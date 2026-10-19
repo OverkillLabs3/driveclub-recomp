@@ -529,6 +529,9 @@ PAIR(lseek,(int fd,int64_t o,int w),(fd,o,w))
 PAIR(fstat,(int fd,GuestStat *s),(fd,s))
 PAIR(stat,(const char *p,GuestStat *s),(p,s))
 PAIR(getdents,(int fd,char *b,uint64_t n,int64_t *base),(fd,b,n,base))
+/* sceKernelGetdents is the 3-argument form (fd, buffer, size): DriveClub calls it to list
+ * a save-data directory (the replay list). getdirentries is the 4-argument form with basep. */
+static ABI int64_t sce_getdents3(int fd,char *b,uint64_t n) { return sce(do_getdents(fd,b,n,NULL)); }
 PAIR(rename,(const char *a,const char *b),(a,b))
 PAIR(ftruncate,(int fd,int64_t l),(fd,l))
 PAIR(truncate,(const char *p,int64_t l),(p,l))
@@ -554,7 +557,7 @@ static const RuntimeExport exports[]={
     {"sceKernelLseek",sce_lseek}, {"lseek",posix_lseek},
     {"sceKernelFstat",sce_fstat}, {"fstat",posix_fstat},
     {"sceKernelStat",sce_stat}, {"stat",posix_stat},
-    {"sceKernelGetdirentries",sce_getdents}, {"getdirentries",posix_getdents},
+    {"sceKernelGetdents",sce_getdents3}, {"sceKernelGetdirentries",sce_getdents}, {"getdirentries",posix_getdents},
     {"sceKernelRename",sce_rename}, {"rename",posix_rename},
     {"sceKernelFtruncate",sce_ftruncate}, {"ftruncate",posix_ftruncate},
     {"sceKernelTruncate",sce_truncate}, {"truncate",posix_truncate},
