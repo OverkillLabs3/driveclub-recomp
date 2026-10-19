@@ -32,8 +32,11 @@
 #include "gpu_check.h"
 #include "prepare.h"
 #include "unlock.h"
+#include "ui_text.h"
 
 using namespace Gdiplus;
+
+int g_ui_lang = 1;  // 0 = English, 1 = Simplified Chinese (launcher UI only; Chinese is the default)
 
 namespace {
 
@@ -293,6 +296,10 @@ void BuildModel() {
   g_lang = seg(L"Language",
                L"The language of the game's menus and text. Click to switch to the next one: all 21 languages of the game are available. Japanese, Korean and Chinese may show missing characters.",
                {L"English (US)"}, {"@lang"}, 0);
+  const int ui_lang = seg(L"Launcher language",
+                          L"Language of this launcher window. The game language is set separately under Gameplay.",
+                          {L"English", L"简体中文"}, {"@ui_lang", ""}, g_ui_lang);
+  g_cards.push_back({L"LAUNCHER", {ui_lang}, 0, L"Switch the launcher's own language here."});
   const int pname = seg(L"Player name", L"The name the game shows for you. Click it to type a new one.", {g_name}, {"@name"}, 0);
   g_mirror = seg(L"Mirror and reflection updates",
                  L"The game draws a second small scene (the mirrors, rain and reflections) every frame, about a quarter of all draw calls. "
@@ -359,12 +366,20 @@ void LoadSettings() {
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
+    if (line.rfind("ui_lang=", 0) == 0) g_ui_lang = line.substr(8) == "zh" ? 1 : 0;
   }
-  for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
+  for (auto& c : g_c) {
+    if (c.patches[0] == "@name") c.items[0] = g_name;
+    if (c.patches[0] == "@ui_lang") c.sel = g_ui_lang;
+  }
   CheckFolders();
   const auto lines = ReadLines(SelectionPath());
   const bool has_selection = !lines.empty() || Exists(SelectionPath());
   for (auto& c : g_c) {
+    if (c.patches[0] == "@ui_lang") {
+      c.sel = g_ui_lang;
+      continue;
+    }
     if (c.kind == Kind::Toggle && c.patches[0] == "@fps") {
       c.sel = fps_counter ? 1 : 0;
       continue;
@@ -473,9 +488,10 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@fast") fast_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@full") full_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
+      if (c.patches[0] == "@ui_lang") g_ui_lang = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\nui_lang=" << (g_ui_lang ? "zh" : "en") << "\r\n";
     // The renderer optimizations that are switched off, as a bit mask. The draw thread is bit 37.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
@@ -511,6 +527,7 @@ void ResetDefaults() {
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
   }
+  g_ui_lang = 1;
   g_changed = true;
 }
 
@@ -653,13 +670,18 @@ void StrokeRound(Graphics& g, const RectF& r, float rad, const Color& c, float w
 void Text(Graphics& g, const std::wstring& s, const Font& f, const RectF& r, const Color& c,
           StringAlignment h = StringAlignmentNear, StringAlignment v = StringAlignmentCenter, bool wrap = false,
           bool ellipsis = true) {
+  const std::wstring shown = Tr(s);
   StringFormat fmt;
   fmt.SetAlignment(h);
   fmt.SetLineAlignment(v);
   if (!wrap) fmt.SetFormatFlags(StringFormatFlagsNoWrap);
   fmt.SetTrimming(ellipsis ? StringTrimmingEllipsisCharacter : StringTrimmingNone);
   SolidBrush br(c);
-  g.DrawString(s.c_str(), -1, &f, r, &fmt, &br);
+  g.DrawString(shown.c_str(), -1, &f, r, &fmt, &br);
+}
+
+void MsgBox(const std::wstring& text, UINT flags) {
+  MessageBoxW(nullptr, Tr(text).c_str(), L"DriveClub", flags);
 }
 
 RectF Scaled(const RectF& r) { return RectF(r.X * g_scale + g_ox, r.Y * g_scale + g_oy, r.Width * g_scale, r.Height * g_scale); }
@@ -671,7 +693,8 @@ void Paint(HDC hdc, int w, int h) {
   g.SetSmoothingMode(SmoothingModeAntiAlias);
   g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
   g.Clear(kBg);
-  FontFamily fam(L"Segoe UI");
+  FontFamily famEn(L"Segoe UI"), famZh(L"Microsoft YaHei UI"), famZh2(L"Microsoft YaHei");
+  FontFamily& fam = !g_ui_lang ? famEn : (famZh.GetLastStatus() == Ok ? famZh : famZh2);
   const float S = g_scale;
   g_oy = ContentOy();
   Font fTitle(&fam, 22 * S, FontStyleBold, UnitPixel), fSub(&fam, 13 * S, FontStyleRegular, UnitPixel),
@@ -687,17 +710,18 @@ void Paint(HDC hdc, int w, int h) {
     const bool folder_problem = !FolderProblem(0).empty() || !FolderProblem(1).empty();
     const wchar_t* chip = GpuBlocked() ? (g_gpu_problem.rfind(L"Your processor", 0) == 0 ? L"Processor not supported" : L"Graphics card not supported")
                           : FoldersOk() ? L"Game found" : folder_problem ? L"Check the game folders" : L"Choose the game folders";
+    const std::wstring chip_text = Tr(std::wstring(chip));
     StringFormat measure(StringFormat::GenericTypographic());
     measure.SetFormatFlags(StringFormatFlagsNoWrap | StringFormatFlagsMeasureTrailingSpaces);
     RectF box;
-    g.MeasureString(chip, -1, &fSeg, PointF(0, 0), &measure, &box);
+    g.MeasureString(chip_text.c_str(), -1, &fSeg, PointF(0, 0), &measure, &box);
     const float cw = box.Width / S + 52.f;
     RectF cr = Scaled(RectF(g_win_w - kMargin - cw, 32, cw, 30));
     const bool chip_ok = FoldersOk() && !GpuBlocked();
     FillRound(g, cr, 15 * S, chip_ok ? Color(255, 28, 52, 38) : Color(255, 60, 40, 28));
     SolidBrush dot(chip_ok ? kOk : kWarn);
     g.FillEllipse(&dot, cr.X + 13 * S, cr.Y + 11 * S, 8 * S, 8 * S);
-    Text(g, chip, fSeg, RectF(cr.X + 30 * S, cr.Y, cr.Width - 30 * S, cr.Height), chip_ok ? kOk : kWarn,
+    Text(g, chip_text, fSeg, RectF(cr.X + 30 * S, cr.Y, cr.Width - 30 * S, cr.Height), chip_ok ? kOk : kWarn,
          StringAlignmentNear, StringAlignmentCenter, false, false);
   }
 
@@ -760,14 +784,15 @@ void Paint(HDC hdc, int w, int h) {
           float px = 13.f;
           StringFormat mf;
           mf.SetFormatFlags(StringFormatFlagsNoWrap);
+          const std::wstring item_text = Tr(c.items[k]);
           for (; px > 9.f; px -= 0.5f) {
             Font ft(&fam, px * S, sel ? FontStyleBold : FontStyleRegular, UnitPixel);
             RectF bx;
-            g.MeasureString(c.items[k].c_str(), -1, &ft, PointF(0, 0), &mf, &bx);
+            g.MeasureString(item_text.c_str(), -1, &ft, PointF(0, 0), &mf, &bx);
             if (bx.Width <= seg.Width - 8 * S) break;
           }
           Font fit(&fam, px * S, sel ? FontStyleBold : FontStyleRegular, UnitPixel);
-          Text(g, c.items[k], fit, seg, sel ? kWhite : kMuted, StringAlignmentCenter);
+          Text(g, item_text, fit, seg, sel ? kWhite : kMuted, StringAlignmentCenter);
         }
       }
     }
@@ -797,6 +822,7 @@ void Paint(HDC hdc, int w, int h) {
     mc = kMuted;
   }
   {
+    const std::wstring msg_text = Tr(msg);
     const RectF fr(g_ox + kMargin * S, fy + 8 * S, (g_btn[0].X - kMargin - 12) * S, (kFooterH - 16) * S);
     StringFormat mfmt;
     mfmt.SetTrimming(StringTrimmingNone);
@@ -804,11 +830,11 @@ void Paint(HDC hdc, int w, int h) {
     for (; px > 9.f; px -= 0.5f) {
       Font ft(&fam, px * S, FontStyleRegular, UnitPixel);
       RectF bounds;
-      g.MeasureString(msg.c_str(), -1, &ft, RectF(0, 0, fr.Width, 0), &mfmt, &bounds);
+      g.MeasureString(msg_text.c_str(), -1, &ft, RectF(0, 0, fr.Width, 0), &mfmt, &bounds);
       if (bounds.Height <= fr.Height) break;
     }
     Font fit(&fam, px * S, FontStyleRegular, UnitPixel);
-    Text(g, msg, fit, fr, mc, StringAlignmentNear, StringAlignmentCenter, true, false);
+    Text(g, msg_text, fit, fr, mc, StringAlignmentNear, StringAlignmentCenter, true, false);
   }
   if (g_busy) {
     const RectF bar = Scaled(RectF(kMargin, g_content_h + kFooterH - 18.f, g_btn[0].X - kMargin - 12, 6.f));
@@ -1003,7 +1029,10 @@ std::wstring Preflight() {
     }
     if (count) {
       LauncherLog("missing program files: " + missing + (count > 6 ? " and more" : ""));
-      return L"Some program files are missing (" + std::wstring(missing.begin(), missing.end()) +
+      const std::wstring files(missing.begin(), missing.end());
+      if (g_ui_lang) return L"缺少部分程序文件（" + files + (count > 6 ? L" 等" : L"") +
+                             L"）。请重新解压下载包；杀毒软件可能删除了它们。";
+      return L"Some program files are missing (" + files +
              (count > 6 ? L" and more" : L"") + L"). Unzip the download again; an antivirus program may have removed them.";
     }
   }
@@ -1032,7 +1061,10 @@ std::wstring Preflight() {
         list += (list.empty() ? "" : ", ") + std::string(name);
       }
       LauncherLog("archive check: " + std::to_string(truncated.size()) + " volumes are shorter than the archive says (" + list + ")");
-      return L"These game files are incomplete: " + std::wstring(list.begin(), list.end()) +
+      const std::wstring files(list.begin(), list.end());
+      if (g_ui_lang) return L"游戏文件不完整：" + files + (truncated.size() > 8 ? L" 等" : L"") +
+                             L"。游戏文件被截断，请重新复制游戏文件后再启动。";
+      return L"These game files are incomplete: " + files +
              (truncated.size() > 8 ? L" and more" : L"") +
              L". The copy of the game was cut short. Copy the game files again, then start the game.";
     }
@@ -1077,7 +1109,12 @@ std::wstring StartGame() {
     const std::wstring problem = BuildUnlock(g_folder[0].path, g_folder[1].path, unlock_dir);
     LauncherLog(problem.empty() ? std::string("add-on content unlock: ok") : "add-on content unlock: " + Narrow(problem));
     if (problem.empty()) unlock_arg = L" --mods \"" + unlock_dir + L"\"";
-    else MessageBoxW(nullptr, (L"The add-on content could not be unlocked (" + problem + L"). The game starts without it.").c_str(), L"DriveClub", MB_OK | MB_ICONWARNING);
+    else {
+      const std::wstring message = g_ui_lang
+          ? L"附加内容解锁失败（" + problem + L"）。游戏将不带附加内容启动。"
+          : L"The add-on content could not be unlocked (" + problem + L"). The game starts without it.";
+      MsgBox(message, MB_OK | MB_ICONWARNING);
+    }
   }
   std::wstring cmd = L"\"" + exe + L"\" \"" + prep + L"\\boot-linked.bin\" --content-profile \"" + prep +
                      L"\\content.bin\" --patches \"" + prep + L"\\patches.bin\" --app0 \"" + g_folder[0].path +
@@ -1416,6 +1453,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
+        if (ctl.patches[0] == "@ui_lang") {
+          if (seg >= 0) {
+            ctl.sel = seg;
+            g_ui_lang = seg;
+            SaveSettings();
+            SetWindowTextW(h, g_ui_lang ? L"DriveClub - PC 启动器" : L"DriveClub - PC");
+            InvalidateRect(h, nullptr, FALSE);
+          }
+          return 0;
+        }
         if (ctl.kind == Kind::Toggle) {
           ctl.sel = !ctl.sel;
           if (ctl.patches[0] == "@skipgpu") {
@@ -1506,12 +1553,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   const bool play_now = wcsstr(GetCommandLineW(), L"--play") != nullptr;
   if (play_now) {
     if (!FoldersOk()) {
-      MessageBoxW(nullptr, L"Open DriveClub.exe once and choose the game folders.", L"DriveClub", MB_OK | MB_ICONERROR);
+      MsgBox(L"Open DriveClub.exe once and choose the game folders.", MB_OK | MB_ICONERROR);
       return 1;
     }
     if (!g_skip_gpu_check) {
       if (const std::wstring gpu = CheckGpu(); !gpu.empty()) {
-        MessageBoxW(nullptr, gpu.c_str(), L"DriveClub", MB_OK | MB_ICONERROR);
+        MsgBox(gpu, MB_OK | MB_ICONERROR);
         return 1;
       }
     }
@@ -1521,7 +1568,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
       std::wstring e = RunPrepare();
       return e.empty() ? StartGame() : e;
     }();
-    if (!error.empty()) MessageBoxW(nullptr, error.c_str(), L"DriveClub", MB_OK | MB_ICONERROR);
+    if (!error.empty()) MsgBox(error, MB_OK | MB_ICONERROR);
     return error.empty() ? 0 : 1;
   }
 
@@ -1611,7 +1658,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   SystemParametersInfoW(SPI_GETWORKAREA, 0, &area, 0);
   const int win_x = (std::max)(int(area.left), int(area.left) + (int(area.right - area.left) - int(rc.right - rc.left)) / 2);
   const int win_y = (std::max)(int(area.top), int(area.top) + (int(area.bottom - area.top) - int(rc.bottom - rc.top)) / 2);
-  g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"DriveClub - PC", style, win_x, win_y, rc.right - rc.left,
+  g_hwnd = CreateWindowExW(0, wc.lpszClassName, g_ui_lang ? L"DriveClub - PC 启动器" : L"DriveClub - PC", style, win_x, win_y, rc.right - rc.left,
                            rc.bottom - rc.top, nullptr, nullptr, inst, nullptr);
   ShowWindow(g_hwnd, show);
   MSG msg;
