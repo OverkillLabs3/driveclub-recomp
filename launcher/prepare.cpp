@@ -961,9 +961,8 @@ std::string PrepareGame(const fs::path& update, const fs::path& base, const fs::
     if (!fs::exists(update / "sce_sys" / "param.sfo")) return "No sce_sys/param.sfo in the update folder.";
     std::map<std::string, uint32_t> ints;
     const auto sfo = ParseSfo(ReadFile(update / "sce_sys" / "param.sfo"), &ints);
-    // The US release (CUSA00093) or the European one (CUSA00003).
-    const std::string title = sfo.count("TITLE_ID") ? sfo.at("TITLE_ID") : std::string();
-    if (title != "CUSA00093" && title != "CUSA00003") return "The update folder is not DriveClub (CUSA00093 or CUSA00003).";
+    // The title ID is not checked: every region's 1.28 update works (the patches cover the known IDs). The
+    // version still has to be 1.28, because the patch addresses are written for that eboot.
     if (!FolderIsVersion128(update)) {
       const auto field = [&](const char* key) { return sfo.count(key) ? sfo.at(key) : std::string("none"); };
       return "The update folder must be DriveClub version 1.28 (its param.sfo says APP_VER " + field("APP_VER") + ", VERSION " + field("VERSION") + ").";
