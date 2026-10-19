@@ -36,7 +36,7 @@
 
 using namespace Gdiplus;
 
-int g_ui_lang = 1;  // 0 = English, 1 = Simplified Chinese (launcher UI only; Chinese is the default)
+int g_ui_lang = 0;  // 0 = English, 1 = Simplified Chinese (launcher UI only; Chinese is the default)
 
 namespace {
 
