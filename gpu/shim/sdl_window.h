@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 // bbport: the game window. Created by the VideoOut driver on first open; the
 // event pump runs on the port's window thread (see window.cpp).
 #pragma once

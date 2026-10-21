@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 //     opcode name,                                         return type,    arg1 type,      arg2 type,      arg3 type,      arg4 type,      arg4 type,      ...
 OPCODE(Phi,                                                 Opaque,                                                                                         )
 OPCODE(Void,                                                Void,                                                                                           )

@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* libSceSaveData on host directories:
  *   <user>/savedata/<user id>/<title id>/<dir name>/        files the game writes
  *   <user>/savedata/<user id>/<title id>/<dir name>.sce_sys/ param.bin, icon0.png

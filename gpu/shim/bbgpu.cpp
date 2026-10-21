@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 #include "bbport_recent.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "bbport_write_log.h"

@@ -1,4 +1,4 @@
-// bbport: BB_SHARED_LOG (bbport_shared_log.cpp): GPU write ranges in CustomHeap(SystemShared), logged once each.
+// driveclub: BB_SHARED_LOG (bbport_shared_log.cpp): GPU write ranges in CustomHeap(SystemShared), logged once each.
 #pragma once
 #include <cstdint>
 

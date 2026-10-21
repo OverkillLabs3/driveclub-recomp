@@ -1,0 +1,21 @@
+Third party software
+====================
+
+This program includes code and libraries from other projects. Their licenses apply to those parts.
+
+- bloodborne_pc by Supermedo (GPL-2.0-or-later): the native runtime, the graphics shim and parts of
+  the game runtime this program is built on. https://github.com/Supermedo/bloodborne_pc
+- bloodborne_pc by deadinside28 (GPL-2.0-or-later): the original native Linux port, the source of the
+  "bbport:" changes in the vendored renderer. https://github.com/deadinside28/bloodborne_pc
+- shadPS4 (GPL-2.0-or-later): video and shader translation layers. https://github.com/shadps4-emu/shadPS4
+- shadp2p (GPL-2.0-or-later) and BloodBorneButPc (GPL-2.0-or-later): the shadNet client, the network
+  and NP libraries. https://github.com/Wozzardman/shadp2p https://github.com/Awakenchan/BloodBorneButPc
+- Dear ImGui (MIT), stb_truetype (public domain), miniz (MIT), xbyak (BSD-3-Clause), magic_enum (MIT)
+- SDL3 (zlib), FFmpeg (LGPL-2.1-or-later), Vulkan Memory Allocator (MIT)
+- FidelityFX FSR (MIT)
+- NVIDIA DLSS libraries (nvngx_dlss.dll, nvngx_dlssg.dll in the runtime folder), used only for DLSS frame generation on GeForce RTX cards. They are distributed under the NVIDIA DLSS license in the licenses folder.
+- DLSS bridge (bbport_dlss.dll, MIT): license in the licenses folder, source in gpu/dlss_bridge.
+- The remaining runtime DLLs next to the program come from the MSYS2 CLANG64 distribution; each keeps its own license.
+
+Source for the GPL parts is available from the project repository this release was built from. NOTICE in
+that repository names every upstream project and what was taken from it.

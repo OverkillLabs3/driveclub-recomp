@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 #ifndef BB_RUNTIME_H
 #define BB_RUNTIME_H
 #include <stdint.h>

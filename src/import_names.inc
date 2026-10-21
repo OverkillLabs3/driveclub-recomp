@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* NID -> symbol name (first 11 characters of the import key). Names from public PS4 symbol
  * lists as collected in shadPS4 aerolib. Generated from the loaded eboot + linked modules; see docs/PORT_NOTES.md. */
 {"fJgP+wqifno","Func_7C980FFB0AA27E7A"},

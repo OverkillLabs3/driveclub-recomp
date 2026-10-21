@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* Minimal x86-64 native loader experiment. Not a PS4 emulator or game port. */
 #define _GNU_SOURCE
 #include <stdint.h>

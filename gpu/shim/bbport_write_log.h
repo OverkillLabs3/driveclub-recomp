@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: BB_WRITE_LOG=1 - a ring of the writes the GPU emulation makes to guest memory (fences,
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
+// driveclub: BB_WRITE_LOG=1 - a ring of the writes the GPU emulation makes to guest memory (fences,
 // WriteData, buffer and image downloads), dumped when the guest faults: which of them landed
 // where the guest's data got corrupted. Diagnostic only.
 #pragma once

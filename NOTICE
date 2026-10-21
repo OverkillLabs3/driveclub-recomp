@@ -1,0 +1,91 @@
+NOTICE
+======
+
+This project is distributed under the GNU General Public License version 2 or
+later (see LICENSE). It contains code that was written for other projects and
+is reused here. The list below names every upstream project whose code is in
+this repository, where it came from and what it is used for. It is part of the
+distribution so that the source of the reused code stays with the binaries, as
+GPL-2.0 section 5 (a) and section 5 (d) require.
+
+Upstream projects
+-----------------
+
+1. bloodborne_pc by Supermedo (https://github.com/Supermedo/bloodborne_pc)
+   License: GPL-2.0-or-later
+   The native Windows port of Bloodborne. The runtime in src/, the graphics
+   shim in gpu/shim/ and parts of the vendored game runtime in gpu/shadps4/
+   were taken from this project and adapted for Driveclub. Supermedo's
+   project is itself built on the native Linux port by deadinside28 (see
+   below).
+
+2. bloodborne_pc by deadinside28 (https://github.com/deadinside28/bloodborne_pc)
+   License: GPL-2.0-or-later
+   The original native Linux port of Bloodborne, also known as bbport. It is
+   the origin of the "bbport:" markers that are in the code of this
+   repository and of the vendored shadPS4 tree in gpu/shadps4/.
+
+3. shadPS4 (https://github.com/shadps4-emu/shadPS4)
+   License: GPL-2.0-or-later
+   The emulator whose video core and shader translator were the starting point
+   of the renderer in gpu/shadps4/. That tree is vendored, see gpu/VENDOR.txt.
+   The vendored copy also carries the "bbport:" changes of the two projects
+   above.
+
+4. shadp2p by Wozzardman (https://github.com/Wozzardman/shadp2p)
+   License: GPL-2.0-or-later
+   The shadNet client. gpu/shim/core/bloodborne_re.h is the header from
+   shadp2p, and the network and NP libraries in gpu/shadps4/core/libraries/
+   {network,np} and gpu/bbnet/ come from the shadNet work that was put
+   together for bloodborne_pc.
+
+5. BloodBorneButPc by Awaken (https://github.com/Awakenchan/BloodBorneButPc)
+   License: GPL-2.0-or-later
+   The online play code of the bloodborne_pc projects. The network, NP and
+   shadNet glue in gpu/bbnet/ and the matching parts of the vendored tree
+   descend from it.
+
+How the reused code can be identified
+-------------------------------------
+
+The following in this repository comes from the projects named above:
+
+- The files gpu/shim/bbport_*.c, gpu/shim/bbport_*.h and
+  gpu/shim/core/bloodborne_re.h keep the file names of the upstream project.
+- 221 comments in gpu/shadps4/ and 27 in gpu/shim/ carry the "bbport:" prefix
+  that marks a change made in the upstream bloodborne_pc projects.
+  gpu/VENDOR.txt described them as local changes; they are not, they come
+  from the two bloodborne_pc projects named above. The changes made for this
+  project are marked with "driveclub:" instead, in 95 comments.
+- 5 of the 30 files in src/ (compat_win.c, compat_win.h, runtime_ajm.c,
+  runtime_rtc.c, vulkan_smoke.c) and 29 of the 50 files in gpu/shim/ are byte
+  for byte the same as in Supermedo's bloodborne_pc at commit de2e38a. Two
+  files in src/ (runtime_ajm.c, vulkan_smoke.c) and four in gpu/shim/
+  (core/address_space.h, core/devtools/widget/gpu_memory.h, tracy/Tracy.hpp,
+  tracy/TracyVulkan.hpp) are also the same as in deadinside28's
+  bloodborne_pc.
+- 216 of the 481 C++ files in gpu/shadps4/ are byte for byte the same as in
+  Supermedo's bloodborne_pc at commit de2e38a. 307 of the 481 are byte for
+  byte the same as in shadPS4 at commit b4e7ae7. 147 are the same as in no
+  commit of either upstream; those are the files that were changed for this
+  project.
+- gpu/VENDOR.txt was byte for byte the same as in Supermedo's bloodborne_pc
+  at commit bf95396.
+- The LICENSE file is byte for byte the same as in both bloodborne_pc
+  projects.
+- The files that were changed for this project carry a notice at the top
+  that names the project they are based on; 182 files carry one. The files
+  that were taken over unchanged keep their original contents.
+
+Changes made here
+-----------------
+
+The Driveclub specific work is: the launcher (launcher/), the patch set in
+patches/DriveClub.xml, the runtime adjustments in src/, the graphics changes
+in gpu/shim/ and the changes in the vendored renderer. The changes to the
+reused files are marked in the source and in the notice at the top of the
+changed file.
+
+Third-party components that keep their own license are listed in
+packaging/release/THIRD_PARTY_NOTICES.txt and have their license file next to
+them in the tree.

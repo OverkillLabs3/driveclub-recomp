@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* Offline AppContent provider for the configured base-game profile.
  * No package/DLC mounting, downloads, entitlement or license emulation. */
 #include "runtime.h"

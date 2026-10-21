@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -14,7 +17,7 @@ namespace VideoCore {
 Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
                  const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth, float extra_lod_bias) {
     using namespace Vulkan;
-    // bbport: BB_ANISO=0|2|4|8|16 (the launcher's Anisotropic filtering): colour samplers that
+    // driveclub: BB_ANISO=0|2|4|8|16 (the launcher's Anisotropic filtering): colour samplers that
     // filter linearly across mip levels get at least that much anisotropy even where the game
     // asked for none. Roads and terrain at a shallow angle stay sharp. Depth compares and point
     // samplers are left alone. 0 keeps the game's own. Default: 16x, 4x on integrated GPUs.

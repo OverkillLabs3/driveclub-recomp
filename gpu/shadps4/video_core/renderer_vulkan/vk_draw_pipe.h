@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // bbport: two-stage draw pipeline (docs/parallel_gpu.md, "Two-stage draw pipeline").
 //
 // The GPU command thread (stage A) decodes PM4, keeps the register file and selects pipelines;
@@ -119,7 +122,7 @@ public:
                 __builtin_ia32_pause();
             } else {
                 std::this_thread::yield();
-                // bbport: a recording thread stuck for 2 s (a GPU hang inside it) is reported once, with the
+                // driveclub: a recording thread stuck for 2 s (a GPU hang inside it) is reported once, with the
                 // reason of this drain, so a freeze leaves a trace in the log.
                 if (!reported && !(spins & 1023) && std::chrono::steady_clock::now() - wall > std::chrono::seconds(2)) {
                     reported = true;
@@ -241,7 +244,7 @@ private:
             }
             busy_cycles.fetch_add(__rdtsc() - start, std::memory_order_relaxed);
             at += header->size;
-            // bbport: guest copies this thread queued (BbCopy batches are per thread) must reach the copy pool
+            // driveclub: guest copies this thread queued (BbCopy batches are per thread) must reach the copy pool
             // before stage A can see the ring empty: A drains, then submits or signals the guest, and waits only
             // for its own batch and the pool. Unpublished, the GPU read staging memory not yet written (missing
             // geometry and noise textures in DriveClub). Published when the ring runs dry, batched otherwise.

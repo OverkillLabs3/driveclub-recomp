@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <span>
@@ -162,7 +165,7 @@ struct Info : InfoPersistent {
     /// bbport: user data of this stage as a draw saw it. The GPU command thread refreshes
     /// user_data/flattened_ud_buf for every draw it decodes, while the draw recording thread
     /// (vk_draw_pipe.h) may still work on an earlier draw: that thread installs snapshots here.
-    /// bbport: a V# the GPU command thread read through a user-data pointer (fetch shader tables, which the
+    /// driveclub: a V# the GPU command thread read through a user-data pointer (fetch shader tables, which the
     /// constant engine dumps into a ring of guest memory): the recording thread uses this copy, so a later
     /// DumpConstRam over the table does not change what an earlier draw binds.
     struct PointerRead {

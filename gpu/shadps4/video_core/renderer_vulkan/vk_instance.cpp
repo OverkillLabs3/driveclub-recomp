@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <cstdio>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
@@ -331,7 +334,7 @@ bool Instance::CreateDevice() {
     custom_border_color = add_extension(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     depth_clip_control = add_extension(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME);
     depth_clip_enable = add_extension(VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME);
-    // bbport: after a lost device the driver can say which address faulted and give its own
+    // driveclub: after a lost device the driver can say which address faulted and give its own
     // crash data; LogDeviceLost() writes it to the log. Optional, nothing depends on it.
     device_fault = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     if (device_fault) {
@@ -343,7 +346,7 @@ bool Instance::CreateDevice() {
     }
     std::printf("GPU: driver fault report after a lost device: %s%s\n", device_fault ? "available" : "not available",
                 device_fault_vendor_binary ? " (with driver crash data)" : "");
-    // bbport: Intel's drivers draw characters as black silhouettes with this extension (seen in
+    // driveclub: Intel's drivers draw characters as black silhouettes with this extension (seen in
     // Arc and HD 630 drivers); the game then builds its vertex input statically.
     // BB_VERTEX_INPUT_DYNAMIC_STATE=0/1 forces it either way.
     {
@@ -480,7 +483,7 @@ bool Instance::CreateDevice() {
             }
         }
     }
-    // bbport: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
+    // driveclub: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
     // Default on for AMD only, where the driver drops the old mapping of memory that a second sparse
     // buffer binds; NVIDIA and Intel keep what they had. BB_SPARSE_ALIASED=1 / 0 forces it on / off.
     const bool sparse_aliased = features.sparseResidencyAliased && [&] {
@@ -982,7 +985,7 @@ extern "C" void bbgpu_print_recent_passes(void);
 extern "C" void bbgpu_note_device_lost(void);
 extern "C" const char* bbgpu_sibling_path(const char* name);
 
-// bbport: everything the driver and the process can say about a lost device, written once.
+// driveclub: everything the driver and the process can say about a lost device, written once.
 void Instance::LogDeviceLost() const {
     const auto line = [](const std::string& text) {
         std::fputs(text.c_str(), stdout);

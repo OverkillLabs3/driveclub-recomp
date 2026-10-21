@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <algorithm>
@@ -69,7 +72,7 @@ public:
             return false;
         }
         manager->template ChangeRegionState<Type::GPU, false>(manager->GetCpuAddr() + offset, size);
-        on_unmark(); // bbport: under the lock (gpu_byte_map.h)
+        on_unmark(); // driveclub: under the lock (gpu_byte_map.h)
         return true;
     }
 
@@ -83,7 +86,7 @@ public:
                             });
     }
 
-    /// bbport: see RegionManager::ExtendWriteFault.
+    /// driveclub: see RegionManager::ExtendWriteFault.
     void ExtendWriteFault(VAddr window_addr, u64 size) {
         IteratePages<false>(window_addr, size,
                             [](RegionManager* manager, u64 offset, size_t size) {
@@ -131,7 +134,7 @@ public:
                             auto&& on_upload) {
         IteratePages<true>(query_cpu_range, query_size,
                            [&func, is_written](RegionManager* manager, u64 offset, size_t size) {
-                               // bbport: read-only bindings skip the region lock when no page
+                               // driveclub: read-only bindings skip the region lock when no page
                                // in range is CPU-modified. A guest write sets its bit in the
                                // fault handler before the store, and the draw that uses the
                                // data reaches this thread through the submission queue lock.

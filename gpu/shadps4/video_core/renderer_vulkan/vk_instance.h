@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <cstdlib>
@@ -252,7 +255,7 @@ public:
     }
 
     /// Returns true if the subgroup size can be set to match guest subgroup size
-    /// bbport: the 64-wide path needs a driver that lets compute require 64 lanes (AMD, the
+    /// driveclub: the 64-wide path needs a driver that lets compute require 64 lanes (AMD, the
     /// compute-lowering to 32 lanes drew colored stripes and blocks there). Graphics stages are
     /// pinned only where the driver allows it (CanRequireSubgroupSize): RADV allows fragment and
     /// compute but not vertex (requiredSubgroupSizeStages 0xf0), the Windows AMD driver only

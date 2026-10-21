@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // Reads the real size of the half resolution depth buffer in the game's depth conversion shader.
 //
 // That shader compares against a hard coded 960x540. Above 1080p the buffer is larger, so most of it is

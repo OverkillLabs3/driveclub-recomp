@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 // bbport: optimizations that can be switched off while the game runs (BB_TOGGLE_FILE,
 // see runtime_memory.c), to find which one changes rendering without restarting.
 #pragma once

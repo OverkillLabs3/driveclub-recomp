@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // bbport: frame generation's depth input, taken where the upscaler runs (before the game's
 // post-processing): the scene depth as R32F. The motion vectors come from CameraMotion.
 #version 450

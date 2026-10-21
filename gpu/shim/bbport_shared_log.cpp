@@ -1,4 +1,4 @@
-// bbport: BB_SHARED_LOG=<file> (off by default): which allocations share
+// driveclub: BB_SHARED_LOG=<file> (off by default): which allocations share
 // 4 KB pages with GPU-written bytes in the game's CustomHeap(SystemShared) (0x3000000000, 49 MB). The loader retargets
 // the six call/jmp sites of its allocator (eboot FUN_00753a80) to Allocate below, which calls the allocator and logs
 //   A t_ms site size align tag address ret0 ret1 ret2 ret3

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: equality of fixed-size, padding-free structs compared on every draw (render state,
+// driveclub: equality of fixed-size, padding-free structs compared on every draw (render state,
 // pipeline key). The Windows CRT memcmp is an out-of-line call that compares 8 bytes per step
 // with byte loops for the head and tail; this compares 16-byte lanes inline and branch-free.
 

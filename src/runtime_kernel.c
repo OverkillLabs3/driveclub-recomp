@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* libkernel/libScePosix process services: clocks, sleeping, errno mapping,
  * pthread once/keys, signal bookkeeping and a narrow sysctl. Guest values
  * use FreeBSD numbering; host errno values never reach the guest directly. */

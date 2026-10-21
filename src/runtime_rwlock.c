@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* Linux rwlocks behind PS4 pointer-to-handle ABI. The registry protects
    lifetime, static initialization and ownership; waiting happens outside it. */
 #define _GNU_SOURCE

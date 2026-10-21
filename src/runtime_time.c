@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* Explicit guest timeval layout; host pointers never escape this boundary. */
 #define _DEFAULT_SOURCE
 #include "runtime.h"

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <atomic>
@@ -93,7 +96,7 @@ public:
     [[nodiscard]] u64 RegistryGeneration() const noexcept {
         return registry_generation.load(std::memory_order_acquire);
     }
-    /// bbport: changes only when an image is registered or unregistered, not on a depth/color form switch (which
+    /// driveclub: changes only when an image is registered or unregistered, not on a depth/color form switch (which
     /// changes the image's backing: memos that check each entry's backing can use this one). Equal to
     /// RegistryGeneration with BB_MEMO_MEMBERSHIP=0.
     [[nodiscard]] u64 MembershipGeneration() const noexcept {
@@ -412,7 +415,7 @@ private:
     tsl::robin_map<u64, Sampler> samplers;
     std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;
-    u64 gc_evictions = 0, gc_downloads = 0, gc_skipped = 0; ///< bbport: pressure report
+    u64 gc_evictions = 0, gc_downloads = 0, gc_skipped = 0; ///< driveclub: pressure report
     std::chrono::steady_clock::time_point gc_report_time{};
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
@@ -453,7 +456,7 @@ private:
         s32 clear_mask = -1;
     };
     tsl::robin_map<VAddr, MetaDataInfo> surface_metas;
-    /// bbport: the other form (depth or color) of a registered image that switches between the two
+    /// driveclub: the other form (depth or color) of a registered image that switches between the two
     /// (ResolveDepthOverlap), kept unregistered so that a switch back does not create an image again.
     tsl::robin_map<u32, ImageId> depth_twins;
     /// Turns registered image `image_id` into `new_info` (same memory, other form) in place: its

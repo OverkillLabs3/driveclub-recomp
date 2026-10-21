@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* Kernel semaphores: 32-bit IDs, counted tokens and FIFO waiters.
  * Priority-ordered semaphores are approximated by FIFO order. */
 #define _GNU_SOURCE

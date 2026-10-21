@@ -184,7 +184,7 @@ struct FfxFsr4VkContext {
     VkBool32  dotProductSupported;
     VkBool32  computeDerivativesSupported;
 
-    /* bbport: BB_FSR4_PROFILE=1 - GPU time per pass (timestamps around each
+    /* driveclub: BB_FSR4_PROFILE=1 - GPU time per pass (timestamps around each
      * dispatch, read back when the frame retires, printed every 300 frames). */
     VkQueryPool profPool;
     float       profPeriodNs;
@@ -636,7 +636,7 @@ static VkFormat toVkFmt(FfxSurfaceFormat f)
 
 // ── pipeline creation ─────────────────────────────────────────────────────────
 
-/* bbport: BB_FSR4_STATS=1 (the device must enable pipelineExecutableInfo) prints the
+/* driveclub: BB_FSR4_STATS=1 (the device must enable pipelineExecutableInfo) prints the
  * driver's statistics of each pass: registers, spills, instruction counts. */
 static void printPipelineStats(FfxFsr4VkContext* c, uint32_t passIdx, VkPipeline pipeline)
 {

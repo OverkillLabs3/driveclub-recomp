@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <array>
 #include "common/bytes_equal.h"
 #include <cstring>
@@ -218,7 +221,7 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
                                                   LastTarget& last, auto&& make_desc,
                                                   const Parts&... parts) {
     static_assert((sizeof(Parts) + ...) <= 256, "target memo key too large");
-    // bbport: the key size is fixed per call site: compare inline instead of a CRT memcmp call.
+    // driveclub: the key size is fixed per call site: compare inline instead of a CRT memcmp call.
     constexpr u32 KeySize = (sizeof(Parts) + ...);
     std::array<u8, 256> key{};
     u32 key_size = 0;
@@ -507,7 +510,7 @@ void Rasterizer::NotePendingGpuWrite(VAddr address, u64 size) {
         return;
     }
     // Draws write the same buffers over and over: an entry for the range only moves on.
-    // bbport: noted while the writing packet is built (before Begin/Commit): Head() is still the end of the
+    // driveclub: noted while the writing packet is built (before Begin/Commit): Head() is still the end of the
     // previous packet, already reached after any drain, so the next draw could copy the stale CPU bytes into
     // the constant ring. Unreachable until the packet is committed (ResolvePendingWrites).
     const u64 position = UnresolvedWrite;
@@ -652,7 +655,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     thread_local std::array<boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>,
                             Shader::MaxStageTypes>
         rings;
-    // bbport: the vertex V#s, read now through the user-data pointer: stage B binds these, so the constant
+    // driveclub: the vertex V#s, read now through the user-data pointer: stage B binds these, so the constant
     // engine may dump new tables over the old ones without waiting for B (BB_PIPE_CE_NODRAIN).
     thread_local boost::container::static_vector<Shader::Info::PointerRead, 32> pointer_reads;
     pointer_reads.clear();
@@ -673,7 +676,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
             }
         }
     }
-    // bbport: every range a stage of this draw writes is noted before any read-only binding is copied into the
+    // driveclub: every range a stage of this draw writes is noted before any read-only binding is copied into the
     // ring: a read copied first would no longer alias a write declared by a later binding or stage.
     if (constant_ring && !BbToggle::Disabled(BbToggle::ConstantRing)) {
         for (const auto* stage : stages) {
@@ -789,7 +792,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         out += sizeof(AmdGpu::Regs);
     }
     dirty.Clear();
-    // bbport: copies stage A queued for work recorded before this hand-off: stage B may submit it.
+    // driveclub: copies stage A queued for work recorded before this hand-off: stage B may submit it.
     BbCopy::FlushBatch();
     draw_pipe->Commit(static_cast<u32>(out - start));
     ResolvePendingWrites();
@@ -828,7 +831,7 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
 }
 
 void Rasterizer::WaitQueuedMemoryWrites() {
-    // bbport: the selection reads guest memory (SRT walk, fetch V#s, sharps) a queued
+    // driveclub: the selection reads guest memory (SRT walk, fetch V#s, sharps) a queued
     // WriteData or DmaData may still change; only that packet has to have run, not the whole ring.
     if (draw_pipe && last_memory_task && OnStageA()) {
         draw_pipe->WaitFor(last_memory_task);
@@ -1193,7 +1196,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
-    buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated since the last recording
+    buffer_cache.ApplyQueuedStores(); // driveclub: guest stores emulated since the last recording
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1460,7 +1463,7 @@ void Rasterizer::FlushLongBatch() {
         const long v = env ? std::atol(env) : 96;
         return v <= 0 ? 0u : u32(std::max<long>(v, 64));
     }();
-    // bbport: on stage B too: while packets are in flight it owns the scheduler (two-stage pipe). Skipped there
+    // driveclub: on stage B too: while packets are in flight it owns the scheduler (two-stage pipe). Skipped there
     // before, the pipe lost the 96-draw batching and the guest waited twice as long for readbacks.
     if (!interval) {
         return;
@@ -1516,7 +1519,7 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
 
 void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_indexed,
                                     const IndirectDraw& indirect) {
-    buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated before this work
+    buffer_cache.ApplyQueuedStores(); // driveclub: guest stores emulated before this work
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
@@ -1785,7 +1788,7 @@ void Rasterizer::DispatchIndirect(VAddr address, u32 offset, u32 size) {
 
 void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr address,
                                         u32 size) {
-    buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated before this work
+    buffer_cache.ApplyQueuedStores(); // driveclub: guest stores emulated before this work
     scheduler.PopPendingOperations();
     const u32 offset = 0;
 
@@ -2561,7 +2564,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                               vsharp.GetSize(), size, stage.pgm_hash);
                 }
                 if (desc.is_written) {
-                    // bbport: BB_READBACK_LOG names the shader that wrote what the guest reads back.
+                    // driveclub: BB_READBACK_LOG names the shader that wrote what the guest reads back.
                     BbTrace::writer_tag.store(stage.pgm_hash ^ (u64(stage.sw_stage) << 60), std::memory_order_relaxed);
                 }
                 const auto [buffer, offset] = buffer_cache.ObtainBuffer(
@@ -2574,7 +2577,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 }
                 push_data.AddOffset(binding.buffer, adjust);
                 buffer_infos.emplace_back(buffer->Handle(), offset_aligned, size + adjust);
-                // bbport: the stream buffer is only written by the host (copies of read-only
+                // driveclub: the stream buffer is only written by the host (copies of read-only
                 // guest data, reused after the GPU finished with it): no GPU hazard to track.
                 // ~500k such binds per second in DriveClub each inserted a barrier tracker range.
                 static const bool track_stream = [] {
@@ -3015,7 +3018,7 @@ Rasterizer::BeginSignature Rasterizer::MakeBeginSignature(const GraphicsPipeline
 bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedStage* prepared,
                                      u32 first_image_idx, bool& barrier, TextureSet*& slot) {
     const u32 count = static_cast<u32>(stage.images.size());
-    // bbport: without a prepared draw (draw preparation is off in DriveClub) the T# hashes are
+    // driveclub: without a prepared draw (draw preparation is off in DriveClub) the T# hashes are
     // computed here from the current user data, so the set memo works on its own. Opt out with
     // BB_TEXTURE_SET_LOCAL=0.
     static const bool local_sets = [] {
@@ -3533,7 +3536,7 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
 
 void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds) {
     DrainDrawPipe(); // stage B must be idle before this thread records (the queued stores included)
-    buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated before this work
+    buffer_cache.ApplyQueuedStores(); // driveclub: guest stores emulated before this work
     ASSERT_MSG(address % 4 == 0 && num_bytes % 4 == 0,
                "FillBuffer address and size must be a multiple of 4 bytes");
     if (!is_gds) {
@@ -3557,7 +3560,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
 
 void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds) {
     DrainDrawPipe(); // stage B must be idle before this thread records (the queued stores included)
-    buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated before this work
+    buffer_cache.ApplyQueuedStores(); // driveclub: guest stores emulated before this work
     if (!dst_gds && !buffer_cache.IsRegionGpuModified(dst, num_bytes)) {
         if (!src_gds && !buffer_cache.IsRegionGpuModified(src, num_bytes) &&
             !texture_cache.FindImageFromRange(src, num_bytes)) {
@@ -3666,7 +3669,7 @@ bool Rasterizer::IsMapped(VAddr addr, u64 size) {
     }
     const auto range = decltype(mapped_ranges)::interval_type::right_open(addr, addr + size);
 
-    // bbport: each thread checks its own copy of the set, taken again after a map or unmap: the
+    // driveclub: each thread checks its own copy of the set, taken again after a map or unmap: the
     // shared lock (a mutex and a condition variable per call) showed in the CPU profile. BB_MAPPED_COPIES=0 locks.
     static const bool copies = [] {
         const char* env = std::getenv("BB_MAPPED_COPIES");

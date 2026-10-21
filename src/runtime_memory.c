@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+ * Modified for this port.
+ */
 /* PS4 virtual memory: direct (physical) pool, flexible memory, reservations,
  * protection changes and queries. One sparse memfd backs the whole direct
  * pool, so any mapping of any physical range aliases the same storage.
@@ -299,7 +304,7 @@ static int pool(void) {
     runtime_memory_reserve();
     uint64_t bytes=POOL_SIZE+FLEX_SPAN;
     section=CreateFileMapping2(INVALID_HANDLE_VALUE,NULL,FILE_MAP_ALL_ACCESS,PAGE_EXECUTE_READWRITE,SEC_COMMIT,bytes,NULL,NULL,0);
-    /* bbport: refused for lack of commit (error 1450/1455): Windows does not grow a system-managed page file for one
+    /* driveclub: refused for lack of commit (error 1450/1455): Windows does not grow a system-managed page file for one
      * request this large, but does while the charge rises in steps. Commit (never touch) 256 MB blocks until as much
      * as the section plus 1 GB is held or a step fails, release them, retry; up to 15 s in all. */
     for (int attempt=0; !section && attempt<30; ++attempt) {
@@ -809,7 +814,7 @@ static void *toggle_watcher(void *path) {
         unsigned long long value=last;
         int parsed=0;
         if (f) { parsed=fscanf(f,"%llu",&value)==1; fclose(f); }
-        /* bbport: a missing, empty (being rewritten) or garbled file keeps the last mask; it no longer turns
+        /* driveclub: a missing, empty (being rewritten) or garbled file keeps the last mask; it no longer turns
          * every optimization on. The first read without a file keeps the built-in default. */
         if (!parsed) value=last==ULLONG_MAX ? runtime_disabled_optimizations : last;
         if (value!=last) {

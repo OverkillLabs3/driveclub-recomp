@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: which 16-byte blocks of guest memory hold bytes the GPU wrote and the guest has not been given yet, readable
+// driveclub: which 16-byte blocks of guest memory hold bytes the GPU wrote and the guest has not been given yet, readable
 // from any thread without locks (BB_FAULT_EMULATE). The owner of the buffer cache marks blocks when it records a GPU
 // write and when ranges return from a readback; downloads clear the blocks they fully delivered. A guest access to
 // bytes in unmarked blocks needs no download even though its page is protected for other bytes.

@@ -26,7 +26,7 @@ cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sl
 cp out/DriveClubGame.exe "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
-cp packaging/release/README.txt packaging/release/THIRD_PARTY_NOTICES.txt LICENSE "$OUT/"
+cp packaging/release/README.txt packaging/release/THIRD_PARTY_NOTICES.txt NOTICE LICENSE "$OUT/"
 echo "$VERSION" > "$OUT/version.txt"
 
 # Every non-system DLL the game program loads, so nothing has to be installed.

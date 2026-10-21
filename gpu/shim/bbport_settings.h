@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 // bbport: user settings changed at run time from the in-game menu (bbport_overlay.h) and kept
 // in bbport.ini (BB_CONFIG overrides the path). Environment variables override the file at
 // start. Readers load the atomics every frame; writers are the menu and Load().

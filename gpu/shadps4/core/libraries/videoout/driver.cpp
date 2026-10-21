@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include "bbport_threads.h"
 #include <algorithm>
 #include <cmath>
@@ -295,7 +298,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
     return 0;
 }
 
-// bbport: BB_FRAME_TRACE=<file> (bbport_frametrace.h): where each frame's time went.
+// driveclub: BB_FRAME_TRACE=<file> (bbport_frametrace.h): where each frame's time went.
 static void TraceFlip(s64 now_ns, s64 queued_ns, s64 guest_flip_ns, u64 prep_ns, u64 ahead_ns) {
     static FILE* file = [] {
         const char* path = std::getenv("BB_FRAME_TRACE");
@@ -377,7 +380,7 @@ void VideoOutDriver::Flip(const Request& req) {
                                                 : 0);
     runtime_benchmark_flip();
 
-    // bbport: BB_FRAME_LOG=<file> - one line per flip: wall-clock time (ms since 1970, to line up with
+    // driveclub: BB_FRAME_LOG=<file> - one line per flip: wall-clock time (ms since 1970, to line up with
     // a benchmark script) and the interval since the previous flip (ms), for 1%/0.1% lows and spikes.
     static FILE* frame_log = [] {
         const char* path = std::getenv("BB_FRAME_LOG");
@@ -635,7 +638,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::readback_paths[9].exchange(0) / window,
                         BbStats::readback_paths[10].exchange(0) / window);
             {
-                // bbport: where offloaded readbacks wait (ms per second over all guest threads).
+                // driveclub: where offloaded readbacks wait (ms per second over all guest threads).
                 const u64 jobs = BbTrace::rb_jobs.exchange(0);
                 std::printf("Readback waits: %.0f copies/s; ms/s waiting for the GPU "
                             "command thread %.1f, for the copy %.1f, for another thread's copy %.1f\n",
@@ -743,7 +746,7 @@ void VideoOutDriver::Flip(const Request& req) {
                 std::printf("%s\n", line.c_str());
             }
             {
-                // bbport: WAIT_REG_MEM on memory: unmet waits and the polled labels read through the guest view.
+                // driveclub: WAIT_REG_MEM on memory: unmet waits and the polled labels read through the guest view.
                 std::string line = fmt::format(
                     "Label waits (unmet at first test)/s: graphics {:.0f} ({:.1f} ms/s), compute {:.0f} ({:.1f} ms/s); "
                     "view reads by label:",
@@ -925,7 +928,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
-    // bbport: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
+    // driveclub: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
     // period after a release the next release may come when frames run late. The slot after a
     // release at `now` is max(slot + period, now + period - credit). 200 is the old rule
     // (now - period: after a late frame the next one, and even a second, goes out at once:

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include "common/types.h"
@@ -48,7 +51,7 @@ public:
     void FillBuffer(const VideoCore::Buffer* dst, u64 offset, u64 size, u32 value);
 
     void InlineData(VideoCore::Buffer* dst, u64 offset, u32 value);
-    /// bbport: one update of `size` bytes (a multiple of 4, at most 64 KiB): one rendering end and barrier check
+    /// driveclub: one update of `size` bytes (a multiple of 4, at most 64 KiB): one rendering end and barrier check
     /// for a run of dwords instead of one per dword (BufferCache::ApplyQueuedStores).
     void InlineBytes(VideoCore::Buffer* dst, u64 offset, const void* data, u32 size);
 
@@ -124,7 +127,7 @@ private:
     BarrierTracker barrier_tracker;
     VideoCore::Image::Barriers image_barriers;
     vk::MemoryBarrier2 memory_barrier{};
-    // bbport: ranges inserted into barrier_tracker since its last Clear(); re-inserting a
+    // driveclub: ranges inserted into barrier_tracker since its last Clear(); re-inserting a
     // contained range is a no-op, and draws re-bind the same ranges constantly.
     struct AccessMemo {
         u64 resource;

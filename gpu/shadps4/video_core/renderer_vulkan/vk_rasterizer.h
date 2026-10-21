@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include "common/recursive_lock.h"
@@ -104,7 +107,7 @@ public:
     /// Returns true when the task was handed to the recording thread (not run yet).
     bool RunInOrder(OrderedTask task, const void* data, u32 size,
                     u64 toggle = BbToggle::PipelinedTasks);
-    /// bbport: stage A, before a pipeline selection: WriteData/DMA queued for stage B may write the
+    /// driveclub: stage A, before a pipeline selection: WriteData/DMA queued for stage B may write the
     /// descriptor tables the selection walks; wait until stage B has run the last one.
     void WaitQueuedMemoryWrites();
     u64 last_memory_task = 0;
@@ -140,12 +143,12 @@ public:
     /// A guest write hit a protected page.
     bool OnWriteFault(VAddr addr, bool assume_locks);
     bool ReadMemory(VAddr addr, u64 size, bool assume_locks = false);
-    /// bbport: BB_FAULT_EMULATE: true unless every byte of the range is GPU mapped and not GPU written.
+    /// driveclub: BB_FAULT_EMULATE: true unless every byte of the range is GPU mapped and not GPU written.
     bool IsRangeGpuWritten(VAddr addr, u64 size);
-    /// bbport: BB_FAULT_EMULATE: queues a guest store that touches no GPU-written byte (BufferCache::
+    /// driveclub: BB_FAULT_EMULATE: queues a guest store that touches no GPU-written byte (BufferCache::
     /// QueueUntrackedStore); false when the usual write fault path must run.
     bool StoreUntracked(VAddr addr, const void* data, u32 size);
-    /// bbport: BB_FAULT_EMULATE: whether the page holds GPU data (lock-free, any thread).
+    /// driveclub: BB_FAULT_EMULATE: whether the page holds GPU data (lock-free, any thread).
     bool IsPageGpuModified(VAddr addr);
     void ProcessDownloadImages();
     bool IsMapped(VAddr addr, u64 size);
@@ -338,7 +341,7 @@ private:
     Core::MemoryManager* memory;
     boost::icl::interval_set<VAddr> mapped_ranges;
     Common::SharedFirstMutex mapped_ranges_mutex;
-    std::atomic<u64> mapped_ranges_generation{0}; ///< bbport: bumped by every map and unmap
+    std::atomic<u64> mapped_ranges_generation{0}; ///< driveclub: bumped by every map and unmap
     PipelineCache pipeline_cache;
     std::unique_ptr<DrawPreparation> draw_prep;
     std::unique_ptr<DriveAA> drive_aa;
@@ -513,7 +516,7 @@ private:
         u64 position;
     };
     std::vector<PendingWrite> pending_writes;
-    /// bbport: position of a write noted for the packet being built (resolved after its Commit).
+    /// driveclub: position of a write noted for the packet being built (resolved after its Commit).
     static constexpr u64 UnresolvedWrite = ~0ull;
     void ResolvePendingWrites();
     VAddr pending_min = ~VAddr{0}, pending_max = 0; ///< bounds of pending_writes

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <cstdlib>
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
@@ -19,8 +22,8 @@ static const u32 ShaderBinaryVersion = [] {
     const char* undef = std::getenv("BB_UNDEF_ZERO");
     return 20u + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u);
 }();
-static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
-static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)
+static constexpr u32 ShaderMetaVersion = 7u; // driveclub: ImageResource::needs_native
+static constexpr u32 PipelineKeyVersion = 5u; // driveclub: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
 namespace Vulkan {

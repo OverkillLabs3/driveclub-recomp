@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include "shader_recompiler/profile.h"
@@ -21,7 +24,7 @@ static constexpr auto AllGraphicsStageBits =
     vk::ShaderStageFlagBits::eTessellationEvaluation | vk::ShaderStageFlagBits::eGeometry |
     vk::ShaderStageFlagBits::eFragment;
 
-/// bbport: with the driver's cache cold (after a driver update) hundreds of pipelines are built at
+/// driveclub: with the driver's cache cold (after a driver update) hundreds of pipelines are built at
 /// once while the game loads, and the driver now and then fails one with an unknown or
 /// out-of-memory error, which used to end the game. True when the result may go away and the
 /// caller should build the pipeline again (after a pause). Gives up after 5 attempts.

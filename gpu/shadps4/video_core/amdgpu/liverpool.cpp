@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include "bbport_threads.h"
 #include <chrono>
 #include <pthread.h>
@@ -69,7 +72,7 @@ extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64
 // page the GPU has written is read-protected, and each read of it was a synchronous GPU download. A
 // label the CPU or the fence handlers wrote is already in the backing; one written by a shader is
 // not, so every 32nd unmet poll reads through the view, which brings it up to date.
-// bbport: BB_LABEL_VIEW_GPU_ONLY (default on): the 32nd poll reads through the view only when the GPU wrote (or a download is
+// driveclub: BB_LABEL_VIEW_GPU_ONLY (default on): the 32nd poll reads through the view only when the GPU wrote (or a download is
 // under way for) the label's bytes; for any other label the backing already holds the latest value, and the view
 // read only forced a synchronous download of the page's other GPU data.
 static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> regs, u32& polls,
@@ -105,7 +108,7 @@ static bool TestWaitRegMem(const PM4CmdWaitRegMem* wait, std::span<const u32> re
     return wait->TestValue(value);
 }
 
-// bbport: BB_FRAME_STATS time of a WAIT_REG_MEM whose first test failed ([0] graphics, [1] compute).
+// driveclub: BB_FRAME_STATS time of a WAIT_REG_MEM whose first test failed ([0] graphics, [1] compute).
 struct WaitRegMemTimer {
     u32 queue;
     std::chrono::steady_clock::time_point start{};
@@ -152,7 +155,7 @@ Liverpool::~Liverpool() {
 void Liverpool::ProcessCommands() {
     // Process incoming commands with high priority
     while (num_commands) {
-        // bbport: commands touch the caches and record: stage B must be idle. Drained per command: one checked
+        // driveclub: commands touch the caches and record: stage B must be idle. Drained per command: one checked
         // before the loop let a command that arrived after that check run while stage B recorded (BB_PIPE_CHECK).
         if (rasterizer) {
             rasterizer->DrainDrawPipe(Vulkan::DrawPipe::ReasonCommands);
@@ -682,13 +685,13 @@ void Liverpool::ApplyGraphicsRegisterPacket(Regs& regs, const PM4Header* header,
     default:
         return;
     }
-    // bbport: only draw preparation compares checksums; without its workers nobody reads it.
+    // driveclub: only draw preparation compares checksums; without its workers nobody reads it.
     if (hash) {
         checksum = HashRegisterPacket(checksum, reinterpret_cast<const u32*>(header), count + 1);
     }
 }
 
-// bbport: BB_DCB_STATS=1 - structure of graphics command buffers (read-only scan, printed every
+// driveclub: BB_DCB_STATS=1 - structure of graphics command buffers (read-only scan, printed every
 // 5 s): how many buffers, draws per buffer, state set before the first draw. Input for
 // processing command buffers on several threads.
 namespace {
@@ -1459,7 +1462,7 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
     while (!acb.empty()) {
         ProcessCommands();
         if (rasterizer) {
-            // bbport: compute work uses the caches, so the recording thread must be idle first. Padding, Nop and
+            // driveclub: compute work uses the caches, so the recording thread must be idle first. Padding, Nop and
             // register writes do no work: no drain for them (~6000 compute drains/s in races, most before
             // register packets). The recording thread draws from its own register snapshots (Rasterizer::Regs).
             // BB_COMPUTE_STATE_NODRAIN=0 drains before every packet again.

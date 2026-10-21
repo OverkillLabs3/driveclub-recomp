@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include "bbport_frametrace.h"
 #include "shader_recompiler/depth_size_fix.h"
 #include <atomic>
@@ -699,7 +702,7 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
                  key.stage_hashes[stage_out_idx]) =
             GetProgram(sel, stage_in, stage_out, params, binding);
         if (fetch_shader_) {
-            sel.fetch_shader = std::move(fetch_shader_); // bbport: no vector copy per draw
+            sel.fetch_shader = std::move(fetch_shader_); // driveclub: no vector copy per draw
         }
         return true;
     };

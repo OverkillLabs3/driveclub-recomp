@@ -134,9 +134,16 @@ Also say what you were doing when it happened (menu, loading, which event and ca
 ## Credits
 The community patches for DriveClub are by Kravickas, TonySSS, ZipperedRain, kalaposfos, squidbus, illusion and u/Charlie_Muggins.
 
+This project is built on other projects and says so where it uses their code. [NOTICE](NOTICE) names every upstream project, what was taken from it and how to verify that. In short:
+
+- [bloodborne_pc](https://github.com/Supermedo/bloodborne_pc) by Supermedo (GPL-2.0-or-later): the native runtime in `src/`, the graphics shim in `gpu/shim/` and parts of the vendored game runtime in `gpu/shadps4/`.
+- [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc) by deadinside28 (GPL-2.0-or-later): the original native Linux port, the source of the `bbport:` changes in the vendored renderer.
+- [shadPS4](https://github.com/shadps4-emu/shadPS4) (GPL-2.0-or-later): the video core and shader translator in `gpu/shadps4/`.
+- [shadp2p](https://github.com/Wozzardman/shadp2p) and [BloodBorneButPc](https://github.com/Awakenchan/BloodBorneButPc) (GPL-2.0-or-later): the shadNet client and the network and NP libraries.
+
 Also used: [SDL3](https://github.com/libsdl-org/SDL) and [FFmpeg](https://ffmpeg.org).
 
 ## License
-GNU General Public License version 2 or later ([LICENSE](LICENSE)). Parts of the code derive from other GPL projects and keep their original notices in the source files. Third-party components keep their own licenses ([THIRD_PARTY_NOTICES.txt](packaging/release/THIRD_PARTY_NOTICES.txt)).
+GNU General Public License version 2 or later ([LICENSE](LICENSE)). Parts of the code derive from other GPL projects; the files that were changed for this project carry a notice at the top naming the project they are based on, and [NOTICE](NOTICE) lists all of them. Third-party components keep their own licenses ([THIRD_PARTY_NOTICES.txt](packaging/release/THIRD_PARTY_NOTICES.txt)).
 
 DriveClub is a trademark and copyright of its respective owners; this project is not affiliated with or endorsed by them.

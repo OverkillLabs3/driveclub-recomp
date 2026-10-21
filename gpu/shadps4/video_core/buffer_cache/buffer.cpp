@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <atomic>
 #include <cstdlib>
 #include <string_view>
@@ -36,7 +39,7 @@ std::string_view BufferTypeName(MemoryType type) {
     }
 }
 
-/// bbport: where the stream buffer lives (BB_STREAM_MEMORY=device|host|cached). Every draw
+/// driveclub: where the stream buffer lives (BB_STREAM_MEMORY=device|host|cached). Every draw
 /// copies its small read-only buffers from guest memory into it on the Vulkan recording thread.
 /// "device" (shadPS4's choice) is VRAM written through the PCIe BAR: cheap with AMD Smart Access
 /// Memory on a desktop, but on a laptop NVIDIA GPU these writes took half of that thread's time

@@ -273,7 +273,7 @@ extern "C" void BbDescribeAddress(unsigned long long, char* out, unsigned long s
 extern "C" void BbStartSampler() {}
 #endif
 
-// bbport: BB_PIPE_CHECK=1 (see bbport_toggles.h): a scheduler or cache entry point called by a thread other than
+// driveclub: BB_PIPE_CHECK=1 (see bbport_toggles.h): a scheduler or cache entry point called by a thread other than
 // stage B while stage B runs a draw packet. Each distinct call stack is printed once (first 64).
 namespace BbStats {
 void PipeCheckViolation(const char* what) {

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <chrono>
 #include <cstdio>
 #include <functional>
@@ -168,11 +171,11 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
         }
         std::printf("GPU: buffer arena memory type %u, host visible (direct guest reads): %s\n", arena_memory_type_index,
                     arena_host_visible ? "yes" : "no");
-        // bbport: copies of hot readback windows at the end of the submission that wrote them (BB_READBACK_EARLY=0: off).
+        // driveclub: copies of hot readback windows at the end of the submission that wrote them (BB_READBACK_EARLY=0: off).
         const char* early = std::getenv("BB_READBACK_EARLY");
         early_readback = !(early && early[0] == '0') && !arena_host_visible;
         std::printf("GPU: early readback copies at submission end: %s\n", early_readback ? "on" : "off");
-        // bbport: BB_EARLY_BINDING_GUARD=0: early copies may be taken by a submission made inside a binding.
+        // driveclub: BB_EARLY_BINDING_GUARD=0: early copies may be taken by a submission made inside a binding.
         const char* guard = std::getenv("BB_EARLY_BINDING_GUARD");
         early_binding_guard = !(guard && guard[0] == '0');
         // What the driver offers, to see whether resizable BAR is on: a CPU visible type in the card's own memory
@@ -341,7 +344,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
     if (assume_locks) {
         flush_request();
     } else if (FILE* log = ReadbackLog()) {
-        // bbport: BB_READBACK_LOG: the synchronous download (the GPU command thread waits for the GPU).
+        // driveclub: BB_READBACK_LOG: the synchronous download (the GPU command thread waits for the GPU).
         const s64 t_start = BbTrace::NowNs();
         liverpool->SendCommand<true>(std::move(flush_request));
         const s64 t_done = BbTrace::NowNs();
@@ -419,7 +422,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
 }
 
 namespace {
-// bbport: BB_READBACK_LOG=<file>: one line per guest read that downloads GPU-written data (see the header line).
+// driveclub: BB_READBACK_LOG=<file>: one line per guest read that downloads GPU-written data (see the header line).
 FILE* ReadbackLog() {
     static FILE* file = [] {
         const char* path = std::getenv("BB_READBACK_LOG");
@@ -442,7 +445,7 @@ unsigned long LogThreadId() {
 
 // The tick that completes the last GPU write into each readback window (hashed): a direct read waits for it.
 void BufferCache::StampGpuWrite(VAddr device_addr, u64 size) {
-    // bbport: BB_SHARED_LOG: each distinct GPU write range in the game's SystemShared heap, once.
+    // driveclub: BB_SHARED_LOG: each distinct GPU write range in the game's SystemShared heap, once.
     static const bool shared_log = BbSharedLog::Enabled();
     if (shared_log && size != 0) {
         BbSharedLog::GpuWrite(device_addr, size, BbTrace::writer_tag.load(std::memory_order_relaxed));
@@ -523,7 +526,7 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     const bool timed = log || BbTrace::enabled;
     while (attempts < 2) {
         Readback job{.window = window, .fault = device_addr};
-        // bbport: where a read fault's time goes (BB_FRAME_STATS 'Readback waits', BB_READBACK_LOG).
+        // driveclub: where a read fault's time goes (BB_FRAME_STATS 'Readback waits', BB_READBACK_LOG).
         const s64 t_start = timed ? BbTrace::NowNs() : 0;
         liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
         const s64 t_recorded = timed ? BbTrace::NowNs() : 0;
@@ -916,7 +919,7 @@ void BufferCache::MergeReadbackReturns() {
 }
 
 namespace {
-// bbport: BB_BUFFER_STATS=1 - how buffer bindings reach the GPU, by guest region (256 MiB),
+// driveclub: BB_BUFFER_STATS=1 - how buffer bindings reach the GPU, by guest region (256 MiB),
 // printed every 5 s: small read-only copies into the stream buffer, arena bindings, and the
 // bytes those re-upload after CPU writes. Input for engine-level short paths.
 struct BufferStats {

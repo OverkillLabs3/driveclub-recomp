@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: BB_GPU_PROFILE=1 - GPU time per render pass, dispatch and upscaler run. A timestamp is
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
+// driveclub: BB_GPU_PROFILE=1 - GPU time per render pass, dispatch and upscaler run. A timestamp is
 // written where each of them starts (and at the frame end); the time to the next timestamp is
 // charged to its label, barriers and copies recorded in between included. Results are read four
 // frames later and printed every 5 s: GPU ms per frame by label.

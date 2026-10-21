@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <condition_variable>
@@ -80,13 +83,13 @@ public:
         return stream_buffer;
     }
 
-    /// bbport: whether the GPU wrote (or a download is under way for) any byte of the range: a guest read of
+    /// driveclub: whether the GPU wrote (or a download is under way for) any byte of the range: a guest read of
     /// other bytes on the same protected pages needs no download (BB_FAULT_EMULATE). Any thread, lock-free.
     [[nodiscard]] bool IsRangeGpuWritten(VAddr addr, u64 size) const {
         return gpu_byte_map.Any(addr, size);
     }
 
-    /// bbport: BB_FAULT_EMULATE, any thread: a guest store to bytes no GPU write holds, on a page protected for
+    /// driveclub: BB_FAULT_EMULATE, any thread: a guest store to bytes no GPU write holds, on a page protected for
     /// other bytes. Written to guest memory now; the arena copy is updated by the cache owner before it records
     /// further work (ApplyQueuedStores). False when not eligible.
     bool QueueUntrackedStore(VAddr addr, const void* data, u32 size);
@@ -95,7 +98,7 @@ public:
     /// The cache owner (GPU command thread or draw recording thread): inline updates of the queued stores.
     void ApplyQueuedStores();
 
-    /// bbport: see gpu_byte_map.h.
+    /// driveclub: see gpu_byte_map.h.
     GpuByteMap gpu_byte_map;
     struct QueuedStore {
         VAddr lo, hi;
@@ -104,7 +107,7 @@ public:
     std::vector<QueuedStore> queued_stores;
     std::atomic<u32> num_queued_stores{0};
 
-    /// bbport: the stream buffer: only the host writes it, no GPU hazard to track.
+    /// driveclub: the stream buffer: only the host writes it, no GPU hazard to track.
     [[nodiscard]] bool IsHostWrittenBuffer(const Buffer* buffer) const noexcept;
 
     /// Returns minimum granularity of a sparse memory bind.
@@ -144,11 +147,11 @@ public:
     /// Commits pending sparse buffer memory binds. Must be called before every scheduler submit.
     void SubmitPendingArenaBinds(Vulkan::SubmitInfo& info);
 
-    /// bbport: BB_READBACK_EARLY: at the end of each submission (submit callback, GPU thread), copies the
+    /// driveclub: BB_READBACK_EARLY: at the end of each submission (submit callback, GPU thread), copies the
     /// GPU-modified ranges of the readback windows it wrote that the guest read recently into staging. A guest
     /// read then waits for that submission only, not for everything recorded until the read fault.
     void RecordEarlyReadbacks();
-    /// bbport: the draw or dispatch whose bindings were stamped is recorded (Rasterizer::ResetBindings).
+    /// driveclub: the draw or dispatch whose bindings were stamped is recorded (Rasterizer::ResetBindings).
     void NoteBindingsRecorded() {
         unrecorded_windows.clear();
     }
@@ -262,14 +265,14 @@ private:
     std::atomic<bool> direct_readback{true};
     u32 direct_reads{};
     std::array<u64, 4096> window_write_tick{};
-    /// bbport: BB_READBACK_LOG: per window (hashed like window_write_tick) the last writer's tag, when it was
+    /// driveclub: BB_READBACK_LOG: per window (hashed like window_write_tick) the last writer's tag, when it was
     /// recorded (steady ns), and how many write bindings since the window was last read back.
     std::array<u64, 4096> window_writer{};
     std::array<s64, 4096> window_write_ns{};
     std::array<u32, 4096> window_writes{};
     void StampGpuWrite(VAddr device_addr, u64 size);
 
-    /// bbport: early readbacks (RecordEarlyReadbacks). Hot: the window was read back in the last ticks.
+    /// driveclub: early readbacks (RecordEarlyReadbacks). Hot: the window was read back in the last ticks.
     struct EarlyReadback {
         VAddr window{};
         DownloadCopies copies{}; ///< srcOffset from the arena, dstOffset into staging.
@@ -282,7 +285,7 @@ private:
     std::array<VAddr, 4096> hot_window{};
     std::array<u64, 4096> hot_tick{};
     std::vector<VAddr> early_pending;
-    /// bbport: windows stamped by bindings whose draw/dispatch is not recorded yet. A submission made
+    /// driveclub: windows stamped by bindings whose draw/dispatch is not recorded yet. A submission made
     /// inside the binding (an allocation-induced flush) must not take their early copy: the draw writes after it,
     /// in the next tick, without a new write sequence. They stay pending until NoteBindingsRecorded.
     std::vector<VAddr> unrecorded_windows;

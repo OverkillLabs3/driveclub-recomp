@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #pragma once
 
 #include <cstddef>
@@ -27,7 +30,7 @@ struct VmaAllocationInfo;
 namespace VideoCore {
 
 /// Hints and requirements for the backing memory type of a commit
-/// bbport: default place of the stream buffer for a GPU vendor (BB_STREAM_MEMORY overrides).
+/// driveclub: default place of the stream buffer for a GPU vendor (BB_STREAM_MEMORY overrides).
 void SetStreamPlacementDefault(u32 vendor_id);
 
 enum class MemoryType : u8 {
@@ -46,7 +49,7 @@ constexpr vk::BufferUsageFlags ReadFlags =
 constexpr vk::BufferUsageFlags AllFlags =
     ReadFlags | vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eStorageBuffer;
 
-/// bbport: set by the Vulkan instance when the device can alias sparse memory. A migrated arena binds the
+/// driveclub: set by the Vulkan instance when the device can alias sparse memory. A migrated arena binds the
 /// same memory as the arena it replaces, which is only valid with sparseResidencyAliased; without it the
 /// AMD driver drops the old mapping and shaders that still use the old addresses read invalid memory.
 inline bool sparse_aliased_enabled = false;

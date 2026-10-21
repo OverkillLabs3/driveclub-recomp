@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // Anti-aliasing for DriveClub through FSR 3.1 or DLSS (DLAA) at the render resolution. The game's
 // own temporal anti-aliasing pass runs as before; right after it the lit HDR picture it read is
 // reconstructed by FSR or DLSS (jittered geometry, depth, camera motion) and the result replaces

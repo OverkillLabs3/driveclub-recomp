@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // bbport: speculative draw preparation on worker threads (see vk_draw_prep.h).
 
 #include <algorithm>

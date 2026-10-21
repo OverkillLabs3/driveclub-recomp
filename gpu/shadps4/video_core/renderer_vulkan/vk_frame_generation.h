@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // bbport: frame generation (BbSettings::frame_gen, BB_FRAME_GEN), as in the Uncharted port.
 // From two finished frames of the game (UI included) it makes the frames in between; the
 // Presenter shows them before the game's frame, evenly paced. The depth and motion vectors are

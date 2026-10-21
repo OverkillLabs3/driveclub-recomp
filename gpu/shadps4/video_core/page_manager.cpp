@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <boost/container/small_vector.hpp>
 #include "bbport_toggles.h"
 #include "bbport_frametrace.h"
@@ -50,7 +53,7 @@ constexpr size_t PM_PAGE_BITS = 12;
 
 #ifdef _WIN64
 namespace {
-// bbport: BB_FAULT_EMULATE=1. Guest read faults in DriveClub mostly read CPU data that shares a 4 KB page with a
+// driveclub: BB_FAULT_EMULATE=1. Guest read faults in DriveClub mostly read CPU data that shares a 4 KB page with a
 // few GPU-written bytes (the top site reads a field ~250 bytes from 16 GPU-written bytes): the page is protected
 // for those bytes, and the read waited for a download of them. A plain load (mov, movzx, movsx, movsxd, SSE
 // moves) of bytes the GPU did not write is done here instead: the value comes from the unprotected backing view,

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <vector>
 #include "common/assert.h"
 #include "common/recursive_lock.h"
@@ -13,7 +16,7 @@ struct RecursiveLockState {
     int count;
 };
 
-// bbport: a thread holds very few of these at once, so a short array beats the hash map this
+// driveclub: a thread holds very few of these at once, so a short array beats the hash map this
 // used to be (a node allocated on the first lock and freed on the last, on every draw).
 thread_local std::vector<RecursiveLockState> g_recursive_locks;
 

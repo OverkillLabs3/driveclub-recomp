@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 // bbport: shadPS4 settings used by the video core, read once from BB_* environment
 // variables (defaults match shadPS4 except the pipeline cache, which is on).
 #pragma once
@@ -45,7 +50,7 @@ public:
     /// Frames per second the present thread lets through; 0 = no limit. BB_FPS_LIMIT overrides.
     u32 GetFrameLimit() {
         static const u32 value = [] {
-            // bbport: BB_FPS_CAP=<n> wins over BB_FPS_LIMIT (which the launcher sets), as the benchmark's
+            // driveclub: BB_FPS_CAP=<n> wins over BB_FPS_LIMIT (which the launcher sets), as the benchmark's
             // "ran" line already reports it: a test cap (40 FPS = 3 refreshes at 120 Hz) with any launcher.
             const long cap = Number("BB_FPS_CAP", -1);
             if (cap >= 0) return u32(cap);

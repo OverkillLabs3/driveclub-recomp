@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+//
+// Based on Supermedo's bloodborne_pc (https://github.com/Supermedo/bloodborne_pc).
+// Modified for this port.
+//
 // bbport: the MemoryManager surface used by the video core and GnmDriver.
 // Guest memory lives at identical host addresses; the C runtime owns the VMAs.
 #pragma once

@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 #include <chrono>
 #include <cstdio>
 #include <unordered_map>
@@ -158,7 +161,7 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
 }
 
 namespace {
-// bbport: the hash of guest memory read through the backing view: a page the GPU wrote is protected, and
+// driveclub: the hash of guest memory read through the backing view: a page the GPU wrote is protected, and
 // hashing it through the guest view faulted (a download, or a deadlock when the caller holds this cache's lock
 // in a guest-thread fault handler).
 extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64_t size);
@@ -243,7 +246,7 @@ void TextureCache::UnmapMemory(VAddr cpu_addr, size_t size) {
 }
 
 namespace {
-// bbport: BB_FRAME_STATS - images recreated because one address is used as a depth and as a color
+// driveclub: BB_FRAME_STATS - images recreated because one address is used as a depth and as a color
 // image, by address, binding and shape; printed every 5 s with the time they took.
 struct DepthRecreate {
     u64 count = 0, ns = 0;
@@ -340,7 +343,7 @@ ImageId TextureCache::ResolveDepthOverlap(const ImageInfo& requested_info, Bindi
             BbStats::mirror_img_created_stale.fetch_add(BbStats::MirrorStale(new_info.guest_address), std::memory_order_relaxed);
         }
         ImageId new_image_id;
-        // bbport: DriveClub switches a few images between the two forms twice per frame (a depth
+        // driveclub: DriveClub switches a few images between the two forms twice per frame (a depth
         // target that a pass renders as color or uses as storage). Creating and freeing an image
         // each time, with its registration and page tracking, was ~8% of the GPU thread. The same
         // memory keeps its registered image; the Vulkan image of the other form is kept aside.
@@ -1285,7 +1288,7 @@ void TextureCache::GarbageCollectImages() {
             const char* env = std::getenv("BB_GC_BUDGET_MB");
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
-        // bbport: on discrete GPUs too (BB_GC_DRIVER_BUDGET=0 reverts to the startup rule). With the startup
+        // driveclub: on discrete GPUs too (BB_GC_DRIVER_BUDGET=0 reverts to the startup rule). With the startup
         // rule an 8 GB card got a 2.5 GB pressure mark, compared with all device memory in use (buffers,
         // swapchain, ...: ~3.6 GB in a race), so every submission evicted textures that were then created and
         // uploaded again (~67 evictions per 5 s). Measured, 3 pairs: day 1% low 39.3 -> 43.9, 0.1% 32.8 ->
@@ -1319,7 +1322,7 @@ void TextureCache::GarbageCollectImages() {
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
         num_deletions = aggresive ? 40 : pressured ? 20 : 10;
     };
-    // bbport: an image that cannot be freed now (GPU-written tiled, or one that needs a download
+    // driveclub: an image that cannot be freed now (GPU-written tiled, or one that needs a download
     // while there is no pressure) used to use up a deletion and stay at the front of the queue.
     // When the oldest images were all of that kind every pass freed nothing and texture memory
     // only grew (12.5 GB on a 9.3 GB budget in our logs). Such an image now moves to the back of

@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Changed for this port. The upstream sources of the vendored tree are listed in
+// gpu/VENDOR.txt and in NOTICE.
+//
 // bbport: frame generation (FSR 3.1) interpolates the game's picture without its UI; this
 // frame's UI goes over the generated frame: where the finished frame differs from the picture
 // without UI, its pixel replaces the generated one.
