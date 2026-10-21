@@ -110,7 +110,7 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Performance preset:** Handheld, Low, Medium, High or Ultra pick the render and output sizes for your PC. You can still change each size afterwards.
 
-**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, or **Unlocked**. Unlocked has no frame cap and the game keeps its normal speed.
+**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, or **Unlocked (VRR)**. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion.
 
 **Resolution:** output from 720p to 8K, render size from 720p to 8K, and ultrawide sizes with a field-of-view fix. Sizes above 1080p use more memory; the needed memory patch is added for you.
 

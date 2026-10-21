@@ -630,6 +630,14 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // the post process pass still sRGB encoded and has to be decoded there instead.
     pp_settings.srgb_input =
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
+    // bbport: TV gamma: the game was made for TVs that decode with 2.4, PC displays decode sRGB
+    // (about 2.2) and showed it washed out. The encoded values to the power 2.4 / 2.2 look on a PC
+    // display as the picture did on a TV. SDR only (HDR maps the picture itself). BB_TV_GAMMA=0: off.
+    static const bool tv_gamma = [] {
+        const char* env = std::getenv("BB_TV_GAMMA");
+        return !env || env[0] != '0';
+    }();
+    pp_settings.power = tv_gamma && !hdr_output ? 2.4f / 2.2f : 1.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     // bbport: HDR output: the overlay over the SDR frame, then the frame and the game's picture

@@ -745,6 +745,87 @@ static void apply_upscale_render_size(unsigned char *image, uint64_t size) {
     memcpy(image+0x12d0544,&render_w,4); memcpy(image+0x12d0554,&render_h,4);
     printf("Upscaling: the game renders at %ux%u for its %ux%u output (%s)\n",render_w,render_h,out_w,out_h,want);
 }
+/* Pop-in: the game leaves out every object smaller than a share of the screen given per kind of object in
+ * viewportquality.xml (static_objects 0.02 in a race), so barriers and trees appeared from nothing as the car came
+ * closer. eboot 1.28 +0x60ff90 copies a view's quality tag into its cull parameters: +0x60ffcb the shadow view's
+ * shadowCullThreshold, +0x60ffd8 cullThreshold and cullThresholdZPass (vmovss xmm0,[r14+x]; vmovss [rbx+y],xmm0).
+ * Both go through a thunk that multiplies each value, then back to +0x60ffee. BB_CULL_SCALE (default 0.25: objects
+ * stay until about 7 pixels tall at 1440p; as fast as the game, where 0 cost ~6 FPS in the 1% lows) and
+ * BB_CULL_SCALE_SHADOW (default 0.25) set the factors, 1 keeps the game's. The depth pre-pass (cullThresholdZPass,
+ * 0.35: only large occluders) keeps the game's unless BB_CULL_SCALE_ZPASS says otherwise: scaling it draws every
+ * small object again in that pass. */
+static float cull_factor(const char *name, float fallback) {
+    const char *env=getenv(name);
+    const float value=env && *env ? (float)atof(env) : fallback;
+    return value>=0.0f && value<=4.0f ? value : fallback;
+}
+static void apply_cull_scale(unsigned char *image, uint64_t size) {
+    if (size<0x60fff0) return;
+    const float scales[3]={cull_factor("BB_CULL_SCALE",0.25f),cull_factor("BB_CULL_SCALE_ZPASS",1.0f),
+                           cull_factor("BB_CULL_SCALE_SHADOW",0.25f)};
+    if (scales[0]==1.0f && scales[1]==1.0f && scales[2]==1.0f) return;
+    static const unsigned char expect[]={0xc4,0xc1,0x7a,0x10,0x46,0x38,0xc5,0xfa,0x11,0x43,0x0c,0xeb,0x16,
+                                         0xc4,0xc1,0x7a,0x10,0x46,0x30,0xc5,0xfa,0x11,0x43,0x0c,
+                                         0xc4,0xc1,0x7a,0x10,0x46,0x34,0xc5,0xfa,0x11,0x43,0x10};
+    unsigned char *site=image+0x60ffcb;
+    if (memcmp(site,expect,sizeof expect)) { printf("Pop-in: the cull thresholds are not where eboot 1.28 has them; not changed\n"); return; }
+    unsigned char *t=allocate(page_size);
+    memcpy(t+0x80,scales,sizeof scales);
+    /* (from, to, scale) triples: tag offset -> cull parameter offset, times scales[i]; the shadow thunk at 0, the
+     * other at 0x30 */
+    static const unsigned char copies[2][6]={{0x38,0x0c,2,0,0,0},{0x30,0x0c,0,0x34,0x10,1}};
+    for (int k=0;k<2;++k) {
+        unsigned char *c=t+0x30*k;
+        int n=0;
+        for (int j=0;j<6 && copies[k][j];j+=3) {
+            const unsigned char load[]={0xc4,0xc1,0x7a,0x10,0x46,copies[k][j]}, store[]={0xc5,0xfa,0x11,0x43,copies[k][j+1]};
+            memcpy(c+n,load,6); n+=6;
+            c[n++]=0xc5; c[n++]=0xfa; c[n++]=0x59; c[n++]=0x05;                  /* vmulss xmm0,xmm0,[rip+scale] */
+            const int32_t at=(int32_t)((t+0x80+4*copies[k][j+2])-(c+n+4)); memcpy(c+n,&at,4); n+=4;
+            memcpy(c+n,store,5); n+=5;
+        }
+        const int64_t back=(int64_t)((uintptr_t)(image+0x60ffee)-(uintptr_t)(c+n+5)), to=(int64_t)((uintptr_t)c-(uintptr_t)(site+(k?13:0)+5));
+        if (back!=(int32_t)back || to!=(int32_t)to) { printf("Pop-in: thunk out of range; cull thresholds not changed\n"); return; }
+        c[n++]=0xe9; const int32_t b32=(int32_t)back; memcpy(c+n,&b32,4);
+    }
+    for (int k=0;k<2;++k) {
+        unsigned char *from=site+(k?13:0);
+        const int32_t to=(int32_t)((t+0x30*k)-(from+5));
+        memset(from,0x90,k?22:13);
+        from[0]=0xe9; memcpy(from+1,&to,4);
+    }
+    protect(t,page_size,5);
+    printf("Pop-in: cull thresholds times %.3f (depth pre-pass %.3f, shadows %.3f)\n",scales[0],scales[1],scales[2]);
+}
+/* Shadow distance: viewportquality.xml's ShadowSplit distance (the cascades end at 4, 11, 42 and 256 m in a race,
+ * so a tree's shadow appeared at 256 m). eboot 1.28 +0x6113b7 stores each split's distance
+ * (vmovss [r13+rbx*8+0x70], xmm0); it goes through a thunk that multiplies distances over 100 m (the far cascade
+ * only: the near ones keep their sharpness) by BB_SHADOW_DISTANCE: 2 by default (512 m, about 2 FPS; 4 lost the far
+ * shadows altogether), 1 keeps the game's. */
+static void apply_shadow_distance(unsigned char *image, uint64_t size) {
+    const char *env=getenv("BB_SHADOW_DISTANCE");
+    const float factor=env && *env ? (float)atof(env) : 2.0f;
+    if (!(factor>1.0f && factor<=16.0f) || size<0x6113c0) return;
+    static const unsigned char expect[7]={0xc4,0xc1,0x7a,0x11,0x44,0xdd,0x70};
+    unsigned char *site=image+0x6113b7;
+    if (memcmp(site,expect,7)) { printf("Shadows: the split distances are not where eboot 1.28 has them; not changed\n"); return; }
+    unsigned char *t=allocate(page_size);
+    const float consts[2]={100.0f,factor};
+    memcpy(t+0x80,consts,sizeof consts);
+    int n=0;
+    t[n++]=0xc5; t[n++]=0xf8; t[n++]=0x2e; t[n++]=0x05;                           /* vucomiss xmm0,[rip+100] */
+    int32_t at=(int32_t)((t+0x80)-(t+n+4)); memcpy(t+n,&at,4); n+=4;
+    t[n++]=0x72; t[n++]=0x08;                                                     /* jb: 100 m or less, as it is */
+    t[n++]=0xc5; t[n++]=0xfa; t[n++]=0x59; t[n++]=0x05;                           /* vmulss xmm0,xmm0,[rip+factor] */
+    at=(int32_t)((t+0x84)-(t+n+4)); memcpy(t+n,&at,4); n+=4;
+    memcpy(t+n,expect,7); n+=7;                                                   /* the original store */
+    const int64_t back=(int64_t)((uintptr_t)(site+7)-(uintptr_t)(t+n+5)), to=(int64_t)((uintptr_t)t-(uintptr_t)(site+5));
+    if (back!=(int32_t)back || to!=(int32_t)to) { printf("Shadows: thunk out of range; split distances not changed\n"); return; }
+    t[n++]=0xe9; const int32_t b32=(int32_t)back; memcpy(t+n,&b32,4);
+    site[0]=0xe9; const int32_t t32=(int32_t)to; memcpy(site+1,&t32,4); site[5]=site[6]=0x90;
+    protect(t,page_size,5);
+    printf("Shadows: the far shadow cascade reaches %.1fx as far\n",factor);
+}
 /* Restarts the game through run.sh (the settings menu: a new render resolution is a patch
  * applied at start). Descriptors are closed first so the old GPU device and its memory are
  * released before the new process opens its own. */
@@ -1194,6 +1275,8 @@ int main(int argc, char **argv) {
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
     if (!cpu_only) apply_upscale_render_size(image, size);
+    if (!cpu_only) apply_cull_scale(image, size);
+    if (!cpu_only) apply_shadow_distance(image, size);
     if (!cpu_only) patch_shared_alloc(image, size);
 #ifdef _WIN32
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));

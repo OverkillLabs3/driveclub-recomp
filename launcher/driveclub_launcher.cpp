@@ -270,6 +270,16 @@ int g_lang_id = 1;
 int up_saved = 0;     // "Upscaling" choice, from launcher.ini
 int sharp_saved = -1;  // "Sharpness" percent, from launcher.ini (-1: not saved yet)
 int g_sharp = -1;
+// "Frame cap" with the Unlocked (VRR) frame rate (fps_cap= in launcher.ini; 0 or missing: the display's refresh
+// rate less 3, which follows the display when it changes).
+int fps_cap_saved = 0;
+int g_fps_cap = -1;
+// The main display's refresh rate in Hz, 0 when unknown.
+int DisplayHz() {
+  DEVMODEW mode{};
+  mode.dmSize = sizeof mode;
+  return EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency >= 50 ? int(mode.dmDisplayFrequency) : 0;
+}
 // HDR output (BB_HDR): on/off, and the brightness of white and of the highlights in nits (hdr=, hdr_paper=,
 // hdr_peak= in launcher.ini; -1: not saved yet).
 int g_hdr = -1, g_hdr_paper = -1, g_hdr_peak = -1;
@@ -402,7 +412,7 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 // overrides (BB_FPS_LIMIT=40, ...). Only these are left alone; the launcher's own values are replaced each time.
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
-  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER",
+  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER",
                              L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
@@ -432,6 +442,7 @@ bool RowHidden(const Ctl& c) {
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
+  if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap]) return g_fps >= 0 && g_c[g_fps].sel != 3;
   if ((g_hdr_paper >= 0 && &c == &g_c[g_hdr_paper]) || (g_hdr_peak >= 0 && &c == &g_c[g_hdr_peak]))
     return g_hdr >= 0 && g_c[g_hdr].sel == 0;
   return false;
@@ -619,10 +630,23 @@ void BuildModel() {
                  {L"Custom", L"Handheld", L"Low", L"Medium", L"High", L"Ultra"}, {"@preset", "", "", "", "", ""}, 0);
   const int fps = (g_fps = int(g_c.size()), seg(L"Frame rate",
                       L"60 FPS (deltatime) scales the game by elapsed time, so speed stays right if the frame rate dips. "
-                      L"Unlocked uses the same timing with no frame cap: the game runs as fast as your PC allows and the speed stays right. "
+                      L"Unlocked (VRR) uses the same timing up to your display's refresh rate: the game runs as fast as your PC allows, the speed stays right, "
+                      L"and variable refresh (G-Sync, FreeSync) is on, so the display shows every frame as it comes (no stutter). "
                       L"Fixed tick uses the engine's own 60 Hz mode (works with every feature, speed follows the frame rate).",
-                      {L"30 FPS", L"60 FPS", L"60 FPS (fixed tick)", L"Unlocked"},
+                      {L"30 FPS", L"60 FPS", L"60 FPS (fixed tick)", L"Unlocked (VRR)"},
                       {"", "60 FPS with deltatime", "60 FPS with fixed tickrate", "@unlocked"}, 1));
+  {
+    const int top = DisplayHz() ? DisplayHz() - 3 : 117;
+    Ctl c{L"Frame cap", L"The highest frame rate with Unlocked (VRR). The right end is your display's refresh rate less 3. "
+          L"A little below what your PC can hold (for example 90 when it runs about 95-100) gives the steadiest, smoothest motion: "
+          L"the graphics card keeps some room, so every frame takes the same time.",
+          Kind::Slider, {}, {"@fpscap"}, top, top};
+    c.min = 30;
+    c.max = top;
+    c.unit = L" FPS";
+    g_fps_cap = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
   const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture (with the menus and HUD). It is then scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
                          {"", "720p [1280x720] Output resolution", "1440p [2560x1440] Output resolution",
@@ -810,7 +834,7 @@ void BuildModel() {
                    {L"Sine", L"Square"}, {"@ffb:wheel_ffb_vibration_wave", ""}, 1);
   const int ffb_invert = toggle(L"Invert forces", L"Turn on only if the wheel pulls away from the centre instead of towards it.", "@ffb:wheel_ffb_invert", false);
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
-  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, outres, inres, wide, fov, twothread}, 0, kTabGraphics});
+  g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, g_fps_cap, outres, inres, wide, fov, twothread}, 0, kTabGraphics});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay}, 0, kTabGameplay});
@@ -910,6 +934,7 @@ void LoadSettings() {
     if (line.rfind("language=", 0) == 0) lang_saved = atoi(line.substr(9).c_str());
     if (line.rfind("up=", 0) == 0) up_saved = atoi(line.substr(3).c_str());
     if (line.rfind("sharpness=", 0) == 0) sharp_saved = atoi(line.substr(10).c_str());
+    if (line.rfind("fps_cap=", 0) == 0) fps_cap_saved = atoi(line.substr(8).c_str());
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
@@ -995,6 +1020,7 @@ void LoadSettings() {
   if (g_up >= 0 && up_saved >= 1 && up_saved <= 4) g_c[g_up].sel = up_saved;
   // The sliders' saved values, else their defaults (the patch list sets nothing for them).
   if (g_sharp >= 0) g_c[g_sharp].sel = sharp_saved >= 0 ? (std::clamp)(sharp_saved, 0, 100) : g_c[g_sharp].def;
+  if (g_fps_cap >= 0) g_c[g_fps_cap].sel = fps_cap_saved > 0 ? (std::clamp)(fps_cap_saved, g_c[g_fps_cap].min, g_c[g_fps_cap].max) : g_c[g_fps_cap].def;
   if (g_hdr >= 0 && hdr_saved >= 0) g_c[g_hdr].sel = hdr_saved ? 1 : 0;
   {
     std::ifstream hdr_ini(HdrIniPath().c_str());
@@ -1084,7 +1110,7 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ntwo_thread=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ntwo_thread=" << (g_two_thread ? 1 : 0) << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
@@ -1975,9 +2001,13 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     for (const Ctl& c : g_c) {
       if (c.kind == Kind::Segmented && c.sel > 0 && c.sel < int(c.patches.size()) && c.patches[c.sel] == "60 FPS with deltatime") delta = true;
     }
-    // Unlocked: every frame is shown at once (1 ms spacing is no cap in practice); the deltatime patch keeps the game speed right.
+    // Unlocked: the deltatime patch keeps the game speed right at any frame rate. Frames go out in step with the
+    // display (Fifo) and the rate stays 3 below its refresh, so a variable refresh display (G-Sync, FreeSync) follows
+    // each frame; Mailbox showed them on a fixed refresh, some for one refresh and some for two (stutter).
     const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3;
-    SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked ? L"1000" : delta ? L"60" : nullptr);
+    const std::wstring cap = g_fps_cap >= 0 ? std::to_wstring(g_c[g_fps_cap].sel) : DisplayHz() ? std::to_wstring(DisplayHz() - 3) : L"1000";
+    if (!UserEnv(L"BB_FPS_LIMIT")) SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked ? cap.c_str() : delta ? L"60" : nullptr);
+    if (!UserEnv(L"BB_PRESENT_MODE")) SetEnvironmentVariableW(L"BB_PRESENT_MODE", unlocked ? L"Fifo" : nullptr);
   }
   // A value set before the launcher started is the player's override and is kept. Checking the environment
   // itself is not enough: the launcher sets these for every start, so a second start (Play, or Run benchmark
@@ -2671,7 +2701,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           if (c == g_hdr) Relayout(h);  // its sliders show or hide
         } else if (seg >= 0) {
           // choices that show or hide other rows (RowHidden)
-          const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up) && ctl.sel != seg;
+          const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_preset) ApplyPreset(seg);
           else if (c == g_outres || c == g_inres || c == g_wide) {
