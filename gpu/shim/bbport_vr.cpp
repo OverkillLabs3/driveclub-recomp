@@ -24,8 +24,8 @@
 //                        the log prints the values to keep here
 //   smoothing = 1        steadies a head that holds still ("1 euro" filter); smooth_hz = 0.5 (lower: steadier),
 //                        smooth_turn = 0.05 and smooth_move = 0.1 (how fast it lets go, per degree/s and per cm/s)
-//   cockpit_vfov = 90    the driver's head camera's vertical field of view (the camera settings' focal length): only
-//                        that camera follows the head
+//   cockpit_vfov = 90    the driver's head camera's vertical field of view in the headset, degrees (VR sets the
+//                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
 // Keypad 5 recentres (the direction the head faces becomes straight ahead).
@@ -570,6 +570,30 @@ void InstallHeadHook() {
 #endif
 }
 
+// ---- the field of view ------------------------------------------------------------------------------------------------
+// The game builds every camera's projection from half its angle: the angle times the float at +0x12efac4 (0.5; the
+// launcher's field of view slider and F5/F6 change it, see camera_fov_apply in src/runtime_pad.c). The driver's head
+// camera's angle is 60.18 degrees (FOCAL_LENGTH 14.01 mm, HALF_SENSOR_HEIGHT 8.12 mm in its settings): while VR is
+// on, the float makes it cockpit_vfov (the other cameras widen alike; they are on the still screen).
+constexpr float kCockpitVfov = 60.18f;
+void SetFieldOfView() {
+#ifdef _WIN32
+    if (!hook_installed) {
+        return; // another game version: its address is not known to be this
+    }
+    float* const k = reinterpret_cast<float*>(runtime_image_base + 0x12efac4);
+    const float wanted = 0.5f * settings.cockpit_vfov / kCockpitVfov;
+    if (std::fabs(*k - wanted) < 1e-6f) {
+        return;
+    }
+    DWORD old = 0;
+    if (VirtualProtect(k, 4, PAGE_READWRITE, &old)) {
+        *k = wanted;
+        VirtualProtect(k, 4, old, &old);
+    }
+#endif
+}
+
 // ---- the driver's head camera or a still screen ---------------------------------------------------------------------
 // The projections the game draws with come from its anti-aliasing constants; the reflection cube map's faces (exactly
 // square 90 x 90 degrees) come in between, so the cockpit's is kept apart: the driver's head camera is in use while
@@ -981,6 +1005,7 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     }
     st.frame_begun = true;
 
+    SetFieldOfView(); // each frame: the launcher's own setting is applied once the game reads the pad
     // The head now: for the game's camera (the hook) and the still screen's place.
     XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
     if (XR_SUCCEEDED(xr.LocateSpace(st.view, st.local, st.frame_state.predictedDisplayTime, &location)) &&

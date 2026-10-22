@@ -772,7 +772,7 @@ void BuildModel() {
                               L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
   const int vr = toggle(L"VR headset (experimental)",
                         L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
-                        L"head, in stereo. Needs openxr_loader.dll next to the game and the VR camera files; see "
+                        L"head, in stereo. Needs openxr_loader.dll next to the game; see "
                         L"packaging/vr/README.md. Widescreen \"VR Ultra\" or \"VR High\" draws in the shape of an eye.",
                         "@vr", false);
   const int twothread = toggle(L"Two-thread rendering",

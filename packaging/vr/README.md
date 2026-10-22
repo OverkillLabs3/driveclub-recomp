@@ -12,24 +12,16 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 1. **OpenXR loader.** Put `openxr_loader.dll` next to `DriveClubGame.exe` (in `runtime\`). It comes with the
    [OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK/releases) (`native\x64\release\bin\openxr_loader.dll`)
    or MSYS2's `mingw-w64-clang-x86_64-openxr-sdk` (`libopenxr_loader.dll`, renamed).
-2. **The cockpit camera's field of view.** The headset needs a wide view (90° vertical), the game's cockpit camera
-   uses 60°. Make a mod from the game's own file:
-   - copy `data\cameras\vehicle\driver_head_cameras\include\driver_head_camera_params.txt` out of the game into the
-     same path under `mods\`;
-   - change both lines to `8.12`:
-     ```
-     FOCAL_LENGTH_AT_REST_MM			8.12
-     FOCAL_LENGTH_AT_HIGH_SPEED_MM		8.12
-     ```
-   With `HALF_SENSOR_HEIGHT 0.00812` that is exactly 90°. If you change it, set `cockpit_vfov` in `vr.ini` to match.
-3. **Launcher:**
+2. **Launcher:**
    - *Gameplay* → **VR headset (experimental)** on;
    - *Graphics* → *Widescreen* → **VR Ultra** (2688x2880) or **VR High** (2496x2688): the picture in the shape of
      a headset eye (Virtual Desktop's Ultra and High sizes). Other sizes work, but waste pixels outside the eye's
      view;
    - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate;
-   - the in-game *Field of view* (F5/F6) must stay at **100%**: the headset is told the camera's own field of view.
-4. Put the headset on and start the headset's PC link (Virtual Desktop, SteamVR, Oculus Link) **before** the game.
+   - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
+     launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the
+     cockpit's focal length together with VR.
+3. Put the headset on and start the headset's PC link (Virtual Desktop, SteamVR, Oculus Link) **before** the game.
    A connected headset that is not worn holds the game's frames back (5 to 10 FPS).
 
 Hide the HUD in the game's options: it is laid out for 16:9 and the eye-shaped picture cuts its sides.
@@ -57,7 +49,7 @@ seat_x = 0         # the eyes relative to the game's head point, metres: x left,
 seat_y = -1.15
 seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
-cockpit_vfov = 90  # the cockpit camera's vertical field of view (see setup step 2)
+cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 screen_vfov = 40   # the still screen's height, degrees
 ```
 
