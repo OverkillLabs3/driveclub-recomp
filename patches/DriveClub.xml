@@ -365,6 +365,36 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
+              Name="VR eye Ultra [2688x2880] Internal + Output resolution"
+              Note="2688x2880 internal render and output resolution for VR, the shape of a Quest 2 eye at Virtual Desktop Ultra - 7 741 440 pixels"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="efee6e3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="800a0000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="400b0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="800a0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="400b0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR eye High [2496x2688] Internal + Output resolution"
+              Note="2496x2688 internal render and output resolution for VR, the shape of a Quest 2 eye at Virtual Desktop High - 6 709 248 pixels"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="dbb66d3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="c0090000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="800a0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="c0090000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="800a0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
               Name="2160p 32:9 [7680x2160] Internal + Output resolution [DEPTH BUG]"
               Note="7680x2160 internal render and output resolution - 16 588 800 pixels (8.00x 1080p) - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
               Author="Kravickas"

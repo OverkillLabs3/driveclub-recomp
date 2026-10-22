@@ -21,6 +21,7 @@
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "bbport_overlay.h"
 #include "bbport_neural_settings.h"
+#include "bbport_vr.h"
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -647,6 +648,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                         vk::AccessFlagBits2::eShaderRead);
         runtime.FlushBarriers();
     }
+    // bbport: VR: the headset takes the display buffer at its own size (the output resolution).
+    BbVr::NoteFrame(cmdbuf, frame->image, frame->is_hdr ? vk::ImageView{} : image_view, VkFormat(view_info.format),
+                    image_size.width, image_size.height);
     BbFrame::NoteOutput(image_size.width, image_size.height);
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
@@ -1305,6 +1309,11 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
                          vk::ImageLayout::eTransferDstOptimal,
                          MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
                          vk::Filter::eLinear);
+        // bbport: VR: the headset gets this frame too.
+        if (last) {
+            BbVr::g_queue_mutex = &Scheduler::submit_mutex;
+            BbVr::RecordFrame(cmdbuf, image, frame->width, frame->height);
+        }
         // bbport: the settings menu / FPS counter over the frame, at display resolution.
         BbOverlay::NotePresent();
         const bool overlay = BbOverlay::Visible() && !hdr_output;
@@ -1372,6 +1381,9 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
     // Present to swapchain.
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        if (last) {
+            BbVr::AfterSubmit();
+        }
         if (!swapchain.Present() && window.GetWidth() != 0 && window.GetHeight() != 0) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }

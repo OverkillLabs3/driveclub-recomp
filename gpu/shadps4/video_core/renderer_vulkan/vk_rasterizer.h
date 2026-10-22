@@ -363,6 +363,7 @@ private:
     bool motion_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
+    int vr_draw_targets = 0; // bbport: VR: the colour targets of the current draw (its G-buffer pass has three)
     /// Frame generation: the scene depth (the G-buffer pass), the first draw into the display buffer
     /// since other work (the UI starts: the picture before it is the HUD-less frame).
     VideoCore::ImageId fg_depth{};

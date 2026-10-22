@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR: the game's display buffer at its own size (the output resolution, not the window's) for the headset:
+// an RGBA8 copy holding sRGB values, which goes bit for bit into the headset's sRGB image.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2D display_tex;
+layout(binding = 1, rgba8) uniform writeonly image2D out_img;
+
+layout(push_constant) uniform Constants {
+    vec2 size;
+    float encode; // 1: the view decodes sRGB: store it encoded again
+};
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    vec3 c = clamp(texelFetch(display_tex, pixel, 0).rgb, 0.0, 1.0);
+    if (encode > 0.5) {
+        c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+    }
+    imageStore(out_img, pixel, vec4(c, 1.0));
+}
