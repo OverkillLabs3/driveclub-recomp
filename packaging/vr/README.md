@@ -51,7 +51,7 @@ ipd = 0.063        # metres between the eyes
 rigid = 1          # the camera fixed to the car body; 0: the game's head on springs (it sways in VR)
 seat_x = 0         # the eyes relative to the driver's eyes the game sets for each car, metres:
                    # x left, y up, z forward
-seat_y = 0
+seat_y = 0.07
 seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key

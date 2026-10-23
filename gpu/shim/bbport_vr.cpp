@@ -99,7 +99,7 @@ struct Settings {
     bool auto_recentre = true; // recentre on getting into the car (after 3 s or more out of the cockpit view)
     bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
-    float seat[3] = {0.0f, 0.0f, 0.0f}; // the game's own eye point (each car its own)
+    float seat[3] = {0.0f, 0.07f, 0.0f}; // above the game's own head point (each car its own), which sits low
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
