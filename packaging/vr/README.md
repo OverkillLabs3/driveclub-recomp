@@ -51,7 +51,7 @@ ipd = 0.063        # metres between the eyes
 rigid = 1          # the camera fixed to the car body; 0: the game's head on springs (it sways in VR)
 seat_x = 0         # the eyes relative to the game's head point, metres: x left, y up, z forward (the
                    # game's point is above the driver's eyes; -1.15 fitted the cars tried)
-seat_y = -1.11
+seat_y = 0
 seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
