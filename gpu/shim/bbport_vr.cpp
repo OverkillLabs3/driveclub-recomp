@@ -443,6 +443,7 @@ struct HookCall {
     XrPosef head{};      // the middle of the head, LOCAL space
     float position[3]{}; // the camera's world position the game draws from
     int eye = -1;        // alternate frames: 0 the left eye, 1 the right, -1 the middle
+    const float* camera = nullptr; // which driver's head camera
 };
 HookCall head_history[64];
 unsigned head_next = 0;
@@ -495,7 +496,11 @@ struct CameraState {
     long long diag_us = 0;
 };
 std::mutex camera_state_mutex;
-CameraState camera_states[8];
+CameraState camera_states[64];
+// The camera the frames are drawn from (found by NoteCameraConstants), and when: the others (each opponent's car has
+// one too) are left as the game has them.
+std::atomic<const float*> drawn_camera{nullptr};
+std::atomic<long long> drawn_camera_us{0};
 CameraState& StateOf(const float* camera) {
     CameraState* oldest = &camera_states[0];
     for (auto& c : camera_states) {
@@ -543,6 +548,9 @@ void DiagHeadPoint(const float* camera, CameraState& state) {
 }
 
 extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
+    if (drawn_camera.load() && drawn_camera.load() != camera && NowUs() - drawn_camera_us.load() < 1000000) {
+        return; // another car's camera, not drawn
+    }
     std::unique_lock state_lock{camera_state_mutex};
     CameraState& state = StateOf(camera);
     state.last_us = NowUs();
@@ -620,7 +628,7 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     state_lock.unlock();
     std::scoped_lock lock{head_mutex};
     HookCall& call = head_history[head_next++ % 64];
-    call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye};
+    call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye, camera};
     hook_time_us = call.time_us;
 }
 
@@ -1032,6 +1040,8 @@ void NoteCameraConstants(const float* data) {
         const float dx = data[108] - c.position[0], dy = data[109] - c.position[1], dz = data[110] - c.position[2];
         if (c.time_us && dx * dx + dy * dy + dz * dz < 0.002f * 0.002f) {
             camera_now = {true, c.eye, c.head};
+            drawn_camera = c.camera;
+            drawn_camera_us = NowUs();
             return;
         }
     }
