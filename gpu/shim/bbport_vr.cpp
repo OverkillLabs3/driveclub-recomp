@@ -482,19 +482,49 @@ XrPosef Steady(const XrPosef& raw) {
     return f.pose;
 }
 
+// The game updates more than one driver's head camera (two cars' or two cameras' of one car, each frame, one after
+// the other): each keeps its own seat point and its own eye for alternate frames; the frame's camera match tells
+// which one is drawn.
+struct CameraState {
+    const float* camera = nullptr;
+    long long last_us = 0;
+    float seat_point[3]{};
+    long long seat_time_us = 0;
+    int next_eye = 0;
+    float diag_eye[3]{};
+    long long diag_us = 0;
+};
+std::mutex camera_state_mutex;
+CameraState camera_states[8];
+CameraState& StateOf(const float* camera) {
+    CameraState* oldest = &camera_states[0];
+    for (auto& c : camera_states) {
+        if (c.camera == camera) return c;
+        if (c.last_us < oldest->last_us) oldest = &c;
+    }
+    *oldest = {};
+    oldest->camera = camera;
+    if (settings.diag) {
+        int live = 0;
+        for (const auto& c : camera_states) live += c.camera && NowUs() - c.last_us < 1000000;
+        std::printf("VR diag: driver's head camera %p updated (%d updated lately)\n", (const void*)camera, live + 1);
+    }
+    return *oldest;
+}
+
 // diag = 1: where the game puts the driver's eyes, in the car's axes (x left, y up, z forward), each time it changes
 // (another car, a restart): the head pose it builds (+0x310..+0x340, from the car's POSITION_OFFSET, the neck and the
 // head-to-eyes offset) and the point of the camera the renderer draws from (+0x270).
-void DiagHeadPoint(const float* camera) {
-    static float last[3];
-    static long long last_us = 0;
+void DiagHeadPoint(const float* camera, CameraState& state) {
+    float* const last = state.diag_eye;
+    long long& last_us = state.diag_us;
     const long long now = NowUs();
     const float* car = camera + 0x2d0 / 4;
     const float* drawn = camera + 0x270 / 4;
     const float* pose = camera + 0x310 / 4;
     const float eye[3] = {pose[12], pose[13], pose[14]};
     const float dx = eye[0] - last[0], dy = eye[1] - last[1], dz = eye[2] - last[2];
-    if (last_us && now - last_us < 2000000 && dx * dx + dy * dy + dz * dz < 0.05f * 0.05f) {
+    if (last_us && dx * dx + dy * dy + dz * dz < 0.05f * 0.05f) {
         return;
     }
     last[0] = eye[0], last[1] = eye[1], last[2] = eye[2];
@@ -504,15 +534,20 @@ void DiagHeadPoint(const float* camera) {
         point[i] = 0.0f;
         for (int k = 0; k < 3; ++k) point[i] += (drawn[12 + k] - car[12 + k]) * car[i * 4 + k];
     }
-    std::printf("VR diag: the game's head pose puts the eyes at x %.3f y %.3f z %.3f; the drawn camera is at x %.3f y "
-                "%.3f z %.3f (difference x %.3f y %.3f z %.3f; car axes, metres)\n",
-                eye[0], eye[1], eye[2], point[0], point[1], point[2], point[0] - eye[0], point[1] - eye[1],
-                point[2] - eye[2]);
+    std::printf("VR diag: camera %p: the game's head pose puts the eyes at x %.3f y %.3f z %.3f; the drawn camera is at "
+                "x %.3f y %.3f z %.3f (car axes, metres; the car's axis lengths %.3f %.3f %.3f)\n",
+                (const void*)camera, eye[0], eye[1], eye[2], point[0], point[1], point[2],
+                std::sqrt(car[0] * car[0] + car[1] * car[1] + car[2] * car[2]),
+                std::sqrt(car[4] * car[4] + car[5] * car[5] + car[6] * car[6]),
+                std::sqrt(car[8] * car[8] + car[9] * car[9] + car[10] * car[10]));
 }
 
 extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
+    std::unique_lock state_lock{camera_state_mutex};
+    CameraState& state = StateOf(camera);
+    state.last_us = NowUs();
     if (settings.diag) {
-        DiagHeadPoint(camera);
+        DiagHeadPoint(camera, state);
     }
     XrPosef head;
     float centre_yaw, seat[3];
@@ -553,8 +588,8 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
             offset[i] = 0.0f;
             for (int k = 0; k < 3; ++k) offset[i] += (cam[12 + k] - car[12 + k]) * car[i * 4 + k];
         }
-        static float seat_point[3];
-        static long long seat_time_us = 0;
+        float* const seat_point = state.seat_point;
+        long long& seat_time_us = state.seat_time_us;
         const long long now = NowUs();
         if (!seat_time_us || now - seat_time_us > 1000000) {
             seat_point[0] = offset[0], seat_point[1] = offset[1], seat_point[2] = offset[2];
@@ -577,12 +612,12 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     // the left eye is on its + side).
     int eye = -1;
     if (settings.afr) {
-        static int next_eye = 0;
-        eye = next_eye;
-        next_eye ^= 1;
+        eye = state.next_eye;
+        state.next_eye ^= 1;
         const float side = eye == 0 ? settings.ipd * 0.5f : -settings.ipd * 0.5f;
         for (int k = 0; k < 3; ++k) cam[12 + k] += side * cam[k];
     }
+    state_lock.unlock();
     std::scoped_lock lock{head_mutex};
     HookCall& call = head_history[head_next++ % 64];
     call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye};
