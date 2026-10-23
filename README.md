@@ -116,6 +116,8 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, or **Unlocked (VRR)**. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion.
 
+**High-FPS camera workaround (experimental):** an optional switch under Gameplay → Patches, off by default. It bundles the camera/replay changes to reduce shaking above 30 FPS, including replay HUD and driver motion. Camera behavior is still incorrect in some situations and does not match the 30 FPS reference. Restart the game after changing it. This is a workaround requiring further review, not a complete camera accuracy fix.
+
 **Resolution:** output from 720p to 8K, render size from 720p to 8K, and ultrawide sizes with a field-of-view fix. Sizes above 1080p use more memory; the needed memory patch is added for you.
 
 **Mirror and reflection updates:** **Live** (default) draws the small scene of mirrors, rain and reflections every frame. **Static (faster)** draws it once and keeps that picture, which is much faster but stops reflections and rain on the glass from updating. The Handheld preset uses it.
