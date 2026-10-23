@@ -27,14 +27,19 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 Hide the HUD in the game's options: it is laid out for 16:9 and the eye-shaped picture cuts its sides.
 
 ## Keys
-| Key | |
-|---|---|
-| Keypad 5 | Recentre: the direction you face becomes straight ahead |
-| Keypad 8 / 2 | Seat up / down (2 cm, with Ctrl 10 cm) |
-| Keypad 4 / 6 | Seat left / right |
-| Keypad 9 / 3 | Seat forward / back |
+The number row, on every keyboard (the keypad works too, for those who have one):
 
-The seat keys print the values to the log (`VR: seat_x = ...`); copy them into `vr.ini` to keep them.
+| Key | Keypad | |
+|---|---|---|
+| 0 | 5 | Recentre: the direction you face becomes straight ahead |
+| 2 / 1 | 8 / 2 | Seat up / down (2 cm, with Ctrl 10 cm) |
+| 5 / 6 | 4 / 6 | Seat left / right |
+| 4 / 3 | 9 / 3 | Seat forward / back |
+
+The seat keys print the values to the log (`VR: seat_x = ...`); copy them into `vr.ini` to keep them. Other keys can
+be set in `vr.ini`: `key_recentre`, `key_up`, `key_down`, `key_left`, `key_right`, `key_forward`, `key_back`, each one
+character (a letter, a digit, `[`, `;` ...), `F1` to `F12`, or `pageup`, `pagedown`, `home`, `end`, `insert`,
+`delete`, `space`, `tab`.
 
 ## vr.ini
 Optional, next to `DriveClubGame.exe` (`runtime\vr.ini`): `key = value` lines. A `vr.ini` without the launcher
@@ -51,6 +56,7 @@ seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 screen_vfov = 40   # the still screen's height, degrees
+key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
 ```
 
 ## How it works

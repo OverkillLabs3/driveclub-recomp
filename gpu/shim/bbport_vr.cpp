@@ -20,15 +20,18 @@
 //   ipd = 0.063          the distance between the eyes, metres
 //   rigid = 1            the camera is fixed to the car body; 0: the game's simulated head (on springs) plus the headset
 //   seat_x, seat_y, seat_z  where the eyes sit relative to the game's head point, metres along the car's axes (x left,
-//                        y up, z forward); keypad 8/2, 4/6 and 9/3 move it 2 cm (with Ctrl 10 cm) while driving and
-//                        the log prints the values to keep here
+//                        y up, z forward); the seat keys move it 2 cm (with Ctrl 10 cm) while driving and the log
+//                        prints the values to keep here
+//   key_recentre = 0, key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
+//                        the keys (one character, F1..F12, pageup, home, ...); the keypad works too (5, 8/2, 4/6,
+//                        9/3)
 //   smoothing = 1        steadies a head that holds still ("1 euro" filter); smooth_hz = 0.5 (lower: steadier),
 //                        smooth_turn = 0.05 and smooth_move = 0.1 (how fast it lets go, per degree/s and per cm/s)
 //   cockpit_vfov = 90    the driver's head camera's vertical field of view in the headset, degrees (VR sets the
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
-// Keypad 5 recentres (the direction the head faces becomes straight ahead).
+// The recentre key (0, or keypad 5) makes the direction the head faces straight ahead.
 #define XR_NO_PROTOTYPES
 #define XR_USE_GRAPHICS_API_VULKAN
 #include "video_core/renderer_vulkan/vk_common.h"
@@ -36,6 +39,7 @@
 #include "video_core/host_shaders/vr_copy_comp.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -96,6 +100,8 @@ struct Settings {
     float seat[3] = {0.0f, -1.15f, 0.0f}; // the game's head point is above the driver's eyes
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
+    // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
+    int keys[7] = {'0', '2', '1', '5', '6', '4', '3'};
 } settings;
 
 struct State {
@@ -149,6 +155,32 @@ std::wstring ExeDir() {
 }
 #endif
 
+// A key name of vr.ini: one character (a letter, a digit, [ ] ; and so on), F1..F12 or a few names. 0: unknown.
+int KeyCode(const char* name) {
+#ifdef _WIN32
+    std::string n = name;
+    for (auto& c : n) c = char(std::tolower(static_cast<unsigned char>(c)));
+    if (n.size() == 1) {
+        const SHORT scan = VkKeyScanA(n[0]);
+        return scan == -1 ? 0 : (scan & 0xff);
+    }
+    if (n[0] == 'f' && n.size() <= 3) {
+        const int f = std::atoi(n.c_str() + 1);
+        if (f >= 1 && f <= 12) return VK_F1 + f - 1;
+    }
+    static const struct {
+        const char* name;
+        int code;
+    } names[] = {{"pageup", VK_PRIOR}, {"pagedown", VK_NEXT}, {"home", VK_HOME}, {"end", VK_END},
+                 {"insert", VK_INSERT}, {"delete", VK_DELETE}, {"up", VK_UP}, {"down", VK_DOWN},
+                 {"left", VK_LEFT}, {"right", VK_RIGHT}, {"space", VK_SPACE}, {"tab", VK_TAB}};
+    for (const auto& k : names) {
+        if (n == k.name) return k.code;
+    }
+#endif
+    return 0;
+}
+
 void ReadSettings() {
 #ifdef _WIN32
     FILE* f = _wfopen((ExeDir() + L"vr.ini").c_str(), L"rb");
@@ -157,7 +189,18 @@ void ReadSettings() {
     }
     char line[256];
     while (std::fgets(line, sizeof line, f)) {
-        char key[64] = "";
+        char key[64] = "", name[32] = "";
+        if (std::sscanf(line, " key_%63[a-z_] = %31s", key, name) == 2) {
+            static const char* const actions[7] = {"recentre", "up", "down", "left", "right", "forward", "back"};
+            for (int a = 0; a < 7; ++a) {
+                if (std::string(key) == actions[a]) {
+                    const int code = KeyCode(name);
+                    if (code) settings.keys[a] = code;
+                    else std::printf("VR: vr.ini: unknown key '%s'\n", name);
+                }
+            }
+            continue;
+        }
         float value = 0;
         if (std::sscanf(line, " %63[a-z_] = %f", key, &value) != 2) {
             continue;
@@ -772,11 +815,12 @@ FrameCamera camera_now; // the frame being drawn
 
 void ReadKeys() {
 #ifdef _WIN32
-    // Keypad 5 recentres; 8/2, 4/6 and 9/3 move the seat up/down, left/right and forward/back, 2 cm (Ctrl: 10 cm).
+    // Recentre, and the seat up/down, left/right and forward/back by 2 cm (Ctrl: 10 cm): the keys of vr.ini (the
+    // number row 0, 2/1, 5/6, 4/3 by default) or the keypad (5, 8/2, 4/6, 9/3).
     static bool was[7];
-    static const int keys[7] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6, VK_NUMPAD9, VK_NUMPAD3};
+    static const int keypad[7] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6, VK_NUMPAD9, VK_NUMPAD3};
     for (int k = 0; k < 7; ++k) {
-        const bool down = (GetAsyncKeyState(keys[k]) & 0x8000) != 0;
+        const bool down = (GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0 || (GetAsyncKeyState(keypad[k]) & 0x8000) != 0;
         if (down && !was[k]) {
             std::scoped_lock lock{head_mutex};
             if (k == 0) {
