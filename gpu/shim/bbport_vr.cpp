@@ -96,6 +96,7 @@ struct Functions {
 
 struct Settings {
     bool afr = true, rigid = true, smoothing = true;
+    bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
     float seat[3] = {0.0f, -1.15f, 0.0f}; // the game's head point is above the driver's eyes
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
@@ -209,6 +210,7 @@ void ReadSettings() {
         if (k == "afr") settings.afr = value != 0;
         else if (k == "rigid") settings.rigid = value != 0;
         else if (k == "smoothing") settings.smoothing = value != 0;
+        else if (k == "diag") settings.diag = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value;
         else if (k == "seat_x") settings.seat[0] = value;
         else if (k == "seat_y") settings.seat[1] = value;
@@ -480,7 +482,38 @@ XrPosef Steady(const XrPosef& raw) {
     return f.pose;
 }
 
+// diag = 1: where the game puts the driver's eyes, in the car's axes (x left, y up, z forward), each time it changes
+// (another car, a restart): the head pose it builds (+0x310..+0x340, from the car's POSITION_OFFSET, the neck and the
+// head-to-eyes offset) and the point of the camera the renderer draws from (+0x270).
+void DiagHeadPoint(const float* camera) {
+    static float last[3];
+    static long long last_us = 0;
+    const long long now = NowUs();
+    const float* car = camera + 0x2d0 / 4;
+    const float* drawn = camera + 0x270 / 4;
+    const float* pose = camera + 0x310 / 4;
+    const float eye[3] = {pose[12], pose[13], pose[14]};
+    const float dx = eye[0] - last[0], dy = eye[1] - last[1], dz = eye[2] - last[2];
+    if (last_us && now - last_us < 2000000 && dx * dx + dy * dy + dz * dz < 0.05f * 0.05f) {
+        return;
+    }
+    last[0] = eye[0], last[1] = eye[1], last[2] = eye[2];
+    last_us = now;
+    float point[3];
+    for (int i = 0; i < 3; ++i) {
+        point[i] = 0.0f;
+        for (int k = 0; k < 3; ++k) point[i] += (drawn[12 + k] - car[12 + k]) * car[i * 4 + k];
+    }
+    std::printf("VR diag: the game's head pose puts the eyes at x %.3f y %.3f z %.3f; the drawn camera is at x %.3f y "
+                "%.3f z %.3f (difference x %.3f y %.3f z %.3f; car axes, metres)\n",
+                eye[0], eye[1], eye[2], point[0], point[1], point[2], point[0] - eye[0], point[1] - eye[1],
+                point[2] - eye[2]);
+}
+
 extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
+    if (settings.diag) {
+        DiagHeadPoint(camera);
+    }
     XrPosef head;
     float centre_yaw, seat[3];
     XrVector3f centre_position;
@@ -898,6 +931,9 @@ void AppendDeviceExtensions(VkInstance instance, VkPhysicalDevice physical_devic
 
 void OnDevice(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, uint32_t queue_family,
               uint32_t queue_index) {
+    if (Wanted() && settings.diag) {
+        InstallHeadHook(); // without a headset too: the hook only logs then
+    }
     if (!st.instance || st.failed) {
         return;
     }
