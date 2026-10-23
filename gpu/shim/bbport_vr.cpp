@@ -98,7 +98,7 @@ struct Settings {
     bool afr = true, rigid = true, smoothing = true;
     bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
-    float seat[3] = {0.0f, -1.15f, 0.0f}; // the game's head point is above the driver's eyes
+    float seat[3] = {0.0f, -1.11f, 0.0f}; // the game's head point is above the driver's eyes
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
