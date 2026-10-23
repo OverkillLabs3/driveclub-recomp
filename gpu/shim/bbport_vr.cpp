@@ -720,7 +720,7 @@ void SetFieldOfView() {
 // The projections the game draws with come from its anti-aliasing constants; the reflection cube map's faces (exactly
 // square 90 x 90 degrees) come in between, so the cockpit's is kept apart: the driver's head camera is in use while
 // its field of view was seen in the last 2 s and the hook ran in the last 300 ms.
-std::atomic<float> cockpit_y{0.0f};
+std::atomic<float> cockpit_x{0.0f}, cockpit_y{0.0f};
 std::atomic<long long> cockpit_time_us{0};
 bool Cockpit() {
     const long long now = NowUs();
@@ -1023,6 +1023,7 @@ void NoteProjection(float x_scale, float y_scale) {
     }
     const float vfov = 2.0f * std::atan(1.0f / y_scale) * 180.0f / Pi;
     if (std::fabs(vfov - settings.cockpit_vfov) < 3.0f && std::fabs(x_scale / y_scale - 1.0f) > 0.02f) {
+        cockpit_x = x_scale;
         cockpit_y = y_scale;
         cockpit_time_us = NowUs();
     }
@@ -1251,8 +1252,12 @@ void AfterSubmit() {
         // The pose each picture is stated at: the runtime turns it from there to the head's pose now.
         XrPosef pose{};
         float tan_y = std::tan(settings.screen_vfov * 0.5f * Pi / 180.0f);
+        float tan_x = tan_y * float(st.width) / float(st.height); // a still screen: the picture's own shape
         if (cockpit) {
+            // the scene's own field of view: the picture may be wider than the scene (the scene in the shape of an
+            // eye, stretched into a 16:9 output for the menus)
             tan_y = 1.0f / cockpit_y.load();
+            tan_x = cockpit_x.load() > 0.1f ? 1.0f / cockpit_x.load() : tan_y * float(st.width) / float(st.height);
             if (st.frame_tagged) {
                 pose = st.frame_pose; // the head this frame was drawn for
             } else if (!HeadAt(NowUs() - (long long)(settings.latency_ms * 1000.0f), pose)) {
@@ -1264,7 +1269,6 @@ void AfterSubmit() {
             pose.orientation = {q.x, q.y, q.z, q.w};
             pose.position = st.centre_position;
         }
-        const float tan_x = tan_y * float(st.width) / float(st.height);
         for (int e = 0; e < 2; ++e) {
             auto& v = views[e];
             v.type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;

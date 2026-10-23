@@ -704,7 +704,7 @@ void BuildModel() {
   const int wide = (g_wide = int(g_c.size()), seg(L"Widescreen (render and output)",
                        L"Ultrawide sizes. These change both the render and the output size. The needed memory patch is added for you.",
                        {L"Off", L"2560x1080", L"3440x1080", L"3840x1080", L"3440x1440",
-                        L"5120x1440", L"5120x2160", L"VR Ultra", L"VR High"},
+                        L"5120x1440", L"5120x2160", L"VR Ultra", L"VR High", L"VR High, 16:9 menus"},
                        {"", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
                         "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]",
                         "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]",
@@ -712,7 +712,8 @@ void BuildModel() {
                         "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
                         "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]",
                         "VR eye Ultra [2688x2880] Internal + Output resolution",
-                        "VR eye High [2496x2688] Internal + Output resolution"},
+                        "VR eye High [2496x2688] Internal + Output resolution",
+                        "VR eye High, menus 16:9 [2496x2688 / 4784x2688] Internal + Output resolution"},
                        00));
   const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
@@ -1190,7 +1191,7 @@ int RenderMemoryTier() {
   if (g_inres < 0 || g_wide < 0) return 0;
   const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
-  if (w == 6) return 3;  // 5120x2160 is 11 megapixels
+  if (w == 6 || w == 9) return 3;  // 5120x2160 is 11 megapixels; VR High with 16:9 menus is 6.7 + 12.9
   if (w > 0 || r >= 3) return 2;
   return r == 2 ? 1 : 0;
 }

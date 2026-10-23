@@ -395,6 +395,21 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
+              Name="VR eye High, menus 16:9 [2496x2688 / 4784x2688] Internal + Output resolution"
+              Note="The scene at 2496x2688, the shape of a Quest 2 eye at Virtual Desktop High; the output (menus, HUD) at 4784x2688, 16:9. The scene is stretched across the output and the VR layer undoes the stretch."
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="dbb66d3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="b0120000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="800a0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="c0090000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="800a0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
               Name="2160p 32:9 [7680x2160] Internal + Output resolution [DEPTH BUG]"
               Note="7680x2160 internal render and output resolution - 16 588 800 pixels (8.00x 1080p) - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
               Author="Kravickas"
