@@ -96,6 +96,7 @@ struct Functions {
 
 struct Settings {
     bool afr = true, rigid = true, smoothing = true;
+    bool auto_recentre = true; // recentre on getting into the car (after 3 s or more out of the cockpit view)
     bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
     float seat[3] = {0.0f, 0.0f, 0.0f}; // the game's own eye point (each car its own)
@@ -124,6 +125,7 @@ struct State {
     bool frame_tagged = false;        // one picture, its head pose known exactly
     XrPosef frame_pose{};
     bool cockpit_shown = false;
+    long long cockpit_left_us = 0; // when the cockpit view was left last
     // the recentred head
     bool have_centre = false;
     float centre_yaw = 0.0f;
@@ -210,6 +212,7 @@ void ReadSettings() {
         if (k == "afr") settings.afr = value != 0;
         else if (k == "rigid") settings.rigid = value != 0;
         else if (k == "smoothing") settings.smoothing = value != 0;
+        else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value;
         else if (k == "seat_x") settings.seat[0] = value;
@@ -1141,7 +1144,8 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             st.centre_yaw = Yaw(location.pose.orientation);
             st.centre_position = location.pose.position;
             st.have_centre = true;
-            std::printf("VR: recentred\n");
+            std::printf("VR: recentred (the head at %.2f, %.2f, %.2f m in the room)\n", location.pose.position.x,
+                        location.pose.position.y, location.pose.position.z);
         }
         head_now = location.pose;
         head_now_valid = true;
@@ -1233,6 +1237,15 @@ void AfterSubmit() {
         const bool cockpit = Cockpit();
         if (cockpit != st.cockpit_shown) {
             st.cockpit_shown = cockpit;
+            // Getting into the car (a race starts, a restart, another car): the player sits as they drive now, so the
+            // head is recentred there, unless the cockpit view was left only for a moment.
+            if (cockpit && settings.auto_recentre && (!st.cockpit_left_us || NowUs() - st.cockpit_left_us > 3000000)) {
+                std::scoped_lock lock{head_mutex};
+                st.have_centre = false;
+            }
+            if (!cockpit) {
+                st.cockpit_left_us = NowUs();
+            }
             std::printf("VR: %s\n", cockpit ? "driver's head camera: the head moves the view" : "still screen");
         }
         // The pose each picture is stated at: the runtime turns it from there to the head's pose now.

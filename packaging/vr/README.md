@@ -31,7 +31,7 @@ The number row, on every keyboard (the keypad works too, for those who have one)
 
 | Key | Keypad | |
 |---|---|---|
-| 0 | 5 | Recentre: the direction you face becomes straight ahead |
+| 0 | 5 | Recentre: where your head is and the direction you face become the seat (sit as you drive). It also happens by itself when you get into the car |
 | 2 / 1 | 8 / 2 | Seat up / down (2 cm, with Ctrl 10 cm) |
 | 5 / 6 | 4 / 6 | Seat left / right |
 | 4 / 3 | 9 / 3 | Seat forward / back |
@@ -54,6 +54,7 @@ seat_x = 0         # the eyes relative to the driver's eyes the game sets for ea
 seat_y = 0
 seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
+auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 screen_vfov = 40   # the still screen's height, degrees
 key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
