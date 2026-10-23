@@ -49,8 +49,8 @@ switch also turns VR on (for running the game without the launcher). Defaults:
 afr = 1            # stereo by alternate frames; 0: one picture for both eyes (full frame rate, no depth)
 ipd = 0.063        # metres between the eyes
 rigid = 1          # the camera fixed to the car body; 0: the game's head on springs (it sways in VR)
-seat_x = 0         # the eyes relative to the game's head point, metres: x left, y up, z forward (the
-                   # game's point is above the driver's eyes; -1.15 fitted the cars tried)
+seat_x = 0         # the eyes relative to the driver's eyes the game sets for each car, metres:
+                   # x left, y up, z forward
 seat_y = 0
 seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
