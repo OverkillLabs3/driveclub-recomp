@@ -2,7 +2,8 @@
 
 Plays DriveClub in an OpenXR headset. In the cockpit view your head moves the camera (turning, leaning, looking
 around the pillars), and the picture is real stereo: the game draws alternate frames from the left and the right
-eye. Menus, loading screens and the other cameras are shown on a still screen in front of you.
+eye. The HUD is a panel of its own, fixed ahead of the seat. Menus, loading screens and the other cameras are shown
+on a still screen in front of you.
 
 It is **off by default**. When it is off, nothing VR-related is loaded and the game runs exactly as without it.
 
@@ -15,10 +16,10 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 2. **Launcher:**
    - *Graphics* → *VR headset (experimental)*: **VR headset** on;
    - *Graphics* → *VR headset* → *Headset picture* → **Ultra** (2688x2880) or **High** (2496x2688): the picture in
-     the shape of a headset eye (Virtual Desktop's Ultra and High sizes). Other sizes work, but waste pixels outside
-     the eye's view. **Ultra + HUD** / **High + HUD**: the same sizes with the game's 16:9 aspect kept, so the menus
-     and the HUD are whole (the HUD then spans the whole view in the car). Leave *Output*, *Render resolution* and
-     *Widescreen* on Default and Off;
+     the shape of a headset eye (Virtual Desktop's Ultra and High sizes). **Ultra + HUD** / **High + HUD** (the
+     ones to use): the same sizes with the game's 16:9 aspect kept, so the menus and the HUD are whole. Plain Ultra
+     and High cut the sides of the menus and the HUD. Leave *Output*, *Render resolution* and *Widescreen* on
+     Default and Off;
    - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate;
    - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
      launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the
@@ -26,7 +27,8 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 3. Put the headset on and start the headset's PC link (Virtual Desktop, SteamVR, Oculus Link) **before** the game.
    A connected headset that is not worn holds the game's frames back (5 to 10 FPS).
 
-Hide the HUD in the game's options: it is laid out for 16:9 and the eye-shaped picture cuts its sides.
+The game's camera shake at speed is still there (it is applied after the head camera). A loose-file mod with zero
+shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) takes it away.
 
 ## Keys
 The number row, on every keyboard (the keypad works too, for those who have one):
@@ -72,9 +74,18 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
   so it goes to its own eye and is stated to the headset at exactly the pose it was drawn from; the runtime turns it
   to the head's pose at display time.
 - The headset gets the game's picture at the output resolution, not the window's.
+- With the "+ HUD" sizes the game keeps its 16:9 aspect (the HUD's and the menus' canvas) and draws in the eye's
+  shape: a hook where the scene takes its camera (Scene::SetCamera) narrows the driver's head camera's projection to
+  the render's shape; everything else is squeezed and shown at 16:9 again.
+- The HUD apart: at a frame's first HUD draw into the display buffer the scene is copied out and the buffer cleared,
+  so the HUD draws alone (its alpha kept as coverage). In the car the eyes get the scene and the HUD is a quad layer;
+  the window and the still screen get both put together again. The split point and the alpha fix follow
+  [hookmanuk's VR fork](https://github.com/hookmanuk/driveclub-recomp).
 
 ## Known limits
-- Each eye gets half the game's frame rate (about 40 in a race on the test PC). FSR, DLSS and frame generation would
-  have to run per eye to work with alternate frames.
-- The HUD and menus are not made for VR.
+- Alternate frames: each eye gets half the game's frame rate (about 40 in a race on the test PC), so the picture can
+  shake a little, most of all near objects while turning.
+- The picture can look grainy: the eye-sized render has no anti-aliasing that works with alternate frames. The
+  game's own temporal AA mixes the two eyes; its FXAA pass (Detail tab) is the only one that helps.
+- No DLSS or FSR (they would have to run per eye), no frame generation.
 - Tested with one headset, runtime and graphics card.
