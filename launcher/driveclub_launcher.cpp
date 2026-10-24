@@ -25,6 +25,9 @@
 #include <cctype>
 #include <cstdint>
 #include <iterator>
+#include <map>
+#include <set>
+#include <sstream>
 #include <cstdio>
 #include <cmath>
 #include <cstring>
@@ -56,6 +59,7 @@ const Color kBg(255, 16, 18, 22), kCard(255, 24, 27, 33), kCardLine(255, 38, 42,
     kWarn(255, 240, 170, 60), kBad(255, 240, 96, 84);
 
 constexpr float kMargin = 24.f, kGap = 18.f, kHeaderH = 92.f, kFooterH = 96.f, kPad = 22.f, kTitleH = 44.f;
+float g_card_inner_w = 320.f;  // the width a card's rows get, set by LayoutPass
 constexpr float kTabH = 46.f;  // the row of tabs under the header: one group of cards at a time
 constexpr float kWinW = 960.f;
 
@@ -64,7 +68,7 @@ constexpr float kWinW = 960.f;
 // ------------------------------------------------------------------------------------------
 // Picker: one box that opens a menu (benchmark track and car). Action: the benchmark's Run button and its result.
 // Slider: a value from min to max (sel), dragged or stepped with the arrow keys. Button: a button across the row.
-enum class Kind { Segmented, Toggle, Picker, Action, Slider, Button };
+enum class Kind { Segmented, Toggle, Picker, Action, Slider, Button, Binding, Info, Monitor };
 
 struct Ctl {
   const wchar_t* label;
@@ -76,6 +80,7 @@ struct Ctl {
   int sel = 0;
   RectF row{}, ctl{};
   RectF info{};                        // the (i) after the name, where it was last drawn (pixels; empty when not shown)
+  RectF key_rect{}, pad_rect{};        // a Binding row: the keyboard and the controller chip
   const wchar_t* more = nullptr;       // the details the (i) opens, after the hint
   int min = 0, max = 0;                // slider range
   const wchar_t* unit = L"%";          // after a slider's value
@@ -135,11 +140,13 @@ const wchar_t* const kTabHint[kTabCount] = {
 int g_tab = kTabGraphics;
 RectF g_tab_rect[kTabCount];
 // The Driving tab has tabs of its own, in a smaller row under the main one (HitTab gives them as kTabCount + n).
-enum { kSubAssists, kSubWheel, kSubCount };
-const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback"};
+enum { kSubAssists, kSubWheel, kSubKeys, kSubCount };
+const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback",
+                                            L"Controller and keyboard"};
 const wchar_t* const kSubHint[kSubCount] = {
     L"The field of view, and the game's gearbox, brake assist, hardcore handling and wheel assist.",
-    L"Your steering wheel: Wheel Setup for its controls, and the force feedback."};
+    L"Your steering wheel: Wheel Setup for its controls, and the force feedback.",
+    L"Which key and which controller button do what: the layout the game reads from data\\user\\input_config\\default.ini."};
 constexpr float kSubTabH = 62.f;
 int g_subtab = kSubAssists;
 RectF g_sub_rect[kSubCount];
@@ -636,6 +643,739 @@ void LoadWheel() {
   }
   DeriveWheelPreset();
 }
+
+// ------------------------------------------------------------------------------------------
+// controller and keyboard: the bindings of data\user\input_config\default.ini (shadPS4 syntax,
+// read by the game's runtime, src/runtime_input.inc). One row per output, two chips: the key on
+// the left, the controller input on the right. Only the lines of a changed row are rewritten,
+// so the rest of the file (dead zones, mouse, wheel force feedback) stays as it is; the layout
+// marker line is kept, or the game would replace the file with its own defaults.
+// ------------------------------------------------------------------------------------------
+struct BindRowDef {
+  const char* out;
+  const wchar_t* label;   // PlayStation name
+  const wchar_t* xbox;    // the same button on an Xbox pad
+  const wchar_t* hint;
+  const char* key;   // the runtime's own default
+  const char* pad;   // "" none, "=" not remappable (an axis: the right chip only reads)
+};
+const BindRowDef kBindButtons[] = {
+    {"cross", L"Cross", L"A", L"Accept, and the handbrake in a race.", "enter", "cross"},
+    {"circle", L"Circle", L"B", L"Back, and the handbrake in a race.", "space", "circle"},
+    {"square", L"Square", L"X", L"Reset to track.", "x", "square"},
+    {"triangle", L"Triangle", L"Y", L"Change camera.", "c", "triangle"},
+    {"l1", L"L1", L"LB", L"Shift down.", "q", "l1"},
+    {"r1", L"R1", L"RB", L"Shift up.", "e", "r1"},
+    {"l2", L"Brake / reverse (L2)", L"Brake / reverse (LT)", L"Brake; hold to reverse.", "s", "l2"},
+    {"r2", L"Throttle (R2)", L"Throttle (RT)", L"Accelerate.", "w", "r2"},
+    {"l3", L"L3", L"LS click", L"Horn, and look behind.", "lctrl", "l3"},
+    {"r3", L"R3", L"RS click", L"Look back.", "v", "r3"},
+    {"options", L"Pause menu (OPTIONS)", L"Pause menu (Menu)", L"Pause the game.", "escape", "options"},
+    {"touchpad_left", L"Touchpad left", L"View (left)", L"Reset to track (the left half of the touchpad).", "r", "back"},
+    {"touchpad_right", L"Touchpad right", L"View (right)", L"Photo mode (the right half of the touchpad).", "t", "back"},
+};
+const BindRowDef kBindSticks[] = {
+    {"pad_up", L"D-pad up", L"D-pad up", L"Menu up.", "up", "pad_up"},
+    {"pad_down", L"D-pad down", L"D-pad down", L"Menu down.", "down", "pad_down"},
+    {"pad_left", L"D-pad left", L"D-pad left", L"Menu left.", "left", "pad_left"},
+    {"pad_right", L"D-pad right", L"D-pad right", L"Menu right.", "right", "pad_right"},
+    {"axis_left_x_minus", L"Steer left", L"Steer left", L"Steering, left.", "a", ""},
+    {"axis_left_x_plus", L"Steer right", L"Steer right", L"Steering, right.", "d", ""},
+    {"axis_left_y_minus", L"Left stick up", L"Left stick up", L"Unbound unless you set it.", "", ""},
+    {"axis_left_y_plus", L"Left stick down", L"Left stick down", L"Unbound unless you set it.", "", ""},
+    {"axis_right_x_minus", L"Right stick left", L"Right stick left", L"Look left.", "j", ""},
+    {"axis_right_x_plus", L"Right stick right", L"Right stick right", L"Look right.", "l", ""},
+    {"axis_right_y_minus", L"Right stick up", L"Right stick up", L"Look up.", "i", ""},
+    {"axis_right_y_plus", L"Right stick down", L"Right stick down", L"Look down.", "k", ""},
+};
+constexpr int kBindButtonCount = int(sizeof(kBindButtons) / sizeof(kBindButtons[0]));
+constexpr int kBindStickCount = int(sizeof(kBindSticks) / sizeof(kBindSticks[0]));
+
+// The controller inputs a row can be remapped to (src/runtime_input.inc, sdl_button_names).
+struct PadChoice { const char* id; const wchar_t* name; const wchar_t* xbox; const wchar_t* group; };
+const PadChoice kPadChoices[] = {
+    {"cross", L"Cross", L"A", L"Face buttons"}, {"circle", L"Circle", L"B", L"Face buttons"},
+    {"square", L"Square", L"X", L"Face buttons"}, {"triangle", L"Triangle", L"Y", L"Face buttons"},
+    {"l1", L"L1", L"LB", L"Shoulders"}, {"r1", L"R1", L"RB", L"Shoulders"},
+    {"l3", L"L3", L"LS click", L"Sticks and buttons"}, {"r3", L"R3", L"RS click", L"Sticks and buttons"},
+    {"options", L"OPTIONS", L"Menu", L"Sticks and buttons"}, {"back", L"Back / Share", L"View", L"Sticks and buttons"},
+    {"touchpad_center", L"Touchpad", L"Touchpad", L"Sticks and buttons"},
+    {"pad_up", L"D-pad up", L"D-pad up", L"D-pad"}, {"pad_down", L"D-pad down", L"D-pad down", L"D-pad"},
+    {"pad_left", L"D-pad left", L"D-pad left", L"D-pad"}, {"pad_right", L"D-pad right", L"D-pad right", L"D-pad"},
+};
+constexpr int kPadChoiceCount = int(sizeof(kPadChoices) / sizeof(kPadChoices[0]));
+
+bool g_xbox_names = false;  // true while the pad in use is an Xbox one (XInput)
+std::wstring g_bind_label[32];
+std::string g_bind_out[32];
+int g_bind_ctl[32] = {};
+int g_bind_count = 0;
+struct BindValue { std::string key, pad; };
+std::map<std::string, BindValue> g_bind;
+int g_capture = -1;       // the binding row that waits for a key
+int g_capture_part = 0;   // 0 keyboard, 1 controller
+
+const BindRowDef* FindBindRow(const std::string& out) {
+  for (int i = 0; i < kBindButtonCount; ++i) if (out == kBindButtons[i].out) return &kBindButtons[i];
+  for (int i = 0; i < kBindStickCount; ++i) if (out == kBindSticks[i].out) return &kBindSticks[i];
+  return nullptr;
+}
+// Some controller controls are the game's own: the analog triggers and every stick axis are read as
+// axes, not as remappable buttons, so their chip is only there to say what the control is.
+bool BindChipLocked(const std::string& out, int part) {
+  if (part == 0) return false;                    // the keyboard chip stays editable
+  if (out == "l2" || out == "r2") return true;
+  return out.rfind("axis_", 0) == 0;
+}
+
+bool IsPadToken(const std::string& t) {
+  for (int i = 0; i < kPadChoiceCount; ++i) if (t == kPadChoices[i].id) return true;
+  return false;
+}
+const wchar_t* PadName(const std::string& t) {
+  // defaults only: the runtime reads these two as the analog triggers
+  if (t == "l2") return g_xbox_names ? L"LT trigger" : L"L2 trigger";
+  if (t == "r2") return g_xbox_names ? L"RT trigger" : L"R2 trigger";
+  for (int i = 0; i < kPadChoiceCount; ++i)
+    if (t == kPadChoices[i].id) return g_xbox_names ? kPadChoices[i].xbox : kPadChoices[i].name;
+  return L"?";
+}
+// The runtime's own default layout, so the launcher can make the file before the game has run.
+const char kInputTemplate[] =
+    "# DriveClub racing layout 4\n"
+    "# Keyboard layout in the style of PC racing games (Forza Horizon, Need for Speed).\n"
+    "# Edit freely: a line with the layout marker above is kept as it is.\n\n"
+    "# Keyboard bindings\n\n# Driving\nr2 = w\nl2 = s\naxis_left_x_minus = a\naxis_left_x_plus = d\n"
+    "circle = space\nl1 = q\nr1 = e\n\n# Menus and cameras\ncross = enter\ncross = z\ncircle = backspace\n"
+    "triangle = c\nsquare = x\nl3 = lctrl\nr3 = v\noptions = escape\noptions = p\n"
+    "touchpad_left = r\ntouchpad_right = t\n\npad_up = up\npad_down = down\npad_left = left\npad_right = right\n\n"
+    "axis_right_x_minus = j\naxis_right_x_plus = l\naxis_right_y_minus = i\naxis_right_y_plus = k\n\n"
+    "# Mouse\nmouse_to_joystick = right\nmouse_movement_params = 0.5, 1, 0.125\n\n"
+    "keyboard_steer_time = 0.18, 0.10\nkeyboard_pedal_time = 0.10, 0.06\n\n"
+    "# Controller bindings\n\ntriangle = triangle\ncross = cross\nsquare = square\ncircle = circle\n\n"
+    "l1 = l1\nl2 = l2\nl3 = l3\nr1 = r1\nr2 = r2\nr3 = r3\n\noptions = options\ntouchpad_center = back\n\n"
+    "pad_up = pad_up\npad_down = pad_down\npad_left = pad_left\npad_right = pad_right\n\n"
+    "axis_left_x = axis_left_x\naxis_left_y = axis_left_y\naxis_right_x = axis_right_x\naxis_right_y = axis_right_y\n\n"
+    "analog_deadzone = leftjoystick, 5, 127\nanalog_deadzone = rightjoystick, 5, 127\n\n"
+    "override_controller_color = false, 0, 0, 255\n";
+
+std::wstring InputIniPath() { return WheelIniPath(); }
+
+void BindDefaults() {
+  g_bind.clear();
+  for (const auto* list : {kBindButtons, kBindSticks}) {
+    const int n = list == kBindButtons ? kBindButtonCount : kBindStickCount;
+    for (int i = 0; i < n; ++i) g_bind[list[i].out] = {list[i].key, list[i].pad};
+  }
+}
+// The lines of default.ini into g_bind: a keyboard line is a key name, a controller line one of
+// the pad inputs; two keyboard lines for one output both count (the first is shown).
+void ApplyBindLines(const std::vector<std::string>& lines) {
+  std::set<std::string> seen_key;
+  for (std::string line : lines) {
+    const size_t hash = line.find('#');
+    if (hash != std::string::npos) line.resize(hash);
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+    const size_t s = key.find_first_not_of(" \t");
+    key = s == std::string::npos ? "" : key.substr(s);
+    for (char& ch : key) ch = char(tolower((unsigned char)ch));
+    value.erase(0, value.find_first_not_of(" \t"));
+    while (!value.empty() && (value.back() == ' ' || value.back() == '\t')) value.pop_back();
+    const std::string first = value.substr(0, value.find(','));
+    auto it = g_bind.find(key);
+    if (it == g_bind.end() || first.empty()) continue;
+    if (IsPadToken(first)) it->second.pad = first;
+    else if (seen_key.insert(key).second) it->second.key = first;  // the first keyboard line of that output
+  }
+}
+void LoadBindings() {
+  BindDefaults();
+  if (!FileHas(InputIniPath(), kLayoutMarker)) return;  // the game has not made it yet
+  ApplyBindLines(ReadLines(InputIniPath()));
+}
+// Rewrites the lines of one row: keyboard lines (everything that is not a pad input) or the pad line.
+bool WriteBinding(const std::string& out, int part, const std::string& value) {
+  std::vector<std::string> lines;
+  if (FileHas(InputIniPath(), kLayoutMarker)) {
+    lines = ReadLines(InputIniPath());
+  } else {
+    std::istringstream template_stream(kInputTemplate);
+    for (std::string line; std::getline(template_stream, line);) lines.push_back(line);
+  }
+  const std::string nl = "\n";
+  auto lhs_of = [](const std::string& l) {
+    const size_t s = l.find_first_not_of(" \t");
+    const size_t eq = l.find('=');
+    if (s == std::string::npos || eq == std::string::npos || eq < s || l[s] == '#') return std::string();
+    std::string k = l.substr(s, eq - s);
+    while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+    for (char& ch : k) ch = char(tolower((unsigned char)ch));
+    return k;
+  };
+  auto rhs_of = [](const std::string& l) {
+    const size_t eq = l.find('=');
+    if (eq == std::string::npos) return std::string();
+    std::string v = l.substr(eq + 1);
+    const size_t hash = v.find('#');
+    if (hash != std::string::npos) v.resize(hash);
+    v.erase(0, v.find_first_not_of(" \t"));
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.pop_back();
+    const size_t comma = v.find(',');
+    return v.substr(0, comma);
+  };
+  int first = -1, last_same_kind = -1;
+  for (int i = int(lines.size()) - 1; i >= 0; --i) {
+    if (lhs_of(lines[size_t(i)]) != out) continue;
+    const bool pad_line = IsPadToken(rhs_of(lines[size_t(i)]));
+    if (pad_line == (part == 1)) {
+      if (first < 0 || i < first) first = i;
+      lines.erase(lines.begin() + i);
+    }
+  }
+  for (int i = 0; i < int(lines.size()); ++i) {  // only the game's own binding lines
+    if (!FindBindRow(lhs_of(lines[size_t(i)]))) continue;
+    if (IsPadToken(rhs_of(lines[size_t(i)])) == (part == 1)) last_same_kind = i;
+  }
+  const std::string line = out + " = " + (value.empty() ? "none" : value);
+  if (value.empty()) {
+    // unbound: nothing to write, the row shows a dash
+  } else if (first >= 0) {
+    lines.insert(lines.begin() + (std::min)(size_t(first), lines.size()), line);
+  } else if (last_same_kind >= 0) {
+    lines.insert(lines.begin() + last_same_kind + 1, line);
+  } else {
+    lines.push_back(line);
+  }
+  static bool backed_up = false;
+  if (!backed_up) {
+    CopyFileW(InputIniPath().c_str(), (InputIniPath() + L".launcher-backup").c_str(), FALSE);
+    backed_up = true;
+  }
+  MakeDirs(Dir(InputIniPath()));
+  std::ofstream out_file(InputIniPath().c_str(), std::ios::binary | std::ios::trunc);
+  if (!out_file) return false;
+  for (const auto& l : lines) out_file << l << nl;
+  return bool(out_file);
+}
+void SetBinding(const std::string& out, int part, const std::string& value) {
+  auto it = g_bind.find(out);
+  if (it == g_bind.end()) return;
+  if (part == 0) it->second.key = value; else it->second.pad = value;
+  WriteBinding(out, part, value);
+  g_changed = true;
+}
+// The key names the runtime accepts (src/runtime_input.inc key_names and the single characters).
+const wchar_t* KeyNameFromVk(UINT vk) {
+  if (vk >= 'A' && vk <= 'Z') return nullptr;  // letters are written as a single character
+  switch (vk) {
+    case VK_SPACE: return L"space"; case VK_RETURN: return L"enter"; case VK_TAB: return L"tab";
+    case VK_BACK: return L"backspace"; case VK_ESCAPE: return L"escape";
+    case VK_LSHIFT: return L"lshift"; case VK_RSHIFT: return L"rshift";
+    case VK_LCONTROL: return L"lctrl"; case VK_RCONTROL: return L"rctrl";
+    case VK_LMENU: return L"lalt"; case VK_RMENU: return L"ralt";
+    case VK_CAPITAL: return L"capslock"; case VK_INSERT: return L"insert"; case VK_DELETE: return L"delete";
+    case VK_HOME: return L"home"; case VK_END: return L"end"; case VK_PRIOR: return L"pageup";
+    case VK_NEXT: return L"pagedown"; case VK_LEFT: return L"left"; case VK_RIGHT: return L"right";
+    case VK_UP: return L"up"; case VK_DOWN: return L"down";
+    default: return L"";
+  }
+}
+std::string KeyTokenFromVk(UINT vk) {
+  if (vk >= 'A' && vk <= 'Z') return std::string(1, char('a' + (vk - 'A')));
+  if (vk >= '0' && vk <= '9') return std::string(1, char('0' + (vk - '0')));
+  if (vk >= VK_F1 && vk <= VK_F12) return "f" + std::to_string(int(vk) - int(VK_F1) + 1);
+  const wchar_t* name = KeyNameFromVk(vk);
+  if (!name || !*name) return std::string();
+  return Narrow(name);
+}
+// An axis row cannot be remapped: its right chip names the stick it reads.
+const wchar_t* AxisChipText(const std::string& out) {
+  if (out == "axis_left_x_minus") return L"Left stick \u2190";
+  if (out == "axis_left_x_plus") return L"Left stick \u2192";
+  if (out == "axis_left_y_minus") return L"Left stick \u2191";
+  if (out == "axis_left_y_plus") return L"Left stick \u2193";
+  if (out == "axis_right_x_minus") return L"Right stick \u2190";
+  if (out == "axis_right_x_plus") return L"Right stick \u2192";
+  if (out == "axis_right_y_minus") return L"Right stick \u2191";
+  return L"Right stick \u2193";
+}
+bool IsAxisOut(const std::string& out) { return out.rfind("axis_", 0) == 0; }
+std::wstring BindingChipText(const std::string& out, const std::string& value, bool pad) {
+  if (pad && IsAxisOut(out)) return AxisChipText(out);
+  if (value.empty()) return L"\u2014";
+  return pad ? std::wstring(PadName(value)) : Widen(value);
+}
+bool DetectXboxNaming();  // defined with the device list below
+
+int AddBindRow(const BindRowDef& def) {
+  const int n = g_bind_count++;
+  g_bind_out[n] = def.out;
+  g_bind_label[n] = def.label;  // the game's button: PlayStation names, whatever pad is used
+  Ctl c{g_bind_label[n].c_str(), def.hint, Kind::Binding, {}, {std::string("@bind:") + def.out}, 0, 0};
+  g_c.push_back(std::move(c));
+  g_bind_ctl[n] = int(g_c.size()) - 1;
+  return int(g_c.size()) - 1;
+}
+// Every row's name in the naming of the pad in use; the window is laid out again when it changes.
+void ApplyDeadNaming();
+void ApplyPadNaming() {
+  for (int i = 0; i < g_bind_count; ++i) {
+    const BindRowDef* def = FindBindRow(g_bind_out[i]);
+    if (!def) continue;
+    g_bind_label[i] = def->label;  // never follows the pad: it names the game's action
+    g_c[size_t(g_bind_ctl[i])].label = g_bind_label[i].c_str();
+  }
+  ApplyDeadNaming();
+}
+
+// ------------------------------------------------------------------------------------------
+// dead zones: analog_deadzone = leftjoystick|rightjoystick|l2|r2, inner, outer  (0..127, the
+// runtime keeps inner < outer). Two slider rows per device; the file's other lines stay as they
+// are. Values are written when a drag ends or an arrow key steps, not on every mouse move.
+// ------------------------------------------------------------------------------------------
+struct DeadRowDef { const char* dev; const wchar_t* label; const wchar_t* xbox; const wchar_t* hint; int part; int def; };
+const DeadRowDef kDeadRows[] = {
+    {"leftjoystick", L"Left stick, inner", L"Left stick, inner", L"Steering that does nothing around the centre. Raise it if the car twitches while you hold the stick still.", 0, 5},
+    {"leftjoystick", L"Left stick, outer", L"Left stick, outer", L"Where the stick counts as fully pushed. Lower it to reach full steering sooner.", 1, 127},
+    {"rightjoystick", L"Right stick, inner", L"Right stick, inner", L"The same for the camera stick.", 0, 5},
+    {"rightjoystick", L"Right stick, outer", L"Right stick, outer", L"The same for the camera stick.", 1, 127},
+    {"l2", L"L2 trigger, inner", L"LT trigger, inner", L"Travel before the brake starts to count. Raise it if a trigger rests slightly pressed.", 0, 0},
+    {"l2", L"L2 trigger, outer", L"LT trigger, outer", L"Where the trigger counts as fully pressed; lower it for a shorter pedal travel.", 1, 127},
+    {"r2", L"R2 trigger, inner", L"RT trigger, inner", L"The same for the throttle.", 0, 0},
+    {"r2", L"R2 trigger, outer", L"RT trigger, outer", L"The same for the throttle.", 1, 127},
+};
+constexpr int kDeadCount = int(sizeof(kDeadRows) / sizeof(kDeadRows[0]));
+int g_dead_row[kDeadCount] = {-1, -1, -1, -1, -1, -1, -1, -1};
+std::wstring g_dead_label[kDeadCount];
+void ApplyDeadNaming() {
+  for (int i = 0; i < kDeadCount; ++i) {
+    if (g_dead_row[i] < 0) continue;
+    g_dead_label[i] = g_xbox_names ? kDeadRows[i].xbox : kDeadRows[i].label;
+    g_c[size_t(g_dead_row[i])].label = g_dead_label[i].c_str();
+  }
+}
+
+int AddDeadRow(const DeadRowDef& def) {
+  g_dead_label[&def - kDeadRows] = g_xbox_names ? def.xbox : def.label;
+  Ctl c{g_dead_label[&def - kDeadRows].c_str(), def.hint, Kind::Slider, {}, {std::string("@dead:") + def.dev + ":" + std::to_string(def.part)}, def.def, def.def};
+  c.min = def.part == 0 ? 0 : 1;
+  c.max = def.part == 0 ? 126 : 127;
+  c.unit = L"";
+  g_c.push_back(std::move(c));
+  return int(g_c.size()) - 1;
+}
+bool IsDeadRow(const Ctl& c) { return c.patches[0].rfind("@dead:", 0) == 0; }
+// "leftjoystick:0" -> device and part of a row
+void DeadRowKey(const Ctl& c, std::string* dev, int* part) {
+  const std::string k = c.patches[0].substr(6);
+  const size_t colon = k.rfind(':');
+  *dev = k.substr(0, colon);
+  *part = colon == std::string::npos ? 0 : std::atoi(k.c_str() + colon + 1);
+}
+int DeadPartner(const Ctl& c) {
+  std::string dev; int part;
+  DeadRowKey(c, &dev, &part);
+  for (int i = 0; i < kDeadCount; ++i) {
+    const Ctl& o = g_c[size_t(g_dead_row[i])];
+    std::string odev; int opart;
+    DeadRowKey(o, &odev, &opart);
+    if (odev == dev && opart != part) return g_dead_row[i];
+  }
+  return -1;
+}
+void LoadDeadzones() {
+  for (const auto& line : ReadLines(InputIniPath())) {
+    if (line.rfind("analog_deadzone", 0) != 0) continue;
+    const size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    char dev[32] = {}; int inner = 0, outer = 127;
+    if (std::sscanf(line.c_str() + eq + 1, " %31[^, ] , %d , %d", dev, &inner, &outer) < 3) continue;
+    for (char* p = dev; *p; ++p) *p = char(tolower((unsigned char)*p));
+    for (int i = 0; i < kDeadCount; ++i) {
+      if (std::string(kDeadRows[i].dev) != dev) continue;
+      Ctl& c = g_c[size_t(g_dead_row[i])];
+      c.sel = kDeadRows[i].part == 0 ? inner : outer;
+      c.loaded = c.sel;
+    }
+  }
+}
+// Writes every device's line from its two rows; the rest of the file is kept.
+void FlushDeadzones() {
+  std::vector<std::string> lines = FileHas(InputIniPath(), kLayoutMarker) ? ReadLines(InputIniPath()) : std::vector<std::string>();
+  if (lines.empty()) {
+    std::istringstream template_stream(kInputTemplate);
+    for (std::string line; std::getline(template_stream, line);) lines.push_back(line);
+  }
+  bool any = false;
+  for (int i = 0; i < kDeadCount; i += 2) {
+    const Ctl& inner_row = g_c[size_t(g_dead_row[i])];
+    const Ctl& outer_row = g_c[size_t(g_dead_row[i + 1])];
+    if (inner_row.sel == inner_row.loaded && outer_row.sel == outer_row.loaded) continue;
+    const std::string dev = kDeadRows[i].dev;
+    const std::string line = "analog_deadzone = " + dev + ", " + std::to_string(inner_row.sel) + ", " + std::to_string(outer_row.sel);
+    int at = -1;
+    for (size_t k = 0; k < lines.size(); ++k) {
+      if (lines[k].rfind("analog_deadzone", 0) != 0) continue;
+      if (lines[k].find(dev) != std::string::npos) at = int(k);
+    }
+    if (at >= 0) lines[size_t(at)] = line; else lines.push_back(line);
+    any = true;
+  }
+  if (!any) return;
+  static bool backed_up = false;
+  if (!backed_up) {
+    CopyFileW(InputIniPath().c_str(), (InputIniPath() + L".launcher-backup").c_str(), FALSE);
+    backed_up = true;
+  }
+  MakeDirs(Dir(InputIniPath()));
+  std::ofstream out(InputIniPath().c_str(), std::ios::binary | std::ios::trunc);
+  if (!out) return;
+  for (const auto& l : lines) out << l << "\n";
+  for (int i = 0; i < kDeadCount; ++i) g_c[size_t(g_dead_row[i])].loaded = g_c[size_t(g_dead_row[i])].sel;
+}
+// The two rows of a device stay ordered, so the runtime's inner < outer rule always holds.
+void ClampDeadzone(int c) {
+  Ctl& row = g_c[size_t(c)];
+  const int partner = DeadPartner(row);
+  if (partner < 0) return;
+  Ctl& other = g_c[size_t(partner)];
+  std::string dev; int part;
+  DeadRowKey(row, &dev, &part);
+  if (part == 0) {
+    row.sel = (std::clamp)(row.sel, 0, 126);
+    if (row.sel >= other.sel) other.sel = (std::min)(127, row.sel + 1);
+  } else {
+    row.sel = (std::clamp)(row.sel, 1, 127);
+    if (row.sel <= other.sel) other.sel = (std::max)(0, row.sel - 1);
+  }
+}
+
+// ------------------------------------------------------------------------------------------
+// controller buttons pressed on the pad itself. SDL3 is loaded at run time from runtime\SDL3.dll
+// (the release ships it for the game), so the launcher keeps its "Windows components only" link
+// and still sees the same pads the game does.
+// ------------------------------------------------------------------------------------------
+void LauncherLog(const std::string& text);
+
+struct SdlApi {
+  HMODULE lib = nullptr;
+  bool (*InitSubSystem)(uint32_t) = nullptr;
+  uint32_t (*WasInit)(uint32_t) = nullptr;
+  const uint32_t* (*GetGamepads)(int*) = nullptr;
+  void* (*OpenGamepad)(uint32_t) = nullptr;
+  void (*CloseGamepad)(void*) = nullptr;
+  bool (*GetGamepadButton)(void*, int) = nullptr;
+  const char* (*GetGamepadName)(void*) = nullptr;
+  const char* (*GetGamepadNameForID)(uint32_t) = nullptr;
+  void (*UpdateGamepads)() = nullptr;
+  void (*FreeFn)(void*) = nullptr;
+};
+SdlApi g_sdl;
+void* g_capture_pad = nullptr;
+
+bool LoadSdl() {
+  static bool tried = false;
+  if (tried) return g_sdl.lib != nullptr;
+  tried = true;
+  const std::wstring dir = g_home + L"\\runtime";
+  HMODULE lib = LoadLibraryExW((dir + L"\\SDL3.dll").c_str(), nullptr,
+                               LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (!lib) lib = LoadLibraryW(L"SDL3.dll");
+  if (!lib) return false;
+  auto get = [&](const char* name) { return reinterpret_cast<void*>(GetProcAddress(lib, name)); };
+  g_sdl.InitSubSystem = reinterpret_cast<bool (*)(uint32_t)>(get("SDL_InitSubSystem"));
+  g_sdl.WasInit = reinterpret_cast<uint32_t (*)(uint32_t)>(get("SDL_WasInit"));
+  g_sdl.GetGamepads = reinterpret_cast<const uint32_t* (*)(int*)>(get("SDL_GetGamepads"));
+  g_sdl.OpenGamepad = reinterpret_cast<void* (*)(uint32_t)>(get("SDL_OpenGamepad"));
+  g_sdl.CloseGamepad = reinterpret_cast<void (*)(void*)>(get("SDL_CloseGamepad"));
+  g_sdl.GetGamepadButton = reinterpret_cast<bool (*)(void*, int)>(get("SDL_GetGamepadButton"));
+  g_sdl.UpdateGamepads = reinterpret_cast<void (*)(void)>(get("SDL_UpdateGamepads"));
+  g_sdl.GetGamepadName = reinterpret_cast<const char* (*)(void*)>(get("SDL_GetGamepadName"));
+  g_sdl.GetGamepadNameForID = reinterpret_cast<const char* (*)(uint32_t)>(get("SDL_GetGamepadNameForID"));
+  g_sdl.FreeFn = reinterpret_cast<void (*)(void*)>(get("SDL_free"));
+  if (!g_sdl.InitSubSystem || !g_sdl.WasInit || !g_sdl.GetGamepads || !g_sdl.OpenGamepad ||
+      !g_sdl.GetGamepadButton || !g_sdl.UpdateGamepads || !g_sdl.CloseGamepad || !g_sdl.FreeFn) {
+    FreeLibrary(lib);
+    g_sdl = SdlApi{};
+    return false;
+  }
+  g_sdl.lib = lib;
+  return true;
+}
+// SDL_GamepadButton -> the name the runtime's input file uses (src/runtime_input.inc).
+const char* PadTokenFromButton(int b) {
+  switch (b) {
+    case 0: return "cross"; case 1: return "circle"; case 2: return "square"; case 3: return "triangle";
+    case 4: return "back"; case 6: return "options"; case 7: return "l3"; case 8: return "r3";
+    case 9: return "l1"; case 10: return "r1"; case 11: return "pad_up"; case 12: return "pad_down";
+    case 13: return "pad_left"; case 14: return "pad_right"; case 20: return "touchpad_center";
+    default: return nullptr;
+  }
+}
+constexpr UINT_PTR kPadTimer = 7;
+
+
+// XInput: every Xbox pad, and the virtual ones DS4Windows, DS4Windows-like tools and x360ce put on
+// ViGEm's "XBOX Synthetic Gamepad Bus" (what the game itself sees for those). Tried before SDL.
+struct XInputApi {
+  HMODULE lib = nullptr;
+  unsigned long (*GetState)(unsigned long, void*) = nullptr;
+};
+XInputApi g_xinput;
+struct XiGamepad { unsigned short buttons; unsigned char lt, rt; short lx, ly, rx, ry; };
+struct XiState { unsigned long packet; XiGamepad pad; };
+int g_capture_source = 0;  // 0 none, 1 XInput, 2 SDL
+
+bool LoadXInput() {
+  static bool tried = false;
+  if (tried) return g_xinput.lib != nullptr;
+  tried = true;
+  for (const wchar_t* name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"}) {
+    HMODULE lib = LoadLibraryW(name);
+    if (!lib) continue;
+    auto fn = reinterpret_cast<unsigned long (*)(unsigned long, void*)>(GetProcAddress(lib, "XInputGetState"));
+    if (!fn) { FreeLibrary(lib); continue; }
+    g_xinput.lib = lib;
+    g_xinput.GetState = fn;
+    return true;
+  }
+  return false;
+}
+// XINPUT_GAMEPAD_* -> the name the runtime's input file uses. Triggers are axes there: not here.
+const char* PadTokenFromXInput(unsigned short b) {
+  if (b & 0x1000) return "cross";       // A
+  if (b & 0x2000) return "circle";      // B
+  if (b & 0x4000) return "square";      // X
+  if (b & 0x8000) return "triangle";    // Y
+  if (b & 0x0100) return "l1";
+  if (b & 0x0200) return "r1";
+  if (b & 0x0040) return "l3";
+  if (b & 0x0080) return "r3";
+  if (b & 0x0010) return "options";     // Start
+  if (b & 0x0020) return "back";        // Back / Share
+  if (b & 0x0001) return "pad_up";
+  if (b & 0x0002) return "pad_down";
+  if (b & 0x0004) return "pad_left";
+  if (b & 0x0008) return "pad_right";
+  return nullptr;
+}
+
+// The first connected pad and its buttons; -1 when none.
+int XInputPoll(unsigned short* buttons) {
+  if (!g_xinput.GetState) return -1;
+  for (unsigned long slot = 0; slot < 4; ++slot) {
+    XiState state{};
+    if (g_xinput.GetState(slot, &state) == 0) {
+      *buttons = state.pad.buttons;
+      return int(slot);
+    }
+  }
+  return -1;
+}
+
+
+// ------------------------------------------------------------------------------------------
+// which devices the launcher can see right now: the keyboard it reads, every XInput slot and every
+// pad SDL knows, with the name SDL reports. Shown on the Controller and keyboard page and refreshed
+// while that page is open, so a pad that never reports a button is easy to spot.
+// ------------------------------------------------------------------------------------------
+void Layout();
+float MaxScroll();
+float ContentOy();
+std::vector<std::wstring> g_devices;
+int g_devices_row = -1;
+constexpr UINT_PTR kDevTimer = 8;
+
+int XInputSlots(int* slots, unsigned short* buttons, int max) {
+  int n = 0;
+  if (!LoadXInput()) return 0;
+  for (unsigned long slot = 0; slot < 4 && n < max; ++slot) {
+    XiState state{};
+    if (g_xinput.GetState(slot, &state) != 0) continue;
+    slots[n] = int(slot);
+    buttons[n] = state.pad.buttons;
+    ++n;
+  }
+  return n;
+}
+// The first button pressed on any connected pad: returns the slot or -1.
+int XInputPressed(unsigned short* pressed) {
+  int slots[4] = {};
+  unsigned short buttons[4] = {};
+  const int n = XInputSlots(slots, buttons, 4);
+  for (int i = 0; i < n; ++i) {
+    if (!PadTokenFromXInput(buttons[i])) continue;
+    *pressed = buttons[i];
+    return slots[i];
+  }
+  return -1;
+}
+// An Xbox pad (or the virtual one a PS pad tool exposes) means Xbox names; a pad SDL names as a
+// PlayStation one keeps the PlayStation names.
+bool DetectXboxNaming() {
+  if (LoadSdl()) {
+    if (!(g_sdl.WasInit(0x00002000) & 0x00002000)) g_sdl.InitSubSystem(0x00002000);
+    int count = 0;
+    const uint32_t* ids = g_sdl.GetGamepads(&count);
+    for (int i = 0; i < count && g_sdl.GetGamepadNameForID; ++i) {
+      const char* got = g_sdl.GetGamepadNameForID(ids[i]);
+      if (!got) continue;
+      std::string name;
+      for (const char* p = got; *p; ++p) name += char(tolower((unsigned char)*p));
+      for (const char* key : {"dualsense", "dualshock", "wireless controller", "sony", "ps4", "ps5", "playstation"}) {
+        if (name.find(key) != std::string::npos) {
+          if (ids) g_sdl.FreeFn(const_cast<uint32_t*>(ids));
+          return false;  // a PlayStation pad is in use
+        }
+      }
+    }
+    if (ids) g_sdl.FreeFn(const_cast<uint32_t*>(ids));
+  }
+  int slots[4] = {};
+  unsigned short buttons[4] = {};
+  return XInputSlots(slots, buttons, 4) > 0;
+}
+
+// ------------------------------------------------------------------------------------------
+// the pad's state right now: sticks, triggers, d-pad and buttons, drawn like an input tester so a
+// control that never moves is visible at once.
+// ------------------------------------------------------------------------------------------
+struct PadView {
+  bool ok = false;
+  unsigned short buttons = 0;
+  unsigned char lt = 0, rt = 0;
+  short lx = 0, ly = 0, rx = 0, ry = 0;
+};
+PadView g_pad_view;
+constexpr UINT_PTR kPadViewTimer = 9;
+int g_monitor_row = -1;
+
+void RefreshPadView() {
+  PadView view;
+  int slots[4] = {};
+  unsigned short buttons[4] = {};
+  if (XInputSlots(slots, buttons, 4) > 0) {
+    XiState state{};
+    if (g_xinput.GetState(static_cast<unsigned long>(slots[0]), &state) == 0) {
+      view.ok = true;
+      view.buttons = state.pad.buttons;
+      view.lt = state.pad.lt;
+      view.rt = state.pad.rt;
+      view.lx = state.pad.lx;
+      view.ly = state.pad.ly;
+      view.rx = state.pad.rx;
+      view.ry = state.pad.ry;
+    }
+  }
+  if (view.ok == g_pad_view.ok && view.buttons == g_pad_view.buttons && view.lt == g_pad_view.lt &&
+      view.rt == g_pad_view.rt && view.lx == g_pad_view.lx && view.ly == g_pad_view.ly &&
+      view.rx == g_pad_view.rx && view.ry == g_pad_view.ry)
+    return;
+  g_pad_view = view;
+  if (g_hwnd && g_tab == kTabDriving && g_subtab == kSubKeys) InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+int AddMonitorRow() {
+  Ctl c{L"", L"Live from the pad in use (XInput slot 0 of those connected). A stick, trigger or d-pad that never moves here is not reaching the launcher either.", Kind::Monitor, {}, {"@monitor"}, 0, 0};
+  g_c.push_back(std::move(c));
+  return int(g_c.size() - 1);
+}
+
+std::vector<std::wstring> ReadDevices() {
+  std::vector<std::wstring> lines;
+  lines.push_back(L"Keyboard: connected (this window reads it)");
+  lines.push_back(g_xbox_names ? L"Button names: Xbox (A, B, X, Y, LB, RB)"
+                               : L"Button names: PlayStation (Cross, Circle, Square, Triangle)");
+  int slots[4] = {};
+  unsigned short buttons[4] = {};
+  const int n = XInputSlots(slots, buttons, 4);
+  for (int i = 0; i < n; ++i) {
+    std::wstring line = L"Controller " + std::to_wstring(i + 1) + L": Xbox pad, XInput slot " +
+                        std::to_wstring(slots[i]);
+    if (buttons[i]) line += L" - a button is held";
+    lines.push_back(line);
+  }
+  if (LoadSdl()) {
+    if (!(g_sdl.WasInit(0x00002000) & 0x00002000)) g_sdl.InitSubSystem(0x00002000);
+    int count = 0;
+    const uint32_t* ids = g_sdl.GetGamepads(&count);
+    for (int i = 0; i < count; ++i) {
+      std::wstring name = L"controller";
+      if (g_sdl.GetGamepadNameForID) {
+        if (const char* got = g_sdl.GetGamepadNameForID(ids[i])) name = Widen(got);
+      }
+      lines.push_back(L"Controller " + std::to_wstring(lines.size()) + L": " + name + L" (SDL)");
+    }
+    if (ids) g_sdl.FreeFn(const_cast<uint32_t*>(ids));
+  }
+  if (lines.size() == 1) lines.push_back(L"No controller detected: check the cable or the adapter, then press a chip again.");
+  return lines;
+}
+void RefreshDevices() {
+  const bool xbox = DetectXboxNaming();
+  if (xbox != g_xbox_names) {
+    g_xbox_names = xbox;
+    ApplyPadNaming();
+  }
+  const std::vector<std::wstring> lines = ReadDevices();
+  if (lines == g_devices) return;
+  g_devices = lines;
+  if (g_devices_row >= 0) g_c[size_t(g_devices_row)].sel = int(g_devices.size());
+  if (g_hwnd) {
+    Layout();  // the row grows and shrinks with the number of lines
+    g_scroll = (std::min)(g_scroll, MaxScroll());
+    g_oy = ContentOy();
+    InvalidateRect(g_hwnd, nullptr, FALSE);
+  }
+}
+int AddDevicesRow() {
+  Ctl c{L"", L"The devices the launcher can see right now. A pad has to appear here before a button can be bound to it.", Kind::Info, {}, {"@info"}, 0, 0};
+  g_c.push_back(std::move(c));
+  return int(g_c.size()) - 1;
+}
+
+bool StartPadCapture(HWND h, int ctl) {
+  LoadXInput();
+  int slots[4] = {};
+  unsigned short states[4] = {};
+  const int xinput_count = XInputSlots(slots, states, 4);
+  const int slot = xinput_count > 0 ? slots[0] : -1;
+  if (slot >= 0) {
+    g_capture_source = 1;
+    g_capture = ctl;
+    g_capture_part = 1;
+    SetTimer(h, kPadTimer, 40, nullptr);
+    LauncherLog("controller capture: XInput slots " + std::to_string(xinput_count) + " (first " + std::to_string(slot) + ")");
+    return true;
+  }
+  if (LoadSdl()) {
+    if (!(g_sdl.WasInit(0x00002000) & 0x00002000)) g_sdl.InitSubSystem(0x00002000);  // SDL_INIT_GAMEPAD
+    if (!g_capture_pad) {
+      int count = 0;
+      const uint32_t* ids = g_sdl.GetGamepads(&count);
+      if (ids && count > 0) g_capture_pad = g_sdl.OpenGamepad(ids[0]);
+      if (ids) g_sdl.FreeFn(const_cast<uint32_t*>(ids));
+      LauncherLog("controller capture: SDL gamepads " + std::to_string(count));
+    }
+    if (g_capture_pad) {
+      g_capture_source = 2;
+      g_capture = ctl;
+      g_capture_part = 1;
+      SetTimer(h, kPadTimer, 40, nullptr);
+      return true;
+    }
+  }
+  LauncherLog("controller capture: no pad found (XInput and SDL)");
+  return false;
+}
+void StopPadCapture(HWND h) {
+  if (g_capture >= 0 && g_capture_part == 1) g_capture = -1;
+  g_capture_source = 0;
+  KillTimer(h, kPadTimer);
+}
+
 // On Save and Play: into default.ini, or, before the game has made it, as ffb.<key>= lines for launcher.ini.
 std::string SaveWheel() {
   if (WheelIniReady()) {
@@ -983,6 +1723,30 @@ void BuildModel() {
   g_cards.back().sub = kSubWheel;
   g_cards.push_back({L"EFFECTS", {g_ffb_slider[3], g_ffb_slider[4], g_ffb_slider[5], g_ffb_wave}, 0, kTabDriving});
   g_cards.back().sub = kSubWheel;
+  // Controller and keyboard: the keys the game reads, one row per action.
+  g_xbox_names = DetectXboxNaming();  // the names of the pad in use, before the rows are built
+  std::vector<int> buttons, sticks;
+  for (int i = 0; i < kBindButtonCount; ++i) buttons.push_back(AddBindRow(kBindButtons[i]));
+  for (int i = 0; i < kBindStickCount; ++i) sticks.push_back(AddBindRow(kBindSticks[i]));
+  g_cards.push_back({L"BUTTONS", buttons, 0, kTabDriving,
+                     L"The row name is the game's own button (the game knows PlayStation names). Left chip: the key. Right chip: what you press on your pad, in that pad's names. Click a chip, then press the key or a button; Esc leaves it as it was."});
+  g_cards.back().sub = kSubKeys;
+  std::vector<int> dead;
+  for (int i = 0; i < kDeadCount; ++i) { g_dead_row[i] = AddDeadRow(kDeadRows[i]); dead.push_back(g_dead_row[i]); }
+  g_devices_row = AddDevicesRow();
+  g_monitor_row = AddMonitorRow();
+  g_cards.push_back({L"DEVICES", {g_devices_row}, 0, kTabDriving,
+                     L"Read from Windows: the keyboard this window uses, every XInput slot (Xbox pads and the virtual ones) and every pad SDL reports, with the name it gives."});
+  g_cards.back().sub = kSubKeys;
+  g_cards.push_back({L"INPUT MONITOR", {g_monitor_row}, 0, kTabDriving,
+                     L"Every control the pad reports, live. Stick boxes and the two trigger bars fill in as you move them; the d-pad and the buttons light up while held."});
+  g_cards.back().sub = kSubKeys;
+  g_cards.push_back({L"DEAD ZONES", dead, 0, kTabDriving,
+                     L"How far a stick or a trigger must move before the game sees it (inner) and where it counts as fully moved (outer). The game reads these lines from data\\user\\input_config\\default.ini."});
+  g_cards.back().sub = kSubKeys;
+  g_cards.push_back({L"D-PAD AND STICKS", sticks, 0, kTabDriving,
+                     L"Steering, the d-pad and the sticks. A dash means nothing is bound; the runtime's own defaults are used until a line is added to default.ini."});
+  g_cards.back().sub = kSubKeys;
 }
 
 // The rows show the chosen track and car by name.
@@ -1156,6 +1920,9 @@ void LoadSettings() {
   NameNativeUpscale();
   DerivePreset();
   LoadWheel();
+  LoadBindings();
+  LoadDeadzones();
+  g_devices = ReadDevices();
   DeriveDrivePreset();
   if (g_fov >= 0) {
     for (const auto& line : ReadLines(CameraIniPath())) {
@@ -1246,7 +2013,8 @@ void SaveSettings() {
       std::ofstream cam(CameraIniPath().c_str(), std::ios::binary | std::ios::trunc);
       cam << "fov=" << g_c[g_fov].sel << "\r\n";
     }
-    ini << SaveWheel();  // into default.ini; before the game has made it, kept here
+    FlushDeadzones();
+  ini << SaveWheel();  // into default.ini; before the game has made it, kept here
     // The renderer optimizations that are switched off, as a bit mask (gpu/shim/bbport_toggles.h): the game's
     // built-in default (runtime_memory.c), plus bit 37 (the two-thread draw path) when "Two-thread rendering" is off.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
@@ -1275,6 +2043,15 @@ void SaveSettings() {
 }
 
 void ResetDefaults() {
+  for (int i = 0; i < kDeadCount; ++i) g_c[size_t(g_dead_row[i])].sel = kDeadRows[i].def;
+  FlushDeadzones();
+  for (const auto* list : {kBindButtons, kBindSticks}) {
+    const int n = list == kBindButtons ? kBindButtonCount : kBindStickCount;
+    for (int i = 0; i < n; ++i) {
+      SetBinding(list[i].out, 0, list[i].key);
+      if (*list[i].pad && *list[i].pad != '=') SetBinding(list[i].out, 1, list[i].pad);
+    }
+  }
   for (auto& c : g_c) {
     if (IsWheelRow(c)) continue;  // the player's wheel tuning stays (its presets are in its card)
     c.sel = c.def;
@@ -1290,9 +2067,14 @@ void ResetDefaults() {
 // layout
 // ------------------------------------------------------------------------------------------
 // full: as if every row were shown (where the cards are placed, so hiding rows does not move them).
+// The monitor keeps its proportions: taller when the card is wider.
+float MonitorScale() { return (std::clamp)(g_card_inner_w / 240.f, 0.85f, 2.2f); }
+float MonitorHeight() { return 200.f * MonitorScale() + 18.f; }
 float RowHeight(const Ctl& c, bool full = false) {
   if (!full && RowHidden(c)) return 0.f;
-  return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : c.kind == Kind::Slider ? 54.f : c.kind == Kind::Button ? 58.f : 70.f) +
+  return (c.kind == Kind::Monitor ? MonitorHeight() :
+          c.kind == Kind::Info ? 26.f + 20.f * (c.sel > 0 ? float(c.sel) : float(g_devices.size() ? g_devices.size() : 2)) :
+          c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : c.kind == Kind::Slider ? 54.f : c.kind == Kind::Button ? 58.f : c.kind == Kind::Binding ? 74.f : 70.f) +
          g_row_extra;
 }
 float FolderRowHeight() { return 74.f; }
@@ -1304,6 +2086,7 @@ bool g_folders_in_flow = false;  // the folders card sits in a column (3+ column
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
   const float colw = (g_win_w - 2 * kMargin - float(g_cols - 1) * kGap) / float(g_cols);
+  g_card_inner_w = colw - 2 * kPad;
   // Game folders: a full-width card on top with 2 columns. With 3 or 4 the benchmark card alone sets the height
   // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
   g_folders_in_flow = g_cols >= 3;
@@ -1415,11 +2198,19 @@ void LayoutPass(float bottom_extra) {
       Ctl& c = g_c[i];
       const float rh = RowHeight(c);
       c.row = RectF(card.rect.X + kPad, cy, colw - 2 * kPad, rh);
-      c.ctl = c.kind == Kind::Toggle   ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
+      c.ctl = c.kind == Kind::Monitor ? RectF(c.row.X, cy + 8.f, c.row.Width, rh - 16.f)
+              : c.kind == Kind::Info    ? RectF(c.row.X, cy + 6.f, c.row.Width, rh - 10.f)
+              : c.kind == Kind::Binding  ? RectF(c.row.X, cy + 30.f, c.row.Width, 32.f)
+              : c.kind == Kind::Toggle ? RectF(c.row.X + c.row.Width - 46.f, cy + 10.f, 46.f, 26.f)
               : c.kind == Kind::Action ? RectF(c.row.X, cy + 8.f, c.row.Width, 44.f)
               : c.kind == Kind::Slider ? RectF(c.row.X, cy + 26.f, c.row.Width, 22.f)
               : c.kind == Kind::Button ? RectF(c.row.X, cy + 8.f, c.row.Width, 42.f)
                                        : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
+      if (c.kind == Kind::Binding) {
+        const float half = (c.ctl.Width - 8.f) / 2.f;
+        c.key_rect = RectF(c.ctl.X, c.ctl.Y, half, c.ctl.Height);
+        c.pad_rect = RectF(c.ctl.X + half + 8.f, c.ctl.Y, half, c.ctl.Height);
+      }
       cy += rh;
     }
     y[card.column] += h + kGap;
@@ -1580,7 +2371,107 @@ void PaintHelp(Graphics& g, int w, int h) {
   }
 }
 
+
+// The pad monitor: four stick boxes, the two triggers, the d-pad and every button. Everything is
+// laid out in units of 320 wide and scaled to the box, so it follows the window.
+void PaintPadMonitor(Graphics& g, const RectF& r, const Font& fSmall, const Font& fTiny, float S) {
+  const float k = (std::clamp)((r.Width / S) / 240.f, 0.85f, 2.2f);
+  const float u = S * k;   // one design unit
+  auto pill = [&](float x, float y, float w, float h, const wchar_t* label, bool on) {
+    const RectF box(r.X + x, r.Y + y, w, h);
+    FillRound(g, box, h / 2, on ? kAccent : kTrack);
+    Text(g, label, fTiny, box, on ? kWhite : kMuted, StringAlignmentCenter);
+  };
+  // the dead zones of the rows above, so the picture shows what the game will see
+  auto dz = [&](int i) { return g_dead_row[i] >= 0 ? g_c[size_t(g_dead_row[i])].sel : 0; };
+  auto remap = [](float v, int inner, int outer) {  // the runtime's own inner/outer rule
+    const float m = fabsf(v) * 127.f;
+    if (m <= float(inner)) return 0.f;
+    const float scaled = (m - float(inner)) / float((std::max)(inner + 1, outer) - inner) * 127.f;
+    return (v < 0 ? -1.f : 1.f) * (std::min)(scaled, 127.f) / 127.f;
+  };
+  auto stick = [&](float x, const wchar_t* label, short vx, short vy, int inner, int outer) {
+    Text(g, label, fTiny, RectF(r.X + x, r.Y, 60 * u, 14 * u), kMuted);
+    const float size = 46 * u;
+    const RectF box(r.X + x, r.Y + 16 * u, size, size);
+    FillRound(g, box, 5 * u, kTrack);
+    StrokeRound(g, box, 5 * u, kCardLine, 1 * u);
+    const float cx = box.X + box.Width / 2, cy = box.Y + box.Height / 2, reach = box.Width / 2 - 5 * u;
+    // the inner dead zone (nothing moves inside it) and the outer edge (full lock from there on)
+    Pen ring(Color(255, 120, 128, 142), 1.f * u);
+    const float ri = reach * (std::min)(inner, 127) / 127.f;
+    if (ri > 1.f) g.DrawEllipse(&ring, cx - ri, cy - ri, ri * 2, ri * 2);
+    if (outer < 127) {
+      const float ro = reach * (std::min)(outer, 127) / 127.f;
+      g.DrawEllipse(&ring, cx - ro, cy - ro, ro * 2, ro * 2);
+    }
+    const float ex = remap(float(vx) / 32767.f, inner, outer), ey = remap(float(vy) / 32767.f, inner, outer);
+    const float limit = reach * (std::min)(outer, 127) / 127.f;  // full scale is the outer ring
+    SolidBrush dot(kAccent);
+    g.FillEllipse(&dot, cx + ex * limit - 3.5f * u, cy - ey * limit - 3.5f * u, 7 * u, 7 * u);
+  };
+  auto bar = [&](float y, const wchar_t* label, int value, int inner, int outer) {
+    Text(g, label, fTiny, RectF(r.X, r.Y + y - 2 * u, 26 * u, 14 * u), kMuted);
+    const RectF track(r.X + 30 * u, r.Y + y, 120 * u, 9 * u);
+    FillRound(g, track, 4.5f * u, kTrack);
+    // the two thresholds, so the sliders above and the bar here line up
+    SolidBrush tick(Color(255, 120, 128, 142));
+    for (int edge : {inner, outer}) {
+      if (edge <= 0 || edge >= 127) continue;
+      const float tx = track.X + track.Width * float(edge) / 127.f;
+      g.FillRectangle(&tick, tx - 0.5f * u, track.Y - 2 * u, 1.f * u, track.Height + 4 * u);
+    }
+    const float t = remap(float(value) / 255.f, inner, outer);
+    const float span = track.Width * (std::min)(outer, 127) / 127.f;  // full scale is the outer tick
+    if (t > 0.01f) FillRound(g, RectF(track.X, track.Y, span * t, track.Height), 4.5f * u, kAccent);
+  };
+  if (!g_pad_view.ok) {
+    Text(g, L"No pad is sending data right now.", fSmall, RectF(r.X, r.Y + 20 * u, r.Width, 22 * u), kMuted);
+    return;
+  }
+  const float top = r.Y + 18 * u;
+  // dead zone rows: 0/1 left stick inner/outer, 2/3 right stick, 4/5 L2, 6/7 R2
+  stick(0, L"LX", g_pad_view.lx, 0, dz(0), dz(1));
+  stick(58 * u, L"LY", 0, g_pad_view.ly, dz(0), dz(1));
+  stick(116 * u, L"RX", g_pad_view.rx, 0, dz(2), dz(3));
+  stick(174 * u, L"RY", 0, g_pad_view.ry, dz(2), dz(3));
+  bar(78 * u, L"L2", g_pad_view.lt, dz(4), dz(5));
+  bar(100 * u, L"R2", g_pad_view.rt, dz(6), dz(7));
+  // d-pad, 3 x 3 with the pressed directions lit
+  {
+    const float cell = 15 * u;
+    const RectF pad(r.X, r.Y + 126 * u, cell * 3, cell * 3);
+    FillRound(g, pad, 4 * u, kTrack);
+    const unsigned short b = g_pad_view.buttons;
+    auto lit = [&](int col, int row) {
+      const RectF c(pad.X + col * cell + 1, pad.Y + row * cell + 1, cell - 2, cell - 2);
+      FillRound(g, c, 3 * u, kAccent);
+    };
+    if (b & 0x0001) lit(1, 0);
+    if (b & 0x0002) lit(1, 2);
+    if (b & 0x0004) lit(0, 1);
+    if (b & 0x0008) lit(2, 1);
+  }
+  // buttons, in the order a PlayStation pad would name them
+  const unsigned short b = g_pad_view.buttons;
+  const float bx = 60 * u;
+  pill(bx, 126 * u, 34 * u, 18 * u, g_xbox_names ? L"A" : L"Cross", (b & 0x1000) != 0);
+  pill(bx + 40 * u, 126 * u, 34 * u, 18 * u, g_xbox_names ? L"B" : L"Circle", (b & 0x2000) != 0);
+  pill(bx + 80 * u, 126 * u, 34 * u, 18 * u, g_xbox_names ? L"X" : L"Square", (b & 0x4000) != 0);
+  pill(bx + 120 * u, 126 * u, 34 * u, 18 * u, g_xbox_names ? L"Y" : L"Triangle", (b & 0x8000) != 0);
+  pill(bx, 148 * u, 34 * u, 18 * u, L"L1", (b & 0x0100) != 0);
+  pill(bx + 40 * u, 148 * u, 34 * u, 18 * u, L"R1", (b & 0x0200) != 0);
+  pill(bx + 80 * u, 148 * u, 34 * u, 18 * u, L"L3", (b & 0x0040) != 0);
+  pill(bx + 120 * u, 148 * u, 34 * u, 18 * u, L"R3", (b & 0x0080) != 0);
+  pill(bx, 170 * u, 34 * u, 18 * u, g_xbox_names ? L"Menu" : L"OPT", (b & 0x0010) != 0);
+  pill(bx + 40 * u, 170 * u, 34 * u, 18 * u, g_xbox_names ? L"View" : L"Share", (b & 0x0020) != 0);
+  pill(bx + 80 * u, 170 * u, 34 * u, 18 * u, L"LT", g_pad_view.lt > 40);
+  pill(bx + 120 * u, 170 * u, 34 * u, 18 * u, L"RT", g_pad_view.rt > 40);
+}
+
 bool FoldersOk() { return g_folder[0].ok && g_folder[1].ok; }
+
+void PaintPadMonitor(Graphics& g, const RectF& r, const Font& fSmall, const Font& fTiny, float S);
 
 void Paint(HDC hdc, int w, int h) {
   Graphics g(hdc);
@@ -1722,6 +2613,30 @@ void Paint(HDC hdc, int w, int h) {
         SolidBrush knob(locked ? kMuted : kWhite);
         const float d = ct.Height - 6 * S;
         g.FillEllipse(&knob, on ? ct.X + ct.Width - d - 3 * S : ct.X + 3 * S, ct.Y + 3 * S, d, d);
+      } else if (c.kind == Kind::Monitor) {
+        PaintPadMonitor(g, Scaled(c.ctl), fSeg, fHint, S);
+      } else if (c.kind == Kind::Info) {
+        float ty = row.Y + 2 * S;
+        for (const auto& line : g_devices) {
+          const bool pad_line = line.rfind(L"Controller", 0) == 0;
+          Text(g, line, fSeg, RectF(row.X, ty, row.Width, 18 * S), pad_line ? kText : kMuted);
+          ty += 20 * S;
+        }
+      } else if (c.kind == Kind::Binding) {
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
+        const std::string out = c.patches[0].substr(6);
+        const auto it = g_bind.find(out);
+        const bool capturing = g_capture == i && g_capture_part == 0;
+        for (int part = 0; part < 2; ++part) {
+          const RectF chip = Scaled(part == 0 ? c.key_rect : c.pad_rect);
+          const bool locked = BindChipLocked(out, part);
+          const bool over = hot && g_hover_seg == part && !locked;
+          FillRound(g, chip, 9 * S, capturing && part == 0 ? kAccent : over ? kTrackHover : kTrack);
+          std::wstring text = part == 0 && capturing ? std::wstring(L"Press a key...")
+                              : it == g_bind.end() ? std::wstring(L"\u2014")
+                                                    : BindingChipText(out, part == 0 ? it->second.key : it->second.pad, part == 1);
+          Text(g, text, fSeg, chip, locked ? kMuted : part == 0 && capturing ? kWhite : kText, StringAlignmentCenter);
+        }
       } else if (c.kind == Kind::Picker) {
         // A box with the chosen name and a down arrow: a click opens the menu of choices.
         RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
@@ -2636,6 +3551,12 @@ int HitControl(float x, float y, int* seg) {
       const RectF ct = Scaled(c.ctl);
       if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) *seg = 0;  // over the Run button
     }
+    if (c.kind == Kind::Binding) {
+      const RectF k = Scaled(c.key_rect), p = Scaled(c.pad_rect);
+      const std::string out = c.patches.empty() ? std::string() : c.patches[0].substr(6);
+      if (x >= k.X && x <= k.X + k.Width && y >= k.Y && y <= k.Y + k.Height) *seg = 0;
+      else if (x >= p.X && x <= p.X + p.Width && y >= p.Y && y <= p.Y + p.Height) *seg = BindChipLocked(out, 1) ? 2 : 1;
+    }
     if (c.kind == Kind::Segmented) {
       RectF ct = Scaled(c.ctl);
       if (x >= ct.X && x <= ct.X + ct.Width && y >= ct.Y && y <= ct.Y + ct.Height) {
@@ -2699,6 +3620,7 @@ void SetSlider(int i, int v) {
   v = (std::clamp)(v, c.min, c.max);
   if (v == c.sel) return;
   c.sel = v;
+  if (IsDeadRow(c)) ClampDeadzone(i);
   DeriveWheelPreset();
   g_changed = true;
 }
@@ -2726,7 +3648,66 @@ void UpdateMotionBlurTooltip(HWND window) {
 
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
+    case WM_TIMER: {
+      if (w == kPadViewTimer) {
+        if (g_tab == kTabDriving && g_subtab == kSubKeys) RefreshPadView();
+        return 0;
+      }
+      if (w == kDevTimer) {
+        RefreshDevices();
+        return 0;
+      }
+      if (w == kPadTimer) {
+        if (g_capture >= 0 && g_capture_part == 1) {
+          const char* token = nullptr;
+          if (g_capture_source == 1) {
+            unsigned short pressed = 0;
+            if (XInputPressed(&pressed) >= 0) token = PadTokenFromXInput(pressed);
+          } else if (g_capture_source == 2 && g_capture_pad && g_sdl.UpdateGamepads) {
+            g_sdl.UpdateGamepads();
+            for (int b = 0; b < 21 && !token; ++b)
+              if (g_sdl.GetGamepadButton(g_capture_pad, b)) token = PadTokenFromButton(b);
+          }
+          if (token) {
+            const int row = g_capture;
+            const std::string out = g_c[row].patches[0].substr(6);
+            SetBinding(out, 1, token);
+            g_status = std::wstring(L"Controller button for ") + g_c[row].label + L" set to " + PadName(token) + L".";
+            g_status_color = kOk;
+            g_status_sticky = true;
+            StopPadCapture(h);
+            InvalidateRect(h, nullptr, FALSE);
+          }
+        }
+        return 0;
+      }
+      break;
+    }
     case WM_KEYDOWN: {
+      if (g_capture >= 0) {  // a binding chip is waiting for its key or button
+        const int row = g_capture;
+        const bool was_pad = g_capture_part == 1;
+        if (was_pad) StopPadCapture(h);
+        g_capture = -1;
+        if (w == VK_ESCAPE) {
+          g_status = L"Binding unchanged.";
+          g_status_color = kMuted;
+        } else {
+          const std::string token = KeyTokenFromVk(UINT(w));
+          const std::string out = g_c[row].patches[0].substr(6);
+          if (token.empty()) {
+            g_status = L"That key cannot be bound. Try a letter, a digit, F1 to F12, an arrow or a named key.";
+            g_status_color = kWarn;
+          } else {
+            SetBinding(out, 0, token);
+            g_status = std::wstring(L"Key for ") + g_c[row].label + L" set to " + Widen(token) + L".";
+            g_status_color = kOk;
+          }
+        }
+        g_status_sticky = true;
+        InvalidateRect(h, nullptr, FALSE);
+        return 0;
+      }
       if (w == VK_ESCAPE && g_info_open >= 0) {
         g_info_open = -1;
         InvalidateRect(h, nullptr, FALSE);
@@ -2738,6 +3719,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const int dir = w == VK_RIGHT || w == VK_UP ? 1 : w == VK_LEFT || w == VK_DOWN ? -1 : 0;
       if (!dir) break;
       SetSlider(g_hover_ctl, g_c[size_t(g_hover_ctl)].sel + dir * step);
+      if (IsDeadRow(g_c[size_t(g_hover_ctl)])) FlushDeadzones();
       InvalidateRect(h, nullptr, FALSE);
       return 0;
     }
@@ -2896,12 +3878,49 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
       }
       g_press_btn = HitButton(x, y);
-      int seg;
+      int seg = -1;
       const int c = HitControl(x, y, &seg);
       if (c >= 0) {
         Ctl& ctl = g_c[c];
         if (ctl.patches[0] == "@name") {
           StartNameEdit(h, ctl);
+          return 0;
+        }
+        if (ctl.kind == Kind::Binding) {
+          const std::string out = ctl.patches[0].substr(6);
+          if (seg == 2) {  // locked: the game reads this control itself
+            const auto lock_it = g_bind.find(out);
+            g_status = std::wstring(ctl.label) + L": " +
+                       (lock_it == g_bind.end() ? std::wstring(PadName(out))
+                                                : BindingChipText(out, lock_it->second.pad, true)) +
+                       L" (read by the game as an analog control, not remappable).";
+            g_status_color = kMuted;
+            g_status_sticky = true;
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+          }
+          if (seg == 0) {
+            g_capture = c;
+            g_capture_part = 0;
+            g_status = std::wstring(L"Press the key for ") + ctl.label + L", or Esc to cancel.";
+            g_status_color = kText;
+            g_status_sticky = true;
+          } else if (seg == 1 && (FindBindRow(out) && *FindBindRow(out)->pad && *FindBindRow(out)->pad != '=') &&
+                     StartPadCapture(h, c)) {
+            g_status = std::wstring(L"Press a button on the controller for ") + ctl.label + L", or Esc to cancel.";
+            g_status_color = kText;
+            g_status_sticky = true;
+          } else if (seg == 1 && (FindBindRow(out) && *FindBindRow(out)->pad && *FindBindRow(out)->pad != '=')) {
+            std::vector<BenchChoice> choices;
+            for (int k = 0; k < kPadChoiceCount; ++k)
+              choices.push_back({kPadChoices[k].id, g_xbox_names ? kPadChoices[k].xbox : kPadChoices[k].name, kPadChoices[k].group});
+            const std::string cur = g_bind.count(out) ? g_bind[out].pad : std::string();
+            int current = -1;
+            for (int k = 0; k < kPadChoiceCount; ++k) if (cur == kPadChoices[k].id) current = k;
+            const int pick = BenchMenu(h, Scaled(ctl.pad_rect), choices.data(), int(choices.size()), current);
+            if (pick >= 0 && pick < kPadChoiceCount) SetBinding(out, 1, kPadChoices[pick].id);
+          }
+          InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
         if (ctl.kind == Kind::Picker) {
@@ -2984,6 +4003,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_LBUTTONUP: {
       ReleaseCapture();
+      if (g_drag >= 0 && IsDeadRow(g_c[size_t(g_drag)])) FlushDeadzones();
       g_drag = -1;
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       const int b = HitButton(x, y);
@@ -3044,6 +4064,48 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   GetModuleFileNameW(nullptr, selfbuf, MAX_PATH * 2);
   g_home = Dir(selfbuf);
   g_data = g_home + L"\\data";
+#ifdef BIND_SELFTEST
+  {
+    FILE* out = std::fopen("bind-selftest.txt", "w");
+    auto step = [&](const char* what) { if (out) { std::fprintf(out, "%s\\n", what); std::fflush(out); } };
+    step("start");
+    BindDefaults();
+    step("defaults");
+    LoadBindings();
+    step("loaded");
+    SetBinding("cross", 0, "g");
+    step("set key");
+    SetBinding("cross", 1, "l1");
+    step("set pad");
+    SetBinding("axis_left_y_plus", 0, "s");
+    step("set axis");
+    for (int i = 0; i < kDeadCount; ++i) g_dead_row[i] = AddDeadRow(kDeadRows[i]);
+    LoadDeadzones();
+    g_c[size_t(g_dead_row[0])].sel = 33;   // left stick inner
+    g_c[size_t(g_dead_row[1])].sel = 100;  // left stick outer
+    g_c[size_t(g_dead_row[4])].sel = 12;   // L2 inner
+    FlushDeadzones();
+    step("deadzones");
+    {
+      const bool sdl_ok = LoadSdl();
+      char buf[96];
+      std::snprintf(buf, sizeof buf, "sdl %s", sdl_ok ? "loaded" : "missing");
+      step(buf);
+      if (sdl_ok) {
+        if (!(g_sdl.WasInit(0x00002000) & 0x00002000)) g_sdl.InitSubSystem(0x00002000);
+        int n = 0;
+        const uint32_t* ids = g_sdl.GetGamepads(&n);
+        std::snprintf(buf, sizeof buf, "gamepads %d", n);
+        step(buf);
+        std::snprintf(buf, sizeof buf, "open %s", ids && n > 0 && g_sdl.OpenGamepad(ids[0]) ? "ok" : "no");
+        step(buf);
+        if (ids) g_sdl.FreeFn(const_cast<uint32_t*>(ids));
+      }
+    }
+    if (out) std::fclose(out);
+    return 0;
+  }
+#endif
   g_runtime = g_home + L"\\runtime";
   BuildModel();
   MakeDirs(g_data + L"\\user");
@@ -3113,6 +4175,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         for (size_t k = 0; eq != std::string::npos && k < g_c.size(); ++k)
           if (Narrow(g_c[k].label) == s.substr(0, eq)) g_c[k].sel = std::atoi(s.c_str() + eq + 1);
       }
+      RefreshPadView();  // the monitor shows the live pad in a snapshot too
       Layout();
       const int w = int(g_win_w * g_scale), h = int(TotalHeight() * g_scale);
       {
@@ -3203,6 +4266,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
   }
   ShowWindow(g_hwnd, show);
+  SetTimer(g_hwnd, kDevTimer, 1500, nullptr);  // the device list on the Controller and keyboard page
+  SetTimer(g_hwnd, kPadViewTimer, 40, nullptr);  // the pad monitor while that page is open
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0)) {
     TranslateMessage(&msg);
