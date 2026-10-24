@@ -66,7 +66,7 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
         return;
     }
     if (slot == 1) {
-        BbVr::NoteProjection(f[48], f[48 + 5]); // VR: tells the driver's head camera apart
+        BbVr::NoteProjection(f[48], f[48 + 5], f[48 + 10], f[48 + 14]); // VR: tells the driver's head camera apart
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
@@ -349,6 +349,14 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
         if (u64(size.width) * size.height >= fg_depth_area) {
             fg_depth = db_desc.first;
             fg_depth_area = u64(size.width) * size.height;
+        }
+    }
+    // VR: the scene depth for the other eye: the biggest G-buffer pass's (three targets) since the HUD split.
+    if (std::popcount(key.mrt_mask) == 3 && db_desc.first && cb_descs[0].first && BbVr::HudLayer()) {
+        const auto& size = texture_cache.GetImage(db_desc.first).info.size;
+        if (u64(size.width) * size.height >= vr_depth_area) {
+            vr_depth = db_desc.first;
+            vr_depth_area = u64(size.width) * size.height;
         }
     }
     if (upscaler->Enabled() && cb_descs[0].first) {
@@ -1309,15 +1317,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (vr_hud_pending && !BbVr::SceneOverlay(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash)) {
         // VR: the first HUD draw: the scene is copied out and the display buffer cleared, so the HUD draws alone
         vr_hud_pending = false;
+        const VideoCore::ImageId scene_depth = std::exchange(vr_depth, VideoCore::ImageId{});
+        vr_depth_area = 0;
         if (BbVr::SceneDrawn() && cb_descs[0].first) {
             auto& display = texture_cache.GetImage(cb_descs[0].first);
             scheduler.EndRendering();
             runtime.Transit(&display, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
                             vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite);
+            VideoCore::Image* depth = scene_depth ? &texture_cache.GetImage(scene_depth) : nullptr;
+            if (depth) {
+                runtime.Transit(depth, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                                vk::AccessFlagBits2::eTransferRead);
+            }
             runtime.FlushBarriers();
             BbVr::TakeScene(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(display.GetImage()),
                             VkFormat(display.info.pixel_format), display.info.size.width,
-                            display.info.size.height);
+                            display.info.size.height, depth ? VkImage(depth->GetImage()) : VK_NULL_HANDLE,
+                            depth ? VkFormat(depth->info.pixel_format) : VK_FORMAT_UNDEFINED,
+                            depth ? depth->info.size.width : 0, depth ? depth->info.size.height : 0);
         }
     }
     std::optional<BbStats::PhaseTimer> phase;

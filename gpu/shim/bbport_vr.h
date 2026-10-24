@@ -32,7 +32,8 @@ void OnDevice(VkInstance instance, VkPhysicalDevice physical_device, VkDevice de
               uint32_t queue_index);
 
 /// The game's projection (anti-aliasing constants, slot 1): tells the driver's head camera apart.
-void NoteProjection(float x_scale, float y_scale);
+/// Also the depth terms (row vectors: z22 = P[2][2], z32 = P[3][2], the near plane of the reversed depth).
+void NoteProjection(float x_scale, float y_scale, float z22, float z32);
 /// A 512-byte constant buffer of a G-buffer draw (three colour targets): floats 108..110 are the position of the
 /// camera the frame is drawn from, which names the head pose and eye of the frame.
 void NoteCameraConstants(const float* data);
@@ -43,7 +44,9 @@ void NoteCameraConstants(const float* data);
 bool HudLayer();
 bool SceneOverlay(uint64_t vs_hash);
 bool SceneDrawn();
-void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height);
+/// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.
+void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height, VkImage depth,
+               VkFormat depth_format, uint32_t depth_width, uint32_t depth_height);
 /// A presenter frame was made from the game's display buffer (`display_view`: SHADER_READ_ONLY_OPTIMAL, in
 /// `display_format`, at the output resolution; null for HDR): the headset gets that picture, with the frame's camera.
 /// `alpha_view`: the same with its alpha (the window's view makes it one), for the HUD's coverage.
