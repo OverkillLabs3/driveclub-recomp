@@ -39,6 +39,24 @@ static struct {
 } ffb={.m=PTHREAD_MUTEX_INITIALIZER,.autocenter=true};
 
 static PadData wheel_last_read;   /* the last read of the wheel port, under lock */
+/* Every effect is started to repeat for ever. Its length SDL_HAPTIC_INFINITY does not reach the wheel as DirectInput's
+ * INFINITE: SDL multiplies it by 1000 into a 32-bit duration, about 71 minutes, and Thrustmaster drivers (T300RS,
+ * T598, TS-XW) cut that to about a minute, after which the effect ends and the wheel goes limp for the rest of the
+ * session. An effect started with infinite iterations plays its duration again and again (as PCSX2 does); a wheel
+ * that refuses that is started once. */
+static bool ffb_run(SDL_Haptic *haptic, int id) {
+    return SDL_RunHapticEffect(haptic,id,SDL_HAPTIC_INFINITY) || SDL_RunHapticEffect(haptic,id,1);
+}
+/* Some wheels ignore the repeat count too. Once a second the effects that should be playing are checked, and one the
+ * wheel itself reports as stopped is started again. Only those: restarting a playing effect costs detail on some
+ * wheels. A wheel that cannot tell (an error, not "stopped") is left alone. */
+static void ffb_keep_running(SDL_Haptic *haptic, int id, bool *running) {
+    if (id<0 || !*running || SDL_GetHapticEffectStatus(haptic,id)) return;
+    const char *err=SDL_GetError();
+    if (err && *err) return;
+    static unsigned n; if (n++<8) printf("Runtime: FFB: the wheel ended effect %d by itself; started again\n",id);
+    *running=ffb_run(haptic,id);
+}
 static int32_t rd_clamp(int32_t v, int32_t lo, int32_t hi) { return v<lo ? lo : v>hi ? hi : v; }
 static Sint16 level16(int32_t v) { return (Sint16)(rd_clamp(v,-255,255)*32767/255); }
 static Uint16 sat16(int32_t v) { return (Uint16)(rd_clamp(v,0,255)*65535/255); }
@@ -224,7 +242,7 @@ static void ffb_software_pass(SDL_Haptic *haptic, const LogiEffectParams *want, 
     } else if (abs(e.constant.level-sw.sent)>=16) {
         if (SDL_UpdateHapticEffect(haptic,sw.id,&e)) sw.sent=e.constant.level;
     }
-    if (!sw.running) sw.running=SDL_RunHapticEffect(haptic,sw.id,1);
+    if (!sw.running) sw.running=ffb_run(haptic,sw.id);
 }
 
 /* ---- wheel_ffb_model = physics: the steering force from the car's front tyres ------------------------------------
@@ -336,7 +354,7 @@ static bool ffb_physics_effect(SDL_Haptic *haptic, int *id, bool *running, const
             return false;
         }
     } else if (!SDL_UpdateHapticEffect(haptic,*id,e)) return false;
-    if (!*running) *running=SDL_RunHapticEffect(haptic,*id,1);
+    if (!*running) *running=ffb_run(haptic,*id);
     return true;
 }
 /* One pass of the haptic thread: the steering force, road and slip, the damper and the soft lock to the wheel.
@@ -536,9 +554,9 @@ void runtime_ffb_release(const char *why) {
 static void *ffb_thread(void *unused) {
     (void)unused;
     SDL_Haptic *haptic=NULL;
-    int sdl_id[LOGI_EFFECTS]; bool running[LOGI_EFFECTS]; Sint16 spring_centre[LOGI_EFFECTS];
+    int sdl_id[LOGI_EFFECTS]; Uint16 sdl_type[LOGI_EFFECTS]; bool running[LOGI_EFFECTS]; Sint16 spring_centre[LOGI_EFFECTS];
     float wave_avg[LOGI_EFFECTS]; bool wave_avg_set[LOGI_EFFECTS]; Uint16 wave_sent[LOGI_EFFECTS]; uint64_t wave_held_us[LOGI_EFFECTS];
-    for (int i=0;i<LOGI_EFFECTS;++i) { sdl_id[i]=-1; running[i]=false; spring_centre[i]=0; wave_avg[i]=0.0f; wave_avg_set[i]=false; wave_sent[i]=0; wave_held_us[i]=0; }
+    for (int i=0;i<LOGI_EFFECTS;++i) { sdl_id[i]=-1; sdl_type[i]=0; running[i]=false; spring_centre[i]=0; wave_avg[i]=0.0f; wave_avg_set[i]=false; wave_sent[i]=0; wave_held_us[i]=0; }
     uint64_t pass_at=now_us();
     for (;;) {
         compat_sleep_ns(4000000); /* 4 ms */
@@ -698,6 +716,10 @@ static void *ffb_thread(void *unused) {
                 if (have) {
                     if (want[i].type==LOGI_SPRING) spring_centre[i]=e.condition.center[0];
                     if (want[i].type==LOGI_PERIODIC) wave_sent[i]=e.periodic.magnitude;
+                    /* SDL cannot change an effect's type (a wave from sine to square after wheel_ffb_vibration_wave is
+                     * reloaded): that one is made again */
+                    if (sdl_id[i]>=0 && sdl_type[i]!=e.type) { SDL_DestroyHapticEffect(haptic,sdl_id[i]); sdl_id[i]=-1; running[i]=false; }
+                    sdl_type[i]=e.type;
                     if (sdl_id[i]<0) {
                         sdl_id[i]=SDL_CreateHapticEffect(haptic,&e);
                         if (sdl_id[i]<0) { static unsigned n; if (n++<8) printf("Runtime: FFB effect type %u not created: %s\n",want[i].type,SDL_GetError()); }
@@ -707,12 +729,21 @@ static void *ffb_thread(void *unused) {
                 }
             }
             if (sdl_id[i]<0) continue;
-            if (playing[i] && !running[i]) running[i]=SDL_RunHapticEffect(haptic,sdl_id[i],1);
+            if (playing[i] && !running[i]) running[i]=ffb_run(haptic,sdl_id[i]);
             else if (!playing[i] && running[i]) { SDL_StopHapticEffect(haptic,sdl_id[i]); running[i]=false; }
         }
         if (ffb_software) ffb_software_pass(haptic,want,used,playing,pos);
         else if (sw.id>=0) { SDL_DestroyHapticEffect(haptic,sw.id); sw.id=-1; sw.running=false; sw.init=false; }
         if (physics) ffb_physics_pass(haptic,pos);
+        { static uint64_t checked;
+          if (pass_now-checked>=1000000 && (SDL_GetHapticFeatures(haptic)&SDL_HAPTIC_STATUS)) {
+              checked=pass_now;
+              for (int i=0;i<LOGI_EFFECTS;++i) ffb_keep_running(haptic,sdl_id[i],&running[i]);
+              ffb_keep_running(haptic,sw.id,&sw.running);
+              ffb_keep_running(haptic,pw.id,&pw.running);
+              ffb_keep_running(haptic,pw.damper_id,&pw.damper_running);
+              ffb_keep_running(haptic,pw.slip_id,&pw.slip_running);
+          } }
         ffb_settings_reload();
     }
     return NULL;
