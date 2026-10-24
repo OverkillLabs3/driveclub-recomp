@@ -77,6 +77,7 @@ static void EmitVertexMotion(EmitContext& ctx) {
                                            ctx.push_data_block,
                                            ctx.ConstU32(PushData::MotionParamIndex));
     const Id param_index = ctx.OpLoad(u32_type, param_ptr);
+    const Id bool_type = ctx.U1[1];
     const auto address = [&](u64 base, Id index, u32 stride) {
         return ctx.OpIAdd(ctx.U64, ctx.Constant(ctx.U64, base),
                           ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, index),
@@ -101,7 +102,6 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id instances = ctx.OpCompositeExtract(u32_type, offsets, 2u);
     const Id vertex = ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.vertex_index), first_vertex);
     const Id instance = ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.instance_id), first_instance);
-    const Id bool_type = ctx.U1[1];
     const Id in_range = ctx.OpLogicalAnd(bool_type, ctx.OpULessThan(bool_type, vertex, vertices),
                                          ctx.OpULessThan(bool_type, instance, instances));
     const Id slot = ctx.OpIAdd(u32_type, vertex, ctx.OpIMul(u32_type, instance, vertices));

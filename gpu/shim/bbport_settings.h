@@ -74,6 +74,16 @@ inline bool UpscalerOptIn() {
     return on;
 }
 
+/// Camera and object vectors are also useful to DriveAA's DLSS path, which is selected with
+/// BB_AA instead of the standalone temporal upscaler's BB_UPSCALER setting.
+inline bool MotionVectorsOptIn() {
+    if (UpscalerOptIn()) {
+        return true;
+    }
+    const char* aa = std::getenv("BB_AA");
+    return aa && std::strcmp(aa, "dlss") == 0;
+}
+
 struct Values {
     /// HDR output (BB_HDR=1 and a display in HDR mode): set by the presenter; the rasterizer then
     /// keeps the picture before the UI. Brightness of SDR white (UI, menus) and of the brightest

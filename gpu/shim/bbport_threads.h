@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: helper thread sizing. Counts follow the hardware threads this process may run on
-// (the affinity mask, so `taskset` can emulate a Steam Deck), and speculative helpers run as
-// SCHED_IDLE: they use cores the game leaves idle and never take time from its threads.
+// (the affinity mask, so `taskset` can emulate a Steam Deck). Speculative pipeline workers run
+// below normal priority so they yield promptly to foreground game work and the GPU command
+// thread; the recorder and command thread remain explicitly above normal priority.
 
 #pragma once
 
@@ -34,6 +35,12 @@ inline unsigned Available() {
 /// The calling thread only runs when cores are otherwise idle (lowest Windows priority).
 inline void MakeBackground() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_IDLE);
+}
+
+/// Pipeline preparation is speculative. Keep it below the foreground game threads so a worker
+/// cannot create frame-time jitter while preparing a draw the GPU thread may not consume.
+inline void MakePreparationWorker() {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 }
 
 /// The calling thread is one the frame waits on (GPU command thread, recorder): above normal priority, and
@@ -154,6 +161,12 @@ inline void MakeBackground() {
     if (sched_setscheduler(0, SCHED_IDLE, &param) != 0) {
         setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 19);
     }
+}
+
+/// Keep speculative pipeline preparation below normal priority so it yields promptly to the
+/// foreground game threads under load.
+inline void MakePreparationWorker() {
+    setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 10);
 }
 #endif
 

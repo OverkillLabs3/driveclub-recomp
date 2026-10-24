@@ -342,10 +342,6 @@ bool Instance::CreateDevice() {
         device_fault = fault_query.deviceFault;
         device_fault_vendor_binary = fault_query.deviceFaultVendorBinary;
     }
-    // bbport: AMD cards can write a number into a buffer as the command processor reaches it, which names the
-    // draw that was running when the device is lost. BB_BREADCRUMBS=0 leaves it out.
-    const char* breadcrumbs = std::getenv("BB_BREADCRUMBS");
-    buffer_marker = !(breadcrumbs && breadcrumbs[0] == '0') && add_extension("VK_AMD_buffer_marker");
     std::printf("GPU: driver fault report after a lost device: %s%s\n", device_fault ? "available" : "not available",
                 device_fault_vendor_binary ? " (with driver crash data)" : "");
     // bbport: Intel's drivers draw characters as black silhouettes with this extension (seen in
@@ -446,6 +442,11 @@ bool Instance::CreateDevice() {
     bool graphics_queue_found = false;
     for (std::size_t i = 0; i < family_properties.size(); i++) {
         const u32 index = static_cast<u32>(i);
+        // bbport: what each family offers. A second queue in the graphics family, or a transfer
+        // only queue, is what a copy that must not wait behind the frame's draws would use.
+        std::printf("GPU: queue family %u: flags 0x%x, %u queues\n", index,
+                    static_cast<u32>(family_properties[i].queueFlags),
+                    family_properties[i].queueCount);
         if (family_properties[i].queueFlags & vk::QueueFlagBits::eGraphics) {
             queue_family_index = index;
             graphics_queue_found = true;
@@ -457,10 +458,15 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
+    static constexpr std::array queue_priorities = {1.0f, 1.0f};
+    // bbport: a second queue of the graphics family for readback copies (BB_COPY_QUEUE=0: one
+    // queue only). A copy on its own queue does not execute after the draws recorded behind it.
+    const bool want_copy_queue =
+        std::getenv("BB_COPY_QUEUE") && std::string_view(std::getenv("BB_COPY_QUEUE")) == "1" &&
+        family_properties[queue_family_index].queueCount >= 2;
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
+        .queueCount = want_copy_queue ? 2u : 1u,
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -739,6 +745,14 @@ bool Instance::CreateDevice() {
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
+    if (want_copy_queue) {
+        copy_queue = device->getQueue(queue_family_index, 1);
+        has_copy_queue = true;
+        std::printf("GPU: readback copy queue: graphics family queue 1 of %u\n",
+                    family_properties[queue_family_index].queueCount);
+    } else {
+        std::printf("GPU: readback copy queue: none (one queue)\n");
+    }
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =

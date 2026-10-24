@@ -199,7 +199,50 @@ union Regs {
 struct RegDirty {
     static constexpr u32 BlockWords = 32;
     static constexpr u32 NumBlocks = Regs::NumRegs / BlockWords;
-    std::bitset<NumBlocks> blocks;
+    /// bbport: a word-wise bitmap instead of std::bitset. The build uses libc++ (no _Find_first),
+    /// so gathering the blocks a draw wrote walked all NumBlocks (1664) of them per draw, which
+    /// measured 14.6% of the GPU command thread's time. This walks only the words in use.
+    struct BlockSet {
+        static constexpr u32 NumWords = (NumBlocks + 63) / 64;
+        std::array<u64, NumWords> words{};
+
+        void set(u32 block) {
+            words[block >> 6] |= 1ull << (block & 63);
+        }
+        [[nodiscard]] bool test(u32 block) const {
+            return (words[block >> 6] >> (block & 63)) & 1ull;
+        }
+        void reset() {
+            words.fill(0);
+        }
+        [[nodiscard]] bool any() const {
+            for (const u64 word : words) {
+                if (word != 0) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        [[nodiscard]] static constexpr u32 size() {
+            return NumBlocks;
+        }
+        /// Index of the first set block at or after `from`, or NumBlocks.
+        [[nodiscard]] u32 find_next(u32 from) const {
+            u32 word = from >> 6;
+            if (word >= NumWords) {
+                return NumBlocks;
+            }
+            u64 bits = words[word] & (~0ull << (from & 63));
+            while (bits == 0) {
+                if (++word >= NumWords) {
+                    return NumBlocks;
+                }
+                bits = words[word];
+            }
+            return word * 64 + std::countr_zero(bits);
+        }
+    };
+    BlockSet blocks;
     bool reset = false; ///< ClearState: defaults, then only the blocks marked after it
 
     void Mark(u32 word, u32 count) {
@@ -232,12 +275,11 @@ struct RegDelta {
         reset = dirty.reset;
         blocks.clear();
         words.clear();
-        for (u32 block = 0; block < RegDirty::NumBlocks; ++block) {
-            if (dirty.blocks.test(block)) {
-                blocks.push_back(u16(block));
-                const u32* src = regs.reg_array.data() + block * RegDirty::BlockWords;
-                words.insert(words.end(), src, src + RegDirty::BlockWords);
-            }
+        for (u32 block = dirty.blocks.find_next(0); block < RegDirty::NumBlocks;
+             block = dirty.blocks.find_next(block + 1)) {
+            blocks.push_back(u16(block));
+            const u32* src = regs.reg_array.data() + block * RegDirty::BlockWords;
+            words.insert(words.end(), src, src + RegDirty::BlockWords);
         }
     }
     void Apply(Regs& regs) const {

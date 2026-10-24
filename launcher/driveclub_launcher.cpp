@@ -40,7 +40,6 @@
 #include "prepare.h"
 #include "unlock.h"
 #include "carswitch.h"
-#include "updater.h"
 
 using namespace Gdiplus;
 
@@ -148,17 +147,12 @@ std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
 bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlays= in launcher.ini)
-bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
-bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
-std::atomic<bool> g_update_ready{false};  // a newer release was found (g_update)
-Updater::Release g_update;
-RectF g_update_btn;  // the Update button, left of Reset to defaults (drawn while g_update_ready)
+bool g_two_thread = true;       // "Two-thread rendering" (two_thread= in launcher.ini)
 bool g_auto_play = false;  // "Start the game without this window" (auto_play= in launcher.ini)
 bool GpuBlocked() { return !g_gpu_problem.empty() && !g_skip_gpu_check; }
 Color g_status_color = kMuted;
 bool g_status_sticky = false;  // a warning about the last click: shown over the hints until the next click
 RectF g_btn[3];  // reset, save, play
-float FooterButtonsLeft() { return g_update_ready ? g_update_btn.X : g_btn[0].X; }
 const wchar_t* kBtnText[3] = {L"Reset to defaults", L"Save", L"Play"};
 std::atomic<bool> g_busy{false};
 std::atomic<int> g_progress{0};
@@ -212,20 +206,6 @@ std::vector<std::string> ReadLines(const std::wstring& path) {
 // settings: launcher.ini (folders) and data\user\patches_enabled.txt (what the game applies)
 // ------------------------------------------------------------------------------------------
 std::wstring IniPath() { return g_home + L"\\launcher.ini"; }
-// The draw threads start off on AMD cards (they lost the device and ran slower there) and under Wine or Proton
-// (stage B ran flat out and cost about a third of the frame rate in a report).
-bool PrimaryGpuIsAmd() {
-  if (GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) return true;
-  DISPLAY_DEVICEW dd{};
-  dd.cb = sizeof(dd);
-  for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &dd, 0); ++i, dd.cb = sizeof(dd)) {
-    if (!(dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE)) continue;
-    std::wstring name = dd.DeviceString;
-    for (auto& c : name) c = wchar_t(towlower(c));
-    return name.find(L"amd") != std::wstring::npos || name.find(L"radeon") != std::wstring::npos;
-  }
-  return false;
-}
 std::wstring SelectionPath() { return g_data + L"\\user\\patches_enabled.txt"; }
 
 // True when the first 64 KiB of the file contain the text.
@@ -320,6 +300,7 @@ enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles
               kGfxHaze, kGfxFxaa, kGfxRows };
 int g_gfx[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 int g_blur_patch = -1;  // the "Disable motion blur and depth of field" patch row
+int g_blur_zero = -1;   // the "Motion blur strength 0 (works with FSR/DLSS)" patch row
 int gfx_saved[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 const char* const kGfxKey[kGfxRows] = {"gfx_car=", "gfx_opponents=", "gfx_scenery=", "gfx_reflections=", "gfx_shadows=",
                                        "gfx_particles=", "gfx_dynres=", "gfx_motion_blur=", "gfx_lens_dust=",
@@ -469,12 +450,19 @@ constexpr char kLayoutMarker[] = "# DriveClub racing layout";  // the game repla
 
 bool PhysicsChosen() { return g_ffb_model >= 0 && g_c[g_ffb_model].sel == 0; }
 bool UpscaleActive();
-// FSR and DLSS work from the game's own anti-aliasing, which shares its shader with the blur: any way of turning
-// the blur off turns them off too. While one is chosen the blur rows cannot be changed and are ignored.
+// FSR and DLSS work from the game's own anti-aliasing, which shares its shader with the blur: turning the
+// game's motion blur setting off turns them off too (the game then loads other shaders). While one is
+// chosen the blur rows cannot be changed and are ignored.
 bool BlurLocked() { return g_aa >= 0 && g_c[g_aa].sel > 0; }
-// The two blur-off rows stay in view but cannot be changed while one is chosen.
+// "Motion blur strength 0" keeps the game's blur pass and shader but zeroes its strength (a byte patch),
+// so it works with FSR/DLSS. It cannot be combined with turning the pass off, so the two rows above are
+// held at the game's setting (blur on) while it is chosen.
+bool BlurZeroOn() { return g_blur_zero >= 0 && g_c[g_blur_zero].sel != 0; }
+// The rows that turn the blur off stay in view but cannot be changed while FSR/DLSS or the patch is chosen.
 bool BlurRowLocked(const Ctl& c) {
-  return BlurLocked() && ((g_blur_patch >= 0 && &c == &g_c[g_blur_patch]) || (g_gfx[kGfxBlur] >= 0 && &c == &g_c[g_gfx[kGfxBlur]]));
+  const bool blur_row = (g_blur_patch >= 0 && &c == &g_c[g_blur_patch]) ||
+                        (g_gfx[kGfxBlur] >= 0 && &c == &g_c[g_gfx[kGfxBlur]]);
+  return blur_row && (BlurLocked() || BlurZeroOn());
 }
 // Rows that do nothing with the other choices: the physics settings with Original Physics; Upscaling and
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
@@ -759,18 +747,14 @@ void BuildModel() {
   const int autoplay = toggle(L"Start the game without this window",
                               L"Double-clicking DriveClub.exe goes straight to the game. When it cannot start, "
                               L"this window opens anyway with the reason.", "@autoplay", false);
-  const int updatecheck = toggle(L"Check for new versions",
-                                 L"When the launcher starts it asks the Releases page once whether a newer version exists "
-                                 L"and offers to install it. Your saves, settings and game folders stay as they are.",
-                                 "@updatecheck", true);
   const int overlays = toggle(L"Let overlay programs into the game",
                               L"Steam, Epic, Discord, OBS and tuning tools add themselves to the game's graphics. "
                               L"A part of the crashes players report comes from those additions, so the launcher keeps them "
                               L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
   const int twothread = toggle(L"Two-thread rendering",
                                L"Records each frame's draw commands on a second thread, so the thread that runs the game's "
-                               L"graphics commands waits less. Faster on most PCs, but it lost the graphics device in races on AMD cards and ran slower there, so it starts off on AMD cards and under Wine or Proton. Turn it off if you see flicker, broken graphics or a crash.",
-                               "@twothread", !PrimaryGpuIsAmd());
+                               L"graphics commands waits less. Faster on most PCs. Turn it off if you see flicker or broken graphics.",
+                               "@twothread", true);
   g_hdr = toggle(L"HDR",
                  L"For HDR monitors and TVs: brighter highlights (the sun, lights, reflections) and deeper contrast. Turn on \"Use HDR\" in Windows' display settings first.",
                  "@hdr", false);
@@ -822,8 +806,12 @@ void BuildModel() {
   g_gfx[kGfxDynres] = toggle(L"Dynamic resolution",
                              L"On (as on PS4), the game draws at a lower resolution for a moment when a frame takes too long.",
                              "@gfx", true);
-  g_gfx[kGfxBlur] = toggle(L"Motion blur", L"The game's motion blur on the road and the scenery while you drive. Cannot be changed while FSR or DLSS anti-aliasing is on: they need the same shader.",
+  g_gfx[kGfxBlur] = toggle(L"Motion blur",
+                           L"The game's motion blur on the road and the scenery while you drive. Cannot be changed while FSR or DLSS anti-aliasing is on, or while Zero motion blur below is on: both need the game's blur pass and shader.",
                            "@gfx", true);
+  g_blur_zero = toggle(L"Zero motion blur (keeps FSR/DLSS)",
+                       L"Sets the game's motion blur strength to 0 but leaves its blur pass and shader on, so FSR or DLSS anti-aliasing keeps working. Use this instead of Motion blur above while FSR/DLSS is chosen. Depth of field is not affected.",
+                       "Motion blur strength 0 (works with FSR/DLSS)", false);
   g_gfx[kGfxDust] = toggle(L"Lens dust", L"Dirt on the camera lens when you face the sun.", "@gfx", true);
   g_gfx[kGfxHaze] = toggle(L"Heat haze", L"The shimmer over hot roads in the distance.", "@gfx", true);
   g_gfx[kGfxFxaa] = toggle(L"FXAA pass",
@@ -918,9 +906,9 @@ void BuildModel() {
                      {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery], g_gfx[kGfxSsr], g_gfx[kGfxShadows],
                       g_gfx[kGfxParticles], g_gfx[kGfxDynres]},
                      0, kTabDetail});
-  g_cards.push_back({L"EFFECTS", {g_gfx[kGfxBlur], g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail,
-                     L"The game's own camera effects, each on as on PS4."});
-  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay, updatecheck}, 0, kTabGameplay});
+  g_cards.push_back({L"EFFECTS", {g_gfx[kGfxBlur], g_blur_zero, g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0,
+                     kTabDetail, L"The game's own camera effects, each on as on PS4."});
+  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay}, 0, kTabGameplay});
   g_cards.push_back({L"VIEW AND KEYS", {g_fov}, 0, kTabDriving,
                      L"Keys while playing:  F5 / F6  narrower / wider view.   F7  mouse look on or off.   F9  the new anti-aliasing on or off (not while upscaling).   F10  FSR or DLSS.   F12  FPS counter.   Page Up / Page Down  HDR brightness."});
   g_cards.back().sub = kSubAssists;
@@ -1006,7 +994,6 @@ void DerivePreset() {
 }
 
 void LoadSettings() {
-  g_two_thread = !PrimaryGpuIsAmd();  // the saved choice (draw_threads=) replaces it below
   for (const auto& line : ReadLines(IniPath())) {
     if (line.rfind("update=", 0) == 0) g_folder[0].path = Widen(line.substr(7));
     if (line.rfind("base=", 0) == 0) g_folder[1].path = Widen(line.substr(5));
@@ -1024,7 +1011,7 @@ void LoadSettings() {
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
-    if (line.rfind("draw_threads=", 0) == 0) g_two_thread = line.substr(13) == "1";
+    if (line.rfind("two_thread=", 0) == 0) g_two_thread = line.substr(11) == "1";
     if (line.rfind("hdr=", 0) == 0) hdr_saved = atoi(line.substr(4).c_str());
     if (line.rfind("hdr_paper=", 0) == 0) hdr_paper_saved = atoi(line.substr(10).c_str());
     if (line.rfind("hdr_peak=", 0) == 0) hdr_peak_saved = atoi(line.substr(9).c_str());
@@ -1035,7 +1022,6 @@ void LoadSettings() {
       if (v >= 0 && v < int(g_c[d.row].items.size())) g_c[d.row].sel = v;
     }
     if (line.rfind("auto_play=", 0) == 0) g_auto_play = line.substr(10) == "1";
-    if (line.rfind("check_updates=", 0) == 0) g_check_updates = line.substr(14) != "0";
     if (line.rfind("full=", 0) == 0) full_screen = line.substr(5) == "1";
     for (int k = 0; k < kGfxRows; ++k) {
       if (line.rfind(kGfxKey[k], 0) == 0) gfx_saved[k] = atoi(line.substr(strlen(kGfxKey[k])).c_str());
@@ -1077,10 +1063,6 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") {
       c.sel = g_auto_play ? 1 : 0;
-      continue;
-    }
-    if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") {
-      c.sel = g_check_updates ? 1 : 0;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") {
@@ -1206,10 +1188,9 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") g_allow_overlays = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
-      if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ntwo_thread=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -1228,11 +1209,12 @@ void SaveSettings() {
       cam << "fov=" << g_c[g_fov].sel << "\r\n";
     }
     ini << SaveWheel();  // into default.ini; before the game has made it, kept here
-    // The renderer optimizations that are switched off, as a bit mask (gpu/shim/bbport_toggles.h): the game's
-    // built-in default (runtime_memory.c), plus bit 37 (the two-thread draw path) when "Two-thread rendering" is off.
+    // The renderer optimizations switched off (gpu/shim/bbport_toggles.h): keep speculative
+    // resource reads disabled, but let validated draw preparation run on its worker pool.
+    // Bit 37 disables the two-thread draw path when "Two-thread rendering" is off.
     const std::wstring toggles = g_data + L"\\user\\toggles.txt";
     std::ofstream tog(toggles.c_str(), std::ios::binary | std::ios::trunc);
-    tog << (g_two_thread ? "2199023808512" : "2336462761984");
+    tog << (g_two_thread ? "2199023800320" : "2336462753792");
     const std::wstring game_ini = g_data + L"\\user\\driveclub.ini";
     std::ofstream game(game_ini.c_str(), std::ios::binary | std::ios::trunc);
     game << "show_fps=" << (fps_on ? 1 : 0) << "\r\n";
@@ -1240,7 +1222,7 @@ void SaveSettings() {
   std::ofstream out(SelectionPath().c_str(), std::ios::binary | std::ios::trunc);
   for (const auto& c : g_c) {
     if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
-    if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
+    if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && (BlurLocked() || BlurZeroOn())) continue;
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (c.sel > 0 && c.patches[c.sel] == "@unlocked") {
@@ -1428,7 +1410,6 @@ void LayoutPass(float bottom_extra) {
     g_btn[i] = RectF(x, bar_y + 14.f, bw[i], 44.f);
     x -= 12.f;
   }
-  g_update_btn = RectF(x - 190.f, bar_y + 14.f, 190.f, 44.f);
 }
 
 // Lays the window out for its current size. Wider: the columns widen. Taller: the rows spread out a little and
@@ -1691,7 +1672,7 @@ void Paint(HDC hdc, int w, int h) {
         // Locked: shown as the game has it (blur on, the patch off), dimmed, with what changing it would cost.
         const bool on = locked ? &c == &g_c[g_gfx[kGfxBlur]] : c.sel != 0;
         if (locked) {
-          const std::wstring name = std::wstring(c.label) + L" (Disables AA)";
+          const std::wstring name = std::wstring(c.label) + (BlurZeroOn() ? L" (Zero motion blur is on)" : L" (Disables AA)");
           Ctl shown = c;
           shown.label = name.c_str();
           RowLabel(g, shown, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 60 * S, 40 * S));
@@ -1783,9 +1764,6 @@ void Paint(HDC hdc, int w, int h) {
   } else if (g_hover_tab >= 0) {
     msg = g_hover_tab < kTabCount ? kTabHint[g_hover_tab] : kSubHint[g_hover_tab - kTabCount];
     mc = kMuted;
-  } else if (g_hover_btn == 3) {
-    msg = L"Download version " + g_update.version + L", check it and install it over this one. Your saves and settings stay.";
-    mc = kMuted;
   } else if (g_hover_btn == 0) {
     msg = L"Put every patch back to its default.";
     mc = kMuted;
@@ -1794,7 +1772,7 @@ void Paint(HDC hdc, int w, int h) {
     mc = kMuted;
   }
   {
-    const RectF fr(g_ox + kMargin * S, fy + 8 * S, (FooterButtonsLeft() - kMargin - 12) * S, (kFooterH - 16) * S);
+    const RectF fr(g_ox + kMargin * S, fy + 8 * S, (g_btn[0].X - kMargin - 12) * S, (kFooterH - 16) * S);
     StringFormat mfmt;
     mfmt.SetTrimming(StringTrimmingNone);
     float px = 12.5f;
@@ -1808,7 +1786,7 @@ void Paint(HDC hdc, int w, int h) {
     Text(g, msg, fit, fr, mc, StringAlignmentNear, StringAlignmentCenter, true, false);
   }
   if (g_busy) {
-    const RectF bar = Scaled(RectF(kMargin, g_content_h + kFooterH - 18.f, FooterButtonsLeft() - kMargin - 12, 6.f));
+    const RectF bar = Scaled(RectF(kMargin, g_content_h + kFooterH - 18.f, g_btn[0].X - kMargin - 12, 6.f));
     FillRound(g, bar, 3 * S, kTrack);
     FillRound(g, RectF(bar.X, bar.Y, bar.Width * float(g_progress.load()) / 100.f, bar.Height), 3 * S, kAccent);
   }
@@ -1821,12 +1799,6 @@ void Paint(HDC hdc, int w, int h) {
                                   : (over ? kTrackHover : kTrack));
     FillRound(g, br, 10 * S, fill);
     Text(g, kBtnText[i], fBtn, br, disabled ? kMuted : kWhite, StringAlignmentCenter);
-  }
-  if (g_update_ready && !g_busy) {
-    const RectF ub = Scaled(g_update_btn);
-    const bool over = g_hover_btn == 3, down = g_press_btn == 3 && over;
-    FillRound(g, ub, 10 * S, down ? Color(255, 56, 62, 74) : over ? Color(255, 66, 73, 88) : Color(255, 50, 56, 68));
-    Text(g, L"Update to " + g_update.version, fBtn, ub, kOk, StringAlignmentCenter);
   }
   g_oy = ContentOy();
   // The benchmark result under the pointer: every setting the game ran with, in a panel over the page.
@@ -2077,6 +2049,19 @@ std::wstring Preflight() {
 
 std::wstring g_game_log;  // the log file of the game started last
 
+// These diagnostic switches add clock reads, counters, logging, or per-frame file I/O to
+// paths that run thousands of times per second. Never inherit them into a normal game start.
+void ClearPerformanceDiagnostics() {
+  static constexpr const wchar_t* names[] = {
+      L"BB_FRAME_STATS", L"BB_PHASES", L"BB_FRAME_TRACE", L"BB_RECORDER_TRACE",
+      L"BB_MOTION_PROFILE", L"BB_DCB_STATS", L"BB_MOTION_SELECT_LOG",
+      L"BB_WARN_META_TEXTURE", L"BB_READBACK_LOG", L"BB_BUFFER_STATS",
+      L"BB_GPU_PROFILE", L"BB_FRAME_LOG", L"BB_FPS_LOG", L"BB_FSR4_PROFILE",
+      L"BB_FG_PROFILE", L"BB_AUDIO_STATS", L"BB_AUDIO_TRACE",
+  };
+  for (const wchar_t* name : names) SetEnvironmentVariableW(name, nullptr);
+}
+
 // Starts the game. With `process` the caller gets the game's process handle (and closes it).
 std::wstring StartGame(HANDLE* process = nullptr) {
   const std::wstring exe = GameExe();
@@ -2118,7 +2103,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.reflections = sel(kGfxSsr, 0);
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
-    gc.motion_blur = BlurLocked() ? 1 : sel(kGfxBlur, 1);
+    gc.motion_blur = (BlurLocked() || BlurZeroOn()) ? 1 : sel(kGfxBlur, 1);
     gc.lens_dust = sel(kGfxDust, 1);
     gc.heat_haze = sel(kGfxHaze, 1);
     gc.fxaa = sel(kGfxFxaa, 1);
@@ -2251,6 +2236,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   for (const auto& d : g_drive) {
     if (d.row >= 0 && !UserEnv(d.env)) SetEnvironmentVariableW(d.env, d.values[(std::max)(0, g_c[d.row].sel)]);
   }
+  ClearPerformanceDiagnostics();
   STARTUPINFOW si{sizeof(si)};
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdOutput = log;
@@ -2270,53 +2256,6 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   if (process) *process = pi.hProcess;
   else CloseHandle(pi.hProcess);
   return L"";
-}
-
-void UpdateWorker() {
-  LauncherLog("update: installing " + Narrow(g_update.version));
-  std::wstring error;
-  const bool ok = Updater::Install(g_update, g_home, [](int p) { SetProgress(p, L"Downloading " + g_update.version + L"..."); }, error);
-  g_busy = false;
-  if (ok) {
-    LauncherLog("update: installed, restarting");
-    if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 2, 0, 0);  // close; the script copies the files and starts the new launcher
-  } else {
-    LauncherLog("update: " + Narrow(error));
-    g_status = L"The update did not work: " + error;
-    g_status_color = kWarn;
-    if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 1, 0, 0);
-  }
-}
-
-void StartUpdate() {
-  if (g_busy || !g_update_ready) return;
-  g_busy = true;
-  g_status.clear();
-  SetProgress(0, L"Downloading " + g_update.version + L"...");
-  std::thread(UpdateWorker).detach();
-}
-
-// Asks the Releases page once, in the background; the Update button shows when a newer version exists.
-void StartUpdateCheck() {
-  std::thread([] {
-    std::wstring current;
-    {
-      std::ifstream in((g_home + L"\\version.txt").c_str());
-      std::string line;
-      if (in && std::getline(in, line)) current = Widen(line);
-    }
-    while (!current.empty() && (current.back() == L'\r' || current.back() == L' ')) current.pop_back();
-    Updater::Release r;
-    std::string why;
-    if (!current.empty() && Updater::CheckNewer(current, r, why)) {
-      g_update = r;
-      g_update_ready = true;
-      LauncherLog("update check: " + Narrow(r.version) + " is available");
-      if (g_hwnd) PostMessageW(g_hwnd, WM_APP + 1, 0, 0);
-    } else {
-      LauncherLog(why.empty() ? "update check: version.txt is missing" : why);
-    }
-  }).detach();
 }
 
 void PlayWorker() {
@@ -2641,13 +2580,6 @@ int HitTab(float x, float y) {
 }
 
 int HitButton(float x, float y) {
-  if (g_update_ready && !g_busy) {
-    const float content_oy0 = g_oy;
-    g_oy = FooterOy();
-    const RectF u = Scaled(g_update_btn);
-    g_oy = content_oy0;
-    if (x >= u.X && x <= u.X + u.Width && y >= u.Y && y <= u.Y + u.Height) return 3;
-  }
   const float content_oy = g_oy;
   g_oy = FooterOy();
   struct Restore { float v; ~Restore() { g_oy = v; } } restore{content_oy};
@@ -2956,8 +2888,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const int pressed = g_press_btn;
       g_press_btn = -1;
       if (!g_busy && b >= 0 && b == pressed) {
-        if (b == 3) StartUpdate();
-        else if (b == 0) ResetDefaults();
+        if (b == 0) ResetDefaults();
         else if (b == 1) {
           SaveSettings();
           g_status = L"Saved.";
@@ -3028,8 +2959,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
 
   const bool asked = wcsstr(GetCommandLineW(), L"--play") != nullptr;
   const bool play_now = asked || g_auto_play;  // the row that starts the game straight away
-  Updater::CleanUp(g_home);
-  if (g_check_updates && !play_now && !wcsstr(GetCommandLineW(), L"--snapshot")) StartUpdateCheck();
   if (play_now) {
     const std::wstring stop = [] {
       if (!FoldersOk()) return std::wstring(L"Open DriveClub.exe once and choose the game folders.");

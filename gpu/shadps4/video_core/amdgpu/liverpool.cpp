@@ -6,6 +6,8 @@
 #include <pthread.h>
 #ifndef _WIN32
 #include <sys/resource.h>
+#else
+#include <windows.h>
 #endif
 #include <time.h>
 #include "bbport_copy.h"
@@ -793,12 +795,14 @@ void ScanDcb(std::span<const u32> dcb, int depth) {
 } // namespace
 
 Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb,
-                                           u64 seq) {
+                                           u64 seq,
+                                           Vulkan::DrawPreparation* inherited_draw_prep) {
     FIBER_ENTER(dcb_task_name);
-    // Top-level buffers enqueued for the draw preparation workers (nested IBs are not).
-    Vulkan::DrawPreparation* draw_prep =
-        seq != NoSeq && rasterizer ? &rasterizer->GetDrawPreparation() : nullptr;
-    if (draw_prep) {
+    const bool owns_draw_submission = seq != NoSeq && rasterizer;
+    Vulkan::DrawPreparation* draw_prep = owns_draw_submission
+                                             ? &rasterizer->GetDrawPreparation()
+                                             : inherited_draw_prep;
+    if (owns_draw_submission) {
         draw_prep->BeginSubmission(seq, regs, gfx_reg_checksum);
     }
     // Nested buffers (no draw_prep here) must keep the checksum in step while the workers run.
@@ -1350,8 +1354,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             }
             case PM4ItOpcode::IndirectBuffer: {
                 const auto* indirect_buffer = reinterpret_cast<const PM4CmdIndirectBuffer*>(header);
-                auto task = ProcessGraphics(
-                    {indirect_buffer->Address<const u32>(), indirect_buffer->ib_size}, {});
+                const std::span<const u32> nested_commands{
+                    indirect_buffer->Address<const u32>(), indirect_buffer->ib_size};
+                if (draw_prep) {
+                    draw_prep->BeginNested(nested_commands, regs, gfx_reg_checksum);
+                }
+                auto task = ProcessGraphics(nested_commands, {}, NoSeq, draw_prep);
                 // Tasks start suspended: the nested body (and its scan) runs on this resume.
                 g_dcb_depth = dcb_depth + 1;
                 RESUME_GFX(task);
@@ -1360,6 +1368,9 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 while (!task.handle.done()) {
                     YIELD_GFX();
                     RESUME_GFX(task);
+                }
+                if (draw_prep) {
+                    draw_prep->EndNested();
                 }
                 break;
             }
@@ -1419,10 +1430,10 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         ce_task.handle.destroy();
     }
 
-    if (rasterizer && seq != NoSeq) {
+    if (rasterizer && owns_draw_submission) {
         rasterizer->RetireSubmission(); // prepared draws live until the recording thread is past
     }
-    if (draw_prep) {
+    if (owns_draw_submission) {
         draw_prep->EndSubmission();
     }
     if (seq != NoSeq && BbStats::enabled) {
@@ -1436,6 +1447,18 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             BbStats::gpu_invol_switches.store(usage.ru_nivcsw, std::memory_order_relaxed);
             BbStats::gpu_vol_switches.store(usage.ru_nvcsw, std::memory_order_relaxed);
             BbStats::gpu_minor_faults.store(usage.ru_minflt, std::memory_order_relaxed);
+        }
+#else
+        // Windows builds also need per-thread CPU time for BB_FRAME_STATS. Keep the
+        // cumulative FILETIME counters in the same microsecond units used by Linux rusage.
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+            const auto to_microseconds = [](const FILETIME& time) {
+                const u64 ticks = (u64(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+                return ticks / 10;
+            };
+            BbStats::gpu_user_us.store(to_microseconds(user), std::memory_order_relaxed);
+            BbStats::gpu_sys_us.store(to_microseconds(kernel), std::memory_order_relaxed);
         }
 #endif
     }

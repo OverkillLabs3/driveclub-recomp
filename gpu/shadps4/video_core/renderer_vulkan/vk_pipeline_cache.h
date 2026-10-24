@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <shared_mutex>
 #include <variant>
+#include <vector>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
 #include "shader_recompiler/profile.h"
@@ -46,11 +47,24 @@ struct Program {
         Shader::StageSpecialization spec;
     };
     static constexpr size_t MaxPermutations = 8;
+    static constexpr size_t SpecializationMemoSize = 4;
     using ModuleList = boost::container::small_vector<Module, MaxPermutations>;
+    struct SpecializationMemo {
+        std::vector<u32> flat_ud;
+        Shader::RuntimeInfo runtime_info{};
+        Shader::Backend::Bindings start{};
+        VAddr program_base{};
+        size_t module_index{};
+        bool valid{};
+    };
 
     Shader::Info info;
     ModuleList modules{};
     size_t last_used = 0; ///< bbport: permutation of the previous lookup, compared first
+    // Vehicle materials often alternate between a small set of specializations. A four-entry
+    // exact memo avoids rerunning the expensive resource walker when a prior material returns.
+    std::array<SpecializationMemo, SpecializationMemoSize> specialization_memos{};
+    size_t specialization_memo_next{};
     /// bbport: `info` as translated, for draw-preparation workers (they must not read `info`,
     /// whose user data the GPU thread rewrites every draw). Guarded by programs_mutex.
     std::unique_ptr<Shader::Info> info_template;
@@ -111,6 +125,9 @@ struct PrepWorker {
     std::unordered_map<const Program*, Shader::Info> infos;
     boost::container::static_vector<Stage, MaxShaderStages> stages;
     bool failed = false;
+    /// bbport: why `failed` was set, for BB_FRAME_STATS (1 program not compiled yet, 2 a guest
+    /// memory read faulted, 3 no matching shader permutation).
+    unsigned failure_reason = 0;
 };
 
 struct PreparedDraw;

@@ -103,13 +103,6 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
                                     color_buffer.data_format == AmdGpu::DataFormat::Format8_8 ||
                                     color_buffer.data_format == AmdGpu::DataFormat::Format8_8_8_8);
 
-    // These formats have no sign bit. The hardware writes 0 for a negative or NaN input and caps anything
-    // large at 65024; Vulkan leaves all of that open, and a NaN left in an HDR target is carried through the
-    // game's post-processing as black patches. So the shader does the clamping itself.
-    const bool ufloat_target = color_buffer.num_format == AmdGpu::NumberFormat::Float &&
-                               (color_buffer.data_format == AmdGpu::DataFormat::Format10_11_11 ||
-                                color_buffer.data_format == AmdGpu::DataFormat::Format11_11_10);
-
     // Swizzle components and export
     for (u32 i = 0; i < 4; ++i) {
         const auto swizzled_comp = components[color_buffer.swizzle.Map(i)];
@@ -120,11 +113,6 @@ void Translator::ExportRenderTarget(const GcnInst& inst) {
         if (needs_unorm_fixup) {
             // FIXME: Fix-up for GPUs where float-to-unorm rounding is off from expected.
             converted = ir.FPSub(converted, ir.Imm32(1.f / 127500.f));
-        }
-        if (ufloat_target && i < 3) {
-            // A NaN fails the comparison and so lands on 0.
-            converted = IR::F32{ir.Select(ir.FPGreaterThan(converted, ir.Imm32(0.f)),
-                                          ir.FPMin(converted, ir.Imm32(65024.f)), ir.Imm32(0.f))};
         }
         ir.SetAttribute(mrt, converted, i);
     }

@@ -5,6 +5,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+
+#include <vk_mem_alloc.h>
+#include <string>
 
 #include "bbport_frame_info.h"
 #include "bbport_settings.h"
@@ -14,6 +20,7 @@
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "bbport_neural_settings.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
+#include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -60,13 +67,119 @@ void PrintIssues(const char* what, u64 issues) {
     std::puts("");
 }
 
+struct CaptureImage {
+    vk::Image image;
+    u32 width, height, bytes_per_pixel;
+    const char* name;
+    const char* format;
+    vk::ImageAspectFlagBits aspect = vk::ImageAspectFlagBits::eColor;
+};
+
+void DumpDlssCapture(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
+                     const std::string& directory, int frame,
+                     const std::vector<CaptureImage>& images) {
+    const vk::MemoryBarrier2 before{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &before});
+    for (const auto& image : images) {
+        const VkDeviceSize size = VkDeviceSize(image.width) * image.height * image.bytes_per_pixel;
+        const VkBufferCreateInfo buffer_ci{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .size = size,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        };
+        const VmaAllocationCreateInfo alloc_ci{
+            .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                     VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        };
+        VkBuffer buffer{};
+        VmaAllocation allocation{};
+        VmaAllocationInfo info{};
+        if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation,
+                            &info) != VK_SUCCESS) {
+            std::printf("DLSS capture: no host memory for %s\n", image.name);
+            continue;
+        }
+        const vk::BufferImageCopy region{
+            .imageSubresource = {image.aspect, 0, 0, 1},
+            .imageExtent = {image.width, image.height, 1},
+        };
+        cmdbuf.copyImageToBuffer(image.image, vk::ImageLayout::eGeneral, buffer, region);
+        char path[1024];
+        std::snprintf(path, sizeof(path), "%s/f%02d_%s_%ux%u_%s.raw", directory.c_str(), frame,
+                      image.name, image.width, image.height, image.format);
+        scheduler.DeferPriorityOperation(
+            [allocator = instance.GetAllocator(), buffer, allocation, info, size,
+             file = std::string{path}] {
+                vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+                if (FILE* f = std::fopen(file.c_str(), "wb")) {
+                    std::fwrite(info.pMappedData, 1, size, f);
+                    std::fclose(f);
+                }
+                vmaDestroyBuffer(allocator, buffer, allocation);
+            });
+    }
+    const vk::MemoryBarrier2 after{
+        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eNone,
+    };
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
+}
+
+int DlssCaptureFrame(bool dlss, const char* user_dir, std::string& directory) {
+    static int remaining = 0;
+    static int frame = 0;
+    static int poll = 0;
+    if (!dlss || !user_dir || !*user_dir) {
+        return -1;
+    }
+    if (remaining == 0 && ++poll % 120 == 0) {
+        const std::string trigger = std::string{user_dir} + "/dlss_capture.trigger";
+        std::ifstream request(trigger);
+        if (request) {
+            std::getline(request, directory);
+            request.close();
+            std::remove(trigger.c_str());
+            if (!directory.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(directory, ec);
+                remaining = 8;
+                frame = 0;
+                std::ofstream manifest(std::filesystem::path(directory) / "capture.txt");
+                manifest << "Driveclub DLSS input capture\n"
+                         << "8 consecutive game frames; lossless raw GPU inputs.\n"
+                         << "color: B10G11R11_UFLOAT_PACK32 (4 bytes/pixel)\n"
+                         << "depth: D32_SFLOAT depth aspect (4 bytes/pixel)\n"
+                         << "motion: R16G16_SFLOAT, pixels, previous minus current (4 bytes/pixel)\n"
+                         << "object: first frame only, RGBA16_SFLOAT; rg=object motion in pixels, "
+                            "b=valid, a=depth (8 bytes/pixel)\n"
+                         << "Inputs are captured before DLSS evaluation.\n";
+                std::printf("DLSS capture: armed for 8 frames -> %s\n", directory.c_str());
+            }
+        }
+    }
+    if (remaining == 0) {
+        return -1;
+    }
+    --remaining;
+    return frame++;
+}
 
 } // namespace
 
 DriveAA::DriveAA(const Instance& instance_, Scheduler& scheduler_,
-                 VideoCore::TextureCache& texture_cache_, Runtime& runtime_, DriveMotion& motion_)
+                 VideoCore::TextureCache& texture_cache_, Runtime& runtime_, DriveMotion& motion_,
+                 CameraMotion& camera_motion_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
-      runtime{runtime_}, motion{motion_}, neural{std::make_unique<NeuralRendering>(instance_, scheduler_)} {}
+      runtime{runtime_}, motion{motion_}, camera_motion{camera_motion_},
+      neural{std::make_unique<NeuralRendering>(instance_, scheduler_)} {}
 
 DriveAA::~DriveAA() {
     if (context) {
@@ -238,6 +351,7 @@ void DriveAA::CreatePipeline() {
     };
     copy_pipeline = compute(DRIVE_AA_COPY_COMP);
     sharpen_pipeline = compute(DRIVE_AA_SHARPEN_COMP);
+
 }
 
 bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
@@ -428,6 +542,15 @@ void DriveAA::OnComposite(VideoCore::ImageId color_id) {
 void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
                           VideoCore::ImageId output_id, std::array<float, 2> frame_jitter,
                           bool upscale) {
+    // The draw attached this frame's object vectors before the display composite. Preserve
+    // them through capture and temporal evaluation, then advance history for the next scene.
+    struct AdvanceObjectMotionFrame {
+        CameraMotion& camera_motion;
+        ~AdvanceObjectMotionFrame() {
+            camera_motion.AdvanceObjectMotionFrame();
+        }
+    } advance_object_motion_frame{camera_motion};
+
     auto& color = texture_cache.GetImage(color_id);
     auto& depth = texture_cache.GetImage(depth_id);
     const u32 w = color.info.size.width, h = color.info.size.height;
@@ -506,12 +629,68 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     barrier(vk::Image(result_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
             all, rw);
 
-    // Camera motion in render pixels (previous minus current).
-    // No stencil here: the anti-aliasing keeps the camera's vectors for every pixel, as before.
-    motion.Record(cmdbuf, depth_view, depth_view, *motion_view, w, h, w, h, false);
+    // Driveclub-specific single-dispatch path: build camera vectors and fuse valid car vectors
+    // in one pass. The legacy CameraMotion path requires constants from another title.
+    if (dlss && camera_motion.Ready()) {
+        camera_motion.RecordMotion(cmdbuf, depth_view, *motion_view, w, h, color_view);
+    } else {
+        vk::ImageView object_view{};
+        if (dlss) {
+            bool object_valid = false;
+            object_view = camera_motion.PrepareObjectMotion(cmdbuf, w, h, object_valid);
+            if (!object_valid) object_view = vk::ImageView{};
+        }
+        motion.Record(cmdbuf, depth_view, depth_view, *motion_view, w, h, w, h, false,
+                      object_view, object_view ? color_view : vk::ImageView{});
+    }
     barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
             vk::AccessFlagBits2::eShaderRead);
+
+    static std::string capture_directory;
+    static bool object_map_dumped = false;
+    const int capture_frame =
+        DlssCaptureFrame(dlss != nullptr, std::getenv("BB_GPU_USER_DIR"), capture_directory);
+    if (capture_frame == 0) {
+        object_map_dumped = false;
+    }
+    if (capture_frame >= 0) {
+        const bool camera_ready = camera_motion.Ready();
+        const vk::Image object_image = camera_motion.ObjectMotionImage(w, h);
+        bool object_map_valid = false;
+        if (object_image && !(dlss && camera_ready)) {
+            camera_motion.PrepareObjectMotion(cmdbuf, w, h, object_map_valid);
+        } else {
+            object_map_valid = object_image && camera_ready;
+        }
+        const bool dump_object = object_image && !object_map_dumped;
+        std::vector<CaptureImage> images{
+            {color.GetImage(), w, h, 4, "color", "b10g11r11"},
+            {depth.GetImage(), w, h, 4, "depth", "d32", vk::ImageAspectFlagBits::eDepth},
+            {vk::Image(motion_image), w, h, 4, "motion", "rg16f"},
+        };
+        if (dump_object) {
+            images.push_back({object_image, w, h, 8, "object_motion", "rgba16f"});
+            object_map_dumped = true;
+        }
+        DumpDlssCapture(instance, scheduler, cmdbuf, capture_directory, capture_frame, images);
+        std::ofstream frame_log(std::filesystem::path(capture_directory) /
+                                ("f" + std::to_string(capture_frame) + "_meta.txt"));
+        frame_log << "capture_frame=" << capture_frame << "\nrender=" << w << 'x' << h << "\noutput=" << ow
+                  << 'x' << oh << "\njitter_x=" << frame_jitter[0]
+                  << "\njitter_y=" << frame_jitter[1]
+                  << "\nmotion_source=" << (dlss && camera_ready ? "scene_camera_object" :
+                       (dlss && object_map_valid ? "game_taa_camera_object_fused" : "game_taa_camera"))
+                  << "\ncamera_ready=" << camera_ready
+                  << "\nobject_map_available=" << bool(object_image)
+                  << "\nobject_map_valid=" << object_map_valid
+                  << "\nobject_map_in_this_file=" << dump_object
+                  << "\nobject_motion_setting=" << bool(BbSettings::Get().object_motion)
+                  << "\nupscale=" << upscale << "\n";
+        std::printf("DLSS capture: frame %d saved (motion=%s, object-map=%s)\n", capture_frame,
+                    dlss && camera_ready ? "scene/object" : "game-camera+object-fusion",
+                    dump_object ? "yes" : "no");
+    }
 
     // Optional neural rendering (off by default) before the upscale: the pass runs on the game's render pixels
     // and DLSS or FSR then carries its result to the output size.
@@ -527,6 +706,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     last_frame = now;
 
     bool dispatched = false;
+    const u32 upscale_frame_id = frame_id++;
     const auto& settings = BbSettings::Get();
     const float sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f;
     // DLSS ignores its sharpness since 2.5.1: RCAS sharpens its result afterwards (FSR has its own).
@@ -602,7 +782,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         info.sharpness = sharpness;
         info.enableSharpening = settings.sharpen ? VK_TRUE : VK_FALSE;
         info.reset = reset ? VK_TRUE : VK_FALSE;
-        info.frameId = frame_id++;
+        info.frameId = upscale_frame_id;
         FfxVkPortableUpscaleCreateInfo create_info{};
         create_info.structSize = sizeof(create_info);
         create_info.flags = FFX_VK_PORTABLE_CONTEXT_HDR_COLOR_INPUT |

@@ -286,24 +286,7 @@ void EmitImageWrite(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id 
         image_ptr = ctx.OpAccessChain(single_image_ptr_type, image_ptr, std::array{lod});
     }
     const Id image = ctx.OpLoad(texture.image_type, image_ptr);
-    Id texel = texture.is_integer ? ctx.OpBitcast(color_type, color) : color;
-    // Same clamping as the render target export, for the game's compute passes that write 11/11/10 floats
-    // directly: negative and NaN give 0, large values stop at 65024.
-    const auto sharp = ctx.info.images[handle & 0xFFFF].GetSharp(ctx.info);
-    const auto dfmt = sharp.GetDataFmt();
-    if (!texture.is_integer && sharp.GetNumberFmt() == AmdGpu::NumberFormat::Float &&
-        (dfmt == AmdGpu::DataFormat::Format10_11_11 || dfmt == AmdGpu::DataFormat::Format11_11_10)) {
-        std::array<Id, 4> parts;
-        for (u32 i = 0; i < 4; ++i) {
-            const Id part = ctx.OpCompositeExtract(ctx.F32[1], texel, i);
-            parts[i] = i == 3 ? part
-                              : ctx.OpSelect(ctx.F32[1],
-                                             ctx.OpFOrdGreaterThan(ctx.U1[1], part, ctx.ConstF32(0.f)),
-                                             ctx.OpFMin(ctx.F32[1], part, ctx.ConstF32(65024.f)),
-                                             ctx.ConstF32(0.f));
-        }
-        texel = ctx.OpCompositeConstruct(ctx.F32[4], parts);
-    }
+    const Id texel = texture.is_integer ? ctx.OpBitcast(color_type, color) : color;
     ctx.OpImageWrite(image, coords, texel, operands.mask, operands.operands);
 }
 

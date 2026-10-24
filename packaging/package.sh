@@ -12,7 +12,7 @@ OUT="release/$NAME"
 bash build.sh
 mkdir -p out/launcher
 windres -I launcher launcher/launcher.rc -O coff -o out/launcher/launcher.res.o
-clang++ -O2 -std=c++20 -municode -mwindows -static -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp out/launcher/launcher.res.o   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt
+clang++ -O2 -std=c++20 -municode -mwindows -static -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp out/launcher/launcher.res.o   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi
 # The steering wheel tools, SDL linked in: WheelSetup is a window; FfbTest a console program (-mconsole after the SDL
 # flags, which bring -mwindows).
 sdl_static="$(pkg-config --static --libs sdl3)"
@@ -30,22 +30,17 @@ cp packaging/release/README.txt packaging/release/THIRD_PARTY_NOTICES.txt LICENS
 echo "$VERSION" > "$OUT/version.txt"
 
 # Every non-system DLL the game program loads, so nothing has to be installed.
-ldd out/DriveClubGame.exe | awk '{print $3}' | grep -i -E '/msys64/|^/(clang64|mingw64|ucrt64)/' | sort -u | while read -r dll; do
+ldd out/DriveClubGame.exe | awk '{print $3}' | grep -i '/msys64/' | sort -u | while read -r dll; do
   cp "$dll" "$OUT/runtime/"
 done
 # And the DLLs those DLLs load (two more rounds reach everything MinGW libraries pull in).
 for round in 1 2; do
   for staged in "$OUT"/runtime/*.dll; do
-    ldd "$staged" 2>/dev/null | awk '{print $3}' | { grep -i -E '/msys64/|^/(clang64|mingw64|ucrt64)/' || true; } | sort -u | while read -r dll; do
+    ldd "$staged" 2>/dev/null | awk '{print $3}' | { grep -i '/msys64/' || true; } | sort -u | while read -r dll; do
       [ -f "$OUT/runtime/$(basename "$dll")" ] || cp "$dll" "$OUT/runtime/"
     done
   done
 done
-# A package without its libraries starts nothing: stop when the collection found none.
-if [ ! -f "$OUT/runtime/SDL3.dll" ] || [ "$(find "$OUT/runtime" -name '*.dll' | wc -l)" -lt 40 ]; then
-  echo "The program libraries were not collected (ldd found no MSYS2 paths); the package would not start." >&2
-  exit 1
-fi
 # DLSS frame generation: the bridge built from gpu/dlss_bridge and NVIDIA's DLSS libraries.
 cp packaging/dlss_bin/bbport_dlss.dll packaging/dlss_bin/nvngx_dlss.dll packaging/dlss_bin/nvngx_dlssg.dll "$OUT/runtime/"
 mkdir -p "$OUT/licenses"

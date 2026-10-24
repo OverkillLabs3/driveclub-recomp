@@ -582,28 +582,6 @@ bool Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
             dst->info.size.width, dst->info.size.height, dst->info.num_samples,
             src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
         return true;
-    } else if (src->info.props.is_depth && src->info.num_samples > 1 && !dst->info.props.is_depth &&
-               dst->info.num_samples == 1 && src->info.size.width == dst->info.size.width &&
-               src->info.size.height == dst->info.size.height) {
-        // The branch above the other way round: the game reads its multisampled depth through a plain color
-        // image (screen-space lighting, SSAO, soft particles). Sample i of a pixel goes to channel i; without
-        // this copy that image keeps whatever it held before.
-        bool needs_flush =
-            Transit(src, vk::ImageLayout::eShaderReadOnlyOptimal,
-                    vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
-        needs_flush |= Transit(dst, vk::ImageLayout::eColorAttachmentOptimal,
-                               vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                               vk::AccessFlagBits2::eColorAttachmentWrite);
-        if (needs_flush) {
-            FlushBarriers();
-        }
-
-        blit_helper->ReinterpretMsDepthAsColor(dst->info.size.width, dst->info.size.height,
-                                               src->info.pixel_format, dst->info.pixel_format,
-                                               src->GetImage(), dst->GetImage());
-        dst->flags |= VideoCore::ImageFlagBits::GpuModified;
-        dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
-        return true;
     } else {
         static std::atomic<u32> warned{0};
         if (warned.fetch_add(1) < 3) {  // it repeats many times a second: only the first few are logged

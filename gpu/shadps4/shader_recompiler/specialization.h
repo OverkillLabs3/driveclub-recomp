@@ -5,6 +5,7 @@
 
 #include <bitset>
 
+#include "bbport_toggles.h"
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
@@ -95,9 +96,15 @@ struct StageSpecialization {
     StageSpecialization(const Info& info_, RuntimeInfo runtime_info_, const Profile& profile_,
                         Backend::Bindings start_)
         : info{&info_}, runtime_info{runtime_info_}, start{start_} {
-        fetch_shader_data = Gcn::ParseFetchShader(info_);
+        {
+            BbStats::MotionProfileTimer timer{
+                BbStats::motion_profile_ns[BbStats::MotionPipelineFetchParse]};
+            fetch_shader_data = Gcn::ParseFetchShader(info_);
+        }
         if (info_.sw_stage == SwStage::Vertex && fetch_shader_data) {
             // Specialize shader on VS input number types to follow spec.
+            BbStats::MotionProfileTimer timer{
+                BbStats::motion_profile_ns[BbStats::MotionPipelineVertexAttribSpecs]};
             ForEachSharp(vs_attribs, fetch_shader_data->attributes,
                          [this](auto& spec, const auto& desc, AmdGpu::Buffer sharp) {
                              using InstanceIdType = Shader::Gcn::VertexAttribute::InstanceIdType;
@@ -114,6 +121,8 @@ struct StageSpecialization {
                          });
         }
         u32 binding{};
+        BbStats::MotionProfileTimer buffer_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineBufferSpecs]};
         ForEachSharp(binding, buffers, info->buffers,
                      [](auto& spec, const auto& desc, AmdGpu::Buffer sharp) {
                          spec.stride = sharp.GetStride();
@@ -130,6 +139,9 @@ struct StageSpecialization {
                              spec.element_size = sharp.element_size;
                          }
                      });
+        buffer_timer.Stop();
+        BbStats::MotionProfileTimer image_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineImageSpecs]};
         ForEachSharp(binding, images, info->images,
                      [&](auto& spec, const auto& desc, AmdGpu::Image sharp) {
                          spec.type = sharp.GetViewType(desc.is_array);
@@ -142,22 +154,36 @@ struct StageSpecialization {
                              spec.is_srgb = sharp.GetNumberFmt() == AmdGpu::NumberFormat::Srgb;
                          }
                          spec.num_conversion = sharp.GetNumberConversion();
-                         spec.num_bindings = desc.NumBindings(*info);
+                         // `sharp` was fetched above by ForEachSharp. Reuse it here instead of
+                         // fetching the same guest descriptor a second time for dynamic mips.
+                         spec.num_bindings =
+                             desc.mip_fallback_mode == MipStorageFallbackMode::DynamicIndex
+                                 ? (sharp.last_level - sharp.base_level + 1)
+                                 : 1;
                      });
+        image_timer.Stop();
+        BbStats::MotionProfileTimer fmask_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineFmaskSpecs]};
         ForEachSharp(binding, fmasks, info->fmasks,
                      [](auto& spec, const auto& desc, AmdGpu::Image sharp) {
                          spec.width = sharp.width;
                          spec.height = sharp.height;
                      });
+        fmask_timer.Stop();
+        BbStats::MotionProfileTimer sampler_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineSamplerSpecs]};
         ForEachSharp(samplers, info->samplers,
                      [](auto& spec, const auto& desc, AmdGpu::Sampler sharp) {
                          spec.force_unnormalized = sharp.force_unnormalized;
                          spec.force_degamma = sharp.force_degamma;
                      });
+        sampler_timer.Stop();
 
         // Initialize runtime_info fields that rely on analysis in tessellation passes
         if (info->sw_stage == SwStage::TessellationControl ||
             info->sw_stage == SwStage::TessellationEval) {
+            BbStats::MotionProfileTimer timer{
+                BbStats::motion_profile_ns[BbStats::MotionPipelineTessSpec]};
             TessellationDataConstantBuffer tess_constants{};
             info->ReadTessConstantBuffer(tess_constants);
             runtime_info.InitFromTessConstants(tess_constants);
@@ -193,6 +219,8 @@ struct StageSpecialization {
     }
 
     bool operator==(const StageSpecialization& other) const {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineSpecEquality]};
         if (!Valid()) {
             return false;
         }

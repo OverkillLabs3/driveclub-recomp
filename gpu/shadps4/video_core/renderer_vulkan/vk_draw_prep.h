@@ -22,6 +22,7 @@
 #include <mutex>
 #include <span>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "common/types.h"
@@ -45,6 +46,11 @@ struct PreparedStage {
     const AmdGpu::Sampler* sampler_sharps;
     const AmdGpu::Buffer* buffer_sharps;
     u32 num_images, num_samplers, num_buffers;
+    const Shader::Info::PointerRead* pointer_reads;
+    u32 num_pointer_reads;
+    VAddr fetch_code_address;
+    const u32* fetch_code_snapshot;
+    u32 fetch_code_words;
 };
 
 /// Key of Rasterizer's texture description cache for a T# bound through `res`.
@@ -94,9 +100,8 @@ public:
     DrawPreparation(const DrawPreparation&) = delete;
     DrawPreparation& operator=(const DrawPreparation&) = delete;
 
-    [[nodiscard]] bool Enabled() const noexcept {
-        return worker_count != 0;
-    }
+    /// False while preparation has stood down (see SetAside).
+    [[nodiscard]] bool Enabled() const noexcept;
 
     struct Submission;
     /// Game submit thread, outside the queue lock: copies and scans a top-level graphics
@@ -110,6 +115,12 @@ public:
     void BeginSubmission(u64 seq, const AmdGpu::Regs& regs, u64 reg_checksum);
     void EndSubmission();
 
+    /// GPU thread: starts speculative preparation for a nested indirect buffer from its exact
+    /// entry register state. The caller brackets recursive IB execution with these methods.
+    void BeginNested(std::span<const u32> commands, const AmdGpu::Regs& regs,
+                     u64 reg_checksum);
+    void EndNested();
+
     /// GPU thread: the prepared state for the next direct draw of the current submission.
     const PreparedDraw* NextDraw();
 
@@ -122,6 +133,8 @@ public:
         std::unique_ptr<PreparedDraw[]> draws;
         u32 num_draws{};
         std::vector<std::unique_ptr<u32[]>> flat_chunks; ///< from the claiming worker
+        std::unique_ptr<AmdGpu::Regs> seed_regs; ///< set for an independently scanned nested IB
+        std::vector<std::shared_ptr<Submission>> nested_jobs; ///< retained with the parent submit
         u64 start_checksum{}, end_checksum{}; ///< set by the scanner
         AmdGpu::RegDelta delta;                ///< registers written, values at the end
         std::atomic<bool> scanned{false};
@@ -133,6 +146,22 @@ private:
     void ScannerLoop(std::stop_token stop);
     void WorkerLoop(std::stop_token stop, u32 index);
     void Collect();
+    std::shared_ptr<Submission> BuildNested(std::span<const u32> commands,
+                                            const AmdGpu::Regs& regs, u64 reg_checksum);
+
+    /// bbport: a prepared draw is only worth the worker time, the per-submission copy and the
+    /// walk when the GPU thread uses it. In DriveClub the tables a worker reads ahead of the GPU
+    /// thread (the flattened user data and the resource descriptors inside it) are rewritten per
+    /// draw, so most prepared draws cannot be used and the preparation itself costs ~7% of the
+    /// frame. When a sample window shows the workers are wasting their time, preparation stands
+    /// down for the rest of the session; this costs nothing when the feature does pay.
+    void SetAsideFor(u64 samples, u64 usable);
+    /// Called once per submission; kept for the API, the set-aside is for the session.
+    void ConsiderResuming() {}
+    /// True while preparation has stood down.
+    [[nodiscard]] bool SetAside() const noexcept {
+        return set_aside.load(std::memory_order_relaxed);
+    }
 
     PipelineCache& pipeline_cache;
     std::unique_ptr<AmdGpu::Regs> initial_regs; ///< state at the start of `baseline_seq`
@@ -148,6 +177,7 @@ private:
     std::mutex mutex;
     std::condition_variable_any cv;
     std::deque<std::shared_ptr<Submission>> submissions; ///< ordered by seq
+    std::deque<std::shared_ptr<Submission>> nested_submissions; ///< seeded from live IB entry state
     std::atomic<u64> gpu_seq{0};
     std::shared_ptr<Submission> current;
 
@@ -160,7 +190,14 @@ public:
 
 private:
     u32 current_draw = 0;
+    Submission* active_draws{};
+    std::array<std::pair<Submission*, u32>, 32> nested_draw_stack{};
+    u32 nested_draw_depth{};
     u64 used = 0, unused = 0;
+    /// Draws counted since the last decision: how many prepared draws the GPU thread used.
+    u64 window_used = 0, window_unused = 0;
+    std::atomic<bool> set_aside{false};
+    std::atomic<u64> resume_at_ns{0};
     u32 worker_count = 0; ///< fixed before the worker threads start
     std::jthread scanner;
     std::vector<std::jthread> workers;

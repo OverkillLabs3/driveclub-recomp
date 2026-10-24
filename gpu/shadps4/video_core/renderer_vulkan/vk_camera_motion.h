@@ -30,12 +30,16 @@ public:
                  VideoCore::TextureCache& texture_cache, Runtime& runtime);
     ~CameraMotion();
     void InvalidateHistory() { current.valid = previous.valid = false; }
+    /// Advance object history after the current frame's motion image has been consumed.
+    void AdvanceObjectMotionFrame();
     void SetObjectMotion(ObjectMotion* motion) noexcept {
         object_motion = motion;
     }
     /// This frame's object motion image (after RecordMotion), for the debug view; or null.
     vk::ImageView ObjectMotionView() const noexcept;
     vk::Image ObjectMotionImage(u32 width, u32 height) const noexcept;
+    vk::ImageView PrepareObjectMotion(vk::CommandBuffer cmdbuf, u32 width, u32 height,
+                                      bool& valid);
 
     void SetJitter(std::array<float, 2> value) noexcept {
         previous_jitter = jitter;
@@ -67,7 +71,7 @@ public:
     /// Records the motion vector pass: `depth_view` (depth aspect, General layout) into
     /// `motion_view` (RG16F storage, General), pixels, previous minus current.
     void RecordMotion(vk::CommandBuffer cmdbuf, vk::ImageView depth_view, vk::ImageView motion_view,
-                      u32 width, u32 height);
+                      u32 width, u32 height, vk::ImageView color_view = {});
 
     /// A bound constant buffer of 864 bytes: checks the scene constant signature.
     void OnConstants(const float* data);
@@ -76,7 +80,7 @@ public:
     void OnGBufferPass(VideoCore::ImageId depth);
 
     /// The pass copying the finished frame (`frame`, the last target drawn) to the display: the
-    /// frame's depth and camera are complete. Records the debug overlay, starts a new frame.
+    /// frame's depth and camera are complete. Records the debug overlay and closes camera state.
     void OnDisplayPass(VideoCore::ImageId frame);
 
 private:
