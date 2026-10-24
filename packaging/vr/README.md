@@ -30,6 +30,18 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 The game's camera shake at speed is still there (it is applied after the head camera). A loose-file mod with zero
 shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) takes it away.
 
+## Recommended settings
+What the test PC (RTX 4070 Ti Super) plays with:
+
+- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap **72** to start with (the headset's refresh rate: 72 Hz in
+  Virtual Desktop; go up to 80 or 90 with the headset when the game holds it). Output and Render resolution
+  **Default**, Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game**, anisotropic filtering
+  Automatic, HDR off. *VR headset*: on, Headset picture **High + HUD** (Ultra + HUD for a faster PC).
+- *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on. **Motion blur off**:
+  the alternate frames come from eyes 6.3 cm apart, which the game's blur takes for motion.
+- *Gameplay*: Mirror and reflection updates **Static (faster)**; Patches: **Disable motion blur and depth of field**
+  on.
+
 ## Keys
 The number row, on every keyboard (the keypad works too, for those who have one):
 
