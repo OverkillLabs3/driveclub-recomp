@@ -36,6 +36,9 @@
 //   screen_vfov = 40     the height of the still screen, degrees
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
 //   hud_layer = 1        in the car the HUD is a panel of its own (0: drawn into the picture, as on a screen)
+//   turn_comp = 0        alternate frames: the older eye's picture is turned by how far the car turned since it was
+//                        drawn (1: fully, 0.5: half; 0 off): the world outside stays steady in turns, the cockpit in
+//                        that eye moves instead. key_turn (9) switches it on and off while driving
 //   hud_distance = 1.1, hud_width = 1.4, hud_y = 0
 //                        the HUD panel: metres ahead of the seat, its width (16:9), metres above the eyes
 // The recentre key (0, or keypad 5) makes the direction the head faces straight ahead.
@@ -114,8 +117,9 @@ struct Settings {
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
     bool hud_layer = true;
     float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
+    float turn_comp = 0.0f;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
-    int keys[7] = {'0', '2', '1', '5', '6', '4', '3'};
+    int keys[8] = {'0', '2', '1', '5', '6', '4', '3', '9'}; // and the car turn compensation on/off
 } settings;
 
 struct State {
@@ -142,6 +146,8 @@ struct State {
     bool afr_frame = false;           // the two eyes' last pictures side by side
     bool frame_tagged = false;        // one picture, its head pose known exactly
     XrPosef frame_pose{};
+    float frame_car[9]{};    // the car's axes (rows, world) of that frame: the turn compensation's reference
+    bool turn_on = false;    // the car turn compensation (turn_comp, key_turn)
     bool cockpit_shown = false;
     long long cockpit_left_us = 0; // when the cockpit view was left last
     // the recentred head
@@ -212,8 +218,9 @@ void ReadSettings() {
     while (std::fgets(line, sizeof line, f)) {
         char key[64] = "", name[32] = "";
         if (std::sscanf(line, " key_%63[a-z_] = %31s", key, name) == 2) {
-            static const char* const actions[7] = {"recentre", "up", "down", "left", "right", "forward", "back"};
-            for (int a = 0; a < 7; ++a) {
+            static const char* const actions[8] = {"recentre", "up",      "down", "left",
+                                                   "right",    "forward", "back", "turn"};
+            for (int a = 0; a < 8; ++a) {
                 if (std::string(key) == actions[a]) {
                     const int code = KeyCode(name);
                     if (code) settings.keys[a] = code;
@@ -246,6 +253,7 @@ void ReadSettings() {
         else if (k == "hud_distance" && value > 0.2f) settings.hud_distance = value;
         else if (k == "hud_width" && value > 0.1f) settings.hud_width = value;
         else if (k == "hud_y") settings.hud_y = value;
+        else if (k == "turn_comp" && value >= 0.0f && value <= 1.0f) settings.turn_comp = value;
     }
     std::fclose(f);
 #endif
@@ -469,6 +477,7 @@ struct HookCall {
     float position[3]{}; // the camera's world position the game draws from
     int eye = -1;        // alternate frames: 0 the left eye, 1 the right, -1 the middle
     const float* camera = nullptr; // which driver's head camera
+    float car[9]{};      // the frame the head turns in (the car body's axes as rows, world): the car's turn
 };
 HookCall head_history[64];
 unsigned head_next = 0;
@@ -654,6 +663,8 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     std::scoped_lock lock{head_mutex};
     HookCall& call = head_history[head_next++ % 64];
     call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye, camera};
+    for (int i = 0; i < 3; ++i)
+        for (int k = 0; k < 3; ++k) call.car[i * 3 + k] = rest[i][k];
     hook_time_us = call.time_us;
 }
 
@@ -923,6 +934,7 @@ struct Gpu {
         bool tagged = false; // its camera was found: drawn for `eye` with `head`
         int eye = -1;
         XrPosef head{};
+        float car[9]{};
     } pictures[4];
     unsigned picture_uses = 0;
     // The display buffer before the HUD (TakeScene): a ring, as the GPU may still read the last one; `scene_ready`
@@ -933,6 +945,7 @@ struct Gpu {
     // Alternate frames: each eye's last picture and the head it was drawn for.
     GpuImage eye_picture[2];
     XrPosef eye_head[2]{};
+    float eye_car[2][9]{};
     bool eye_valid[2]{};
 } gpu;
 
@@ -1098,6 +1111,7 @@ struct FrameCamera {
     bool found = false;
     int eye = -1;
     XrPosef head{};
+    float car[9]{};
 };
 std::mutex camera_mutex;
 FrameCamera camera_now; // the frame being drawn
@@ -1106,14 +1120,18 @@ void ReadKeys() {
 #ifdef _WIN32
     // Recentre, and the seat up/down, left/right and forward/back by 2 cm (Ctrl: 10 cm): the keys of vr.ini (the
     // number row 0, 2/1, 5/6, 4/3 by default) or the keypad (5, 8/2, 4/6, 9/3).
-    static bool was[7];
-    static const int keypad[7] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6, VK_NUMPAD9, VK_NUMPAD3};
-    for (int k = 0; k < 7; ++k) {
+    static bool was[8];
+    static const int keypad[8] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6, VK_NUMPAD9, VK_NUMPAD3, 0};
+    for (int k = 0; k < 8; ++k) {
         const bool down = (GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0 || (GetAsyncKeyState(keypad[k]) & 0x8000) != 0;
         if (down && !was[k]) {
             std::scoped_lock lock{head_mutex};
             if (k == 0) {
                 st.have_centre = false;
+            } else if (k == 7) {
+                st.turn_on = !st.turn_on;
+                std::printf("VR: car turn compensation %s (%.2f)\n", st.turn_on ? "on" : "off",
+                            settings.turn_comp > 0.0f ? settings.turn_comp : 1.0f);
             } else {
                 const int axis = k <= 2 ? 1 : k <= 4 ? 0 : 2;
                 const float size = (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 0.10f : 0.02f;
@@ -1155,6 +1173,7 @@ void AppendInstanceExtensions(std::vector<const char*>& extensions) {
         return;
     }
     ReadSettings();
+    st.turn_on = settings.turn_comp > 0.0f;
     if (!Start() || !xr.GetVulkanInstanceExtensionsKHR) {
         st.failed = true;
         std::printf("VR: off\n");
@@ -1294,6 +1313,7 @@ void NoteCameraConstants(const float* data) {
         const float dx = data[108] - c.position[0], dy = data[109] - c.position[1], dz = data[110] - c.position[2];
         if (c.time_us && dx * dx + dy * dy + dz * dz < 0.002f * 0.002f) {
             camera_now = {true, c.eye, c.head};
+            std::memcpy(camera_now.car, c.car, sizeof c.car);
             drawn_camera = c.camera;
             drawn_camera_us = NowUs();
             return;
@@ -1435,6 +1455,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             entry->tagged = camera.found;
             entry->eye = camera.eye;
             entry->head = camera.head;
+            std::memcpy(entry->car, camera.car, sizeof camera.car);
             entry->split = true;
             entry->valid = true;
             return whole_view; // the window shows both together
@@ -1463,6 +1484,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     entry->tagged = camera.found;
     entry->eye = camera.eye;
     entry->head = camera.head;
+    std::memcpy(entry->car, camera.car, sizeof camera.car);
     entry->valid = true;
     return VK_NULL_HANDLE;
 }
@@ -1569,6 +1591,7 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     st.frame_tagged = cockpit && made && made->tagged;
     if (st.frame_tagged) {
         st.frame_pose = made->head;
+        std::memcpy(st.frame_car, made->car, sizeof st.frame_car);
     }
     if (eye >= 0) {
         // the frame's picture becomes its eye's
@@ -1583,6 +1606,7 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             Barrier(cmd, pic.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
             gpu.eye_head[eye] = made->head;
+            std::memcpy(gpu.eye_car[eye], made->car, sizeof made->car);
             gpu.eye_valid[eye] = true;
         }
     }
@@ -1600,6 +1624,41 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     }
     Barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
+}
+
+// The turn the world made relative to the car between two frames (`from`, `to`: the car's axes as rows, world),
+// applied to `orientation` (LOCAL space), `amount` of it. A direction d in the world is A d in a car's own axes, so a
+// picture drawn at `from` shows what is now at A_to A_from^T of it: turned by that, in the headset's axes (the car's
+// X and Z flipped) about the recentred yaw.
+XrQuaternionf CarTurn(const float (&from)[9], const float (&to)[9], float centre_yaw, float amount,
+                      const XrQuaternionf& orientation) {
+    float m[3][3];
+    static const float flip[3] = {-1.0f, 1.0f, -1.0f};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            m[i][j] = flip[i] * flip[j] *
+                      (to[i * 3] * from[j * 3] + to[i * 3 + 1] * from[j * 3 + 1] + to[i * 3 + 2] * from[j * 3 + 2]);
+    // the matrix's quaternion (rotation of column vectors)
+    Quat q;
+    const float trace = m[0][0] + m[1][1] + m[2][2];
+    if (trace > 0.0f) {
+        const float r = std::sqrt(1.0f + trace) * 2.0f;
+        q = {(m[2][1] - m[1][2]) / r, (m[0][2] - m[2][0]) / r, (m[1][0] - m[0][1]) / r, 0.25f * r};
+    } else if (m[0][0] > m[1][1] && m[0][0] > m[2][2]) {
+        const float r = std::sqrt(1.0f + m[0][0] - m[1][1] - m[2][2]) * 2.0f;
+        q = {0.25f * r, (m[0][1] + m[1][0]) / r, (m[0][2] + m[2][0]) / r, (m[2][1] - m[1][2]) / r};
+    } else if (m[1][1] > m[2][2]) {
+        const float r = std::sqrt(1.0f + m[1][1] - m[0][0] - m[2][2]) * 2.0f;
+        q = {(m[0][1] + m[1][0]) / r, 0.25f * r, (m[1][2] + m[2][1]) / r, (m[0][2] - m[2][0]) / r};
+    } else {
+        const float r = std::sqrt(1.0f + m[2][2] - m[0][0] - m[1][1]) * 2.0f;
+        q = {(m[0][2] + m[2][0]) / r, (m[1][2] + m[2][1]) / r, 0.25f * r, (m[1][0] - m[0][1]) / r};
+    }
+    const Quat uncentre = AxisAngle(0, 1, 0, centre_yaw * Pi / 180.0f);
+    q = Mul(Mul(Conj(uncentre), q), uncentre);
+    const XrQuaternionf turn = Nlerp({0, 0, 0, 1}, {q.x, q.y, q.z, q.w}, amount);
+    const Quat out = Mul(ToQuat(turn), ToQuat(orientation));
+    return {out.x, out.y, out.z, out.w};
 }
 
 void AfterSubmit() {
@@ -1681,6 +1740,11 @@ void AfterSubmit() {
                                                {from == 0 ? -settings.ipd * 0.5f : settings.ipd * 0.5f, 0, 0});
                 v.pose.orientation = h.orientation;
                 v.pose.position = {h.position.x + side.x, h.position.y + side.y, h.position.z + side.z};
+                if (st.turn_on && st.frame_tagged) {
+                    // the world turned past the car since this picture was drawn (the headset only knows the head)
+                    const float amount = settings.turn_comp > 0.0f ? settings.turn_comp : 1.0f;
+                    v.pose.orientation = CarTurn(gpu.eye_car[from], st.frame_car, st.centre_yaw, amount, h.orientation);
+                }
                 v.subImage.imageRect.offset.x = int32_t(e * st.width);
             }
             v.fov = {-std::atan(tan_x), std::atan(tan_x), std::atan(tan_y), -std::atan(tan_y)};

@@ -75,6 +75,8 @@ cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset,
 hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture
 hud_distance = 1.1 # the HUD panel: metres ahead, hud_width = 1.4 (metres, 16:9), hud_y = 0 (metres above the eyes)
 screen_vfov = 40   # the still screen's height, degrees
+turn_comp = 0      # 1: the older eye's picture turned by the car's turn since it was drawn (steadier world in
+                   # turns, the cockpit moves in that eye instead); 0.5 half. key_turn = 9 switches it while driving
 key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
 ```
 
