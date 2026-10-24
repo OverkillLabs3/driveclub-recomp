@@ -14,6 +14,10 @@
 //   is scaled for the monitor). Each eye keeps its last picture; the headset's swapchain holds both side by side and
 //   the projection layer states each at the pose it was drawn from, so the runtime turns it to the head's pose now.
 // - Elsewhere (menus, loading, other cameras) the picture is a still screen in front of the player.
+// - The HUD apart (hud_layer): the game draws its frame's composite into the display buffer and every HUD element over
+//   it. At the first HUD draw of a frame with a 3D scene the display buffer is copied out (the scene) and cleared, so
+//   the HUD draws alone (its alpha made its coverage: the pipeline cache's blend). In the car the eyes get the scene
+//   and the HUD is a panel of its own, fixed in front of the seat; the window and the still screen get both again.
 //
 // vr.ini (next to DriveClubGame.exe), key = value lines, all optional:
 //   afr = 1              stereo by alternate frames (each eye gets half the frame rate); 0: one picture for both eyes
@@ -31,12 +35,16 @@
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
+//   hud_layer = 1        in the car the HUD is a panel of its own (0: drawn into the picture, as on a screen)
+//   hud_distance = 1.1, hud_width = 1.4, hud_y = 0
+//                        the HUD panel: metres ahead of the seat, its width (16:9), metres above the eyes
 // The recentre key (0, or keypad 5) makes the direction the head faces straight ahead.
 #define XR_NO_PROTOTYPES
 #define XR_USE_GRAPHICS_API_VULKAN
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "bbport_vr.h"
 #include "video_core/host_shaders/vr_copy_comp.h"
+#include "video_core/host_shaders/vr_hud_comp.h"
 
 #include <algorithm>
 #include <cctype>
@@ -50,6 +58,7 @@
 #include <initializer_list>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -103,6 +112,8 @@ struct Settings {
     float seat[3] = {0.0f, 0.07f, 0.0f}; // above the game's own head point (each car its own), which sits low
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
+    bool hud_layer = true;
+    float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     int keys[7] = {'0', '2', '1', '5', '6', '4', '3'};
 } settings;
@@ -117,6 +128,12 @@ struct State {
     int64_t swapchain_format = 0;
     uint32_t swapchain_width = 0, swapchain_height = 0;
     std::vector<XrSwapchainImageVulkanKHR> images;
+    // the HUD's panel (a quad layer)
+    XrSwapchain hud_swapchain = XR_NULL_HANDLE;
+    uint32_t hud_width = 0, hud_height = 0;
+    std::vector<XrSwapchainImageVulkanKHR> hud_images;
+    bool hud_acquired = false;
+    long long hud_us = 0; // its last picture
     bool running = false;
     // the frame between RecordFrame and AfterSubmit
     bool frame_begun = false, image_acquired = false;
@@ -225,6 +242,10 @@ void ReadSettings() {
         else if (k == "cockpit_vfov" && value > 10) settings.cockpit_vfov = value;
         else if (k == "screen_vfov" && value > 5) settings.screen_vfov = value;
         else if (k == "latency_ms" && value >= 0) settings.latency_ms = value;
+        else if (k == "hud_layer") settings.hud_layer = value != 0;
+        else if (k == "hud_distance" && value > 0.2f) settings.hud_distance = value;
+        else if (k == "hud_width" && value > 0.1f) settings.hud_width = value;
+        else if (k == "hud_y") settings.hud_y = value;
     }
     std::fclose(f);
 #endif
@@ -383,13 +404,14 @@ void PollEvents() {
     }
 }
 
-bool EnsureSwapchain(uint32_t width, uint32_t height) {
-    if (st.swapchain && st.swapchain_width == width && st.swapchain_height == height) {
+bool EnsureSwapchain(XrSwapchain& swapchain, uint32_t& swapchain_width, uint32_t& swapchain_height,
+                     std::vector<XrSwapchainImageVulkanKHR>& images, uint32_t width, uint32_t height) {
+    if (swapchain && swapchain_width == width && swapchain_height == height) {
         return true;
     }
-    if (st.swapchain) {
-        xr.DestroySwapchain(st.swapchain);
-        st.swapchain = XR_NULL_HANDLE;
+    if (swapchain) {
+        xr.DestroySwapchain(swapchain);
+        swapchain = XR_NULL_HANDLE;
     }
     if (!st.swapchain_format) {
         uint32_t count = 0;
@@ -415,18 +437,17 @@ bool EnsureSwapchain(uint32_t width, uint32_t height) {
     info.faceCount = 1;
     info.arraySize = 1;
     info.mipCount = 1;
-    if (!Ok(xr.CreateSwapchain(st.session, &info, &st.swapchain), "xrCreateSwapchain")) {
+    if (!Ok(xr.CreateSwapchain(st.session, &info, &swapchain), "xrCreateSwapchain")) {
         st.failed = true;
         return false;
     }
     uint32_t count = 0;
-    xr.EnumerateSwapchainImages(st.swapchain, 0, &count, nullptr);
-    st.images.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
-    xr.EnumerateSwapchainImages(st.swapchain, count, &count,
-                                reinterpret_cast<XrSwapchainImageBaseHeader*>(st.images.data()));
-    st.swapchain_width = width;
-    st.swapchain_height = height;
-    std::printf("VR: swapchain %ux%u\n", width, height);
+    xr.EnumerateSwapchainImages(swapchain, 0, &count, nullptr);
+    images.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_VULKAN_KHR});
+    xr.EnumerateSwapchainImages(swapchain, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+    swapchain_width = width;
+    swapchain_height = height;
+    std::printf("VR: swapchain %ux%u%s\n", width, height, &images == &st.hud_images ? " (the HUD)" : "");
     return true;
 }
 
@@ -846,7 +867,9 @@ bool Cockpit() {
 struct GpuImage {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;        // RGBA8 storage
+    VkImageView sample_view = VK_NULL_HANDLE; // sampled, in sample_format
+    VkFormat format = VK_FORMAT_R8G8B8A8_UNORM, sample_format = VK_FORMAT_UNDEFINED;
     uint32_t width = 0, height = 0;
 };
 struct Gpu {
@@ -856,12 +879,18 @@ struct Gpu {
     VkDescriptorSetLayout copy_set = VK_NULL_HANDLE;
     VkPipelineLayout copy_layout = VK_NULL_HANDLE;
     VkPipeline copy_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSetLayout hud_set = VK_NULL_HANDLE;
+    VkPipelineLayout hud_layout = VK_NULL_HANDLE;
+    VkPipeline hud_pipeline = VK_NULL_HANDLE;
     std::mutex mutex;              // the pictures: made on the renderer's thread, read on the present thread
     std::vector<GpuImage> retired; // replaced by a resize (rare), kept: the GPU may still read them
     // The display buffer of each presenter frame, keyed by the frame's image, with the frame's camera.
     struct FramePicture {
         VkImage frame = VK_NULL_HANDLE;
-        GpuImage picture; // RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL
+        GpuImage picture; // RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL (the scene alone when `split`)
+        GpuImage hud;     // split: the HUD (premultiplied), TRANSFER_SRC_OPTIMAL
+        GpuImage whole;   // split: scene and HUD, SHADER_READ_ONLY_OPTIMAL (the window samples it)
+        bool split = false;
         uint32_t width = 0, height = 0;
         bool valid = false;
         unsigned last_use = 0;
@@ -870,6 +899,11 @@ struct Gpu {
         XrPosef head{};
     } pictures[4];
     unsigned picture_uses = 0;
+    // The display buffer before the HUD (TakeScene): a ring, as the GPU may still read the last one; `scene_ready`
+    // names the one taken since the last presenter frame.
+    GpuImage scenes[3];
+    unsigned scene_next = 0;
+    int scene_ready = -1;
     // Alternate frames: each eye's last picture and the head it was drawn for.
     GpuImage eye_picture[2];
     XrPosef eye_head[2]{};
@@ -881,33 +915,34 @@ struct CopyPush {
     float encode;
 };
 
-void GpuInit(VkPhysicalDevice physical, VkDevice device) {
-    gpu.device = device;
-    gpu.physical = physical;
-    VkDescriptorSetLayoutBinding b[2]{};
-    for (uint32_t i = 0; i < 2; ++i) {
+// A compute pipeline with push descriptors: `sampled` sampled images, then `storage` storage images, and CopyPush.
+template <size_t N>
+void MakeCompute(const uint32_t (&code)[N], uint32_t sampled, uint32_t storage, VkDescriptorSetLayout& set,
+                 VkPipelineLayout& layout, VkPipeline& pipeline) {
+    VkDescriptorSetLayoutBinding b[8]{};
+    for (uint32_t i = 0; i < sampled + storage; ++i) {
         b[i].binding = i;
-        b[i].descriptorType = i == 0 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[i].descriptorType = i < sampled ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[i].descriptorCount = 1;
         b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
     VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     si.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-    si.bindingCount = 2;
+    si.bindingCount = sampled + storage;
     si.pBindings = b;
-    VKF.vkCreateDescriptorSetLayout(device, &si, nullptr, &gpu.copy_set);
+    VKF.vkCreateDescriptorSetLayout(gpu.device, &si, nullptr, &set);
     const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CopyPush)};
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     li.setLayoutCount = 1;
-    li.pSetLayouts = &gpu.copy_set;
+    li.pSetLayouts = &set;
     li.pushConstantRangeCount = 1;
     li.pPushConstantRanges = &range;
-    VKF.vkCreatePipelineLayout(device, &li, nullptr, &gpu.copy_layout);
+    VKF.vkCreatePipelineLayout(gpu.device, &li, nullptr, &layout);
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof(VR_COPY_COMP);
-    mi.pCode = VR_COPY_COMP;
+    mi.codeSize = sizeof(code);
+    mi.pCode = code;
     VkShaderModule module = VK_NULL_HANDLE;
-    if (VKF.vkCreateShaderModule(device, &mi, nullptr, &module) != VK_SUCCESS) {
+    if (VKF.vkCreateShaderModule(gpu.device, &mi, nullptr, &module) != VK_SUCCESS) {
         return;
     }
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
@@ -915,14 +950,23 @@ void GpuInit(VkPhysicalDevice physical, VkDevice device) {
     ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     ci.stage.module = module;
     ci.stage.pName = "main";
-    ci.layout = gpu.copy_layout;
-    VKF.vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &gpu.copy_pipeline);
-    VKF.vkDestroyShaderModule(device, module, nullptr);
+    ci.layout = layout;
+    VKF.vkCreateComputePipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline);
+    VKF.vkDestroyShaderModule(gpu.device, module, nullptr);
+}
+
+void GpuInit(VkPhysicalDevice physical, VkDevice device) {
+    gpu.device = device;
+    gpu.physical = physical;
+    MakeCompute(VR_COPY_COMP, 1, 1, gpu.copy_set, gpu.copy_layout, gpu.copy_pipeline);
+    MakeCompute(VR_HUD_COMP, 2, 3, gpu.hud_set, gpu.hud_layout, gpu.hud_pipeline);
     gpu.ready = gpu.copy_pipeline != VK_NULL_HANDLE;
 }
 
-bool MakeImage(GpuImage& img, uint32_t width, uint32_t height, VkImageUsageFlags usage) {
-    if (img.image && img.width == width && img.height == height) {
+// `format` (RGBA8 unless said), MUTABLE_FORMAT when `views` (SampleView then makes views of other formats).
+bool MakeImage(GpuImage& img, uint32_t width, uint32_t height, VkImageUsageFlags usage,
+               VkFormat format = VK_FORMAT_R8G8B8A8_UNORM, bool views = false) {
+    if (img.image && img.width == width && img.height == height && img.format == format) {
         return true;
     }
     if (img.image) {
@@ -930,8 +974,9 @@ bool MakeImage(GpuImage& img, uint32_t width, uint32_t height, VkImageUsageFlags
         img = {};
     }
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.flags = views ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
     ii.imageType = VK_IMAGE_TYPE_2D;
-    ii.format = VK_FORMAT_R8G8B8A8_UNORM;
+    ii.format = format;
     ii.extent = {width, height, 1};
     ii.mipLevels = 1;
     ii.arrayLayers = 1;
@@ -972,7 +1017,31 @@ bool MakeImage(GpuImage& img, uint32_t width, uint32_t height, VkImageUsageFlags
     }
     img.width = width;
     img.height = height;
+    img.format = format;
     return true;
+}
+
+// A sampled view of `img` in `format` (its own, or another of its size when made with views).
+VkImageView SampleView(GpuImage& img, VkFormat format) {
+    if (img.sample_view && img.sample_format == format) {
+        return img.sample_view;
+    }
+    if (img.sample_view) {
+        GpuImage old{};
+        old.sample_view = img.sample_view; // the GPU may still read it
+        gpu.retired.push_back(old);
+        img.sample_view = VK_NULL_HANDLE;
+    }
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = img.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = format;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (VKF.vkCreateImageView(gpu.device, &vi, nullptr, &img.sample_view) != VK_SUCCESS) {
+        img.sample_view = VK_NULL_HANDLE;
+    }
+    img.sample_format = format;
+    return img.sample_view;
 }
 
 void Barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags src_access,
@@ -1144,12 +1213,15 @@ void NoteProjection(float x_scale, float y_scale) {
     }
 }
 
+std::atomic<bool> scene_drawn{false}; // a G-buffer pass since the last HUD split: a 3D scene this frame
+
 void NoteCameraConstants(const float* data) {
     // Many draws bind 512 bytes (the mirror's and the reflections' cameras too): each is tried until one is a camera
     // the hook gave the game (2 mm).
     if (!Active()) {
         return;
     }
+    scene_drawn.store(true, std::memory_order_relaxed);
     std::scoped_lock lock{camera_mutex};
     if (camera_now.found) {
         return;
@@ -1166,10 +1238,62 @@ void NoteCameraConstants(const float* data) {
     }
 }
 
-void NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkFormat display_format,
-               uint32_t display_width, uint32_t display_height) {
-    if (!Active()) {
+// ---- the HUD apart -----------------------------------------------------------------------------------------------------
+bool HudLayer() {
+    return Active() && settings.hud_layer && gpu.ready && gpu.hud_pipeline;
+}
+
+bool SceneOverlay(uint64_t vs_hash) {
+    // drawn over the composite before the HUD, part of the scene (found by the dcport-vr fork)
+    return vs_hash == 0x44606ffd || vs_hash == 0xdc8e480a;
+}
+
+bool SceneDrawn() {
+    return scene_drawn.load(std::memory_order_relaxed);
+}
+
+VkFormat last_display_format = VK_FORMAT_UNDEFINED; // the presenter's view of the display buffer
+
+void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height) {
+    scene_drawn.store(false, std::memory_order_relaxed);
+    switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB: case VK_FORMAT_A8B8G8R8_UNORM_PACK32: case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+        break;
+    default:
+        return; // a format the split pass does not read
+    }
+    std::scoped_lock lock{gpu.mutex};
+    const unsigned index = gpu.scene_next++ % 3;
+    GpuImage& scene = gpu.scenes[index];
+    if (!MakeImage(scene, width, height, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, format, true)) {
         return;
+    }
+    // `display` is in TRANSFER_SRC_OPTIMAL and stays so
+    Barrier(cmd, scene.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT);
+    Copy(cmd, display, scene.image, width, height, 0);
+    Barrier(cmd, scene.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    Barrier(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    const VkClearColorValue clear{};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VKF.vkCmdClearColorImage(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+    Barrier(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
+    gpu.scene_ready = int(index);
+    static bool told = false;
+    if (!told) {
+        told = true;
+        std::printf("VR: the HUD drawn apart (display buffer %ux%u, format %d)\n", width, height, int(format));
+    }
+}
+
+VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkFormat display_format,
+                      uint32_t display_width, uint32_t display_height) {
+    if (!Active()) {
+        return VK_NULL_HANDLE;
     }
     FrameCamera camera;
     {
@@ -1182,9 +1306,13 @@ void NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkF
     for (auto& e : gpu.pictures) {
         if (e.frame == frame) entry = &e;
     }
+    const int scene_index = std::exchange(gpu.scene_ready, -1);
+    if (display_view) {
+        last_display_format = display_format;
+    }
     if (!st.running || !display_view || !display_width || !display_height) {
         if (entry) entry->valid = false;
-        return;
+        return VK_NULL_HANDLE;
     }
     if (!entry) {
         entry = &gpu.pictures[0];
@@ -1195,12 +1323,60 @@ void NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkF
     }
     entry->last_use = ++gpu.picture_uses;
     entry->valid = false;
+    entry->split = false;
     if (!MakeImage(entry->picture, display_width, display_height,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
-        return;
+        return VK_NULL_HANDLE;
     }
     const VkFormat f = display_format;
     const bool encode = f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
+    GpuImage* const scene = scene_index >= 0 ? &gpu.scenes[scene_index] : nullptr;
+    if (scene && scene->width == display_width && scene->height == display_height &&
+        MakeImage(entry->hud, display_width, display_height, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
+        MakeImage(entry->whole, display_width, display_height,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                  VK_FORMAT_R8G8B8A8_UNORM, true)) {
+        // the HUD drawn apart: the scene, the HUD and both together, from one pass
+        const VkImageView scene_view = SampleView(*scene, display_format);
+        const VkImageView whole_view = SampleView(entry->whole, encode ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+        if (scene_view && whole_view) {
+            for (GpuImage* img : {&entry->picture, &entry->hud, &entry->whole}) {
+                Barrier(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                        VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+            }
+            VkDescriptorImageInfo infos[5] = {{VK_NULL_HANDLE, display_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                              {VK_NULL_HANDLE, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                              {VK_NULL_HANDLE, entry->picture.view, VK_IMAGE_LAYOUT_GENERAL},
+                                              {VK_NULL_HANDLE, entry->hud.view, VK_IMAGE_LAYOUT_GENERAL},
+                                              {VK_NULL_HANDLE, entry->whole.view, VK_IMAGE_LAYOUT_GENERAL}};
+            VkWriteDescriptorSet writes[5]{};
+            for (uint32_t i = 0; i < 5; ++i) {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstBinding = i;
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = i >= 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                writes[i].pImageInfo = &infos[i];
+            }
+            const CopyPush push{{float(display_width), float(display_height)}, encode ? 1.0f : 0.0f};
+            VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.hud_pipeline);
+            VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.hud_layout, 0, 5, writes);
+            VKF.vkCmdPushConstants(cmd, gpu.hud_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+            VKF.vkCmdDispatch(cmd, (display_width + 7) / 8, (display_height + 7) / 8, 1);
+            for (GpuImage* img : {&entry->picture, &entry->hud}) {
+                Barrier(cmd, img->image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            }
+            Barrier(cmd, entry->whole.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+            entry->width = display_width, entry->height = display_height;
+            entry->tagged = camera.found;
+            entry->eye = camera.eye;
+            entry->head = camera.head;
+            entry->split = true;
+            entry->valid = true;
+            return whole_view; // the window shows both together
+        }
+    }
     Barrier(cmd, entry->picture.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT,
             VK_ACCESS_SHADER_WRITE_BIT);
     VkDescriptorImageInfo infos[2] = {{VK_NULL_HANDLE, display_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -1225,6 +1401,7 @@ void NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkF
     entry->eye = camera.eye;
     entry->head = camera.head;
     entry->valid = true;
+    return VK_NULL_HANDLE;
 }
 
 void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height) {
@@ -1282,8 +1459,35 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         }
     }
     const bool cockpit = Cockpit();
+    if (made && made->split && !cockpit) {
+        // a still screen: the scene and the HUD together (the window has read it)
+        source = made->whole.image;
+        Barrier(cmd, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    }
+    if (made && made->split && cockpit && st.frame_state.shouldRender &&
+        EnsureSwapchain(st.hud_swapchain, st.hud_width, st.hud_height, st.hud_images, made->width, made->height)) {
+        // the HUD's panel
+        uint32_t hud_index = 0;
+        XrSwapchainImageAcquireInfo hud_acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        XrSwapchainImageWaitInfo hud_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        hud_wait.timeout = 100000000; // 100 ms
+        if (Ok(xr.AcquireSwapchainImage(st.hud_swapchain, &hud_acquire, &hud_index), "xrAcquireSwapchainImage") &&
+            Ok(xr.WaitSwapchainImage(st.hud_swapchain, &hud_wait), "xrWaitSwapchainImage")) {
+            st.hud_acquired = true;
+            const VkImage target = st.hud_images[hud_index].image;
+            Barrier(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+            Copy(cmd, made->hud.image, target, made->width, made->height, 0);
+            Barrier(cmd, target, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
+            st.hud_us = NowUs();
+        }
+    }
     const int eye = settings.afr && cockpit && made && made->tagged ? made->eye : -1;
-    if (!st.frame_state.shouldRender || !EnsureSwapchain(settings.afr ? width * 2 : width, height)) {
+    if (!st.frame_state.shouldRender ||
+        !EnsureSwapchain(st.swapchain, st.swapchain_width, st.swapchain_height, st.images,
+                         settings.afr ? width * 2 : width, height)) {
         return;
     }
     uint32_t index = 0;
@@ -1342,7 +1546,14 @@ void AfterSubmit() {
     st.frame_begun = false;
     XrCompositionLayerProjectionView views[2]{};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
-    const XrCompositionLayerBaseHeader* layers[1] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
+    XrCompositionLayerQuad hud{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    const XrCompositionLayerBaseHeader* layers[2] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer),
+                                                     reinterpret_cast<XrCompositionLayerBaseHeader*>(&hud)};
+    if (st.hud_acquired) {
+        st.hud_acquired = false;
+        XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xr.ReleaseSwapchainImage(st.hud_swapchain, &release);
+    }
     XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
     end.displayTime = st.frame_state.predictedDisplayTime;
     end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -1409,6 +1620,23 @@ void AfterSubmit() {
         layer.views = views;
         end.layerCount = 1;
         end.layers = layers;
+        if (cockpit && st.hud_swapchain && NowUs() - st.hud_us < 500000) {
+            // the HUD: a panel fixed ahead of the seat (the recentred head), level, facing the player; its last
+            // picture stays up through a frame without one
+            const float aspect = GameAspect() ? GameAspect() : 16.0f / 9.0f;
+            const Quat q = AxisAngle(0, 1, 0, -st.centre_yaw * Pi / 180.0f);
+            const XrVector3f ahead = Rotate(q, {0, settings.hud_y, -settings.hud_distance});
+            hud.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // premultiplied
+            hud.space = st.local;
+            hud.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            hud.subImage.swapchain = st.hud_swapchain;
+            hud.subImage.imageRect = {{0, 0}, {int32_t(st.hud_width), int32_t(st.hud_height)}};
+            hud.pose.orientation = {q.x, q.y, q.z, q.w};
+            hud.pose.position = {st.centre_position.x + ahead.x, st.centre_position.y + ahead.y,
+                                 st.centre_position.z + ahead.z};
+            hud.size = {settings.hud_width, settings.hud_width / aspect}; // the HUD's 16:9 canvas
+            end.layerCount = 2;
+        }
     }
     Ok(xr.EndFrame(st.session, &end), "xrEndFrame");
 }

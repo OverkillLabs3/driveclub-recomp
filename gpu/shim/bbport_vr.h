@@ -36,10 +36,19 @@ void NoteProjection(float x_scale, float y_scale);
 /// A 512-byte constant buffer of a G-buffer draw (three colour targets): floats 108..110 are the position of the
 /// camera the frame is drawn from, which names the head pose and eye of the frame.
 void NoteCameraConstants(const float* data);
+/// The HUD drawn apart: the rasterizer, at a frame's first HUD draw into the display buffer (the second draw there,
+/// not a SceneOverlay draw) with a 3D scene drawn (SceneDrawn), calls TakeScene with the display buffer in
+/// TRANSFER_SRC_OPTIMAL: it is copied out and cleared to transparent black, and stays in TRANSFER_SRC_OPTIMAL. The
+/// pipeline cache makes the alpha of blended draws into the display buffer their coverage while HudLayer().
+bool HudLayer();
+bool SceneOverlay(uint64_t vs_hash);
+bool SceneDrawn();
+void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height);
 /// A presenter frame was made from the game's display buffer (`display_view`: SHADER_READ_ONLY_OPTIMAL, in
 /// `display_format`, at the output resolution; null for HDR): the headset gets that picture, with the frame's camera.
-void NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkFormat display_format,
-               uint32_t display_width, uint32_t display_height);
+/// Returns the view the window shows instead (the scene and the HUD put together again), or null.
+VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkFormat display_format,
+                      uint32_t display_width, uint32_t display_height);
 /// Present: `image` (the window's picture, TRANSFER_SRC_OPTIMAL) is the fallback when the frame has no picture.
 void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height);
 /// After the present submission (under the queue's submit lock): the headset's layer goes out.

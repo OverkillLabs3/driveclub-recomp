@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR: a frame whose HUD was drawn apart (the display buffer cleared to transparent black after the scene was copied
+// out; the HUD's alpha is its coverage): the scene for the eyes, the HUD for its own layer (premultiplied), and the
+// two put together again for the window and the still screen. RGBA8 copies holding sRGB values, as vr_copy.comp's.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2D hud_tex;   // the display buffer: the HUD over transparent black
+layout(binding = 1) uniform texture2D scene_tex; // the display buffer before the HUD
+layout(binding = 2, rgba8) uniform writeonly image2D scene_img;
+layout(binding = 3, rgba8) uniform writeonly image2D hud_img;
+layout(binding = 4, rgba8) uniform writeonly image2D whole_img;
+
+layout(push_constant) uniform Constants {
+    vec2 size;
+    float encode; // 1: the views decode sRGB: store it encoded again
+};
+
+vec3 Encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return encode > 0.5 ? mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)) : c;
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    const vec4 hud = clamp(texelFetch(hud_tex, pixel, 0), 0.0, 1.0);
+    const vec3 scene = texelFetch(scene_tex, pixel, 0).rgb;
+    imageStore(scene_img, pixel, vec4(Encode(scene), 1.0));
+    imageStore(hud_img, pixel, vec4(Encode(hud.rgb), hud.a));
+    imageStore(whole_img, pixel, vec4(Encode(hud.rgb + (1.0 - hud.a) * scene), 1.0));
+}

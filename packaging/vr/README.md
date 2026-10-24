@@ -58,6 +58,8 @@ seat_z = 0
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
+hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture
+hud_distance = 1.1 # the HUD panel: metres ahead, hud_width = 1.4 (metres, 16:9), hud_y = 0 (metres above the eyes)
 screen_vfov = 40   # the still screen's height, degrees
 key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
 ```

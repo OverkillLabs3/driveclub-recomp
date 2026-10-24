@@ -1232,6 +1232,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         if (fg_display_draws == 2 && BbSettings::Get().frame_gen != BbSettings::FrameGenOff) {
             fg_capture_pending = true;
         }
+        if (fg_display_draws == 2 && BbVr::HudLayer()) {
+            vr_hud_pending = true; // VR: the HUD starts here (after any scene overlays)
+        }
         // HDR output: the first display draw after a 3D scene is its composite; the next one
         // starts the UI, and the display buffer before it is the picture before the UI.
         if (BbSettings::Get().hdr_output.load(std::memory_order_relaxed)) {
@@ -1250,6 +1253,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         fg_in_display = true;
     } else {
         fg_in_display = false;
+        vr_hud_pending = false;
     }
     if (display_draw) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
@@ -1301,6 +1305,20 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (hdr_capture_pending) {
         hdr_capture_pending = false;
         CaptureHdrHudless(cb_descs[0].first, regs.color_buffers[0].Address());
+    }
+    if (vr_hud_pending && !BbVr::SceneOverlay(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash)) {
+        // VR: the first HUD draw: the scene is copied out and the display buffer cleared, so the HUD draws alone
+        vr_hud_pending = false;
+        if (BbVr::SceneDrawn() && cb_descs[0].first) {
+            auto& display = texture_cache.GetImage(cb_descs[0].first);
+            scheduler.EndRendering();
+            runtime.Transit(&display, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                            vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite);
+            runtime.FlushBarriers();
+            BbVr::TakeScene(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(display.GetImage()),
+                            VkFormat(display.info.pixel_format), display.info.size.width,
+                            display.info.size.height);
+        }
     }
     std::optional<BbStats::PhaseTimer> phase;
     phase.emplace(BbStats::phase_ns[4]);
