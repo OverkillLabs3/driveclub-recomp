@@ -149,6 +149,7 @@ std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
 bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlays= in launcher.ini)
+bool g_vr = false;  // "VR headset (experimental)" (vr= in launcher.ini): BB_VR for the game
 bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
 bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
 std::atomic<bool> g_update_ready{false};  // a newer release was found (g_update)
@@ -315,6 +316,7 @@ int fgen_saved = 0;   // "Frame generation" choice, from launcher.ini
 int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.ini
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
+int g_vrsize = -1;  // "Headset picture": the eye-shaped sizes, apart from the widescreen ones
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
@@ -780,6 +782,20 @@ void BuildModel() {
                               L"Steam, Epic, Discord, OBS and tuning tools add themselves to the game's graphics. "
                               L"A part of the crashes players report comes from those additions, so the launcher keeps them "
                               L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
+  const int vr = toggle(L"VR headset (experimental)",
+                        L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
+                        L"head, in stereo. Needs openxr_loader.dll next to the game; see packaging/vr/README.md.",
+                        "@vr", false);
+  g_vrsize = seg(L"Headset picture",
+                 L"The size the game draws at, in the shape of a headset eye (Quest 2 at Virtual Desktop's Ultra or "
+                 L"High). \"+ HUD\": the game keeps its 16:9 shape for the menus and the HUD, so they are whole. "
+                 L"It sets the render and output size itself: leave those and Widescreen on Default and Off.",
+                 {L"Off", L"Ultra", L"High", L"Ultra + HUD", L"High + HUD"},
+                 {"", "VR eye Ultra [2688x2880] Internal + Output resolution",
+                  "VR eye High [2496x2688] Internal + Output resolution",
+                  "VR eye Ultra, full HUD [2688x2880] Internal + Output resolution",
+                  "VR eye High, full HUD [2496x2688] Internal + Output resolution"},
+                 0);
   const int twothread = toggle(L"Two-thread rendering",
                                L"Records each frame's draw commands on a second thread, so the thread that runs the game's "
                                L"graphics commands waits less. Faster on most PCs, but it lost the graphics device in races on AMD cards and ran slower there, so it starts off on AMD cards and under Wine or Proton. Turn it off if you see flicker, broken graphics or a crash.",
@@ -930,6 +946,7 @@ void BuildModel() {
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, g_fps_cap, outres, inres, wide, fov, twothread}, 0, kTabGraphics});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
+  g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, g_vrsize}, 0, kTabGraphics});
   g_cards.push_back({L"GRAPHICS DETAIL",
                      {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery], g_gfx[kGfxSsr], g_gfx[kGfxShadows],
                       g_gfx[kGfxParticles], g_gfx[kGfxDynres]},
@@ -1016,6 +1033,7 @@ void DerivePreset() {
   if (g_preset < 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_preset].sel = 0;
   if (g_wide >= 0 && g_c[g_wide].sel != 0) return;
+  if (g_vrsize >= 0 && g_c[g_vrsize].sel != 0) return;
   for (int p = 1; p <= 5; ++p) {
     if (g_c[g_outres].sel == kPresetOut[p] && g_c[g_inres].sel == kPresetIn[p]) g_c[g_preset].sel = p;
   }
@@ -1040,6 +1058,7 @@ void LoadSettings() {
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
+    if (line.rfind("vr=", 0) == 0) g_vr = line.substr(3) == "1";
     if (line.rfind("draw_threads=", 0) == 0) g_two_thread = line.substr(13) == "1";
     if (line.rfind("hdr=", 0) == 0) hdr_saved = atoi(line.substr(4).c_str());
     if (line.rfind("hdr_paper=", 0) == 0) hdr_paper_saved = atoi(line.substr(10).c_str());
@@ -1082,6 +1101,10 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@fast") {
       c.sel = fast_render ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@vr") {
+      c.sel = g_vr ? 1 : 0;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") {
@@ -1196,7 +1219,7 @@ int RenderMemoryTier() {
   const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
   if (w == 6) return 3;  // 5120x2160 is 11 megapixels
-  if (w > 0 || r >= 3) return 2;
+  if (w > 0 || r >= 3 || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0)) return 2;  // the headset sizes: 6.7-7.7 megapixels
   return r == 2 ? 1 : 0;
 }
 
@@ -1208,6 +1231,7 @@ void ApplyPreset(int preset) {
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];
   if (g_wide >= 0) g_c[g_wide].sel = 0;
+  if (g_vrsize >= 0) g_c[g_vrsize].sel = 0;
   if (g_mirror >= 0) g_c[g_mirror].sel = kPresetMirror[preset];
 }
 
@@ -1222,12 +1246,13 @@ void SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@full") full_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") g_allow_overlays = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@vr") g_vr = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel == 3) ? 1 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : 0) <<"\r\nname=" << Narrow(g_name) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -2264,6 +2289,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   }
   SetEnvironmentVariableW(L"BB_USER_NAME", g_name.c_str());
   SetEnvironmentVariableW(L"BB_FULLSCREEN", full_screen_now() ? L"1" : L"0");
+  if (!UserEnv(L"BB_VR")) SetEnvironmentVariableW(L"BB_VR", g_vr ? L"1" : L"0");
   SetEnvironmentVariableW(L"BB_TOGGLE_FILE", (user + L"\\toggles.txt").c_str());
   const int tier = MemoryTier();
   SetEnvironmentVariableW(L"BB_DMEM_MB", tier == 3 ? L"17056" : tier == 2 ? L"10056" : tier == 1 ? L"8056" : L"5056");
@@ -2956,15 +2982,19 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_preset) ApplyPreset(seg);
-          else if (c == g_outres || c == g_inres || c == g_wide) {
-            // A widescreen size sets the render and output size itself: other sizes there crop the picture.
-            if (c == g_wide && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
+          else if (c == g_outres || c == g_inres || c == g_wide || c == g_vrsize) {
+            // A widescreen or headset size sets the render and output size itself: other sizes there crop the picture.
+            const bool whole = c == g_wide || c == g_vrsize;
+            const int other = c == g_wide ? g_vrsize : g_wide;
+            if (whole && seg > 0 && other >= 0) g_c[other].sel = 0;  // one of the two
+            if (whole && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
               g_c[g_outres].sel = g_c[g_inres].sel = 0;
-              g_status = L"Output and render resolution are back on Default: the widescreen size sets both, and other sizes there crop the picture.";
+              g_status = L"Output and render resolution are back on Default: the widescreen or headset size sets both, and other sizes there crop the picture.";
               g_status_color = kWarn;
               g_status_sticky = true;
-            } else if ((c == g_outres || c == g_inres) && seg > 0 && g_wide >= 0 && g_c[g_wide].sel > 0) {
-              g_status = L"With a widescreen size, leave Output and Render resolution on Default, or the picture is cropped.";
+            } else if ((c == g_outres || c == g_inres) && seg > 0 &&
+                       ((g_wide >= 0 && g_c[g_wide].sel > 0) || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0))) {
+              g_status = L"With a widescreen or headset size, leave Output and Render resolution on Default, or the picture is cropped.";
               g_status_color = kWarn;
               g_status_sticky = true;
             }

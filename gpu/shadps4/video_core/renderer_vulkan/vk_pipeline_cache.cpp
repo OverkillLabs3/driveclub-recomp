@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_frametrace.h"
+#include "bbport_vr.h"
 #include "shader_recompiler/depth_size_fix.h"
 #include <atomic>
 #include <chrono>
@@ -26,6 +27,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
+#include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -638,6 +640,21 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         // Fill color blending information
         if (regs.blend_control[cb].enable && !col_buf.info.blend_bypass) {
             key.blend_controls[cb] = regs.blend_control[cb];
+            // VR: the HUD draws alone over transparent black (BbVr::TakeScene): its alpha must be its coverage for the
+            // HUD's own layer (premultiplied). The game blends the minimap's alpha with SrcA / 1-SrcA too, which
+            // leaves srcA^2 (faded parts vanished): alpha follows the colour's transmittance instead (dst factor
+            // 1-SrcA: a = srcA + (1 - srcA) * dstA; additive: a unchanged). The window drops alpha: unchanged there.
+            auto& blend = key.blend_controls[cb];
+            using Factor = AmdGpu::BlendControl::BlendFactor;
+            if (BbVr::HudLayer() && blend.color_func == AmdGpu::BlendControl::BlendFunc::Add &&
+                (blend.color_dst_factor == Factor::OneMinusSrcAlpha || blend.color_dst_factor == Factor::One) &&
+                FrameCapture::IsDisplayBuffer(col_buf.Address())) {
+                const bool over = blend.color_dst_factor == Factor::OneMinusSrcAlpha;
+                blend.alpha_src_factor = over ? Factor::One : Factor::Zero;
+                blend.alpha_dst_factor = over ? Factor::OneMinusSrcAlpha : Factor::One;
+                blend.alpha_func = AmdGpu::BlendControl::BlendFunc::Add;
+                blend.separate_alpha_blend = 1;
+            }
         }
 
         // Apply swizzle to target mask
