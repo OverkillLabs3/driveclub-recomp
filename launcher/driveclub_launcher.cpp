@@ -315,6 +315,7 @@ int fgen_saved = 0;   // "Frame generation" choice, from launcher.ini
 int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.ini
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
+int g_vrsize = -1;  // "Headset picture": the eye-shaped sizes, apart from the widescreen ones
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
@@ -704,18 +705,13 @@ void BuildModel() {
   const int wide = (g_wide = int(g_c.size()), seg(L"Widescreen (render and output)",
                        L"Ultrawide sizes. These change both the render and the output size. The needed memory patch is added for you.",
                        {L"Off", L"2560x1080", L"3440x1080", L"3840x1080", L"3440x1440",
-                        L"5120x1440", L"5120x2160", L"VR Ultra", L"VR High",
-                        L"VR Ultra, full HUD", L"VR High, full HUD"},
+                        L"5120x1440", L"5120x2160"},
                        {"", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
                         "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]",
                         "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]",
                         "1440p 21:9 [3440x1440] Internal + Output resolution [DEPTH BUG]",
                         "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
-                        "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]",
-                        "VR eye Ultra [2688x2880] Internal + Output resolution",
-                        "VR eye High [2496x2688] Internal + Output resolution",
-                        "VR eye Ultra, full HUD [2688x2880] Internal + Output resolution",
-                        "VR eye High, full HUD [2496x2688] Internal + Output resolution"},
+                        "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
                        00));
   const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
@@ -775,9 +771,18 @@ void BuildModel() {
                               L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
   const int vr = toggle(L"VR headset (experimental)",
                         L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
-                        L"head, in stereo. Needs openxr_loader.dll next to the game; see "
-                        L"packaging/vr/README.md. Widescreen \"VR Ultra\" or \"VR High\" draws in the shape of an eye.",
+                        L"head, in stereo. Needs openxr_loader.dll next to the game; see packaging/vr/README.md.",
                         "@vr", false);
+  g_vrsize = seg(L"Headset picture",
+                 L"The size the game draws at, in the shape of a headset eye (Quest 2 at Virtual Desktop's Ultra or "
+                 L"High). \"+ HUD\": the game keeps its 16:9 shape for the menus and the HUD, so they are whole. "
+                 L"It sets the render and output size itself: leave those and Widescreen on Default and Off.",
+                 {L"Off", L"Ultra", L"High", L"Ultra + HUD", L"High + HUD"},
+                 {"", "VR eye Ultra [2688x2880] Internal + Output resolution",
+                  "VR eye High [2496x2688] Internal + Output resolution",
+                  "VR eye Ultra, full HUD [2688x2880] Internal + Output resolution",
+                  "VR eye High, full HUD [2496x2688] Internal + Output resolution"},
+                 0);
   const int twothread = toggle(L"Two-thread rendering",
                                L"Records each frame's draw commands on a second thread, so the thread that runs the game's "
                                L"graphics commands waits less. Faster on most PCs, but it lost the graphics device in races on AMD cards and ran slower there, so it starts off on AMD cards and under Wine or Proton. Turn it off if you see flicker, broken graphics or a crash.",
@@ -925,13 +930,14 @@ void BuildModel() {
   g_cards.push_back({L"FRAME RATE AND RESOLUTION", {g_preset, fps, g_fps_cap, outres, inres, wide, fov, twothread}, 0, kTabGraphics});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
+  g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, g_vrsize}, 0, kTabGraphics});
   g_cards.push_back({L"GRAPHICS DETAIL",
                      {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery], g_gfx[kGfxSsr], g_gfx[kGfxShadows],
                       g_gfx[kGfxParticles], g_gfx[kGfxDynres]},
                      0, kTabDetail});
   g_cards.push_back({L"EFFECTS", {g_gfx[kGfxBlur], g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail,
                      L"The game's own camera effects, each on as on PS4."});
-  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, vr, autoplay, updatecheck}, 0, kTabGameplay});
+  g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, overlays, autoplay, updatecheck}, 0, kTabGameplay});
   g_cards.push_back({L"VIEW AND KEYS", {g_fov}, 0, kTabDriving,
                      L"Keys while playing:  F5 / F6  narrower / wider view.   F7  mouse look on or off.   F9  the new anti-aliasing on or off (not while upscaling).   F10  FSR or DLSS.   F12  FPS counter.   Page Up / Page Down  HDR brightness."});
   g_cards.back().sub = kSubAssists;
@@ -1011,6 +1017,7 @@ void DerivePreset() {
   if (g_preset < 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_preset].sel = 0;
   if (g_wide >= 0 && g_c[g_wide].sel != 0) return;
+  if (g_vrsize >= 0 && g_c[g_vrsize].sel != 0) return;
   for (int p = 1; p <= 5; ++p) {
     if (g_c[g_outres].sel == kPresetOut[p] && g_c[g_inres].sel == kPresetIn[p]) g_c[g_preset].sel = p;
   }
@@ -1194,7 +1201,7 @@ int RenderMemoryTier() {
   const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
   if (w == 6) return 3;  // 5120x2160 is 11 megapixels
-  if (w > 0 || r >= 3) return 2;
+  if (w > 0 || r >= 3 || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0)) return 2;  // the headset sizes: 6.7-7.7 megapixels
   return r == 2 ? 1 : 0;
 }
 
@@ -1206,6 +1213,7 @@ void ApplyPreset(int preset) {
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];
   if (g_wide >= 0) g_c[g_wide].sel = 0;
+  if (g_vrsize >= 0) g_c[g_vrsize].sel = 0;
   if (g_mirror >= 0) g_c[g_mirror].sel = kPresetMirror[preset];
 }
 
@@ -2940,15 +2948,19 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_preset) ApplyPreset(seg);
-          else if (c == g_outres || c == g_inres || c == g_wide) {
-            // A widescreen size sets the render and output size itself: other sizes there crop the picture.
-            if (c == g_wide && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
+          else if (c == g_outres || c == g_inres || c == g_wide || c == g_vrsize) {
+            // A widescreen or headset size sets the render and output size itself: other sizes there crop the picture.
+            const bool whole = c == g_wide || c == g_vrsize;
+            const int other = c == g_wide ? g_vrsize : g_wide;
+            if (whole && seg > 0 && other >= 0) g_c[other].sel = 0;  // one of the two
+            if (whole && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
               g_c[g_outres].sel = g_c[g_inres].sel = 0;
-              g_status = L"Output and render resolution are back on Default: the widescreen size sets both, and other sizes there crop the picture.";
+              g_status = L"Output and render resolution are back on Default: the widescreen or headset size sets both, and other sizes there crop the picture.";
               g_status_color = kWarn;
               g_status_sticky = true;
-            } else if ((c == g_outres || c == g_inres) && seg > 0 && g_wide >= 0 && g_c[g_wide].sel > 0) {
-              g_status = L"With a widescreen size, leave Output and Render resolution on Default, or the picture is cropped.";
+            } else if ((c == g_outres || c == g_inres) && seg > 0 &&
+                       ((g_wide >= 0 && g_c[g_wide].sel > 0) || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0))) {
+              g_status = L"With a widescreen or headset size, leave Output and Render resolution on Default, or the picture is cropped.";
               g_status_color = kWarn;
               g_status_sticky = true;
             }
