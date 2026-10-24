@@ -688,6 +688,24 @@ float RenderAspect() { // the scene's size (eboot 0x16d0544 / 0x16d0554), width 
     return w >= 64 && h >= 64 && w <= 16384 && h <= 16384 ? float(w) / float(h) : 0.0f;
 }
 
+// diag = 1: every 2 s while the driver's head camera's field of view is seen, how steady its projection and the layer
+// stating it are: the scene hook (16:9 perspective views it saw, narrowed, left), the projections the frames were drawn
+// with (anti-aliasing constants: narrowed to the render's shape or the game's 16:9), and the layer's angles.
+struct ProjectionDiag {
+    std::mutex mutex;
+    long long since_us = 0;
+    int hook_views = 0, hook_narrowed = 0, hook_other_fov = 0, hook_stale = 0;
+    int notes = 0, notes_narrowed = 0, notes_wide = 0;
+    float x_min = 0, x_max = 0, y_min = 0, y_max = 0;
+    int layers = 0, layers_tagged = 0, layers_afr = 0;
+    float tan_x_min = 0, tan_x_max = 0, tan_y_min = 0, tan_y_max = 0;
+} pdiag;
+
+void Range(float v, float& lo, float& hi, bool first) {
+    lo = first || v < lo ? v : lo;
+    hi = first || v > hi ? v : hi;
+}
+
 // The camera handed on is a copy (the game's own is rebuilt every frame); a ring, as more than one thread may set one.
 struct alignas(16) CameraCopy {
     uint8_t bytes[0x1000]; // the description runs on past the matrices: copied whole
@@ -706,8 +724,16 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
     }
     const float ratio = proj[5] / proj[0] / aspect;
     const float vfov = 2.0f * std::atan(1.0f / proj[5]) * 180.0f / Pi;
-    if (ratio < 0.96f || ratio > 1.045f || std::fabs(vfov - settings.cockpit_vfov) >= 3.0f ||
-        NowUs() - hook_time_us.load() > 300000) {
+    const bool other_fov = std::fabs(vfov - settings.cockpit_vfov) >= 3.0f;
+    const bool stale = NowUs() - hook_time_us.load() > 300000;
+    if (settings.diag && ratio >= 0.96f && ratio <= 1.045f) {
+        std::scoped_lock lock{pdiag.mutex};
+        ++pdiag.hook_views;
+        pdiag.hook_narrowed += !other_fov && !stale;
+        pdiag.hook_other_fov += other_fov;
+        pdiag.hook_stale += !other_fov && stale;
+    }
+    if (ratio < 0.96f || ratio > 1.045f || other_fov || stale) {
         return camera; // not the driver's head camera (a mirror, a reflection's face, a menu's camera)
     }
     CameraCopy& copy = camera_copies[camera_copy_next.fetch_add(1) % 64];
@@ -1201,7 +1227,44 @@ void OnDevice(VkInstance instance, VkPhysicalDevice physical_device, VkDevice de
                 settings.rigid ? "car-fixed" : "the game's head");
 }
 
+void DiagProjection(float x_scale, float y_scale, bool cockpit_fov) {
+    std::scoped_lock lock{pdiag.mutex};
+    const long long now = NowUs();
+    if (cockpit_fov) {
+        const bool first = pdiag.notes++ == 0;
+        Range(x_scale, pdiag.x_min, pdiag.x_max, first);
+        Range(y_scale, pdiag.y_min, pdiag.y_max, first);
+        const float aspect = GameAspect(), render = RenderAspect(), shape = y_scale / x_scale;
+        pdiag.notes_narrowed += render && std::fabs(shape / render - 1.0f) < 0.02f;
+        pdiag.notes_wide += aspect && std::fabs(shape / aspect - 1.0f) < 0.02f && std::fabs(render / aspect - 1.0f) > 0.01f;
+    }
+    if (!pdiag.since_us) {
+        pdiag.since_us = now;
+    }
+    if (now - pdiag.since_us < 2000000) {
+        return;
+    }
+    if (pdiag.notes) {
+        std::printf("VR diag: 2 s: scene hook %d views (%d narrowed, %d other field of view, %d without the head hook); "
+                    "frames' projection %d (%d narrowed, %d 16:9), x %.4f..%.4f y %.4f..%.4f; layer %d (%d tagged, %d "
+                    "alternate), tan x %.4f..%.4f y %.4f..%.4f\n",
+                    pdiag.hook_views, pdiag.hook_narrowed, pdiag.hook_other_fov, pdiag.hook_stale, pdiag.notes,
+                    pdiag.notes_narrowed, pdiag.notes_wide, pdiag.x_min, pdiag.x_max, pdiag.y_min, pdiag.y_max,
+                    pdiag.layers, pdiag.layers_tagged, pdiag.layers_afr, pdiag.tan_x_min, pdiag.tan_x_max,
+                    pdiag.tan_y_min, pdiag.tan_y_max);
+    }
+    pdiag.since_us = now;
+    pdiag.hook_views = pdiag.hook_narrowed = pdiag.hook_other_fov = pdiag.hook_stale = 0;
+    pdiag.notes = pdiag.notes_narrowed = pdiag.notes_wide = 0;
+    pdiag.layers = pdiag.layers_tagged = pdiag.layers_afr = 0;
+}
+
 void NoteProjection(float x_scale, float y_scale) {
+    if (settings.diag && hook_installed && x_scale > 0.1f && y_scale > 0.1f) {
+        // without a headset too
+        DiagProjection(x_scale, y_scale,
+                       std::fabs(2.0f * std::atan(1.0f / y_scale) * 180.0f / Pi - settings.cockpit_vfov) < 3.0f);
+    }
     if (!Active() || x_scale <= 0.1f || y_scale <= 0.1f) {
         return;
     }
@@ -1596,6 +1659,14 @@ void AfterSubmit() {
             const Quat q = AxisAngle(0, 1, 0, -st.centre_yaw * Pi / 180.0f);
             pose.orientation = {q.x, q.y, q.z, q.w};
             pose.position = st.centre_position;
+        }
+        if (settings.diag && cockpit) {
+            std::scoped_lock lock{pdiag.mutex};
+            const bool first = pdiag.layers++ == 0;
+            pdiag.layers_tagged += st.frame_tagged;
+            pdiag.layers_afr += st.afr_frame;
+            Range(tan_x, pdiag.tan_x_min, pdiag.tan_x_max, first);
+            Range(tan_y, pdiag.tan_y_min, pdiag.tan_y_max, first);
         }
         for (int e = 0; e < 2; ++e) {
             auto& v = views[e];
