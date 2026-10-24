@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
+#include "bbport_vr.h"
 #include "bbport_frametrace.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "common/debug.h"
@@ -63,6 +64,9 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
         }
     } else {
         return;
+    }
+    if (slot == 1) {
+        BbVr::NoteProjection(f[48], f[48 + 5]); // VR: tells the driver's head camera apart
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
@@ -327,6 +331,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // bbport: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
     // main camera (shadow passes bind the same layout with the light's camera).
     gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= 5 && db_desc.first;
+    vr_draw_targets = std::popcount(key.mrt_mask);
     // HDR output: a 3D scene is drawn in this frame (its G-buffer: three or more targets and depth).
     if (std::popcount(key.mrt_mask) >= 3 && db_desc.first &&
         BbSettings::Get().hdr_output.load(std::memory_order_relaxed)) {
@@ -1227,6 +1232,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         if (fg_display_draws == 2 && BbSettings::Get().frame_gen != BbSettings::FrameGenOff) {
             fg_capture_pending = true;
         }
+        if (fg_display_draws == 2 && BbVr::HudLayer()) {
+            vr_hud_pending = true; // VR: the HUD starts here (after any scene overlays)
+        }
         // HDR output: the first display draw after a 3D scene is its composite; the next one
         // starts the UI, and the display buffer before it is the picture before the UI.
         if (BbSettings::Get().hdr_output.load(std::memory_order_relaxed)) {
@@ -1245,6 +1253,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         fg_in_display = true;
     } else {
         fg_in_display = false;
+        vr_hud_pending = false;
     }
     if (display_draw) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
@@ -1296,6 +1305,20 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (hdr_capture_pending) {
         hdr_capture_pending = false;
         CaptureHdrHudless(cb_descs[0].first, regs.color_buffers[0].Address());
+    }
+    if (vr_hud_pending && !BbVr::SceneOverlay(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash)) {
+        // VR: the first HUD draw: the scene is copied out and the display buffer cleared, so the HUD draws alone
+        vr_hud_pending = false;
+        if (BbVr::SceneDrawn() && cb_descs[0].first) {
+            auto& display = texture_cache.GetImage(cb_descs[0].first);
+            scheduler.EndRendering();
+            runtime.Transit(&display, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                            vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite);
+            runtime.FlushBarriers();
+            BbVr::TakeScene(VkCommandBuffer(scheduler.CommandBuffer()), VkImage(display.GetImage()),
+                            VkFormat(display.info.pixel_format), display.info.size.width,
+                            display.info.size.height);
+        }
     }
     std::optional<BbStats::PhaseTimer> phase;
     phase.emplace(BbStats::phase_ns[4]);
@@ -2763,6 +2786,9 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     camera_motion->OnConstants(reinterpret_cast<const float*>(ring_data));
                 }
                 NoteTaaBuffer(stage.pgm_hash, buffer_index, ring_data, ring->size);
+                if (ring->size == 512 && vr_draw_targets == 3 && BbVr::Active()) {
+                    BbVr::NoteCameraConstants(reinterpret_cast<const float*>(ring_data));
+                }
                 push_data.AddOffset(binding.buffer, 0);
             }
             buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
@@ -2820,6 +2846,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             if (vsharp.GetSize() == 864 && gbuffer_draw &&
                 memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                 camera_motion->OnConstants(reinterpret_cast<const float*>(vsharp.base_address));
+            }
+            if (vsharp.GetSize() == 512 && vr_draw_targets == 3 && BbVr::Active() && vsharp.base_address != 0 &&
+                memory->ClampRangeSize(vsharp.base_address, 512) == 512) {
+                BbVr::NoteCameraConstants(reinterpret_cast<const float*>(vsharp.base_address));
             }
             // Object motion research: the vertex shader buffers of G-buffer draws.
             if (FrameCapture::Active() && gbuffer_draw && stage.sw_stage == Shader::SwStage::Vertex &&

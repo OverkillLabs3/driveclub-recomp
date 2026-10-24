@@ -363,6 +363,7 @@ private:
     bool motion_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
+    int vr_draw_targets = 0; // bbport: VR: the colour targets of the current draw (its G-buffer pass has three)
     /// Frame generation: the scene depth (the G-buffer pass), the first draw into the display buffer
     /// since other work (the UI starts: the picture before it is the HUD-less frame).
     VideoCore::ImageId fg_depth{};
@@ -392,6 +393,7 @@ private:
     bool fg_in_display = false;
     u32 fg_display_draws = 0; ///< draws into the display buffer since other work
     bool fg_capture_pending = false;
+    bool vr_hud_pending = false; ///< VR: the next display draw that is not a scene overlay starts the HUD
     /// A compute pass writes one of the mirror scene's targets while that scene is skipped: it would filter
     /// an already filtered picture again, so the dispatch is dropped as well.
     bool skip_mirror_dispatch = false;
