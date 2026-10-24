@@ -92,14 +92,6 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
-    if (instance.IsBufferMarkerSupported()) {
-        crumb_buffer = std::make_unique<VideoCore::Buffer>(instance, 0, 256, VideoCore::MemoryType::HostUncached,
-                                                          "Breadcrumbs");
-        if (crumb_buffer->mapped_data.data()) {
-            BbRecent::crumb = reinterpret_cast<volatile u32*>(crumb_buffer->mapped_data.data());
-            *BbRecent::crumb = 0;
-        }
-    }
     // Object motion first: it fixes the buffer addresses the motion shader variants embed.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
@@ -108,7 +100,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
                                                   *camera_motion, *scene_targets);
     g_drive_motion = &upscaler->GetDriveMotion();
     drive_aa = std::make_unique<DriveAA>(instance, scheduler, texture_cache, runtime,
-                                         upscaler->GetDriveMotion());
+                                         upscaler->GetDriveMotion(), *camera_motion);
     if (!EmulatorSettings.IsNullGPU()) {
         liverpool->BindRasterizer(this);
     }
@@ -118,6 +110,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
         draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
+        buffer_cache.SetDrainGpuPipe([this] { draw_pipe->Drain(); });
         if (BbStats::PipeCheckEnabled()) {
             static DrawPipe* checked_pipe = nullptr;
             checked_pipe = draw_pipe.get();
@@ -324,9 +317,10 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     } else {
         db_desc.first = {};
     }
-    // bbport: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
-    // main camera (shadow passes bind the same layout with the light's camera).
-    gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= 5 && db_desc.first;
+    // DriveClub's scene G-buffer has three color targets. Ignore the optional motion output
+    // at slot 7 when identifying those guest targets.
+    const u32 guest_color_targets = std::popcount(key.mrt_mask & 0x7f);
+    gbuffer_draw = camera_motion->Enabled() && guest_color_targets >= 3 && db_desc.first;
     // HDR output: a 3D scene is drawn in this frame (its G-buffer: three or more targets and depth).
     if (std::popcount(key.mrt_mask) >= 3 && db_desc.first &&
         BbSettings::Get().hdr_output.load(std::memory_order_relaxed)) {
@@ -337,7 +331,7 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     }
     // Frame generation: the G-buffer pass (three color targets and a depth target) holds the scene depth.
     if ((BbSettings::Get().frame_gen != BbSettings::FrameGenOff || drive_aa->Active()) &&
-        std::popcount(key.mrt_mask) == 3 &&
+        guest_color_targets == 3 &&
         db_desc.first && cb_descs[0].first) {
         // The biggest one of the frame: the mirror and reflection probe scenes use the same layout.
         const auto& size = texture_cache.GetImage(db_desc.first).info.size;
@@ -637,6 +631,8 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
 void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_prepared,
                           bool is_indexed, u32 index_offset, const AmdGpu::ComputeProgram* cs,
                           const IndirectDraw* indirect) {
+    std::optional<BbStats::PhaseTimer> post_phase;
+    post_phase.emplace(BbStats::post_ns[5], 1u << 9); // the head: dirty blocks and thread state
     auto& dirty = liverpool->pipe_dirty;
     if (!pipe_synced) {
         // Stage B has not run yet: its register copy starts as this one.
@@ -646,22 +642,14 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     std::array<u16, AmdGpu::RegDirty::NumBlocks> blocks;
     u32 num_blocks = 0;
-#ifdef __GLIBCXX__
-    for (size_t block = dirty.blocks._Find_first(); block < dirty.blocks.size();
-         block = dirty.blocks._Find_next(block)) {
+    post_phase.emplace(BbStats::post_ns[6], 1u << 10); // the dirty-block gather
+    for (u32 block = dirty.blocks.find_next(0); block < AmdGpu::RegDirty::NumBlocks;
+         block = dirty.blocks.find_next(block + 1)) {
         blocks[num_blocks++] = static_cast<u16>(block);
     }
-#else
-    if (dirty.blocks.any()) {
-        for (size_t block = 0; block < dirty.blocks.size(); ++block) {
-            if (dirty.blocks.test(block)) {
-                blocks[num_blocks++] = static_cast<u16>(block);
-            }
-        }
-    }
-#endif
     const auto stages =
         pipeline ? pipeline->GetStages() : std::span<const Shader::Info* const>{};
+    post_phase.emplace(BbStats::post_ns[7], 1u << 11); // stages and thread-local state
     // Constants: copied here into the ring, the recording thread only binds them.
     thread_local std::array<boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>,
                             Shader::MaxStageTypes>
@@ -671,6 +659,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     thread_local boost::container::static_vector<Shader::Info::PointerRead, 32> pointer_reads;
     pointer_reads.clear();
     const Shader::Info* fetch_stage = nullptr;
+    post_phase.emplace(BbStats::post_ns[0], 1u << 1);
     if (pipeline && !cs) {
         const auto* graphics = static_cast<const GraphicsPipeline*>(pipeline);
         const auto& fetch = graphics->GetFetchShader();
@@ -689,6 +678,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     // bbport: every range a stage of this draw writes is noted before any read-only binding is copied into the
     // ring: a read copied first would no longer alias a write declared by a later binding or stage.
+    post_phase.emplace(BbStats::post_ns[1], 1u << 2);
     if (constant_ring && !BbToggle::Disabled(BbToggle::ConstantRing)) {
         for (const auto* stage : stages) {
             if (!stage) {
@@ -707,6 +697,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         }
     }
     u32 num_stages = 0;
+    post_phase.emplace(BbStats::post_ns[2], 1u << 3);
     u32 size = sizeof(DrawPacket) + AlignPacket(num_blocks * sizeof(u16)) +
                num_blocks * AmdGpu::RegDirty::BlockWords * sizeof(u32);
     for (const auto* stage : stages) {
@@ -739,6 +730,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
 
     u8* out = draw_pipe->Begin(size);
+    post_phase.emplace(BbStats::post_ns[3], 1u << 4);
     u8* const start = out;
     auto& packet = *reinterpret_cast<DrawPacket*>(out);
     packet.kind = cs         ? (indirect ? PacketKind::IndirectDispatch : PacketKind::Dispatch)
@@ -803,6 +795,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         out += sizeof(AmdGpu::Regs);
     }
     dirty.Clear();
+    post_phase.emplace(BbStats::post_ns[4], 1u << 5);
     // bbport: copies stage A queued for work recorded before this hand-off: stage B may submit it.
     BbCopy::FlushBatch();
     draw_pipe->Commit(static_cast<u32>(out - start));
@@ -1007,6 +1000,57 @@ void Rasterizer::PrintPipeStats() {
                 (draw_pipe->drains - last_drains) / seconds,
                 100.0 * (draw_pipe->drain_cycles - last_drain_cycles) / cycles,
                 100.0 * (busy - last_busy) / cycles);
+    if (BbStats::motion_profile_enabled) {
+        static constexpr const char* profile_names[] = {
+            "DrawRecord", "PrepareRenderState", "BindResources", "BeginRendering",
+            "object-motion gate+history", "object-motion index ranges", "object-motion PrepareDraw",
+            "emit/bind/record draw", "begin memo lookup", "begin full path",
+            "begin setup", "begin color attachments", "begin depth attachment",
+            "begin tail", "begin memo store", "object-motion Attach",
+            "attach EnsureImage", "attach EndRendering", "attach Record",
+            "EnsureImage vk::Image::Create", "EnsureImage createImageView",
+            "EnsureImage scheduler.Finish", "pipeline prepared check", "pipeline key refresh",
+            "pipeline map lookup", "pipeline runtime info", "pipeline flat-buffer refresh",
+            "pipeline specialization", "pipeline permutation lookup", "pipeline add bindings",
+            "fetch shader parse", "vertex attribute specialization", "buffer specialization",
+            "image specialization", "fmask specialization", "sampler specialization",
+            "tessellation specialization", "specialization equality",
+            "specialization memo check",
+        };
+        std::printf("Draw profile (thread-ms/s; nested phases overlap):");
+        for (u32 i = 0; i < BbStats::MotionProfilePhaseCount; ++i) {
+            const u64 ns = BbStats::motion_profile_ns[i].exchange(0, std::memory_order_relaxed);
+            std::printf(" %s=%.1f", profile_names[i], double(ns) / (seconds * 1e6));
+        }
+        std::printf("\n");
+        std::printf("Pipeline lookup outcomes: prepared hit %.0f/s, prepared miss %.0f/s, "
+                    "no prepared draw %.0f/s; specialization memo %.0f hits/s, %.0f misses/s\n",
+                    double(BbStats::pipeline_prepared_hits.exchange(0,
+                                                                    std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::pipeline_prepared_misses.exchange(0,
+                                                                      std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::pipeline_unprepared.exchange(0, std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::pipeline_spec_memo_hits.exchange(0,
+                                                                     std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::pipeline_spec_memo_misses.exchange(
+                               0, std::memory_order_relaxed)) /
+                        seconds);
+        std::printf("Object-motion Attach calls: %.0f/s, layout transitions: %.0f/s, "
+                    "image recreations: %.0f/s, scheduler finishes: %.0f/s\n",
+                    double(BbStats::motion_attach_calls.exchange(0, std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::motion_attach_transitions.exchange(0,
+                                                                        std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::motion_image_recreates.exchange(0, std::memory_order_relaxed)) /
+                        seconds,
+                    double(BbStats::motion_image_finishes.exchange(0, std::memory_order_relaxed)) /
+                        seconds);
+    }
     std::printf("  drains by reason/s:");
     for (u32 r = 0; r < DrawPipe::NumReasons; ++r) {
         if (const u64 n = draw_pipe->drains_by_reason[r]) {
@@ -1150,6 +1194,22 @@ static bool SkipMirrorDraw(const AmdGpu::Regs& regs) {
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     RENDERER_TRACE;
     BbStats::draws.fetch_add(1, std::memory_order_relaxed);
+    // bbport: BB_FLUSH_DRAWS=<n> submits the pending commands every n draws. The whole frame is
+    // otherwise submitted in the flushes a flip and a guest readback make, so the GPU starts on a
+    // frame only after most of it was recorded. Diagnostic: it shows how much of the frame time is
+    // the GPU waiting for that submission.
+    static const u32 flush_draws = [] {
+        const char* env = std::getenv("BB_FLUSH_DRAWS");
+        return env ? u32(std::max(0, std::atoi(env))) : 0u;
+    }();
+    static thread_local u32 draws_since_flush = 0;
+    if (flush_draws != 0 && ++draws_since_flush >= flush_draws) {
+        draws_since_flush = 0;
+        DrainDrawPipe(DrawPipe::ReasonDraw);
+        scheduler.Flush();
+    }
+    std::optional<BbStats::PhaseTimer> draw_phase;
+    draw_phase.emplace(BbStats::draw_ns[0], 1u << 6);
     if (SkipMirrorDraw(Regs())) {
         // A draw that reads the mirror scene's own pictures keeps the simulation behind them in step (rain on the
         // windscreen, wipers): it is drawn every frame.
@@ -1170,12 +1230,15 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     // bbport: with the draw pipeline this thread only selects the pipeline and hands the draw
     // to the recording thread (DrawRecord there); draws FilterDraw handles itself run here.
     const bool pipelined = UseDrawPipe();
-    if (pipelined && !FilterDrawPasses() &&
+    // Evaluated once: the three checks below asked the same question, and each one reads the
+    // register file (a few hundred ns per 2500 draws a frame).
+    const bool filter_passes = FilterDrawPasses();
+    if (pipelined && !filter_passes &&
         !BbToggle::Disabled(BbToggle::PipelinedMemoryWrites)) {
         PostDraw(nullptr, nullptr, false, 0);
         return;
     }
-    if (!pipelined || !FilterDrawPasses()) {
+    if (!pipelined || !filter_passes) {
         BbStats::PhaseTimer filter_timer{BbStats::phase_ns[0]};
         DrainDrawPipe(DrawPipe::ReasonDraw);
         FrameCapture::Poll();
@@ -1185,6 +1248,7 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
         }
     }
     WaitQueuedMemoryWrites();
+    draw_phase.emplace(BbStats::draw_ns[1], 1u << 7);
     const GraphicsPipeline* pipeline;
     const PreparedDraw* used_prepared;
     {
@@ -1198,7 +1262,8 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     if (!pipeline) {
         return;
     }
-    if (pipelined && FilterDrawPasses()) {
+    if (pipelined && filter_passes) {
+        draw_phase.emplace(BbStats::draw_ns[2], 1u << 8);
         PostDraw(pipeline, used_prepared, is_indexed, index_offset);
         return;
     }
@@ -1207,6 +1272,8 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
+    BbStats::MotionProfileTimer record_timer{
+        BbStats::motion_profile_ns[BbStats::MotionDrawRecord]};
     buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated since the last recording
     if (DrawPipe::OnStageB()) {
         FrameCapture::Poll();
@@ -1246,7 +1313,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     } else {
         fg_in_display = false;
     }
-    if (display_draw) {
+    // Several draws target the display buffer in one game frame (scene composite, then UI).
+    // Advance temporal state only once, at the first display draw that closes the scene.
+    const bool frame_display = display_draw && fg_display_draws == 1;
+    if (frame_display) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
         NoteFrameStart();
         drive_aa->NextFrame();
@@ -1257,8 +1327,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 object_motion->InvalidateHistory();
                 camera_motion->InvalidateHistory();
             }
-            camera_motion->SetJitter(upscaler->Jitter());
-            object_motion->OnFrameStart();
+            camera_motion->SetJitter(upscaler->Enabled() ? upscaler->Jitter() : drive_aa->Jitter());
             static const char* scene_debug = std::getenv("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
@@ -1270,6 +1339,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
 
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
+        BbStats::MotionProfileTimer profile_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPrepareRenderState]};
         PrepareRenderState(pipeline);
     }
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
@@ -1285,6 +1356,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     bool bound;
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[3]};
+        BbStats::MotionProfileTimer profile_timer{
+            BbStats::motion_profile_ns[BbStats::MotionBindResources]};
         bound = BindResources(pipeline);
     }
     bind_prepared = nullptr; // indirect draws and dispatches bind without prepared sharps
@@ -1299,7 +1372,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     std::optional<BbStats::PhaseTimer> phase;
     phase.emplace(BbStats::phase_ns[4]);
-    const auto state = BeginRendering(pipeline);
+    RenderState state;
+    {
+        BbStats::MotionProfileTimer profile_timer{
+            BbStats::motion_profile_ns[BbStats::MotionBeginRendering]};
+        state = BeginRendering(pipeline);
+    }
     phase.emplace(BbStats::phase_ns[5]);
     if (fg_capture_pending) {
         fg_capture_pending = false;
@@ -1333,6 +1411,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
     if (motion_draw && motion_geometry) {
+        BbStats::MotionProfileTimer profile_timer{
+            BbStats::motion_profile_ns[BbStats::MotionGate]};
         const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
         const auto [base_vertex, first_instance] =
             GetDrawOffsets(regs, vs, pipeline->GetFetchShader());
@@ -1343,12 +1423,18 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         // Without a character-size skeleton the draw is gated on its bone palette changing
         // since last frame (model constants follow the camera, the palette does not). The
         // check comes first: most gated draws are static world pieces with long index lists.
+        // bbport: the broad path is the default now (BB_OBJECT_MOTION_ALL=0 restores the gate).
+        // A car's parts are separate meshes and only the ones binding a 416-byte model-constant
+        // buffer were picked up by the gate below; the rest (trunk trim, diffuser, light
+        // clusters) kept camera-only vectors, so DLSS reprojected them wrongly and their edges
+        // and specular highlights shimmered while the car moved. Object vectors for every
+        // scene-geometry draw fix that, for about 2% of the frame.
         static const bool all_motion = [] {
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
+            return !value || value[0] != '0';
         }();
         bool gated = !all_motion;
-        u64 palette = 0;
+        u64 motion_state = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;
             const auto buffer = resource.GetSharp(vs);
@@ -1360,11 +1446,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 break;
             }
             const VAddr address = buffer.base_address;
-            if (role == Motion::BufferRole::SmallSkeleton &&
+            // Rigid meshes have no bone palette to signal movement. Their 416-byte
+            // model constants carry the world transform; include them in the gate so
+            // moving car bodies get object vectors instead of camera-only vectors.
+            if ((role == Motion::BufferRole::SmallSkeleton || size == 416) &&
                 memory->IsValidGpuMapping(address, 0) &&
                 memory->ClampRangeSize(address, size) == size) {
-                palette = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
-                                               palette);
+                motion_state = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
+                                                    motion_state);
             }
         }
         push_data.motion_param = 0;
@@ -1374,10 +1463,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                                              .index_count = regs.num_indices,
                                              .instances = regs.num_instances.NumInstances(),
                                              .first_instance = first_instance},
-                                            palette)) {
+                                            motion_state)) {
             Motion::VertexRange range{base_vertex, regs.num_indices};
             u64 topology = 0;
             if (is_indexed) {
+                BbStats::MotionProfileTimer index_timer{
+                    BbStats::motion_profile_ns[BbStats::MotionIndexRange]};
                 range = {};
                 const u64 bytes = u64(regs.num_indices) * index_size;
                 if (index_address && memory->IsValidGpuMapping(index_address, 0) &&
@@ -1402,6 +1493,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                     topology = scanned.topology;
                 }
             }
+            BbStats::MotionProfileTimer prepare_timer{
+                BbStats::motion_profile_ns[BbStats::MotionPrepareDraw]};
             push_data.motion_param = object_motion->PrepareDraw({
                 .shader = vs.pgm_hash,
                 .geometry = motion_geometry,
@@ -1414,6 +1507,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
+    BbStats::MotionProfileTimer emit_timer{
+        BbStats::motion_profile_ns[BbStats::MotionEmitDraw]};
     pipeline->BindResources(set_writes, push_data);
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
@@ -1438,18 +1533,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
-    // The number BbRecent::Draw below gives this draw; the GPU writes it when its command processor gets here.
-    const vk::Buffer crumb_handle = BbRecent::crumb ? crumb_buffer->Handle() : vk::Buffer{};
-    const u32 crumb = BbRecent::next.load(std::memory_order_relaxed) + 1;
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
             cmdbuf.drawIndexed(num_indices, num_instances, 0, s32(first_vertex), first_instance);
         } else {
             cmdbuf.draw(num_indices, num_instances, first_vertex, first_instance);
-        }
-        if (crumb_handle) {
-            cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eTopOfPipe, crumb_handle, 0, crumb);
         }
     });
     {
@@ -1982,8 +2071,6 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
 
     const vk::Pipeline handle = pipeline->Handle();
     const u32 dim_x = cs_program.dim_x, dim_y = cs_program.dim_y, dim_z = cs_program.dim_z;
-    const vk::Buffer crumb_handle = BbRecent::crumb ? crumb_buffer->Handle() : vk::Buffer{};
-    const u32 crumb = BbRecent::next.load(std::memory_order_relaxed) + 1;
     BbRecent::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
@@ -1991,9 +2078,6 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
-        if (crumb_handle) {
-            cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eTopOfPipe, crumb_handle, 0, crumb);
-        }
     });
     DebugState.IncDispatch();
 
@@ -2132,7 +2216,9 @@ bool Rasterizer::BindHelperWanted() {
     if (env && env[0]) {
         return env[0] == '1';
     }
-    // Measured neutral on 16 threads (docs/parallel_gpu.md): opt-in.
+    // Texture binding can overlap guest updates to image descriptors and cache state. Keep
+    // the helper opt-in so those timing-sensitive reads stay on the recording thread by default.
+    // BB_TEXTURE_HELPER=1 enables it for performance A/B testing.
     return false;
 }
 
@@ -3502,6 +3588,8 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     }
     BeginSignature signature;
     if (memo_on) {
+        BbStats::MotionProfileTimer memo_timer{
+            BbStats::motion_profile_ns[BbStats::MotionBeginMemoLookup]};
         signature = MakeBeginSignature(pipeline);
         const auto& regs = Regs();
         bool usable = begin_memo.valid && scheduler.IsRenderingWith(begin_memo.state) &&
@@ -3524,7 +3612,12 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         ++begin_memo_misses;
     }
     begin_memo.valid = false;
+    BbStats::MotionProfileTimer full_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginFull]};
     RenderState state = BeginRenderingFull(pipeline);
+    full_timer.Stop();
+    BbStats::MotionProfileTimer store_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginMemoStore]};
     if (memo_on && !attachment_feedback_loop) {
         // (is_clear of the depth attachment shares its bytes with has_depth.)
         bool clears = state.depth_stencil_attachment.depth_clear ||
@@ -3542,6 +3635,8 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
 }
 
 RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
+    BbStats::MotionProfileTimer setup_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginSetup]};
     attachment_feedback_loop = false;
     using VulkanUpscalerTarget = TemporalUpscaler::Target;
     VulkanUpscalerTarget redirect{};
@@ -3550,7 +3645,7 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     std::pair<vk::ImageView, vk::ImageLayout> original_color{};
     const auto& regs = Regs();
     const auto& key = pipeline->GetGraphicsKey();
-    if (std::popcount(key.mrt_mask & 0x7f) >= 5 && db_desc.first &&
+    if (std::popcount(key.mrt_mask & 0x7f) >= 3 && db_desc.first &&
         scene_targets->EligibleScene(texture_cache.GetImage(db_desc.first))) scene_started = true;
     // A proxy attachment cannot represent MSAA or a feedback loop that reads the
     // same image through the guest's native descriptor during this draw.
@@ -3614,11 +3709,14 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         BbStats::reduced_draws.fetch_add(reduced, std::memory_order_relaxed);
         BbStats::scene_draws.fetch_add(scene_started, std::memory_order_relaxed);
     }
+    setup_timer.Stop();
     RenderState state;
     state.width = instance.GetMaxFramebufferWidth();
     state.height = instance.GetMaxFramebufferHeight();
     state.num_layers = std::numeric_limits<u16>::max();
     state.num_color_attachments = std::bit_width(key.mrt_mask);
+    BbStats::MotionProfileTimer color_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginColorAttachments]};
     for (auto cb = 0u; cb < state.num_color_attachments; ++cb) {
         auto& [image_id, desc] = cb_descs[cb];
         if (!image_id) {
@@ -3695,7 +3793,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     for (u32 cb = state.num_color_attachments; cb < state.color_attachments.size(); ++cb) {
         state.color_attachments[cb] = {};
     }
+    color_timer.Stop();
 
+    BbStats::MotionProfileTimer depth_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginDepthAttachment]};
     if (auto image_id = db_desc.first; image_id) {
         auto& desc = db_desc.second;
         const auto htile_address = regs.depth_htile_data_base.GetAddress();
@@ -3769,7 +3870,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     } else {
         state.depth_stencil_attachment = {};
     }
+    depth_timer.Stop();
 
+    BbStats::MotionProfileTimer finalize_timer{
+        BbStats::motion_profile_ns[BbStats::MotionBeginTail]};
     // bbport: a pass drawn into the upscaler's output-size images (UI, display pass): every
     // attachment must be redirected, viewports and scissors are scaled.
     target_scale = {1.0f, 1.0f};
@@ -3986,6 +4090,14 @@ bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks) {
 }
 
 bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
+    // bbport: a read of a host visible readback window is served on this thread from its mapping;
+    // no draw pipe drain, GPU command or copy.
+    if (!assume_locks && buffer_cache.TryCopyQueueReadback(addr, size)) {
+        return true;
+    }
+    if (!assume_locks && buffer_cache.TryFastWindowRead(addr, size)) {
+        return true;
+    }
     DrainDrawPipe();
     if (!IsMapped(addr, size)) {
         // Not GPU mapped memory, can skip invalidation logic entirely.

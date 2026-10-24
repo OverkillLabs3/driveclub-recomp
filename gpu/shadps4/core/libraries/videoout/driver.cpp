@@ -451,12 +451,16 @@ void VideoOutDriver::Flip(const Request& req) {
                   subs = BbStats::submissions.load(), sys_us = BbStats::gpu_sys_us.load(),
                   user_us = BbStats::gpu_user_us.load(), invol = BbStats::gpu_invol_switches.load(),
                   vol = BbStats::gpu_vol_switches.load();
-        u64 gpu_ns = 0;
+        // Linux has a per-thread CPU clock. On Windows, Liverpool publishes equivalent
+        // GetThreadTimes totals; use them so the same stall diagnostics work there too.
+        u64 gpu_ns = (user_us + sys_us) * 1000;
+#ifndef _WIN32
         if (const int clock = BbStats::gpu_thread_clock.load(); clock != -1) {
             timespec ts{};
             clock_gettime(static_cast<clockid_t>(clock), &ts);
             gpu_ns = u64(ts.tv_sec) * 1000000000ull + u64(ts.tv_nsec);
         }
+#endif
         const u64 images = BbStats::images_registered.load();
         const u64 image_bytes = BbStats::image_upload_bytes.load();
         const u64 buffer_bytes = BbStats::buffer_upload_bytes.load();
@@ -572,6 +576,52 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::phase_ns[4].exchange(0) / (window * 1e7),
                         BbStats::phase_ns[5].exchange(0) / (window * 1e7),
                         BbStats::phase_ns[6].exchange(0) / (window * 1e7));
+            if (BbStats::phases_enabled) {
+                // bbport: where the stage A draw hand-off spends its time (% of wall time).
+                std::printf("Stage A draw hand-off (%% of wall time): entry and pipe wait %.1f, "
+                            "pipeline lookup and filter %.1f, PostDraw %.1f; of it head %.1f "
+                            "(dirty gather %.1f, stages and thread state %.1f), fetch V#s %.1f, "
+                            "written buffers %.1f, stage loop and ring copies %.1f, assembly "
+                            "%.1f, commit %.1f\n",
+                            BbStats::draw_ns[0].exchange(0) / (window * 1e7),
+                            BbStats::draw_ns[1].exchange(0) / (window * 1e7),
+                            BbStats::draw_ns[2].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[5].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[6].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[7].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[0].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[1].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[2].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[3].exchange(0) / (window * 1e7),
+                            BbStats::post_ns[4].exchange(0) / (window * 1e7));
+                std::vector<std::pair<u64, u32>> ops;
+                for (u32 i = 0; i < 256; ++i) {
+                    if (const u64 ns = BbStats::opcode_ns[i].exchange(0, std::memory_order_relaxed)) {
+                        ops.emplace_back(ns, i);
+                    }
+                }
+                std::sort(ops.rbegin(), ops.rend());
+                std::string line = "GPU thread by opcode (% of wall time):";
+                for (size_t i = 0; i < ops.size() && i < 12; ++i) {
+                    line += fmt::format(" {:#x}={:.1f}", ops[i].second,
+                                        double(ops[i].first) / (window * 1e7));
+                }
+                std::printf("%s\n", line.c_str());
+            }
+            if (BbStats::enabled) {
+                // bbport: why the prepared draws were not used (see BbStats::prepared_miss).
+                std::printf("Prepared draws not used (per second): not ready %.0f, register checksum "
+                            "%.0f, no program %.0f, program hash %.0f, flattened user data %.0f, "
+                            "pointer read %.0f, fetch shader %.0f, not in the map %.0f\n",
+                            BbStats::prepared_miss[0].exchange(0) / window,
+                            BbStats::prepared_miss[1].exchange(0) / window,
+                            BbStats::prepared_miss[2].exchange(0) / window,
+                            BbStats::prepared_miss[3].exchange(0) / window,
+                            BbStats::prepared_miss[4].exchange(0) / window,
+                            BbStats::prepared_miss[5].exchange(0) / window,
+                            BbStats::prepared_miss[6].exchange(0) / window,
+                            BbStats::prepared_miss[7].exchange(0) / window);
+            }
             std::printf("Tick waits (%% of wall time): other %.1f, buffer watch %.1f, fault buffer %.1f, "
                         "present pacing %.1f, finish %.1f, wait submitted %.1f, image download %.1f, GDS store %.1f\n",
                         BbStats::wait_site_ns[0].exchange(0) / (window * 1e7),
@@ -619,6 +669,38 @@ void VideoOutDriver::Flip(const Request& req) {
                     BbStats::store_skip_rip[i].store(0);
                 }
                 std::printf("\n");
+            }
+            {
+                // bbport: the load instruction families the read-fault emulator does not handle, by
+                // name, so a missing family is visible in the log instead of only in a count.
+                std::string line;
+                for (int pass = 0; pass < 6; ++pass) {
+                    int best = -1;
+                    std::uint64_t most = 0;
+                    for (int i = 0; i < 32; ++i) {
+                        const std::uint64_t c = BbStats::read_decline_count[i].load(std::memory_order_relaxed);
+                        if (c > most) {
+                            most = c;
+                            best = i;
+                        }
+                    }
+                    if (best < 0) {
+                        break;
+                    }
+                    const auto name = reinterpret_cast<const char*>(
+                        BbStats::read_decline_name[best].load(std::memory_order_relaxed));
+                    line += fmt::format(" {} x{:.0f}/s (reason {})",
+                                        name ? name : "undecoded", most / window,
+                                        BbStats::read_decline_reason[best].load());
+                    BbStats::read_decline_count[best].store(0);
+                    BbStats::read_decline_rip[best].store(0);
+                }
+                for (int i = 0; i < 32; ++i) {
+                    BbStats::read_decline_count[i].store(0);
+                    BbStats::read_decline_rip[i].store(0);
+                }
+                std::printf("Read faults declined by instruction (BB_FAULT_WHY names them):%s\n",
+                            line.empty() ? " none" : line.c_str());
             }
             std::printf("Guest reads per second: offloaded %.0f, window split %.0f, unresolved %.0f, "
                         "locked caller %.0f, offload off %.0f; read directly from video memory %.0f, direct read "
@@ -871,17 +953,22 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
         port->flip_status.submit_tsc = Libraries::Kernel::sceKernelReadTsc();
     }
 
+    // bbport: the guest's flip instant, taken here on the guest's thread. The frame pacer measures
+    // the guest's production rate from it: a timestamp taken later, on the GPU or present thread,
+    // would include the pacing itself and feed back into it.
+    const s64 guest_ns = BbTrace::NowNs();
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
-        liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop); });
+        liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop, guest_ns); });
     } else {
-        SubmitFlipInternal(port, index, flip_arg, is_eop);
+        SubmitFlipInternal(port, index, flip_arg, is_eop, guest_ns);
     }
 
     return true;
 }
 
-void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop) {
+void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
+                                        s64 guest_ns) {
     Vulkan::Frame* frame;
     if (index == -1) {
         frame = presenter->PrepareBlankFrame(false);
@@ -900,7 +987,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
             .flip_arg = flip_arg,
             .index = index,
             .eop = is_eop,
-            .queued_ns = BbTrace::enabled ? BbTrace::NowNs() : 0,
+            .queued_ns = guest_ns != 0 ? guest_ns : BbTrace::NowNs(),
             .guest_flip_ns = BbTrace::last_submit_flip_ns.load(std::memory_order_relaxed),
             .prep_ns = BbTrace::prep_ns.load(std::memory_order_relaxed),
             .ahead_ns = BbTrace::ahead_wait_ns.load(std::memory_order_relaxed),
@@ -971,6 +1058,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // bbport: with a frame limit (uncapped presets) a queued flip is presented as soon as it
     // arrives and its slot allows, between vblanks, instead of on the next vblank tick.
     const bool immediate_flips = frame_limit != 0;
+
 
     while (!token.stop_requested()) {
         timer.Start();
@@ -1057,8 +1145,42 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
                 FRAME_END;
             }
         }
-        sleep_to(tick_deadline);
+        // bbport: wait for the next vblank tick, but release a frame that falls due meanwhile.
+        // Sleeping straight through the tick held a frame that arrived just before it back to
+        // the tick, and the next frame then went out at once: the frame log showed the intervals
+        // alternating (4.5 ms, 12 ms, 4.5 ms, ... within a 16.7 ms vblank) although the game was
+        // producing every frame in the same time. The vblank counter itself is still advanced
+        // once per outer iteration; only the release is no longer tied to it.
+        while (!token.stop_requested() && std::chrono::steady_clock::now() < tick_deadline) {
+            {
+                std::unique_lock lk{mutex};
+                request_cv.wait_until(lk, tick_deadline, [&] { return !requests.empty(); });
+            }
+            if (std::chrono::steady_clock::now() >= tick_deadline) {
+                break; // next vblank
+            }
+            const auto slot_now = std::chrono::steady_clock::now();
+            if (slot_now < next_flip) {
+                if (next_flip >= tick_deadline) {
+                    break; // the slot is in the next vblank: leave it to the outer loop
+                }
+                sleep_to(next_flip);
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const auto request = receive_request();
+            if (!request) {
+                break;
+            }
+            advance(now);
+            Flip(request);
+            FRAME_END;
+        }
+        if (std::chrono::steady_clock::now() < tick_deadline) {
+            sleep_to(tick_deadline);
+        }
     }
 }
 
 } // namespace Libraries::VideoOut
+
+

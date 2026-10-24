@@ -797,9 +797,9 @@ void *runtime_low_map(size_t size, int prot) {
  * 524288 small guest copies batched for the copy threads instead of the recording thread,
  * 1073741824 the lock-free UpdateImage path for clean, tracked images. */
 /* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/bbport_toggles.h). */
-/* DriveClub: draw-preparation workers (4096 | 8192) read vertex/texture descriptors before the game finished
- * updating them, which showed up as vertex explosions, green textures and flicker. Off by default. */
-uint64_t runtime_disabled_optimizations=4096|8192|16384|524288|(1ull<<41);
+/* DriveClub: prepared resource data includes fetch V# pointer-table and fetch-code snapshots;
+ * the GPU thread validates both, plus flattened user data, before it uses the worker result. */
+uint64_t runtime_disabled_optimizations=16384|524288|(1ull<<41);
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */
 __thread sigjmp_buf *runtime_fault_recover;

@@ -547,4 +547,15 @@
             <Line Type="bytes" Address="0x00b54c21" Value="e0100000"/>
         </PatchList>
     </Metadata>
+    <Metadata Title="Driveclub"
+              Name="Motion blur strength 0 (works with FSR/DLSS)"
+              Note="Sets the game's motion blur level to 0 but leaves the blur pass, its shader and the enableMotionBlur setting on, so FSR or DLSS anti-aliasing keeps working. The game's own Motion blur option turns the pass off instead, which cannot be combined with FSR/DLSS (the game then picks other shaders and the port faults)."
+              Author="driveclub-recomp"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x015e6320" Value="0f57c0c390" OriginalHash="f2e0b79b68951f85"/>
+        </PatchList>
+    </Metadata>
 </Patch>

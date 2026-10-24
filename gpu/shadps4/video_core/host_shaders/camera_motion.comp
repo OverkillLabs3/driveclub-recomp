@@ -15,6 +15,7 @@ layout(binding = 3, std430) writeonly buffer NextFrame { uint next_frame[]; };
 layout(binding = 1, rg16f) uniform writeonly image2D motion_img; // pixels, previous - current
 // Object motion from the G-buffer: rg pixels, b = valid, a = written depth.
 layout(binding = 2) uniform texture2D object_tex;
+layout(binding = 3) uniform texture2D color_tex;
 #endif
 
 layout(push_constant) uniform Constants {
@@ -26,6 +27,7 @@ layout(push_constant) uniform Constants {
     vec2 previous_jitter;
     uint mode;         // motion: 1 = object motion vectors available; debug: 0 motion, 1 raw
                        // depth, 2 view z / 50, 3 reprojected previous frame, 4 |difference|
+    float use_highlight;
 };
 
 void main() {
@@ -95,6 +97,16 @@ void main() {
             !any(isnan(object_motion.rg)) &&
             !any(isinf(object_motion.rg))) {
             result = object_motion.rg;
+            const vec2 vector_delta = motion - object_motion.rg;
+            if (use_highlight > 0.5 && dot(vector_delta, vector_delta) > 0.00390625) {
+                const vec3 hdr = texelFetch(color_tex, pixel, 0).rgb;
+                const float peak = max(hdr.r, max(hdr.g, hdr.b));
+                const float floor = min(hdr.r, min(hdr.g, hdr.b));
+                const float chroma = (peak - floor) / max(peak, 1e-4);
+                const float highlight = smoothstep(0.65, 1.8, peak);
+                const float neutral = 1.0 - smoothstep(0.15, 0.6, chroma);
+                result = mix(result, motion, highlight * neutral);
+            }
         }
     }
     imageStore(motion_img, pixel, vec4(result, 0.0, 0.0));

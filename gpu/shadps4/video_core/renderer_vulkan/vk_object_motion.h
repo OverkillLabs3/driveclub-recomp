@@ -8,6 +8,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 #include "video_core/renderer_vulkan/motion_history.h"
 
 #include "common/types.h"
@@ -45,7 +46,7 @@ public:
     /// Rendering of a motion pipeline: the motion attachment (render-target size).
     void Attach(RenderState& state, u32 width, u32 height);
 
-    /// Start of a frame (display pass).
+    /// Start the next scene frame after the current vector image has been consumed.
     void OnFrameStart();
     void InvalidateHistory() { history.NextFrame(); history.NextFrame(); }
 
@@ -54,14 +55,31 @@ public:
     vk::ImageView PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32 height, bool& valid);
     /// The image of the last PrepareRead (layout General), or null.
     [[nodiscard]] vk::ImageView View() const noexcept {
-        return view ? *view : vk::ImageView{};
+        return active_image < images.size() && images[active_image].view
+                   ? *images[active_image].view
+                   : vk::ImageView{};
     }
     [[nodiscard]] vk::Image Image(u32 width, u32 height) const noexcept {
-        return written && width == image_width && height == image_height
-            ? vk::Image(image) : vk::Image{};
+        if (active_image >= images.size()) {
+            return {};
+        }
+        const auto& target = images[active_image];
+        return target.written && width == target.width && height == target.height
+                   ? vk::Image(target.image)
+                   : vk::Image{};
     }
 
 private:
+    struct ImageTarget {
+        VideoCore::UniqueImage image;
+        vk::UniqueImageView view;
+        u32 width = 0;
+        u32 height = 0;
+        u64 last_use = 0;
+        bool written = false;
+        vk::ImageLayout layout = vk::ImageLayout::eUndefined;
+    };
+
     void EnsureImage(u32 width, u32 height);
 
     const Instance& instance;
@@ -72,6 +90,7 @@ private:
     // element 0 all zero (motion off).
     static constexpr u32 FrameSlots = 4;
     static constexpr u32 ParamsPerFrame = 8192;
+    static constexpr size_t MotionImageCacheSize = 8;
     // Positions (device local): two halves (current/previous frame) of vec4; element 0 is reserved.
     static constexpr u32 PositionsPerFrame = 4u << 20;
     Motion::History history{PositionsPerFrame};
@@ -84,12 +103,10 @@ private:
     VmaAllocation positions_allocation{};
 
     u64 frame = 0;
+    u64 image_use_serial = 0;
     u32 params_used = 0;
-    VideoCore::UniqueImage image;
-    vk::UniqueImageView view;
-    u32 image_width = 0, image_height = 0;
-    bool written = false; ///< this frame's vectors are in the image
-    vk::ImageLayout image_layout = vk::ImageLayout::eUndefined;
+    u32 active_image = ~u32{0};
+    std::vector<ImageTarget> images;
 };
 
 } // namespace Vulkan

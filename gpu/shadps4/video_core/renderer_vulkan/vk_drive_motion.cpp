@@ -24,6 +24,7 @@ struct Push {
     std::array<float, 2> size;
     std::array<float, 2> scale;
     float use_stencil;
+    float use_object;
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -88,7 +89,7 @@ bool Invert(const Mat& m, Mat& out) {
 
 DriveMotion::DriveMotion(const Instance& instance) {
     const auto device = instance.GetDevice();
-    const std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {{
+    const std::array<vk::DescriptorSetLayoutBinding, 5> bindings = {{
         {.binding = 0,
          .descriptorType = vk::DescriptorType::eSampledImage,
          .descriptorCount = 1,
@@ -98,6 +99,14 @@ DriveMotion::DriveMotion(const Instance& instance) {
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
         {.binding = 2,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 3,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 4,
          .descriptorType = vk::DescriptorType::eSampledImage,
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
@@ -152,7 +161,8 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
 
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
-                         u32 src_height, bool normalized) {
+                         u32 src_height, bool normalized, vk::ImageView object_view,
+                         vk::ImageView color_view) {
     Push push{};
     ClipToPrevious(push.clip_to_prev_clip);
     push.size = {float(width), float(height)};
@@ -165,9 +175,16 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
     const vk::DescriptorImageInfo motion_info{.imageView = motion_view,
                                               .imageLayout = vk::ImageLayout::eGeneral};
     push.use_stencil = mask_view != depth_view ? 1.0f : 0.0f;
+    push.use_object = object_view && color_view ? 1.0f : 0.0f;
     const vk::DescriptorImageInfo mask_info{.imageView = mask_view,
                                             .imageLayout = vk::ImageLayout::eGeneral};
-    const std::array<vk::WriteDescriptorSet, 3> writes = {{
+    const vk::DescriptorImageInfo object_info{
+        .imageView = object_view ? object_view : depth_view,
+        .imageLayout = vk::ImageLayout::eGeneral};
+    const vk::DescriptorImageInfo color_info{
+        .imageView = color_view ? color_view : depth_view,
+        .imageLayout = vk::ImageLayout::eGeneral};
+    const std::array<vk::WriteDescriptorSet, 5> writes = {{
         {.dstBinding = 2,
          .descriptorCount = 1,
          .descriptorType = vk::DescriptorType::eSampledImage,
@@ -176,6 +193,14 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
          .descriptorCount = 1,
          .descriptorType = vk::DescriptorType::eSampledImage,
          .pImageInfo = &depth_info},
+        {.dstBinding = 3,
+         .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .pImageInfo = &object_info},
+        {.dstBinding = 4,
+         .descriptorCount = 1,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .pImageInfo = &color_info},
         {.dstBinding = 1,
          .descriptorCount = 1,
          .descriptorType = vk::DescriptorType::eStorageImage,

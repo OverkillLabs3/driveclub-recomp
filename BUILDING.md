@@ -42,6 +42,14 @@ time.
 - `BB_READBACK_LOG=<file>`: one line per guest read that downloads GPU-written data: the faulting instruction
   and address, how long the read waited for the GPU thread, for the submission that wrote the data and for
   the copy, and the shader or copy that wrote it.
+- `BB_PHASES=1` (with `BB_FRAME_STATS`): adds which part of a draw the GPU command thread and the draw
+  recording thread spend their time in, and how the GPU command thread's time splits over the PM4 opcodes.
+  This adds a clock read per part per draw, so it lowers the frame rate; `BB_PHASE_ONE=<n>` times only one of
+  them (`0` the recording phases, `1`-`8` the single parts listed in `gpu/shim/bbport_toggles.h`), which keeps
+  the number for that part accurate.
+- `BB_PREP_WHY=1`: for the first few draws, why a draw-preparation worker found no matching shader permutation.
+- `BB_PREP_ADAPT=0`: turns off the self-test that sets the speculative draw preparation aside when its results
+  are not usable (see `gpu/shadps4/video_core/renderer_vulkan/vk_draw_prep.h`).
 
 A frame that misses its slot shows in the frame log as a long interval. Its line in the frame trace says whether
 the time went to read faults (the readback log then names the instruction and the writer), shader compiles,

@@ -838,11 +838,27 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }();
     s64 ahead_start = 0, ahead_end = 0;
     if (frames_ahead) {
+        // bbport: BB_LEAD_PERCENT=<0..100> bounds the lead in submissions, not only in frames.
+        // The guest's readbacks wait for GPU work submitted before them, so the whole-frame bound
+        // lets a read wait for up to a frame of queue (4K DLAA: 9.5 / 22 ms alternation). Waiting
+        // for that fraction of the frame's own submissions here, where the guest would wait for the
+        // display anyway, keeps the GPU busy while the queue in front of a read stays shorter.
+        // The guest reads its GPU results late in the frame, so the knee is at ~85 %: 4K DLAA
+        // 20 s runs, same build: 0 -> 64.0 FPS, sd 3.8-4.4 ms, p99 23.2; 50 -> 63.1, 3.9, 21.3;
+        // 70 -> 62.9, 3.4, 21.2; 85 -> 62.6-63.0, 1.8-1.9, 19.5; 92 overshoots (short frames).
+        static const u32 lead_percent = [] {
+            const char* env = std::getenv("BB_LEAD_PERCENT");
+            return env ? u32(std::clamp(std::atoi(env), 0, 100)) : 85u;
+        }();
         recent_frame_ticks.push_back(frame->ready_tick);
         while (recent_frame_ticks.size() > frames_ahead) {
-            const u64 tick = recent_frame_ticks.front();
+            u64 tick = recent_frame_ticks.front();
             recent_frame_ticks.pop_front();
             if (recent_frame_ticks.size() == frames_ahead) {
+                if (lead_percent && tick < frame->ready_tick) {
+                    const u64 span = frame->ready_tick - tick;
+                    tick += span * lead_percent / 100;
+                }
                 ahead_start = BbTrace::enabled ? BbTrace::NowNs() : 0;
                 draw_scheduler.Wait(tick, 3);
                 ahead_end = BbTrace::enabled ? BbTrace::NowNs() : 0;

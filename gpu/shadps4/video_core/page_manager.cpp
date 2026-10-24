@@ -132,10 +132,26 @@ DWORD64* Gpr(CONTEXT* c, ZydisRegister r) {
 
 enum class Load { None, Gpr, GprZero, GprSign, XmmLow, XmmFull, XmmLane };
 
-// Legacy SSE, or VEX with 128-bit vectors (the PS4 code uses AVX moves).
+// bbport: why the last load emulation declined (a diagnostic for BB_FRAME_STATS; see NoteReadDecline).
+thread_local u32 last_decline_reason = 0;
+
+// Legacy SSE, or VEX with 128- or 256-bit vectors (the PS4 code uses AVX moves; a 256-bit move
+// was declined until it was the largest single class of read-fault declines at 4K DLAA).
 bool Encodable(const ZydisDecodedInstruction& inst) {
     return inst.encoding == ZYDIS_INSTRUCTION_ENCODING_LEGACY ||
-           (inst.encoding == ZYDIS_INSTRUCTION_ENCODING_VEX && inst.avx.vector_length == 128);
+           (inst.encoding == ZYDIS_INSTRUCTION_ENCODING_VEX &&
+            (inst.avx.vector_length == 128 || inst.avx.vector_length == 256));
+}
+
+// The low 128 bits of an XMM/YMM operand as an index 0..15, or -1.
+int VectorIndex(ZydisRegister r) {
+    if (r >= ZYDIS_REGISTER_XMM0 && r <= ZYDIS_REGISTER_XMM15) {
+        return int(r - ZYDIS_REGISTER_XMM0);
+    }
+    if (r >= ZYDIS_REGISTER_YMM0 && r <= ZYDIS_REGISTER_YMM15) {
+        return int(r - ZYDIS_REGISTER_YMM0);
+    }
+    return -1;
 }
 
 // The upper halves of the YMM registers in the exception context (VEX loads zero them), or null.
@@ -330,7 +346,9 @@ bool EmulateNonGpuCompare(CONTEXT* ctx, const ZydisDecodedInstruction& inst, con
         case 16: flags = HostCmpFlags<u16>(u16(dst), u16(src), is_test); break;
         case 32: flags = HostCmpFlags<u32>(u32(dst), u32(src), is_test); break;
         case 64: flags = HostCmpFlags<u64>(dst, src, is_test); break;
-        default: return false;
+        default:
+            last_decline_reason = 10;
+            return false;
         }
     }
     ctx->EFlags = DWORD((ctx->EFlags & ~kArith) | (flags & kArith));
@@ -547,38 +565,283 @@ bool EmulateNonGpuArith(CONTEXT* ctx, const ZydisDecodedInstruction& inst, const
     return true;
 }
 
+// bbport: 128-bit vector ALU with one memory source (andps, paddd, addps, vblendps, ...): the
+// operation is done here on the loaded value instead of downloading the page. These were the
+// second class of declined loads at 4K DLAA (vblendps alone ~30/s).
+bool EmulateNonGpuVectorAlu(CONTEXT* ctx, const ZydisDecodedInstruction& inst,
+                            const ZydisDecodedOperand* ops, VAddr fault,
+                            Vulkan::Rasterizer* rasterizer) {
+    const auto m = inst.mnemonic;
+    const bool vex = inst.encoding == ZYDIS_INSTRUCTION_ENCODING_VEX;
+    if ((inst.encoding != ZYDIS_INSTRUCTION_ENCODING_LEGACY && !vex) ||
+        (vex && inst.avx.vector_length != 128) || inst.operand_count_visible < 2 ||
+        (inst.attributes & (ZYDIS_ATTRIB_HAS_LOCK | ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
+                            ZYDIS_ATTRIB_HAS_REPNE))) {
+        return false;
+    }
+    int mem = -1, imm = -1;
+    for (u32 i = 0; i < inst.operand_count_visible; ++i) {
+        if (ops[i].type == ZYDIS_OPERAND_TYPE_MEMORY) {
+            if (mem >= 0) {
+                return false; // two memory operands: never a plain vector ALU
+            }
+            mem = int(i);
+        } else if (ops[i].type == ZYDIS_OPERAND_TYPE_IMMEDIATE && imm < 0) {
+            imm = int(i);
+        }
+    }
+    if (mem < 0 || ops[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        ops[mem].mem.segment == ZYDIS_REGISTER_FS || ops[mem].mem.segment == ZYDIS_REGISTER_GS ||
+        ops[mem].size != 128) {
+        return false;
+    }
+    M128A* const ymm_upper = vex ? YmmUpper(ctx) : nullptr;
+    if (vex && !ymm_upper) {
+        return false;
+    }
+    const int dst = VectorIndex(ops[0].reg.value);
+    if (dst < 0) {
+        return false;
+    }
+    // The first source: the destination itself (legacy), or operand 1 (VEX three-operand form).
+    int src_index = dst;
+    if (vex && inst.operand_count_visible >= 3) {
+        if (ops[1].type != ZYDIS_OPERAND_TYPE_REGISTER) {
+            return false;
+        }
+        src_index = VectorIndex(ops[1].reg.value);
+        if (src_index < 0) {
+            return false;
+        }
+    }
+    ZydisRegisterContext regs{};
+    for (const ZydisRegister r : kGprs) {
+        regs.values[r] = *Gpr(ctx, r);
+    }
+    ZyanU64 ea = 0;
+    if (!ZYAN_SUCCESS(ZydisCalcAbsoluteAddressEx(&inst, &ops[mem], ctx->Rip, &regs, &ea))) {
+        return false;
+    }
+    if (fault < ea || fault >= ea + 16) {
+        return false;
+    }
+    alignas(16) u8 b[16]{};
+    if (!ReadOperand(rasterizer, ea, b, 16)) {
+        return false;
+    }
+    alignas(16) u8 a[16]{};
+    std::memcpy(a, &ctx->Xmm0 + src_index, 16);
+    alignas(16) u8 r[16]{};
+    const u64 imm_value = imm >= 0 ? ops[imm].imm.value.u : 0;
+    const auto as_u32 = [](const u8* p, int i) {
+        u32 v;
+        std::memcpy(&v, p + 4 * i, 4);
+        return v;
+    };
+    const auto as_u16 = [](const u8* p, int i) {
+        u16 v;
+        std::memcpy(&v, p + 2 * i, 2);
+        return v;
+    };
+    const auto as_u64 = [](const u8* p) {
+        u64 v;
+        std::memcpy(&v, p, 8);
+        return v;
+    };
+    switch (m) {
+    case ZYDIS_MNEMONIC_ANDPS:
+    case ZYDIS_MNEMONIC_ANDPD:
+    case ZYDIS_MNEMONIC_VANDPS:
+    case ZYDIS_MNEMONIC_VANDPD:
+    case ZYDIS_MNEMONIC_PAND:
+    case ZYDIS_MNEMONIC_VPAND:
+        for (int i = 0; i < 8; ++i) r[i] = a[i] & b[i];
+        break;
+    case ZYDIS_MNEMONIC_ORPS:
+    case ZYDIS_MNEMONIC_ORPD:
+    case ZYDIS_MNEMONIC_VORPS:
+    case ZYDIS_MNEMONIC_VORPD:
+    case ZYDIS_MNEMONIC_POR:
+    case ZYDIS_MNEMONIC_VPOR:
+        for (int i = 0; i < 8; ++i) r[i] = a[i] | b[i];
+        break;
+    case ZYDIS_MNEMONIC_XORPS:
+    case ZYDIS_MNEMONIC_XORPD:
+    case ZYDIS_MNEMONIC_VXORPS:
+    case ZYDIS_MNEMONIC_VXORPD:
+    case ZYDIS_MNEMONIC_PXOR:
+    case ZYDIS_MNEMONIC_VPXOR:
+        for (int i = 0; i < 8; ++i) r[i] = a[i] ^ b[i];
+        break;
+    case ZYDIS_MNEMONIC_ANDNPS:
+    case ZYDIS_MNEMONIC_ANDNPD:
+    case ZYDIS_MNEMONIC_VANDNPS:
+    case ZYDIS_MNEMONIC_VANDNPD:
+    case ZYDIS_MNEMONIC_PANDN:
+    case ZYDIS_MNEMONIC_VPANDN:
+        for (int i = 0; i < 8; ++i) r[i] = u8(~a[i] & b[i]);
+        break;
+    case ZYDIS_MNEMONIC_PADDB:
+    case ZYDIS_MNEMONIC_VPADDB:
+        for (int i = 0; i < 16; ++i) r[i] = u8(a[i] + b[i]);
+        break;
+    case ZYDIS_MNEMONIC_PADDW:
+    case ZYDIS_MNEMONIC_VPADDW:
+        for (int i = 0; i < 8; ++i) {
+            const u16 v = u16(as_u16(a, i) + as_u16(b, i));
+            std::memcpy(r + 2 * i, &v, 2);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PADDD:
+    case ZYDIS_MNEMONIC_VPADDD:
+        for (int i = 0; i < 4; ++i) {
+            const u32 v = as_u32(a, i) + as_u32(b, i);
+            std::memcpy(r + 4 * i, &v, 4);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PADDQ:
+    case ZYDIS_MNEMONIC_VPADDQ:
+        for (int i = 0; i < 2; ++i) {
+            const u64 v = as_u64(a + 8 * i) + as_u64(b + 8 * i);
+            std::memcpy(r + 8 * i, &v, 8);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PSUBB:
+    case ZYDIS_MNEMONIC_VPSUBB:
+        for (int i = 0; i < 16; ++i) r[i] = u8(a[i] - b[i]);
+        break;
+    case ZYDIS_MNEMONIC_PSUBW:
+    case ZYDIS_MNEMONIC_VPSUBW:
+        for (int i = 0; i < 8; ++i) {
+            const u16 v = u16(as_u16(a, i) - as_u16(b, i));
+            std::memcpy(r + 2 * i, &v, 2);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PSUBD:
+    case ZYDIS_MNEMONIC_VPSUBD:
+        for (int i = 0; i < 4; ++i) {
+            const u32 v = as_u32(a, i) - as_u32(b, i);
+            std::memcpy(r + 4 * i, &v, 4);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PMULLW:
+    case ZYDIS_MNEMONIC_VPMULLW:
+        for (int i = 0; i < 8; ++i) {
+            const u16 v = u16(as_u16(a, i) * as_u16(b, i));
+            std::memcpy(r + 2 * i, &v, 2);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PMULLD:
+    case ZYDIS_MNEMONIC_VPMULLD:
+        for (int i = 0; i < 4; ++i) {
+            const u32 v = as_u32(a, i) * as_u32(b, i);
+            std::memcpy(r + 4 * i, &v, 4);
+        }
+        break;
+    case ZYDIS_MNEMONIC_ADDPS:
+    case ZYDIS_MNEMONIC_VADDPS:
+    case ZYDIS_MNEMONIC_SUBPS:
+    case ZYDIS_MNEMONIC_VSUBPS:
+    case ZYDIS_MNEMONIC_MULPS:
+    case ZYDIS_MNEMONIC_VMULPS:
+    case ZYDIS_MNEMONIC_DIVPS:
+    case ZYDIS_MNEMONIC_VDIVPS:
+    case ZYDIS_MNEMONIC_MINPS:
+    case ZYDIS_MNEMONIC_VMINPS:
+    case ZYDIS_MNEMONIC_MAXPS:
+    case ZYDIS_MNEMONIC_VMAXPS: {
+        const bool is_add = m == ZYDIS_MNEMONIC_ADDPS || m == ZYDIS_MNEMONIC_VADDPS;
+        const bool is_sub = m == ZYDIS_MNEMONIC_SUBPS || m == ZYDIS_MNEMONIC_VSUBPS;
+        const bool is_mul = m == ZYDIS_MNEMONIC_MULPS || m == ZYDIS_MNEMONIC_VMULPS;
+        const bool is_div = m == ZYDIS_MNEMONIC_DIVPS || m == ZYDIS_MNEMONIC_VDIVPS;
+        const bool is_min = m == ZYDIS_MNEMONIC_MINPS || m == ZYDIS_MNEMONIC_VMINPS;
+        for (int i = 0; i < 4; ++i) {
+            float x, y;
+            std::memcpy(&x, a + 4 * i, 4);
+            std::memcpy(&y, b + 4 * i, 4);
+            const float v = is_add   ? x + y
+                            : is_sub ? x - y
+                            : is_mul ? x * y
+                            : is_div ? x / y
+                            : is_min ? (x < y ? x : y)
+                                     : (x > y ? x : y);
+            std::memcpy(r + 4 * i, &v, 4);
+        }
+        break;
+    }
+    case ZYDIS_MNEMONIC_BLENDPS:
+    case ZYDIS_MNEMONIC_VBLENDPS:
+        for (int i = 0; i < 4; ++i) {
+            const u8* src = (imm_value >> i) & 1 ? b : a;
+            std::memcpy(r + 4 * i, src + 4 * i, 4);
+        }
+        break;
+    case ZYDIS_MNEMONIC_BLENDPD:
+    case ZYDIS_MNEMONIC_VBLENDPD:
+        for (int i = 0; i < 2; ++i) {
+            const u8* src = (imm_value >> i) & 1 ? b : a;
+            std::memcpy(r + 8 * i, src + 8 * i, 8);
+        }
+        break;
+    case ZYDIS_MNEMONIC_PBLENDW:
+    case ZYDIS_MNEMONIC_VPBLENDW:
+        for (int i = 0; i < 8; ++i) {
+            const u8* src = (imm_value >> i) & 1 ? b : a;
+            std::memcpy(r + 2 * i, src + 2 * i, 2);
+        }
+        break;
+    default:
+        return false;
+    }
+    std::memcpy(&ctx->Xmm0 + dst, r, 16);
+    if (vex) {
+        std::memset(ymm_upper + dst, 0, sizeof(M128A)); // VEX.128 zeroes bits 255:128
+    }
+    ctx->Rip += inst.length;
+    return true;
+}
+
 bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
     CONTEXT* ctx = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord;
     ZydisDecodedInstruction inst;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
     if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
             inst, ops, reinterpret_cast<void*>(ctx->Rip), 15))) {
+        last_decline_reason = 9;
         return false;
     }
     const Load kind = Classify(inst);
     if (kind == Load::None) {
         return EmulateNonGpuCompare(ctx, inst, ops, fault, rasterizer) ||
                EmulateNonGpuArith(ctx, inst, ops, fault, rasterizer) ||
-               EmulateNonGpuIntAlu(ctx, inst, ops, fault, rasterizer);
+               EmulateNonGpuIntAlu(ctx, inst, ops, fault, rasterizer) ||
+               EmulateNonGpuVectorAlu(ctx, inst, ops, fault, rasterizer);
     }
     if (kind == Load::XmmLane || !Encodable(inst) || inst.operand_count_visible != 2 ||
         (inst.attributes & (ZYDIS_ATTRIB_HAS_LOCK | ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
                             ZYDIS_ATTRIB_HAS_REPNE))) {
+        last_decline_reason = 1;
         return false;
     }
     const bool vex = inst.encoding == ZYDIS_INSTRUCTION_ENCODING_VEX;
     M128A* const ymm_upper = vex ? YmmUpper(ctx) : nullptr;
     if (vex && !ymm_upper) {
+        last_decline_reason = 3;
         return false;
     }
     const ZydisDecodedOperand& dst = ops[0];
     const ZydisDecodedOperand& src = ops[1];
     if (dst.type != ZYDIS_OPERAND_TYPE_REGISTER || src.type != ZYDIS_OPERAND_TYPE_MEMORY ||
         src.mem.segment == ZYDIS_REGISTER_FS || src.mem.segment == ZYDIS_REGISTER_GS) {
+        last_decline_reason = 4;
         return false;
     }
-    const bool to_xmm = dst.reg.value >= ZYDIS_REGISTER_XMM0 && dst.reg.value <= ZYDIS_REGISTER_XMM15;
+    // bbport: an XMM or YMM destination; the 256-bit forms (vmovdqu ymm, m256) were the largest
+    // class of declined loads at 4K DLAA.
+    const int vec_index = VectorIndex(dst.reg.value);
+    const bool to_xmm = vec_index >= 0;
     if ((kind == Load::XmmLow || kind == Load::XmmFull) != to_xmm) {
+        last_decline_reason = 5;
         return false;
     }
     ZydisRegisterContext regs{};
@@ -587,30 +850,41 @@ bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterize
     }
     ZyanU64 ea = 0;
     if (!ZYAN_SUCCESS(ZydisCalcAbsoluteAddressEx(&inst, &src, ctx->Rip, &regs, &ea))) {
+        last_decline_reason = 6;
         return false;
     }
     const u32 size = src.size / 8;
-    if (size == 0 || size > 16 || (size > 8 && !to_xmm) || fault < ea || fault >= ea + size) {
+    const bool wide = vex && size == 32;
+    if (size == 0 || size > 32 || (size > 8 && !to_xmm) || (wide && !ymm_upper) || fault < ea ||
+        fault >= ea + size) {
+        last_decline_reason = 7;
         return false;
     }
-    alignas(16) u8 data[16]{};
+    alignas(32) u8 data[32]{};
     if (!ReadOperand(rasterizer, ea, data, size)) {
+        last_decline_reason = 8;
         return false;
     }
     if (to_xmm) {
-        // Loads into the low part of an XMM register zero the rest (legacy SSE load forms).
-        const u32 index = dst.reg.value - ZYDIS_REGISTER_XMM0;
-        std::memcpy(&ctx->Xmm0 + index, data, 16);
+        // Loads into the low part of an XMM register zero the rest (legacy SSE load forms); a VEX
+        // 128-bit load zeroes bits 255:128 and a 256-bit load writes them.
+        std::memcpy(&ctx->Xmm0 + vec_index, data, 16);
         if (vex) {
-            std::memset(ymm_upper + index, 0, sizeof(M128A)); // VEX.128 loads zero bits 255:128
+            if (wide) {
+                std::memcpy(ymm_upper + vec_index, data + 16, 16);
+            } else {
+                std::memset(ymm_upper + vec_index, 0, sizeof(M128A)); // VEX.128 zeroes bits 255:128
+            }
         }
     } else {
         if (dst.reg.value >= ZYDIS_REGISTER_AH && dst.reg.value <= ZYDIS_REGISTER_BH) {
-            return false;
+            last_decline_reason = 7;
+        return false;
         }
         const ZydisRegister full = ZydisRegisterGetLargestEnclosing(ZYDIS_MACHINE_MODE_LONG_64, dst.reg.value);
         DWORD64* reg = Gpr(ctx, full);
         if (!reg) {
+            last_decline_reason = 10;
             return false;
         }
         u64 v = 0;
@@ -624,7 +898,9 @@ bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterize
         case 32: *reg = u32(v); break; // 32-bit destinations zero the upper half
         case 16: *reg = (*reg & ~0xffffull) | (v & 0xffff); break;
         case 8: *reg = (*reg & ~0xffull) | (v & 0xff); break;
-        default: return false;
+        default:
+            last_decline_reason = 10;
+            return false;
         }
     }
     ctx->Rip += inst.length;
@@ -832,7 +1108,17 @@ struct PageManager::Impl {
                 BbStats::fault_emulate_declined.fetch_add(1, std::memory_order_relaxed);
                 // Declined loads are listed with the store skips (bit 63 set marks a load).
                 if (BbStats::enabled) {
-                    BbStats::NoteStoreSkip(Common::FaultInstructionPointer(context) | (1ull << 63));
+                    const u64 rip = Common::FaultInstructionPointer(context);
+                    BbStats::NoteStoreSkip(rip | (1ull << 63));
+                    // Name the instruction too: the emulator's gaps are only visible this way.
+                    ZydisDecodedInstruction inst;
+                    ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
+                    const char* name =
+                        ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
+                            inst, ops, reinterpret_cast<void*>(rip), 15))
+                            ? ZydisMnemonicGetString(inst.mnemonic)
+                            : "undecoded";
+                    BbStats::NoteReadDecline(rip, name, last_decline_reason);
                 }
             }
 #endif

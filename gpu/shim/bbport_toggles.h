@@ -143,6 +143,26 @@ inline std::atomic<std::uint64_t> store_emulated{0}, store_emulate_declined{0};
 /// 5 GPU-written bytes, 6 download in flight, 7 arena.
 inline std::atomic<std::uint64_t> store_why[8]{};
 /// Instructions of write faults the emulation does not handle (rip, count), for BB_FRAME_STATS.
+/// Read faults whose load the emulator declined (BB_FRAME_STATS): the faulting instruction, the
+/// name of the instruction decoded there (a static Zydis string) and a count, so the missing
+/// instruction family is named in the log.
+inline std::atomic<std::uint64_t> read_decline_rip[32]{}, read_decline_name[32]{},
+    read_decline_count[32]{}, read_decline_reason[32]{};
+inline void NoteReadDecline(std::uint64_t rip, const char* name, std::uint64_t reason) {
+    for (std::uint32_t i = 0, h = std::uint32_t((rip >> 2) * 2654435761u) & 31; i < 32; ++i, h = (h + 1) & 31) {
+        std::uint64_t cur = read_decline_rip[h].load(std::memory_order_relaxed);
+        if (cur == 0 && read_decline_rip[h].compare_exchange_strong(cur, rip)) {
+            cur = rip;
+        }
+        if (cur == rip) {
+            read_decline_name[h].store(reinterpret_cast<std::uint64_t>(name), std::memory_order_relaxed);
+            read_decline_reason[h].store(reason, std::memory_order_relaxed);
+            read_decline_count[h].fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+}
+/// Store faults the emulator declined (BB_FRAME_STATS).
 inline std::atomic<std::uint64_t> store_skip_rip[64]{}, store_skip_count[64]{};
 inline void NoteStoreSkip(std::uint64_t rip) {
     for (std::uint32_t i = 0, h = std::uint32_t((rip >> 2) * 2654435761u) & 63; i < 64; ++i, h = (h + 1) & 63) {
@@ -186,12 +206,30 @@ inline const bool phases_enabled = [] {
     const char* env = std::getenv("BB_PHASES");
     return enabled && env && env[0] == '1';
 }();
+/// BB_PHASE_ONE=<n>: time only the timer tagged bit 1<<n, so the clock reads of the others do not
+/// inflate it (bit 0 is the set of general phase timers). Unset: every timer runs.
+inline const std::uint32_t phase_one_mask = [] {
+    const char* env = std::getenv("BB_PHASE_ONE");
+    if (!enabled || !env || !env[0]) {
+        return ~std::uint32_t{0};
+    }
+    return 1u << (std::strtoul(env, nullptr, 0) & 31u);
+}();
+inline bool PhaseWanted(std::uint32_t tag) {
+    return (phase_one_mask & (tag ? tag : 1u)) != 0;
+}
 struct PhaseTimer {
     std::atomic<std::uint64_t>& total;
-    std::chrono::steady_clock::time_point start =
-        phases_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    bool on = false;
+    std::chrono::steady_clock::time_point start{};
+    explicit PhaseTimer(std::atomic<std::uint64_t>& total_, std::uint32_t tag = 0)
+        : total(total_), on(phases_enabled && PhaseWanted(tag)) {
+        if (on) {
+            start = std::chrono::steady_clock::now();
+        }
+    }
     ~PhaseTimer() {
-        if (!phases_enabled) {
+        if (!on) {
             return;
         }
         total.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -203,6 +241,9 @@ struct PhaseTimer {
 /// Time blocked in Scheduler::Wait by call site (ns): 0 other, 1 buffer watch, 2 fault buffer,
 /// 3 present pacing, 4 Finish, 5 WaitSubmitted.
 inline std::atomic<std::uint64_t> wait_site_ns[8]{};
+/// Why an early readback copy was or was not used (BB_FRAME_STATS): 0 used, 1 no copy for the
+/// window, 2 a GPU write was marked since the copy, 3 the copy's ranges differ.
+inline std::atomic<std::uint64_t> readback_early[4]{};
 /// Guest read paths into BufferCache::ReadMemory: 0 offloaded, 1 window split, 2 unresolved (sync fallback),
 /// 3 locked caller (sync), 4 offload disabled, 5 direct, 6 direct mismatch, 7 early copy used, 8 early copy made,
 /// 9 early copy verified, 10 early copy deferred (the draw writing the window was not recorded yet).
@@ -360,8 +401,118 @@ struct WaitTimer {
 /// Per-phase wall time of the GPU command thread draw path (ns), BB_FRAME_STATS only:
 /// 0 filter, 1 pipeline lookup, 2 render state, 3 bind resources, 4 begin rendering, 5 emit + bind, 6 record + flush.
 inline std::atomic<std::uint64_t> phase_ns[8]{};
+/// Focused CPU timings for the Vulkan draw-recording path. Enabled only by
+/// BB_MOTION_PROFILE=1; separate from BB_PHASES so profiling can be toggled
+/// independently when diagnosing the object-motion path.
+inline const bool motion_profile_enabled = [] {
+    const char* env = std::getenv("BB_MOTION_PROFILE");
+    return env && env[0] == '1';
+}();
+enum MotionProfilePhase : unsigned {
+    MotionDrawRecord,
+    MotionPrepareRenderState,
+    MotionBindResources,
+    MotionBeginRendering,
+    MotionGate,
+    MotionIndexRange,
+    MotionPrepareDraw,
+    MotionEmitDraw,
+    MotionBeginMemoLookup,
+    MotionBeginFull,
+    MotionBeginSetup,
+    MotionBeginColorAttachments,
+    MotionBeginDepthAttachment,
+    MotionBeginTail,
+    MotionBeginMemoStore,
+    MotionAttach,
+    MotionAttachEnsureImage,
+    MotionAttachEndRendering,
+    MotionAttachRecord,
+    MotionEnsureImageCreate,
+    MotionEnsureViewCreate,
+    MotionEnsureFinish,
+    MotionPipelinePreparedCheck,
+    MotionPipelineRefreshKey,
+    MotionPipelineMapLookup,
+    MotionPipelineRuntimeInfo,
+    MotionPipelineFlatBuffer,
+    MotionPipelineSpecialization,
+    MotionPipelinePermutationLookup,
+    MotionPipelineAddBindings,
+    MotionPipelineFetchParse,
+    MotionPipelineVertexAttribSpecs,
+    MotionPipelineBufferSpecs,
+    MotionPipelineImageSpecs,
+    MotionPipelineFmaskSpecs,
+    MotionPipelineSamplerSpecs,
+    MotionPipelineTessSpec,
+    MotionPipelineSpecEquality,
+    MotionPipelineSpecMemoCheck,
+    MotionProfilePhaseCount,
+};
+inline std::atomic<std::uint64_t> motion_profile_ns[MotionProfilePhaseCount]{};
+inline std::atomic<std::uint64_t> motion_attach_calls{0}, motion_attach_transitions{0};
+inline std::atomic<std::uint64_t> motion_image_recreates{0}, motion_image_finishes{0};
+inline std::atomic<std::uint64_t> pipeline_prepared_hits{0}, pipeline_prepared_misses{0},
+    pipeline_unprepared{0};
+/// Draw preparation workers (BB_FRAME_STATS): submissions scanned, draws prepared, time spent and
+/// claimed-but-idle time (ns), and the queue depth at the last print.
+inline std::atomic<std::uint64_t> prep_scans{0}, prep_scan_ns{0}, prep_claims{0}, prep_draws{0},
+    prep_apply_ns{0}, prep_wait_ns{0};
+inline std::atomic<std::uint64_t> prep_queue_depth{0}, prep_backlog{0};
+/// Draws a worker dropped because the GPU thread had already passed the submission, the sum of
+/// how far ahead of the GPU thread each claimed submission was at claim time, and how often a
+/// claim reached the packet loop with no draw left to prepare.
+inline std::atomic<std::uint64_t> prep_skipped{0}, prep_ahead_sum{0}, prep_empty_claims{0};
+/// Draws a worker walked, and the draws it dropped because the GPU thread had passed the
+/// submission (as opposed to beyond the counted draws).
+inline std::atomic<std::uint64_t> prep_seen{0}, prep_passed{0};
+/// Why PrepareGraphicsPipeline failed in a worker (BB_FRAME_STATS): 0 the key could not be
+/// refreshed, 1 program not compiled yet, 2 a guest memory read faulted, 3 no matching shader
+/// permutation, 4 the worker gave up for another reason.
+inline std::atomic<std::uint64_t> prep_failed[8]{};
+inline void NotePrepFailure(unsigned reason) {
+    if (enabled) {
+        prep_failed[reason & 7].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+/// Why a prepared draw was not used (BB_FRAME_STATS): 0 not ready, 1 register checksum, 2 no program,
+/// 3 program hash, 4 flattened user data, 5 pointer read, 6 fetch shader, 7 pipeline not in the map.
+inline std::atomic<std::uint64_t> prepared_miss[8]{};
+inline void NotePreparedMiss(unsigned reason) {
+    if (enabled) {
+        prepared_miss[reason & 7].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+inline std::atomic<std::uint64_t> pipeline_spec_memo_hits{0}, pipeline_spec_memo_misses{0};
+struct MotionProfileTimer {
+    std::atomic<std::uint64_t>& total;
+    bool active = motion_profile_enabled;
+    std::chrono::steady_clock::time_point start =
+        motion_profile_enabled ? std::chrono::steady_clock::now()
+                               : std::chrono::steady_clock::time_point{};
+    void Stop() {
+        if (active) {
+            total.fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - start)
+                                .count(),
+                            std::memory_order_relaxed);
+            active = false;
+        }
+    }
+    ~MotionProfileTimer() { Stop(); }
+};
 /// Wall time per graphics packet opcode on the GPU command thread (ns), BB_FRAME_STATS only.
 inline std::atomic<std::uint64_t> opcode_ns[256]{};
+/// Wall time of the parts of the stage A draw hand-off (Rasterizer::PostDraw, ns), BB_PHASES only:
+/// 0 fetch V# pointer reads, 1 written-buffer walk (NotePendingGpuWrite), 2 the stage loop
+/// (constant ring copies and the packet size), 3 Begin() and packet assembly (memcpy of the
+/// register blocks and user data), 4 Commit and FlushBatch.
+inline std::atomic<std::uint64_t> post_ns[8]{};
+/// Wall time in Rasterizer::Draw on stage A around those: 0 from the entry through
+/// WaitQueuedMemoryWrites (mirror filter and the wait for the draw pipe), 1 the pipeline lookup
+/// and the filter checks, 2 PostDraw.
+inline std::atomic<std::uint64_t> draw_ns[3]{};
 /// GPU thread rusage, refreshed after each graphics submission.
 inline std::atomic<std::uint64_t> gpu_sys_us{0}, gpu_user_us{0}, gpu_invol_switches{0},
     gpu_vol_switches{0}, gpu_minor_faults{0};

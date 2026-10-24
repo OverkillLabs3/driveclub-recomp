@@ -4,7 +4,11 @@
 #pragma once
 
 #include <condition_variable>
+#include <functional>
 #include <mutex>
+#include <span>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "bbport_copy.h"
 
@@ -80,6 +84,11 @@ public:
         return stream_buffer;
     }
 
+    /// bbport: Rasterizer installs this after it created the draw pipe (see drain_gpu_pipe).
+    void SetDrainGpuPipe(std::function<void()>&& drain) {
+        drain_gpu_pipe = std::move(drain);
+    }
+
     /// bbport: whether the GPU wrote (or a download is under way for) any byte of the range: a guest read of
     /// other bytes on the same protected pages needs no download (BB_FAULT_EMULATE). Any thread, lock-free.
     [[nodiscard]] bool IsRangeGpuWritten(VAddr addr, u64 size) const {
@@ -151,6 +160,7 @@ public:
     /// bbport: the draw or dispatch whose bindings were stamped is recorded (Rasterizer::ResetBindings).
     void NoteBindingsRecorded() {
         unrecorded_windows.clear();
+        any_unrecorded.store(false, std::memory_order_relaxed);
     }
 
 private:
@@ -237,7 +247,7 @@ private:
 
     struct Backing : public Interval {
         vk::DeviceMemory memory;
-        u64 offset; ///< into `memory`, in blocks like start and end
+        u64 offset;
         /// Host mapping of the whole allocation (host visible arena memory), or null.
         u8* base{};
         constexpr bool CanMergeWith(const Backing& other) const noexcept {
@@ -265,8 +275,10 @@ private:
     /// The arena memory can be mapped by the CPU (resizable BAR, or memory shared with the CPU): finished GPU writes
     /// are then read straight from the mapping instead of being copied down by the GPU first.
     bool arena_host_visible{false};
+    /// bbport: the memory types the arena buffer may use (diagnostic for direct guest reads).
+    u32 arena_memory_type_bits{};
     std::atomic<bool> direct_readback{true};
-    u32 direct_reads{};
+    std::atomic<u32> direct_reads{0};
     std::array<u64, 4096> window_write_tick{};
     /// bbport: BB_READBACK_LOG: per window (hashed like window_write_tick) the last writer's tag, when it was
     /// recorded (steady ns), and how many write bindings since the window was last read back.
@@ -288,19 +300,99 @@ private:
     std::array<VAddr, 4096> hot_window{};
     std::array<u64, 4096> hot_tick{};
     std::vector<VAddr> early_pending;
+    /// bbport: how many windows after a hot one get an early copy too (BB_READBACK_PREFETCH).
+    u32 prefetch_windows{};
     /// bbport: windows stamped by bindings whose draw/dispatch is not recorded yet. A submission made
     /// inside the binding (an allocation-induced flush) must not take their early copy: the draw writes after it,
     /// in the next tick, without a new write sequence. They stay pending until NoteBindingsRecorded.
     std::vector<VAddr> unrecorded_windows;
+    /// Set while unrecorded_windows is not empty: read by guest threads (TryFastWindowRead).
+    std::atomic<bool> any_unrecorded{false};
     bool early_binding_guard = true;
     std::vector<EarlyReadback> early_readbacks;
     void DropEarlyReadback(VAddr window);
+
+    /// bbport: BB_READBACK_WINDOW_HOSTVISIBLE: back the guest ranges the CPU reads every frame (the
+    /// readback windows) with non-sparse, device-local, host-visible memory, so a guest read copies
+    /// from the CPU mapping instead of waiting for a GPU copy. Only the windows that are actually
+    /// read are moved (a few MiB), not the arenas.
+    struct HostChunk {
+        vk::DeviceMemory memory;
+        u8* base;
+        u64 size;
+        u64 used;
+    };
+    std::vector<HostChunk> window_chunks;
+    /// Windows backed by host-visible memory (GPU command thread only).
+    std::unordered_set<VAddr> promoted_windows;
+    /// Windows whose promotion was refused (uncommitted backing, no room): never retried.
+    std::unordered_set<VAddr> unpromotable_windows;
+    /// BB_READBACK_HOSTVISIBLE_AFTER: how many reads of a window make it worth a copy (default 2).
+    u32 window_promote_after{2};
+    bool window_host_visible{true};
+    u32 window_memory_type_index{~0u};
+    u32 window_promote_failures{};
+    u32 window_promotions{};
+    /// Reads of each window, and 1 while a promotion is queued. Guarded by readback_mutex.
+    std::unordered_map<VAddr, u32> window_reads;
+    std::unordered_set<VAddr> window_promote_queued;
+    void MaybePromoteWindow(VAddr window);
+    void PromoteWindow(VAddr window);
+    void WriteBdaEntries(const Buffer* arena, std::span<const u64> blocks);
+    bool IsPromotedWindow(VAddr window) const {
+        return promoted_windows.contains(window);
+    }
+
+    /// bbport: a readback window in host visible memory. GPU writes into it are recorded with the
+    /// submission tick that will make them visible, so a guest read fault can deliver them on the
+    /// faulting thread: no GPU command thread round trip and no GPU copy.
+    struct WindowWrite {
+        VAddr addr;
+        u64 size;
+        u64 tick;
+    };
+    struct WindowState {
+        VAddr window{};
+        u8* base{};          ///< the host visible mapping of the window's memory
+        u64 memory_offset{}; ///< the window's offset in the chunk mapping
+        std::mutex mutex;
+        std::vector<WindowWrite> writes;
+        bool active{};
+        bool overflow{};
+    };
+    static constexpr u32 WINDOW_SLOTS = 256;
+    std::array<std::atomic<u64>, WINDOW_SLOTS> window_keys{};
+    std::array<WindowState*, WINDOW_SLOTS> window_states{};
+    std::array<std::unique_ptr<WindowState>, 64> window_state_pool{};
+    std::atomic<u32> window_state_count{0};
+    std::atomic<bool> any_promoted{false};
+    WindowState* FindWindowState(VAddr window) const;
+    WindowState* RegisterWindowState(VAddr window);
+    void NoteWindowWrite(VAddr window, VAddr addr, u64 size, u64 tick);
+public:
+    /// bbport: serves a read of a promoted window from its mapping on the calling thread (the guest
+    /// read fault handler calls this before draining anything). False: the normal readback path.
+    bool TryFastWindowRead(VAddr addr, u64 size);
+    /// bbport: downloads a window on a second queue of the graphics family, waiting only for the
+    /// submission that wrote it (BB_READBACK_COPY_QUEUE). False: the normal readback path.
+    bool TryCopyQueueReadback(VAddr addr, u64 size);
+private:
+    /// Command buffer, fence and host visible destination of TryCopyQueueReadback.
+    struct CopyReadback;
+    std::unique_ptr<CopyReadback> copy_readback;
+    std::mutex copy_readback_mutex;
+    CopyReadback& EnsureCopyReadback();
+    /// bbport: waits until the draw recording thread has run its packets, so it cannot submit a draw
+    /// that writes the old memory while a window is being moved (Rasterizer sets this).
+    std::function<void()> drain_gpu_pipe;
 
     bool readback_offload{true};
     std::mutex readback_mutex;
     std::condition_variable readback_cv;
     /// Windows with a submitted download that the faulting thread has yet to finish.
-    std::vector<VAddr> pending_readbacks;
+    /// bbport: (address, size) of the copy each pending offloaded readback makes, so a job that
+    /// covers a whole arena is visible to a fault anywhere in it instead of only in its 512 KB window.
+    std::vector<std::pair<VAddr, u64>> pending_readbacks;
     /// Ranges of vetoed readbacks, merged back into gpu_modified_ranges on the GPU thread.
     std::vector<std::pair<VAddr, u64>> readback_returns;
 };

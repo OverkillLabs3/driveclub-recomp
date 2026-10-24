@@ -9,6 +9,8 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform texture2D depth_tex; // reversed Z: 1 at the near plane, 0 far away
 layout(binding = 1, rg16f) uniform writeonly image2D motion_img;
 layout(binding = 2) uniform utexture2D mask_tex; // stencil of the scene depth
+layout(binding = 3) uniform texture2D object_tex; // rg=pixel motion, b=valid, a=depth
+layout(binding = 4) uniform texture2D color_tex;  // HDR input; bright speculars use camera flow
 
 layout(push_constant) uniform Constants {
     vec2 src_size;          // the game's render size (depth)
@@ -16,6 +18,7 @@ layout(push_constant) uniform Constants {
     vec2 size;              // render pixels
     vec2 scale;             // output scale: 1 for pixels, 1 / size for screen fractions
     float use_stencil;      // 1: the stencil view is real
+    float use_object;       // 1: fuse Driveclub object vectors and highlight-aware camera flow
 };
 
 void main() {
@@ -38,6 +41,34 @@ void main() {
     // The player's car, the hands and the other cars keep their place on the screen far better than the world does.
     if (use_stencil > 0.5 && (texelFetch(mask_tex, src, 0).r & 130u) != 0u) {
         motion = vec2(0.0);
+    }
+    if (use_object > 0.5) {
+        const vec4 object_motion = texelFetch(object_tex, pixel, 0);
+        const float depth_tolerance = max(2.0e-7, abs(depth) * 0.01);
+        if (object_motion.b > 0.99 && !any(isnan(object_motion.rg)) &&
+            !any(isinf(object_motion.rg)) &&
+            abs(object_motion.a - depth) <= depth_tolerance) {
+            // Specular highlights do not follow the underlying car surface's motion. Keep
+            // the camera field there so their changing reflection does not inherit the car's
+            // otherwise-correct rigid motion vector.
+            const vec2 vector_delta = motion - object_motion.rg;
+            // If the two fields differ by less than 1/16 pixel, their choice is visually
+            // indistinguishable. Avoid an HDR texture read for the common near-zero case.
+            if (dot(vector_delta, vector_delta) > 0.00390625) {
+                const vec3 hdr = texelFetch(color_tex, pixel, 0).rgb;
+                const float peak = max(hdr.r, max(hdr.g, hdr.b));
+                const float floor = min(hdr.r, min(hdr.g, hdr.b));
+                const float chroma = (peak - floor) / max(peak, 1e-4);
+                // Bright, nearly neutral pixels are usually reflected light. Their apparent
+                // position follows the environment rather than the car surface. Fade toward
+                // camera flow there instead of switching vectors abruptly at a hard threshold.
+                const float highlight = smoothstep(0.65, 1.8, peak);
+                const float neutral = 1.0 - smoothstep(0.15, 0.6, chroma);
+                motion = mix(object_motion.rg, motion, highlight * neutral);
+            } else {
+                motion = object_motion.rg;
+            }
+        }
     }
     imageStore(motion_img, pixel, vec4(motion * scale, 0.0, 0.0));
 }

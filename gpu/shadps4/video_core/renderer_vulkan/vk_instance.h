@@ -99,6 +99,16 @@ public:
         return present_queue;
     }
 
+    /// bbport: the second graphics-family queue for readback copies, or the graphics queue when the
+    /// device has only one queue.
+    vk::Queue GetCopyQueue() const {
+        return has_copy_queue ? copy_queue : graphics_queue;
+    }
+
+    bool HasCopyQueue() const {
+        return has_copy_queue;
+    }
+
     TracyVkCtx GetProfilerContext() const {
         return profiler_context;
     }
@@ -262,10 +272,6 @@ public:
     /// compute but not vertex (requiredSubgroupSizeStages 0xf0), the Windows AMD driver only
     /// compute (0x20). NVIDIA and Intel report at most 32 lanes and use the lowered path.
     /// BB_SUBGROUP=32 forces the lowered 32-wide path, 64 the native one.
-    bool IsBufferMarkerSupported() const {
-        return buffer_marker;
-    }
-
     bool IsSubgroupSize64Supported() const {
         static const int forced = [] {
             const char* env = std::getenv("BB_SUBGROUP");
@@ -582,6 +588,10 @@ private:
     VmaAllocator allocator{};
     vk::Queue present_queue;
     vk::Queue graphics_queue;
+    /// bbport: a second queue of the graphics family, used for readback copies. A copy on it does
+    /// not queue behind the draws recorded after the data the guest wants (see buffer_cache.cpp).
+    vk::Queue copy_queue;
+    bool has_copy_queue{};
     std::vector<vk::PhysicalDevice> physical_devices;
     std::vector<std::string> available_extensions;
     std::unordered_map<vk::Format, vk::FormatProperties3> format_properties;
@@ -593,7 +603,6 @@ private:
     bool depth_clip_control{};
     bool depth_clip_enable{};
     bool device_fault{};
-    bool buffer_marker{};
     bool device_fault_vendor_binary{};
     bool dynamic_state_3{};
     bool depth_range_unrestricted{};

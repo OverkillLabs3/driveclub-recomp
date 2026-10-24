@@ -2005,7 +2005,6 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
     if (ok) {
         // The jitter and motion vectors FSR 3 gets: render pixels, current to previous.
         const float sign = BbToggle::Disabled(1u << 26) ? -1.0f : 1.0f;
-        const auto& settings = BbSettings::Get();
         ok = dlss->Evaluate(cmdbuf, {
             .color = color,
             .depth = depth,
@@ -2017,7 +2016,9 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
             .jitter_y = sign * jitter[1],
             .reset = reset,
             .frame_ms = frame_ms,
-            .sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f,
+            // The configured sharpness is applied once, after DLSS, by ExtraSharpen.
+            // NGX sharpening here as well compounds edge enhancement and creates halos.
+            .sharpness = 0.0f,
         });
     }
     if (!ok) {

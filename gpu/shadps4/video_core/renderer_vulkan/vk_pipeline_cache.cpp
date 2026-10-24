@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_frametrace.h"
+#include "bbport_toggles.h"
 #include "shader_recompiler/depth_size_fix.h"
 #include <atomic>
 #include <chrono>
@@ -36,6 +37,60 @@ namespace Vulkan {
 using Shader::HwStage;
 using Shader::Output;
 using Shader::SwStage;
+
+namespace {
+/// bbport: BB_PREP_WHY=1 - why a draw-preparation worker found no matching shader permutation. The
+/// first few cases print which part of the specialization no existing module shares.
+void ExplainSpecMismatch(const Program& program, const Shader::StageSpecialization& spec) {
+    static const u32 limit = [] {
+        const char* env = std::getenv("BB_PREP_WHY");
+        return env && env[0] ? 12u : 0u;
+    }();
+    static std::atomic<u32> printed{0};
+    if (printed.fetch_add(1, std::memory_order_relaxed) >= limit) {
+        return;
+    }
+    const char* closest = "none";
+    u32 most = 0;
+    std::string differ;
+    for (const auto& module : program.modules) {
+        const auto& other = module.spec;
+        u32 same = 0;
+        std::string now;
+        const auto check = [&](const char* name, bool equal) {
+            if (equal) {
+                ++same;
+            } else {
+                now += " ";
+                now += name;
+            }
+        };
+        check("vs_attribs", spec.vs_attribs == other.vs_attribs);
+        check("runtime_info", spec.runtime_info == other.runtime_info);
+        check("fetch_shader", spec.fetch_shader_data == other.fetch_shader_data);
+        check("fmasks", spec.fmasks == other.fmasks);
+        check("start", spec.start == other.start);
+        check("buffers", spec.buffers == other.buffers);
+        check("images", spec.images == other.images);
+        check("samplers", spec.samplers == other.samplers);
+        if (same > most) {
+            most = same;
+            closest = other.info ? "module" : "empty";
+            differ = now;
+        }
+    }
+    std::printf("Draw prep: shader %016llx, %u modules, closest shares %u of 8, differs:%s\n",
+                static_cast<unsigned long long>(program.info.pgm_hash), u32(program.modules.size()),
+                most, differ.c_str());
+    std::printf("  worker: rt(hw %u sw %u, user data %u, vgprs in %u alloc %u), vs attribs %zu, "
+                "buffers %zu, images %zu, samplers %zu, start %u/%u/%u\n",
+                u32(spec.runtime_info.hw_stage), u32(spec.runtime_info.sw_stage),
+                spec.runtime_info.props.num_user_data, spec.runtime_info.props.num_input_vgprs,
+                spec.runtime_info.props.num_allocated_vgprs, spec.vs_attribs.size(),
+                spec.buffers.size(), spec.images.size(), spec.samplers.size(), spec.start.unified,
+                spec.start.buffer, spec.start.user_data);
+}
+} // namespace
 
 constexpr static auto SpirvVersion1_6 = 0x00010600U;
 
@@ -341,14 +396,8 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             return !instance.IsFragmentShaderBarycentricSupported() &&
                    instance.GetDriverID() == vk::DriverId::eNvidiaProprietary;
         }(),
-        // The game shares workgroup memory between the 64 lanes of a wave without barriers, which holds on
-        // the console because they run in lockstep. A host compiler is free to reorder those loads and stores
-        // (the AMD driver does: a lattice of white squares), so every host gets the barriers. BB_LDS_BARRIERS=0
-        // leaves them out again.
-        .needs_lds_barriers = [] {
-            const char* env = std::getenv("BB_LDS_BARRIERS");
-            return !(env && env[0] == '0');
-        }(),
+        .needs_lds_barriers = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary ||
+                              instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_buffer_offsets = instance.StorageMinAlignment() > 4,
         .needs_unorm_fixup = instance.GetDriverID() == vk::DriverId::eMesaKosmickrisp,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
@@ -389,14 +438,27 @@ struct CompileTimer {
 bool PipelineCache::PrepareGraphicsPipeline(PipelineSelection& worker_sel) {
     // Tessellation stages read constant buffers from memory at selection time: not prepared.
     if (worker_sel.regs->stage_enable.hs_en) {
+        BbStats::NotePrepFailure(4);
         return false;
     }
-    return RefreshGraphicsKey(worker_sel) && !worker_sel.worker->failed;
+    if (!RefreshGraphicsKey(worker_sel)) {
+        BbStats::NotePrepFailure(0);
+        return false;
+    }
+    if (worker_sel.worker->failed) {
+        BbStats::NotePrepFailure(worker_sel.worker->failure_reason);
+        return false;
+    }
+    return true;
 }
 
 const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& prepared) {
-    if (prepared.state.load(std::memory_order_acquire) != PreparedDraw::Ready ||
-        prepared.reg_checksum != liverpool->gfx_reg_checksum) {
+    if (prepared.state.load(std::memory_order_acquire) != PreparedDraw::Ready) {
+        BbStats::NotePreparedMiss(0);
+        return nullptr;
+    }
+    if (prepared.reg_checksum != liverpool->gfx_reg_checksum) {
+        BbStats::NotePreparedMiss(1);
         return nullptr;
     }
     // Same registers; the stage programs and their flattened user data (which also covers
@@ -407,10 +469,12 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         const auto& stage = prepared.stages[i];
         const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage.hw_stage));
         if (!pgm || !pgm->Address<u32*>()) {
+            BbStats::NotePreparedMiss(2);
             return nullptr;
         }
         const auto params = AmdGpu::GetParams(*pgm);
         if (params.hash != stage.hash) {
+            BbStats::NotePreparedMiss(3);
             return nullptr;
         }
         auto& info = const_cast<Program*>(stage.program)->info;
@@ -420,27 +484,79 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
         if (info.pgm_base != stage.pgm_base || info.flattened_ud_buf.size() != stage.flat_size ||
             std::memcmp(info.flattened_ud_buf.data(), stage.flat,
                         stage.flat_size * sizeof(u32)) != 0) {
+            BbStats::NotePreparedMiss(4);
             return nullptr;
+        }
+        for (u32 read_index = 0; read_index < stage.num_pointer_reads; ++read_index) {
+            const auto& read = stage.pointer_reads[read_index];
+            const auto sharp = info.ReadUdReg<AmdGpu::Buffer>(read.ptr_index,
+                                                               read.dword_offset);
+            if (std::memcmp(&sharp, read.words, sizeof(sharp)) != 0) {
+                BbStats::NotePreparedMiss(5);
+                return nullptr;
+            }
+        }
+        if (stage.fetch_code_words != 0) {
+            if (!info.has_fetch_shader) {
+                BbStats::NotePreparedMiss(6);
+                return nullptr;
+            }
+            const u32* fetch_code =
+                Shader::Gcn::GetFetchShaderCode(info, info.fetch_shader_sgpr_base);
+            if (reinterpret_cast<VAddr>(fetch_code) != stage.fetch_code_address ||
+                std::memcmp(fetch_code, stage.fetch_code_snapshot,
+                            stage.fetch_code_words * sizeof(u32)) != 0) {
+                BbStats::NotePreparedMiss(6);
+                return nullptr;
+            }
         }
     }
     const auto it = graphics_pipelines.find(prepared.key);
-    return it != graphics_pipelines.end() ? it->second.get() : nullptr;
+    if (it == graphics_pipelines.end()) {
+        BbStats::NotePreparedMiss(7);
+        return nullptr;
+    }
+    return it->second.get();
 }
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
                                                            const PreparedDraw* prepared) {
     used_prepared = nullptr;
     if (prepared) {
+        BbStats::MotionProfileTimer prepared_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelinePreparedCheck]};
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
+            if (BbStats::motion_profile_enabled) {
+                BbStats::pipeline_prepared_hits.fetch_add(1, std::memory_order_relaxed);
+            }
             used_prepared = prepared;
             return pipeline;
         }
+        if (BbStats::motion_profile_enabled) {
+            BbStats::pipeline_prepared_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+    } else if (BbStats::motion_profile_enabled) {
+        BbStats::pipeline_unprepared.fetch_add(1, std::memory_order_relaxed);
     }
     sel.draw_indirect_params = params;
-    if (!RefreshGraphicsKey(sel)) {
+    bool key_valid;
+    {
+        BbStats::MotionProfileTimer refresh_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineRefreshKey]};
+        key_valid = RefreshGraphicsKey(sel);
+    }
+    if (!key_valid) {
         return nullptr;
     }
-    const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
+    decltype(graphics_pipelines)::iterator it;
+    bool is_new;
+    {
+        BbStats::MotionProfileTimer map_timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineMapLookup]};
+        const auto result = graphics_pipelines.try_emplace(sel.graphics_key);
+        it = result.first;
+        is_new = result.second;
+    }
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
         LOG_INFO(Render_Vulkan, "Compiling graphics pipeline {:#x}", pipeline_hash);
@@ -524,20 +640,26 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     const bool skip_cb_binding =
         regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Disable;
 
-    // Only potentially animated G-buffer draws may use the extra motion attachment. The
-    // ordinary stage variant is needed first to inspect the vertex shader's resources.
-    bool motion_possible = false;
-    {
-        u32 bound = 0;
-        for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
-            bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
-        }
-        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 5 &&
-                          !regs.color_buffers[Shader::MotionVectors::Output] &&
-                          regs.depth_buffer.DepthValid() &&
-                          regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
-                          regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
+    // DriveClub's vehicle G-buffer uses three color targets; the former five-target gate
+    // was inherited from another game's pass layout and rejected every vehicle draw here.
+    // Keep the depth/sample/clip/stage checks below to avoid adding motion output to UI or
+    // incompatible passes. Inspect the ordinary shader variant before selecting motion.
+    constexpr u32 MinMotionColorTargets = 3;
+    u32 motion_bound = 0;
+    for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
+        motion_bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
     }
+    const bool motion_positions_ready = Shader::MotionVectors::positions_address != 0;
+    const bool motion_output_free = !regs.color_buffers[Shader::MotionVectors::Output];
+    const bool motion_depth_valid = regs.depth_buffer.DepthValid();
+    const u32 motion_depth_samples = regs.depth_buffer.NumSamples();
+    const bool motion_clip_enabled = !regs.IsClipDisabled();
+    const bool motion_vs_only =
+        regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
+    const bool motion_possible = motion_positions_ready && motion_bound >= MinMotionColorTargets &&
+                                 motion_output_free && motion_depth_valid &&
+                                 motion_depth_samples == 1 && motion_clip_enabled &&
+                                 motion_vs_only;
     sel.motion = false;
 
     // First pass to fill render target information needed by shader recompiler
@@ -569,9 +691,9 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     if (!RefreshGraphicsStages(sel)) {
         return false;
     }
-    if (motion_possible) {
+    {
         const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
-        if (vs) {
+        if (motion_possible && vs) {
             // Shaders with a bone palette (motion_history.h). Small skeletons (weapons,
             // props) also include static world pieces: the rasterizer gives those
             // history only while their constants change.
@@ -579,40 +701,59 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                 if (resource.IsSpecial()) continue;
                 const auto buffer = resource.GetSharp(*vs);
                 if (buffer.Valid() && buffer.GetStride() == 16 &&
-                    Motion::ClassifyBuffer(buffer.GetSize()) != Motion::BufferRole::Other) {
+                    Motion::ClassifyBuffer(buffer.GetSize()) == Motion::BufferRole::Skeleton) {
                     sel.motion = true;
                     break;
                 }
             }
         }
-        // BB_MOTION_SELECT_LOG=1: each G-buffer vertex shader once, with its buffer sizes
-        // and the selection, to find animated models that the size rule leaves out.
+        // BB_MOTION_SELECT_LOG=1: each vertex shader once, including the early render-pass
+        // eligibility reasons, so a missing object-motion attachment is diagnosable.
         static const bool select_log = [] {
             const char* value = std::getenv("BB_MOTION_SELECT_LOG");
             return value && value[0] == '1';
         }();
-        if (select_log && vs) {
+        if (select_log) {
             std::string sizes;
-            for (const auto& resource : vs->buffers) {
-                if (resource.IsSpecial()) continue;
-                const auto buffer = resource.GetSharp(*vs);
-                sizes += fmt::format(" {}/{}", buffer.GetSize(), buffer.GetStride());
+            if (vs) {
+                for (const auto& resource : vs->buffers) {
+                    if (resource.IsSpecial()) continue;
+                    const auto buffer = resource.GetSharp(*vs);
+                    const auto role = Motion::ClassifyBuffer(buffer.GetSize());
+                    const char* role_name = role == Motion::BufferRole::Skeleton ? "skeleton"
+                        : role == Motion::BufferRole::SmallSkeleton ? "small" : "other";
+                    sizes += fmt::format(" {}/{}/{}", buffer.GetSize(), buffer.GetStride(),
+                                         role_name);
+                }
             }
+            const std::string gate = fmt::format(
+                "gate={} (positions={}, bound={}/3, output7_free={}, depth_valid={}, "
+                "depth_samples={}, clip_enabled={}, vs_only={})",
+                motion_possible ? "pass" : "reject", motion_positions_ready, motion_bound,
+                motion_output_free, motion_depth_valid, motion_depth_samples,
+                motion_clip_enabled, motion_vs_only);
             static std::mutex log_mutex;
             static std::unordered_set<u64> logged;
             std::scoped_lock lock{log_mutex};
-            if (logged.insert(vs->pgm_hash ^ std::hash<std::string>{}(sizes)).second) {
-                std::printf("Motion select: vs %016llx %s, buffers (size/stride):%s\n",
-                            static_cast<unsigned long long>(vs->pgm_hash),
-                            sel.motion ? "ON " : "off", sizes.c_str());
+            const u64 shader_hash = vs ? vs->pgm_hash : 0;
+            // Buffer sizes vary per instance; one representative per VS is enough for this
+            // diagnostic and avoids expensive formatting/logging on the render thread.
+            const u64 diagnostic_hash = shader_hash;
+            if (logged.insert(diagnostic_hash).second) {
+                std::printf("Motion select: vs %016llx %s, %s, buffers (size/stride/role):%s\n",
+                            static_cast<unsigned long long>(shader_hash),
+                            motion_possible ? (sel.motion ? "ON" : "off:buffer-rule")
+                                            : "off:render-gate",
+                            gate.c_str(), sizes.c_str());
             }
         }
-        // Keep the old broad path available for visual A/B tests.
+        // bbport: the broad path is the default (see Rasterizer::DrawRecord): the objects whose
+        // motion the selective rule above misses include a car's trunk, diffuser and lights.
         static const bool all_motion = [] {
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
+            return !value || value[0] != '0';
         }();
-        if (all_motion) {
+        if (motion_possible && all_motion) {
             sel.motion = true;
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {
@@ -851,7 +992,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
                                                 SwStage sw_stage,
                                                 const Shader::ShaderParams& params,
                                                 Shader::Backend::Bindings& binding) {
-    auto runtime_info = BuildRuntimeInfo(sel, hw_stage, sw_stage);
+    Shader::RuntimeInfo runtime_info = [&] {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineRuntimeInfo]};
+        return BuildRuntimeInfo(sel, hw_stage, sw_stage);
+    }();
     if (sel.worker) {
         // bbport: draw-preparation worker: look up only, with the worker's own Info copy.
         auto& worker = *sel.worker;
@@ -859,6 +1004,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         const auto found_program = program_cache.find(params.hash);
         if (found_program == program_cache.end() || !found_program->second->info_template) {
             worker.failed = true;
+            worker.failure_reason = 1;
             return {};
         }
         const Program* program = found_program->second.get();
@@ -873,6 +1019,7 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         sigjmp_buf recover;
         if (sigsetjmp(recover, 0)) {
             worker.failed = true;
+            worker.failure_reason = 2;
             return {};
         }
         runtime_fault_recover = &recover;
@@ -881,7 +1028,9 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         runtime_fault_recover = nullptr;
         const auto it = std::ranges::find(program->modules, spec, &Program::Module::spec);
         if (it == program->modules.end()) {
+            ExplainSpecMismatch(*program, spec);
             worker.failed = true;
+            worker.failure_reason = 3;
             return {};
         }
         info.AddBindings(binding);
@@ -922,8 +1071,54 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     auto& info = program->info;
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
-    info.RefreshFlatBuf();
-    auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
+    {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineFlatBuffer]};
+        info.RefreshFlatBuf();
+    }
+
+    // Fetch shader code lives outside FlatUserData, so those programs stay on the full path.
+    // Most vehicle draws are non-fetch programs and cycle among a handful of material
+    // specializations; retain those exact combinations instead of remembering only the last.
+    {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineSpecMemoCheck]};
+        if (!info.has_fetch_shader) {
+            for (const auto& memo : program->specialization_memos) {
+                if (!memo.valid || memo.program_base != info.pgm_base ||
+                    memo.runtime_info != runtime_info || memo.start != binding ||
+                    memo.flat_ud.size() != info.flattened_ud_buf.size() ||
+                    (!memo.flat_ud.empty() &&
+                     std::memcmp(memo.flat_ud.data(), info.flattened_ud_buf.data(),
+                                 memo.flat_ud.size() * sizeof(u32)) != 0) ||
+                    memo.module_index >= program->modules.size()) {
+                    continue;
+                }
+                if (BbStats::motion_profile_enabled) {
+                    BbStats::pipeline_spec_memo_hits.fetch_add(1, std::memory_order_relaxed);
+                }
+                program->last_used = memo.module_index;
+                auto& previous = program->modules[memo.module_index];
+                {
+                    BbStats::MotionProfileTimer binding_timer{
+                        BbStats::motion_profile_ns[BbStats::MotionPipelineAddBindings]};
+                    info.AddBindings(binding);
+                }
+                return std::make_tuple(&info, previous.module, previous.spec.fetch_shader_data,
+                                       HashCombine(params.hash, memo.module_index));
+            }
+        }
+        if (BbStats::motion_profile_enabled) {
+            BbStats::pipeline_spec_memo_misses.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    Shader::StageSpecialization spec;
+    {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineSpecialization]};
+        spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
+    }
 
     size_t perm_idx = program->modules.size();
     u64 perm_hash = HashCombine(params.hash, perm_idx);
@@ -931,10 +1126,15 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     vk::ShaderModule module{};
 
     // bbport: consecutive draws of a program almost always use the same permutation.
-    auto it = program->last_used < program->modules.size() &&
-                      program->modules[program->last_used].spec == spec
-                  ? program->modules.begin() + program->last_used
-                  : std::ranges::find(program->modules, spec, &Program::Module::spec);
+    decltype(program->modules.begin()) it;
+    {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelinePermutationLookup]};
+        it = program->last_used < program->modules.size() &&
+                     program->modules[program->last_used].spec == spec
+                 ? program->modules.begin() + program->last_used
+                 : std::ranges::find(program->modules, spec, &Program::Module::spec);
+    }
     if (it != program->modules.end()) {
         program->last_used = std::distance(program->modules.begin(), it);
     }
@@ -945,11 +1145,25 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         RegisterShaderMeta(info, spec.fetch_shader_data, spec, perm_hash, perm_idx);
         std::unique_lock lk{programs_mutex};
         program->AddPermut(module, std::move(spec));
+        program->last_used = perm_idx;
     } else {
+        BbStats::MotionProfileTimer timer{
+            BbStats::motion_profile_ns[BbStats::MotionPipelineAddBindings]};
         info.AddBindings(binding);
         module = it->module;
         perm_idx = std::distance(program->modules.begin(), it);
         perm_hash = HashCombine(params.hash, perm_idx);
+    }
+    if (!info.has_fetch_shader) {
+        auto& memo = program->specialization_memos[program->specialization_memo_next];
+        memo.flat_ud = info.flattened_ud_buf;
+        memo.runtime_info = runtime_info;
+        memo.start = binding;
+        memo.program_base = info.pgm_base;
+        memo.module_index = perm_idx;
+        memo.valid = true;
+        program->specialization_memo_next =
+            (program->specialization_memo_next + 1) % Program::SpecializationMemoSize;
     }
     return std::make_tuple(&program->info, module,
                            program->modules[perm_idx].spec.fetch_shader_data, perm_hash);

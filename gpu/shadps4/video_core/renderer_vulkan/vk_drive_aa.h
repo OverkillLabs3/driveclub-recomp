@@ -29,11 +29,12 @@ class Instance;
 class Scheduler;
 class Runtime;
 class DriveMotion;
+class CameraMotion;
 
 class DriveAA {
 public:
     DriveAA(const Instance& instance, Scheduler& scheduler, VideoCore::TextureCache& texture_cache,
-            Runtime& runtime, DriveMotion& motion);
+            Runtime& runtime, DriveMotion& motion, CameraMotion& camera_motion);
     ~DriveAA();
 
     /// FSR or DLSS anti-aliasing is switched on and has not failed.
@@ -109,6 +110,7 @@ private:
     VideoCore::TextureCache& texture_cache;
     Runtime& runtime;
     DriveMotion& motion;
+    CameraMotion& camera_motion;
     std::unique_ptr<NeuralRendering> neural;
 
     std::array<CachedView, 8> views{};

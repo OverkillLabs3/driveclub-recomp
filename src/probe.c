@@ -314,27 +314,11 @@ static BOOL WINAPI console_closing(DWORD event) {
     runtime_ffb_release("the console closed");
     return FALSE;
 }
-/* abort() (an uncaught C++ exception, a failed library check), the C runtime's invalid-parameter check and a pure virtual
- * call end the process with 0xC0000409 and no message that any handler sees: say what happened first, with the same
- * report as a crash (registers, host call stack as module+offset). */
-static void report_runtime_check(const char *why);
 static void on_abort(int signal_number) {
     (void)signal_number;
     runtime_ffb_release("abort");
-    report_runtime_check("abort() was called (a failed check in the runtime or a library)");
-    fflush(NULL);
-    _exit(22);
-}
-static void on_invalid_parameter(const wchar_t *expression, const wchar_t *function, const wchar_t *file, unsigned line, uintptr_t reserved) {
-    (void)expression; (void)function; (void)file; (void)line; (void)reserved;
-    runtime_ffb_release("a C runtime check");
-    report_runtime_check("the C runtime stopped on an invalid parameter");
-    fflush(NULL);
-    _exit(22);
-}
-static void on_pure_call(void) {
-    runtime_ffb_release("a pure virtual call");
-    report_runtime_check("a pure virtual function was called");
+    fputs("Fatal: abort() was called (a failed check in the runtime or a library)", stderr);
+    fputc(10, stderr);
     fflush(NULL);
     _exit(22);
 }
@@ -449,20 +433,6 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
     fflush(NULL);
     TerminateProcess(GetCurrentProcess(),3);
     return EXCEPTION_CONTINUE_SEARCH;
-}
-static void report_runtime_check(const char *why) {
-    CONTEXT context;
-    EXCEPTION_RECORD record;
-    EXCEPTION_POINTERS pointers;
-    memset(&context,0,sizeof context);
-    memset(&record,0,sizeof record);
-    RtlCaptureContext(&context);
-    record.ExceptionCode=0xC0000409;
-    record.ExceptionAddress=(PVOID)(uintptr_t)context.Rip;
-    pointers.ExceptionRecord=&record;
-    pointers.ContextRecord=&context;
-    fprintf(stderr,"Fatal: %s\n",why);
-    fatal_exception(&pointers);
 }
 static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     const EXCEPTION_RECORD *record=info->ExceptionRecord;
@@ -1105,8 +1075,6 @@ int main(int argc, char **argv) {
     SetUnhandledExceptionFilter(unhandled_fault);
     atexit(note_exit);
     signal(SIGABRT,on_abort);
-    _set_invalid_parameter_handler(on_invalid_parameter);
-    _set_purecall_handler(on_pure_call);
     SetConsoleCtrlHandler(console_closing,TRUE);
     if (getenv("BB_STRICT_HANDLES")) {
         PROCESS_MITIGATION_STRICT_HANDLE_CHECK_POLICY strict={0};

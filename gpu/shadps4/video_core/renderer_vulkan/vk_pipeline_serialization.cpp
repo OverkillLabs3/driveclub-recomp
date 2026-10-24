@@ -17,7 +17,7 @@ static const u32 ShaderBinaryVersion = [] {
     // The switches that change the translated shaders are part of the version, so cached shaders never mix.
     const char* nan = std::getenv("BB_NAN_MINMAX");
     const char* undef = std::getenv("BB_UNDEF_ZERO");
-    return 32u + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u);
+    return 30u + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u);
 }();
 static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)

@@ -308,29 +308,6 @@ extern "C" int bbgpu_handle_fault(void* ucontext, void* address) {
 }
 
 extern "C" void bbgpu_print_recent_passes(void) {
-    if (BbRecent::crumb) {
-        // The GPU's own count of the work its command processor reached: the faulting draw is this one or
-        // one of the few before it, not the last that was recorded.
-        const u32 reached = *BbRecent::crumb;
-        const u32 recorded = BbRecent::next.load(std::memory_order_relaxed);
-        std::printf("GPU: the command processor had reached draw or dispatch #%u of %u recorded", reached, recorded);
-        if (reached == 0 || recorded - reached >= BbRecent::Size) {
-            std::fputs(" (no entry kept for it)\n", stdout);
-        } else {
-            std::fputs(", around it:", stdout);
-            const u32 from = reached > 12 ? reached - 12 : 0;
-            for (u32 i = from; i < std::min<u32>(recorded, reached + 3); ++i) {
-                const auto& e = BbRecent::entries[i & (BbRecent::Size - 1)];
-                const char* mark = i + 1 == reached ? "*" : "";
-                if (e.kind == 'D') {
-                    std::printf(" [%sdraw vs %08x ps %08x idx %u inst %u]", mark, u32(e.a), u32(e.b), e.x, e.y);
-                } else if (e.kind == 'C') {
-                    std::printf(" [%scompute %08x %ux%ux%u]", mark, u32(e.a), e.x, e.y, e.z);
-                }
-            }
-            std::fputc(10, stdout);
-        }
-    }
     const u32 end = BbRecent::next.load(std::memory_order_relaxed);
     const u32 count = std::min<u32>(end, 48);
     if (!count) {

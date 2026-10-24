@@ -246,6 +246,13 @@ void Swapchain::SetSurfaceProperties() {
     // (bbport: two with frame generation, which presents several images per game frame).
     image_count = capabilities.minImageCount +
                   (BbSettings::Get().frame_gen != BbSettings::FrameGenOff ? 2 : 1);
+    // bbport: BB_SWAPCHAIN_IMAGES=<n> adds n buffers beyond the default. More buffers let the GPU
+    // keep working while the guest thread is stopped by a readback.
+    static const u32 extra_images = [] {
+        const char* env = std::getenv("BB_SWAPCHAIN_IMAGES");
+        return env ? std::min<u32>(std::max(0, std::atoi(env)), 4) : 0u;
+    }();
+    image_count += extra_images;
     if (capabilities.maxImageCount > 0) {
         image_count = std::min(image_count, capabilities.maxImageCount);
     }

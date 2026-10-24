@@ -32,7 +32,8 @@ public:
     /// `depth_view` itself when there is none.
     void Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view, vk::ImageView mask_view,
                 vk::ImageView motion_view,
-                u32 width, u32 height, u32 src_width, u32 src_height, bool normalized);
+                u32 width, u32 height, u32 src_width, u32 src_height, bool normalized,
+                vk::ImageView object_view = {}, vk::ImageView color_view = {});
 
     /// Row-vector clip space matrices for the frame generator.
     void ClipTransforms(std::array<float, 16>& view_to_clip,

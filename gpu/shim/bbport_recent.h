@@ -17,12 +17,9 @@ struct Entry {
     char kind = 0;
 };
 
-inline constexpr std::uint32_t Size = 8192;
+inline constexpr std::uint32_t Size = 64;
 inline Entry entries[Size];
 inline std::atomic<std::uint32_t> next{0};
-// Where the GPU writes the number of the last draw or dispatch its command processor reached (AMD's buffer
-// marker, see Rasterizer): entry (value - 1) was being processed when the device was lost. Null without it.
-inline volatile std::uint32_t* crumb = nullptr;
 
 inline std::uint64_t Now() {
     return static_cast<std::uint64_t>(
