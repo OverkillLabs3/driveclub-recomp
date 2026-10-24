@@ -607,6 +607,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     view_info.mapping.a = vk::ComponentSwizzle::eOne;
 
     vk::ImageView image_view{};
+    vk::ImageView alpha_view{}; // bbport: VR: the display buffer with its alpha (the HUD's coverage)
     vk::Extent2D image_size{};
     if (upscaled) {
         const auto device = instance.GetDevice();
@@ -642,6 +643,11 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                     image.info.size.height, "display", frame_dump_index);
         }
         image_view = *image.FindView(view_info).image_view;
+        if (BbVr::Active()) {
+            VideoCore::ImageViewInfo alpha_info = view_info;
+            alpha_info.mapping.a = vk::ComponentSwizzle::eIdentity;
+            alpha_view = *image.FindView(alpha_info).image_view;
+        }
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::PipelineStageFlagBits2::eFragmentShader,
@@ -651,7 +657,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // bbport: VR: the headset takes the display buffer at its own size (the output resolution).
     // With the HUD drawn apart the window shows the scene and the HUD put together again.
     if (const VkImageView whole = BbVr::NoteFrame(cmdbuf, frame->image, frame->is_hdr ? vk::ImageView{} : image_view,
-                                                  VkFormat(view_info.format), image_size.width, image_size.height)) {
+                                                  alpha_view, VkFormat(view_info.format), image_size.width,
+                                                  image_size.height)) {
         image_view = vk::ImageView(whole);
     }
     BbFrame::NoteOutput(image_size.width, image_size.height);

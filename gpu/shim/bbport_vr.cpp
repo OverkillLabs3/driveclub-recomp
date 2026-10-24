@@ -1290,8 +1290,8 @@ void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t w
     }
 }
 
-VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkFormat display_format,
-                      uint32_t display_width, uint32_t display_height) {
+VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkImageView alpha_view,
+                      VkFormat display_format, uint32_t display_width, uint32_t display_height) {
     if (!Active()) {
         return VK_NULL_HANDLE;
     }
@@ -1331,7 +1331,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     const VkFormat f = display_format;
     const bool encode = f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB || f == VK_FORMAT_A8B8G8R8_SRGB_PACK32;
     GpuImage* const scene = scene_index >= 0 ? &gpu.scenes[scene_index] : nullptr;
-    if (scene && scene->width == display_width && scene->height == display_height &&
+    if (scene && alpha_view && scene->width == display_width && scene->height == display_height &&
         MakeImage(entry->hud, display_width, display_height, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) &&
         MakeImage(entry->whole, display_width, display_height,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1344,7 +1344,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                 Barrier(cmd, img->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                         VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
             }
-            VkDescriptorImageInfo infos[5] = {{VK_NULL_HANDLE, display_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            VkDescriptorImageInfo infos[5] = {{VK_NULL_HANDLE, alpha_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                                               {VK_NULL_HANDLE, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                                               {VK_NULL_HANDLE, entry->picture.view, VK_IMAGE_LAYOUT_GENERAL},
                                               {VK_NULL_HANDLE, entry->hud.view, VK_IMAGE_LAYOUT_GENERAL},
