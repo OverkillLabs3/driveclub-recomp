@@ -1053,7 +1053,7 @@ int main(int argc, char **argv) {
 #endif
     int cpu_only = 0, strict_imports = 0;
     unsigned timeout_seconds = 10;
-    const char *content_profile=NULL, *app0_base_dir=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *mods_dir[4]={0}; int mods_n=0;
+    const char *content_profile=NULL, *app0_base_dir=NULL, *app0=NULL, *user_dir=NULL, *patch_file=NULL, *mods_dir[8]={0}; int mods_n=0; /* as many as runtime_file.c keeps (MODS_MAX): the launcher passes up to five */
     for (int i = 2; i < argc; ++i) {
         if (!strcmp(argv[i], "--cpu-only")) cpu_only = 1;
         else if (!strcmp(argv[i], "--strict-imports")) strict_imports = 1;
@@ -1061,7 +1061,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--app0") && i+1<argc) app0=argv[++i];
         else if (!strcmp(argv[i], "--app0-base") && i+1<argc) app0_base_dir=argv[++i];
         else if (!strcmp(argv[i], "--user") && i+1<argc) user_dir=argv[++i];
-        else if (!strcmp(argv[i], "--mods") && i+1<argc) { const char *mv=argv[++i]; if (mods_n<4) mods_dir[mods_n++]=mv; }
+        else if (!strcmp(argv[i], "--mods") && i+1<argc) { const char *mv=argv[++i]; if (mods_n<8) mods_dir[mods_n++]=mv; }
         else if (!strcmp(argv[i], "--patches") && i+1<argc) patch_file=argv[++i];
         else if (!strcmp(argv[i], "--stub-unresolved")) stub_unresolved=1;
         else if (!strcmp(argv[i], "--timeout") && i+1<argc) timeout_seconds=(unsigned)strtoul(argv[++i],NULL,10);
