@@ -47,6 +47,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 
@@ -648,6 +649,119 @@ bool HeadAt(long long time_us, XrPosef& out) {
     return best >= 0;
 }
 
+// ---- the scene's projection -------------------------------------------------------------------------------------------
+// The game's aspect (the float at +0x729978, eboot 0xb29978) shapes the scene's projection and the HUD's canvas alike:
+// an aspect of the eye's shape cuts the HUD's and the menus' edges off. The "full HUD" sizes keep it at 16:9 and draw in
+// the eye's shape; the driver's head camera's projection is narrowed to the render's shape here, as the scene takes the
+// camera (Scene::SetCamera at +0x5e7a20: rdi the scene, rsi {world 4x4, projection 4x4, ...}; the place was found by
+// the dcport-vr fork). Every other view keeps the 16:9 projection: squeezed into the picture as the HUD is, it is shown
+// at 16:9 again on the still screen.
+float GameAspect() {
+    const float a = *reinterpret_cast<const float*>(runtime_image_base + 0x729978);
+    return a > 0.5f && a < 4.0f ? a : 0.0f;
+}
+
+float RenderAspect() { // the scene's size (eboot 0x16d0544 / 0x16d0554), width / height
+    const uint32_t w = *reinterpret_cast<const uint32_t*>(runtime_image_base + 0x12d0544);
+    const uint32_t h = *reinterpret_cast<const uint32_t*>(runtime_image_base + 0x12d0554);
+    return w >= 64 && h >= 64 && w <= 16384 && h <= 16384 ? float(w) / float(h) : 0.0f;
+}
+
+// The camera handed on is a copy (the game's own is rebuilt every frame); a ring, as more than one thread may set one.
+struct alignas(16) CameraCopy {
+    uint8_t bytes[0x1000]; // the description runs on past the matrices: copied whole
+};
+CameraCopy camera_copies[64];
+std::atomic<uint32_t> camera_copy_next{0};
+
+extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t camera) {
+    const float* proj = reinterpret_cast<const float*>(camera) + 16;
+    const float aspect = GameAspect(), render = RenderAspect();
+    if (!aspect || !render || std::fabs(render / aspect - 1.0f) < 0.01f) {
+        return camera; // the render has the game's shape
+    }
+    if (proj[11] != -1.0f || proj[0] <= 0.0f || proj[5] <= 0.0f) {
+        return camera; // not a perspective view
+    }
+    const float ratio = proj[5] / proj[0] / aspect;
+    const float vfov = 2.0f * std::atan(1.0f / proj[5]) * 180.0f / Pi;
+    if (ratio < 0.96f || ratio > 1.045f || std::fabs(vfov - settings.cockpit_vfov) >= 3.0f ||
+        NowUs() - hook_time_us.load() > 300000) {
+        return camera; // not the driver's head camera (a mirror, a reflection's face, a menu's camera)
+    }
+    CameraCopy& copy = camera_copies[camera_copy_next.fetch_add(1) % 64];
+    std::memcpy(copy.bytes, reinterpret_cast<const void*>(camera), sizeof copy.bytes);
+    float* const p = reinterpret_cast<float*>(copy.bytes) + 16;
+    p[0] = p[5] / render;
+    static bool told = false;
+    if (!told) {
+        told = true;
+        std::printf("VR: the driver's head camera drawn in the render's shape (%.3f, the game's aspect %.3f)\n", render,
+                    aspect);
+    }
+    return reinterpret_cast<uint64_t>(copy.bytes);
+}
+
+void InstallSceneCameraHook() {
+#ifdef _WIN32
+    static const uint8_t expected[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,  // push rbp; mov rbp, rsp;
+                                         0x41, 0x55, 0x41, 0x54, 0x53};                    // push r15, r14, r13, r12, rbx
+    static bool installed = false;
+    uint8_t* site = reinterpret_cast<uint8_t*>(runtime_image_base + 0x5e7a20);
+    if (installed || std::memcmp(site, expected, sizeof expected) != 0) {
+        if (!installed) {
+            std::printf("VR: the scene camera hook does not fit this game version: the full HUD sizes are not drawn "
+                        "right\n");
+        }
+        return;
+    }
+    // The trampoline: the registers the handler (Windows ABI) may change are kept (rax too, though the jump in uses
+    // it), rsi = bbvr_scene_camera_hook(rsi), the instructions the jump replaces, back after them.
+    uint8_t* t = static_cast<uint8_t*>(VirtualAlloc(nullptr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!t) {
+        return;
+    }
+    size_t n = 0;
+    const auto put = [&](std::initializer_list<uint8_t> bytes) {
+        for (uint8_t b : bytes) t[n++] = b;
+    };
+    put({0x50, 0x51, 0x52, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53}); // push rax rcx rdx r8 r9 r10 r11
+    put({0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00});                         // sub rsp, 0x80 (16-aligned for the call)
+    for (int i = 0; i < 6; ++i) {
+        put({0xf3, 0x0f, 0x7f, uint8_t(0x44 + 8 * i), 0x24, uint8_t(0x20 + 16 * i)}); // movdqu [rsp+0x20+16i], xmm<i>
+    }
+    put({0x48, 0x89, 0xf1}); // mov rcx, rsi
+    put({0x48, 0xb8});       // mov rax, imm64
+    const uint64_t hook = reinterpret_cast<uint64_t>(&bbvr_scene_camera_hook);
+    std::memcpy(t + n, &hook, 8), n += 8;
+    put({0xff, 0xd0});       // call rax
+    put({0x48, 0x89, 0xc6}); // mov rsi, rax
+    for (int i = 0; i < 6; ++i) {
+        put({0xf3, 0x0f, 0x6f, uint8_t(0x44 + 8 * i), 0x24, uint8_t(0x20 + 16 * i)}); // movdqu xmm<i>, [rsp+0x20+16i]
+    }
+    put({0x48, 0x81, 0xc4, 0x80, 0x00, 0x00, 0x00});                         // add rsp, 0x80
+    put({0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59, 0x58}); // pop r11 r10 r9 r8 rdx rcx rax
+    std::memcpy(t + n, expected, sizeof expected), n += sizeof expected;
+    put({0xff, 0x25, 0, 0, 0, 0}); // jmp [rip]
+    const uint64_t back = reinterpret_cast<uint64_t>(site + sizeof expected);
+    std::memcpy(t + n, &back, 8), n += 8;
+    FlushInstructionCache(GetCurrentProcess(), t, n);
+    // The jump in: mov rax, imm64; jmp rax (12 bytes: rax is free at a function's entry), a nop.
+    uint8_t jump[13] = {0x48, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xe0, 0x90};
+    const uint64_t to = reinterpret_cast<uint64_t>(t);
+    std::memcpy(jump + 2, &to, 8);
+    DWORD old = 0;
+    if (!VirtualProtect(site, sizeof jump, PAGE_EXECUTE_READWRITE, &old)) {
+        return;
+    }
+    std::memcpy(site, jump, sizeof jump);
+    VirtualProtect(site, sizeof jump, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site, sizeof jump);
+    installed = true;
+    std::printf("VR: scene camera hook in\n");
+#endif
+}
+
 void InstallHeadHook() {
 #ifdef _WIN32
     static const uint8_t expected[14] = {0xc4, 0xc1, 0x79, 0x6f, 0x87, 0x10, 0x03, 0x00, 0x00,  // vmovdqa xmm0,[r15+0x310]
@@ -689,6 +803,7 @@ void InstallHeadHook() {
     FlushInstructionCache(GetCurrentProcess(), site, sizeof jump);
     hook_installed = true;
     std::printf("VR: head camera hook in\n");
+    InstallSceneCameraHook();
 #endif
 }
 
@@ -1252,10 +1367,12 @@ void AfterSubmit() {
         // The pose each picture is stated at: the runtime turns it from there to the head's pose now.
         XrPosef pose{};
         float tan_y = std::tan(settings.screen_vfov * 0.5f * Pi / 180.0f);
-        float tan_x = tan_y * float(st.width) / float(st.height); // a still screen: the picture's own shape
+        // A still screen: the game's aspect (the full HUD sizes squeeze a 16:9 picture into the eye's shape), else the
+        // picture's own shape.
+        const float game_aspect = hook_installed ? GameAspect() : 0.0f;
+        float tan_x = tan_y * (game_aspect ? game_aspect : float(st.width) / float(st.height));
         if (cockpit) {
-            // the scene's own field of view: the picture may be wider than the scene (the scene in the shape of an
-            // eye, stretched into a 16:9 output for the menus)
+            // the scene's own field of view, from its projection (the picture's shape need not be the scene's)
             tan_y = 1.0f / cockpit_y.load();
             tan_x = cockpit_x.load() > 0.1f ? 1.0f / cockpit_x.load() : tan_y * float(st.width) / float(st.height);
             if (st.frame_tagged) {

@@ -16,7 +16,8 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
    - *Gameplay* → **VR headset (experimental)** on;
    - *Graphics* → *Widescreen* → **VR Ultra** (2688x2880) or **VR High** (2496x2688): the picture in the shape of
      a headset eye (Virtual Desktop's Ultra and High sizes). Other sizes work, but waste pixels outside the eye's
-     view;
+     view. **VR Ultra, full HUD** / **VR High, full HUD**: the same sizes with the game's 16:9 aspect kept, so the
+     menus and the HUD are whole (the HUD then spans the whole view in the car);
    - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate;
    - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
      launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the

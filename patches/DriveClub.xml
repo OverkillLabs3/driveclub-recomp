@@ -395,15 +395,28 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
-              Name="VR eye High, menus 16:9 [2496x2688 / 4784x2688] Internal + Output resolution"
-              Note="The scene at 2496x2688, the shape of a Quest 2 eye at Virtual Desktop High; the output (menus, HUD) at 4784x2688, 16:9. The scene is stretched across the output and the VR layer undoes the stretch."
+              Name="VR eye Ultra, full HUD [2688x2880] Internal + Output resolution"
+              Note="2688x2880 internal render and output resolution for VR, the shape of a Quest 2 eye at Virtual Desktop Ultra, with the game's 16:9 aspect kept: the HUD and the menus whole (squeezed into the picture; VR shows them at 16:9 again and draws the driver's view in the eye's shape)"
               Author="After Kravickas' widescreen patches"
               PatchVer="1.0"
               AppVer="01.28"
               AppElf="eboot.bin">
         <PatchList>
-            <Line Type="bytes" Address="0x00b29978" Value="dbb66d3f"/>
-            <Line Type="bytes" Address="0x00b54c1b" Value="b0120000"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="800a0000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="400b0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="800a0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="400b0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR eye High, full HUD [2496x2688] Internal + Output resolution"
+              Note="2496x2688 internal render and output resolution for VR, the shape of a Quest 2 eye at Virtual Desktop High, with the game's 16:9 aspect kept: the HUD and the menus whole (squeezed into the picture; VR shows them at 16:9 again and draws the driver's view in the eye's shape)"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b54c1b" Value="c0090000"/>
             <Line Type="bytes" Address="0x00b54c21" Value="800a0000"/>
             <Line Type="bytes" Address="0x016d0544" Value="c0090000"/>
             <Line Type="bytes" Address="0x016d0554" Value="800a0000"/>
