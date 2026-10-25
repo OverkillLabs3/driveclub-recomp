@@ -454,6 +454,9 @@ bool EnsureSwapchain(XrSwapchain& swapchain, uint32_t& swapchain_width, uint32_t
     if (swapchain && swapchain_width == width && swapchain_height == height) {
         return true;
     }
+    // The runtime may submit to the game's queue in these calls (SteamVR: its images' keyed mutexes), so they are made
+    // under the queue lock as every other submission (found by red1ty).
+    std::scoped_lock lock{*BbVr::g_queue_mutex};
     if (swapchain) {
         xr.DestroySwapchain(swapchain);
         swapchain = XR_NULL_HANDLE;
@@ -1921,8 +1924,14 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         XrSwapchainImageAcquireInfo hud_acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         XrSwapchainImageWaitInfo hud_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         hud_wait.timeout = 100000000; // 100 ms
-        if (Ok(xr.AcquireSwapchainImage(st.hud_swapchain, &hud_acquire, &hud_index), "xrAcquireSwapchainImage") &&
-            Ok(xr.WaitSwapchainImage(st.hud_swapchain, &hud_wait), "xrWaitSwapchainImage")) {
+        bool hud_ready;
+        {
+            std::scoped_lock lock{*g_queue_mutex}; // the runtime may submit to the game's queue (EnsureSwapchain)
+            hud_ready = Ok(xr.AcquireSwapchainImage(st.hud_swapchain, &hud_acquire, &hud_index),
+                           "xrAcquireSwapchainImage") &&
+                        Ok(xr.WaitSwapchainImage(st.hud_swapchain, &hud_wait), "xrWaitSwapchainImage");
+        }
+        if (hud_ready) {
             st.hud_acquired = true;
             const VkImage target = st.hud_images[hud_index].image;
             Barrier(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
@@ -1940,14 +1949,17 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         return;
     }
     uint32_t index = 0;
-    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (!Ok(xr.AcquireSwapchainImage(st.swapchain, &acquire, &index), "xrAcquireSwapchainImage")) {
-        return;
-    }
-    XrSwapchainImageWaitInfo image_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    image_wait.timeout = 100000000; // 100 ms
-    if (!Ok(xr.WaitSwapchainImage(st.swapchain, &image_wait), "xrWaitSwapchainImage")) {
-        return;
+    {
+        std::scoped_lock lock{*g_queue_mutex}; // the runtime may submit to the game's queue (EnsureSwapchain)
+        XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        if (!Ok(xr.AcquireSwapchainImage(st.swapchain, &acquire, &index), "xrAcquireSwapchainImage")) {
+            return;
+        }
+        XrSwapchainImageWaitInfo image_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        image_wait.timeout = 100000000; // 100 ms
+        if (!Ok(xr.WaitSwapchainImage(st.swapchain, &image_wait), "xrWaitSwapchainImage")) {
+            return;
+        }
     }
     st.image_acquired = true;
     st.width = width;
