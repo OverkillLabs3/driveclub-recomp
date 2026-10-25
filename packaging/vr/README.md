@@ -51,6 +51,8 @@ The number row, on every keyboard (the keypad works too, for those who have one)
 | 2 / 1 | 8 / 2 | Seat up / down (2 cm, with Ctrl 10 cm) |
 | 5 / 6 | 4 / 6 | Seat left / right |
 | 4 / 3 | 9 / 3 | Seat forward / back |
+| 8 | | Experimental: eyes from depth, off → 1 → 2 → off (see below) |
+| 9 | | Experimental: car turn compensation on / off (see below) |
 
 The seat keys print the values to the log (`VR: seat_x = ...`); copy them into `vr.ini` to keep them. Other keys can
 be set in `vr.ini`: `key_recentre`, `key_up`, `key_down`, `key_left`, `key_right`, `key_forward`, `key_back`, each one
@@ -75,6 +77,9 @@ cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset,
 hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture
 hud_distance = 1.1 # the HUD panel: metres ahead, hud_width = 1.4 (metres, 16:9), hud_y = 0 (metres above the eyes)
 screen_vfov = 40   # the still screen's height, degrees
+reproject = 0      # experimental, smoother turns: 1 the other eye made each frame from this frame's picture and
+                   # depth (glass, reflections and edges flicker a little); 2 both eyes made from a frame drawn
+                   # between them (no flicker, softer edges, glass at a wrong depth). key_reproject = 8 cycles it
 turn_comp = 0      # 1: the older eye's picture turned by the car's turn since it was drawn (steadier world in
                    # turns, the cockpit moves in that eye instead); 0.5 half. key_turn = 9 switches it while driving
 key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
