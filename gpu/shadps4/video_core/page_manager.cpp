@@ -33,8 +33,9 @@
 #include <windows.h>
 #include "common/decoder.h"
 #include <immintrin.h>
-extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64_t size);
 #endif
+
+extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64_t size);
 
 #ifdef __linux__
 #include <thread>

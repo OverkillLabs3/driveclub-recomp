@@ -44,6 +44,7 @@ struct Program {
     struct Module {
         vk::ShaderModule module;
         Shader::StageSpecialization spec;
+        u64 cache_hash{};
     };
     static constexpr size_t MaxPermutations = 8;
     using ModuleList = boost::container::small_vector<Module, MaxPermutations>;
@@ -62,14 +63,8 @@ struct Program {
     Program(Shader::HwStage stage, Shader::SwStage l_stage, Shader::ShaderParams params)
         : info{stage, l_stage, params} {}
 
-    void AddPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec) {
-        modules.emplace_back(module, std::move(spec));
-    }
-
-    void InsertPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec,
-                      size_t perm_idx) {
-        modules.resize(std::max(modules.size(), perm_idx + 1)); // <-- beware of realloc
-        modules[perm_idx] = {module, std::move(spec)};
+    void AddPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec, u64 cache_hash) {
+        modules.emplace_back(module, std::move(spec), cache_hash);
     }
 };
 
@@ -173,7 +168,7 @@ private:
                     std::string_view ext);
     std::optional<std::vector<u32>> GetShaderPatch(u64 hash, Shader::HwStage stage, size_t perm_idx,
                                                    std::string_view ext);
-    vk::ShaderModule CompileModule(Shader::Info& info, Shader::RuntimeInfo& runtime_info,
+    std::pair<vk::ShaderModule, u64> CompileModule(Shader::Info& info, Shader::RuntimeInfo runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
                                    Shader::Backend::Bindings& binding);
     const Shader::RuntimeInfo& BuildRuntimeInfo(PipelineSelection& sel, Shader::HwStage stage,

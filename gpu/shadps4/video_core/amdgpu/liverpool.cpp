@@ -1549,7 +1549,8 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
                 // A label poll does no cache work either: a wait that is already met goes on at once; an unmet one
                 // drains first, so labels queued on the recording thread are written while it waits.
                 case PM4ItOpcode::WaitRegMem: {
-                    if (!ComputeInOrder()) {
+                    if (!ComputeInOrder() || queue.tmp_dwords != 0 ||
+                        acb.size_bytes() < sizeof(PM4CmdWaitRegMem)) {
                         return false;
                     }
                     u32 polls = 0;
