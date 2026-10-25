@@ -138,6 +138,8 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Gameplay:** player name, borderless fullscreen, FPS counter, motion blur and depth of field off, no reset-to-track timer, no track barriers, and photo mode options.
 
+**Disable collision slowdown penalties** (Gameplay → Patches, off by default) removes the additional wall-impact slowdown and the car-contact penalty timer. Cars still physically hit walls and each other, and corner-cut penalties remain. Fame deductions and some collision messages may still occur. The two patches check the original 1.28 instructions before applying; game dump files are unchanged. Turn the option off and restart the game to restore the original behavior.
+
 **Driving:** the field of view, the gearbox, brake assist, hardcore handling and wheel assist, and the steering wheel (Wheel Setup and force feedback, see [Steering wheels](#steering-wheels)). **Sim** turns the assists off, with a manual gearbox and hardcore handling; **Assisted** uses an automatic gearbox, brake assist and wheel assist; **Game Defaults** leaves them to the game's own menu. A choice made here wins over the game's menu; **In-game** hands that option back to the menu.
 
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.

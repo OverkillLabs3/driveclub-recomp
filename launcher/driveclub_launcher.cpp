@@ -996,6 +996,9 @@ void BuildModel() {
   const int reset = toggle(L"No reset-to-track timer", L"Disables the reset to track timer.", "Reset Disable", false);
   const int barrier = toggle(L"Disable track barriers", L"Removes the invisible barriers at the track edges.",
                              "Barrier Disable", false);
+  const int collision_penalty = toggle(L"Disable collision slowdown penalties",
+      L"Optional relaxed driving: removes the extra slowdown after wall impacts and car contacts. Physical impacts, scoring and corner-cut penalties remain. Off by default. Restart the game after changing this option.",
+      "Disable collision slowdown penalties", false);
   const int pcol = toggle(L"Photo mode: free camera through cars",
                           L"Disables car collision with the free camera, so you can look inside any car.",
                           "Disable Photomode Free Camera Collision", false);
@@ -1226,7 +1229,7 @@ void BuildModel() {
   g_cards.push_back({L"TEMPORARY WORKAROUNDS", {camera_patch}, 0, kTabPatches,
                      L"Optional workaround for high-FPS shake. Not needed at 30 FPS. Disable it if your runtime already corrects camera/replay timing."});
   g_cards.push_back({L"DISPLAY COMPATIBILITY", {fov}, 0, kTabPatches});
-  g_cards.push_back({L"GAMEPLAY PATCHES", {reset, barrier}, 0, kTabPatches});
+  g_cards.push_back({L"GAMEPLAY PATCHES", {reset, barrier, collision_penalty}, 0, kTabPatches});
   g_cards.push_back({L"PHOTO MODE", {pcol, pproc}, 0, kTabPatches});
   g_cards.push_back({L"EFFECT OVERRIDES", {blur}, 0, kTabPatches});
   g_cards.push_back({L"ADVANCED", {twothread, skipgpu}, 0, kTabGameplay});
