@@ -38,6 +38,7 @@
 #include "scene_track_names.h"
 #include "gpu_check.h"
 #include "graphics.h"
+#include "headcam.h"
 #include "prepare.h"
 #include "unlock.h"
 #include "carswitch.h"
@@ -124,13 +125,14 @@ int g_hover_tab = -1;
 int g_hover_info = -1, g_info_open = -1;
 
 // The cards are split over tabs so a page holds what belongs together and needs no scrolling.
-enum { kTabGraphics, kTabDetail, kTabGameplay, kTabDriving, kTabBench, kTabCount };
-const wchar_t* const kTabName[kTabCount] = {L"Graphics", L"Detail", L"Gameplay", L"Driving", L"Benchmark"};
+enum { kTabGraphics, kTabDetail, kTabGameplay, kTabDriving, kTabHeadcam, kTabBench, kTabCount };
+const wchar_t* const kTabName[kTabCount] = {L"Graphics", L"Detail", L"Gameplay", L"Driving", L"Head camera", L"Benchmark"};
 const wchar_t* const kTabHint[kTabCount] = {
     L"Frame rate, the sizes the game draws and shows, anti-aliasing and texture filtering.",
     L"Model, scenery, reflection and shadow detail, and the game's own camera effects.",
     L"Your name and language, the mirrors, the window, the add-on content and the community patches.",
     L"Driving: the field of view and the game's driving assists, and the steering wheel (its setup and force feedback).",
+    L"The cockpit camera's head: how the driver's head looks into corners and sways, built from your own game files.",
     L"Drive one circuit on its own and get back the frame rate and the 1% and 0.1% lows."};
 int g_tab = kTabGraphics;
 RectF g_tab_rect[kTabCount];
@@ -423,6 +425,12 @@ bool IsDriveRow(const Ctl& c) { return c.patches[0].rfind("@drive", 0) == 0; }
 // Field of view, percent of the game's own: data\user\camera.ini fov=, read by the game at start; F5 and F6 change
 // it while playing and save it there (src/runtime_pad.c).
 int g_fov = -1;
+// Head camera: the cockpit head's look into corners and its weight, 0 = the game's own;
+// kept in launcher.ini as headcam_<name>=<percent>, applied to an edited copy of the game's own camera file
+// (launcher/headcam.h).
+int g_headcam[2] = {-1, -1};
+const char* const kHeadcamKey[2] = {"headcam_look=", "headcam_weight="};
+int headcam_saved[2] = {-1, -1};
 // The driving presets: the choice of each row of g_drive (0 = In-game). Sim: manual, no assists, hardcore handling;
 // Assisted: automatic, medium brake assist, wheel assist; Game Defaults: the game's own options for all.
 int g_drive_preset = -1;
@@ -892,6 +900,23 @@ void BuildModel() {
     g_fov = int(g_c.size());
     g_c.push_back(std::move(c));
   }
+  // Head camera: the cockpit camera's head, from the game's own camera settings (launcher/headcam.h).
+  {
+    Ctl c{L"Head look", L"The driver's head turns toward where the car is going, into corners and slides. 0% is the game's own camera; lower it if the view moves too much for you.",
+          Kind::Slider, {}, {"@headcam_look"}, 0, 0};
+    c.min = 0;
+    c.max = 100;
+    g_headcam[0] = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+  {
+    Ctl c{L"Head weight", L"Softer neck: the head sways with braking, acceleration and cornering. 0% is the game's own.",
+          Kind::Slider, {}, {"@headcam_weight"}, 0, 0};
+    c.min = 0;
+    c.max = 100;
+    g_headcam[1] = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
   // Steering wheel: Wheel Setup, then the force feedback.
   g_wheel_setup = int(g_c.size());
   g_c.push_back(Ctl{L"Controls", L"Set up your wheel, pedals, handbrake and shifter. Click Map next to a control, then move it.",
@@ -944,6 +969,8 @@ void BuildModel() {
   g_cards.push_back({L"VIEW AND KEYS", {g_fov}, 0, kTabDriving,
                      L"Keys while playing:  F5 / F6  narrower / wider view.   F7  mouse look on or off.   F9  the new anti-aliasing on or off (not while upscaling).   F10  FSR or DLSS.   F12  FPS counter.   Page Up / Page Down  HDR brightness."});
   g_cards.back().sub = kSubAssists;
+  g_cards.push_back({L"HEAD CAMERA", {g_headcam[0], g_headcam[1]}, 0, kTabHeadcam,
+                     L"The cockpit camera's head, from the game's own camera settings. Built from your own game files; the game folders are not modified. At 0% the game's camera is used as it is."});
   g_cards.push_back({L"ASSISTS", {g_drive_preset, g_drive[0].row, g_drive[1].row, g_drive[2].row, g_drive[3].row}, 0, kTabDriving,
                      L"In-game: the launcher leaves that setting alone and the game's own Options menu decides. Any other choice is set by the launcher every time the game starts."});
   g_cards.back().sub = kSubAssists;
@@ -1062,6 +1089,9 @@ void LoadSettings() {
       if (line.rfind(kGfxKey[k], 0) == 0) gfx_saved[k] = atoi(line.substr(strlen(kGfxKey[k])).c_str());
     }
     if (line.rfind("motion_blur=", 0) == 0) motion_blur_saved = line.substr(12) == "fast" ? 1 : 0;
+    for (int k = 0; k < 2; ++k) {
+      if (line.rfind(kHeadcamKey[k], 0) == 0) headcam_saved[k] = atoi(line.substr(strlen(kHeadcamKey[k])).c_str());
+    }
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
     if (line.rfind("bench_track=", 0) == 0) g_bench_track = FindBench(kBenchTracks, kBenchTrackCount, line.substr(12), 0);
     if (line.rfind("bench_car=", 0) == 0) g_bench_car = FindBench(kBenchCars, kBenchCarCount, line.substr(10), kBenchDefaultCar);
@@ -1129,6 +1159,9 @@ void LoadSettings() {
     }
   }
   // After the loop above, which resets every row that has no patch of its own.
+  for (int k = 0; k < 2; ++k) {
+    if (g_headcam[k] >= 0 && headcam_saved[k] >= 0 && headcam_saved[k] <= 100) g_c[g_headcam[k]].sel = headcam_saved[k];
+  }
   if (g_mirror >= 0 && mirror_saved == 1) g_c[g_mirror].sel = mirror_saved;
   if (g_aniso >= 0 && aniso_saved >= 1 && aniso_saved <= 5) g_c[g_aniso].sel = aniso_saved;
   if (g_lang >= 0) {
@@ -1247,6 +1280,9 @@ void SaveSettings() {
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
     for (const auto& d : g_drive) if (d.row >= 0) ini << d.key << g_c[d.row].sel << "\r\n";
+    for (int k = 0; k < 2; ++k) {
+      if (g_headcam[k] >= 0) ini << kHeadcamKey[k] << g_c[g_headcam[k]].sel << "\r\n";
+    }
     // Only when moved here: the game may have saved a newer one since this window read it.
     if (g_hdr_paper >= 0 && g_c[g_hdr_paper].sel != g_c[g_hdr_paper].loaded) {
       std::ofstream hdr_ini(HdrIniPath().c_str(), std::ios::binary | std::ios::trunc);
@@ -2179,10 +2215,28 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     LauncherLog(problem.empty() ? std::string("faster car switching: ok") : "faster car switching: " + Narrow(problem));
     if (problem.empty()) unlock_arg += L" --mods \"" + carswitch_dir + L"\"";
   }
+  // Head camera: an edited copy of the game's own driver head camera file, from the player's archive; none at 0%.
+  std::wstring headcam_arg;
+  {
+    HeadCamChoice hc;
+    const auto pct = [](int k) { return g_headcam[k] >= 0 ? g_c[g_headcam[k]].sel : 0; };
+    hc.look = pct(0);
+    hc.weight = pct(1);
+    const std::wstring headcam_dir = g_data + L"\\headcam";
+    bool active = false;
+    const std::wstring problem = BuildHeadCam(g_folder[0].path, g_folder[1].path, headcam_dir, hc, active);
+    LauncherLog(!problem.empty() ? "head camera: " + Narrow(problem)
+                : active        ? std::string("head camera: ok")
+                                : std::string("head camera: game defaults"));
+    if (problem.empty() && active) headcam_arg = L" --mods \"" + headcam_dir + L"\"";
+    else if (!problem.empty())
+      MessageBoxW(nullptr, (L"The head camera settings could not be applied (" + problem + L"). The game starts with its own camera.").c_str(),
+                  L"DriveClub", MB_OK | MB_ICONWARNING);
+  }
   std::wstring cmd = L"\"" + exe + L"\" \"" + prep + L"\\boot-linked.bin\" --content-profile \"" + prep +
                      L"\\content.bin\" --patches \"" + prep + L"\\patches.bin\" --app0 \"" + g_folder[0].path +
                      L"\" --app0-base \"" + g_folder[1].path + L"\" --user \"" + user + L"\" --mods \"" + g_home + L"\\mods\"" +
-                     unlock_arg + graphics_arg + L" --stub-unresolved";
+                     unlock_arg + graphics_arg + headcam_arg + L" --stub-unresolved";
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
   SetCameraPatchEnvironment();
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());

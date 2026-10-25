@@ -8,7 +8,7 @@ the code needs is in this repository (`gpu/third_party/`, `third_party/`).
 Install MSYS2 and, from the CLANG64 shell, the build packages once:
 
     pacman -S --needed mingw-w64-clang-x86_64-{clang,cmake,ninja,pkgconf,vulkan-headers,vulkan-loader,\
-    vulkan-memory-allocator,fmt,boost,tsl-robin-map,xxhash,sdl3,zydis,ffmpeg,protobuf,nlohmann-json,\
+    vulkan-memory-allocator,fmt,boost,robin-map,xxhash,sdl3,zydis,ffmpeg,protobuf,nlohmann-json,\
     openssl,zlib,miniupnpc}
 
 ## Game runtime
@@ -16,6 +16,12 @@ Install MSYS2 and, from the CLANG64 shell, the build packages once:
     bash build.sh
 
 This produces `out/DriveClubGame.exe`.
+
+## Tests
+
+The regression tests are single files built by hand, each with its command line in its first line, for example:
+
+    clang++ -std=c++20 -O2 tools/headcam_test.cpp launcher/headcam.cpp launcher/datx.cpp -o headcam_test.exe
 
 ## Release
 
