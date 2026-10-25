@@ -34,6 +34,8 @@
 //   cockpit_vfov = 90    the driver's head camera's vertical field of view in the headset, degrees (VR sets the
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
+//   screen_quad = 1      the still screen is a panel in the room (an OpenXR quad layer, screen_distance = 2 m
+//                        ahead); 0: a picture stated at the recentred head (some runtimes keep it on the face)
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
 //   hud_layer = 1        in the car the HUD is a panel of its own (0: drawn into the picture, as on a screen)
 //   turn_comp = 0        alternate frames: the older eye's picture is turned by how far the car turned since it was
@@ -101,6 +103,8 @@ struct Functions {
     PFN_xrEndFrame EndFrame;
     PFN_xrCreateReferenceSpace CreateReferenceSpace;
     PFN_xrLocateSpace LocateSpace;
+    PFN_xrLocateViews LocateViews;
+    PFN_xrGetInstanceProperties GetInstanceProperties;
     PFN_xrEnumerateSwapchainFormats EnumerateSwapchainFormats;
     PFN_xrCreateSwapchain CreateSwapchain;
     PFN_xrDestroySwapchain DestroySwapchain;
@@ -125,6 +129,8 @@ struct Settings {
     bool hud_layer = true;
     float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
     float turn_comp = 0.0f;
+    bool screen_quad = true;
+    float screen_distance = 2.0f;
     int reproject = 0;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     int keys[9] = {'0', '2', '1', '5', '6', '4', '3', '9', '8'}; // and the turn compensation, the reprojection
@@ -156,6 +162,8 @@ struct State {
     XrPosef frame_pose{};
     float frame_car[9]{};    // the car's axes (rows, world) of that frame: the turn compensation's reference
     bool turn_on = false;    // the car turn compensation (turn_comp, key_turn)
+    XrView eyes[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}; // the runtime's eyes this frame (xrLocateViews, LOCAL space)
+    float logged_eyes[6]{};  // what was logged last: both eyes' horizontal angles and their distance
     bool reproject_frame = false; // this frame's layer: both eyes at the frame's head
     bool cockpit_shown = false;
     long long cockpit_left_us = 0; // when the cockpit view was left last
@@ -267,6 +275,8 @@ void ReadSettings() {
         else if (k == "hud_y") settings.hud_y = value;
         else if (k == "turn_comp" && value >= 0.0f && value <= 1.0f) settings.turn_comp = value;
         else if (k == "reproject" && value >= 0 && value <= 2) settings.reproject = int(value);
+        else if (k == "screen_quad") settings.screen_quad = value != 0;
+        else if (k == "screen_distance" && value > 0.3f) settings.screen_distance = value;
     }
     std::fclose(f);
 #endif
@@ -315,6 +325,8 @@ bool Start() {
     Load(xr.EndFrame, "xrEndFrame");
     Load(xr.CreateReferenceSpace, "xrCreateReferenceSpace");
     Load(xr.LocateSpace, "xrLocateSpace");
+    Load(xr.LocateViews, "xrLocateViews");
+    Load(xr.GetInstanceProperties, "xrGetInstanceProperties");
     Load(xr.EnumerateSwapchainFormats, "xrEnumerateSwapchainFormats");
     Load(xr.CreateSwapchain, "xrCreateSwapchain");
     Load(xr.DestroySwapchain, "xrDestroySwapchain");
@@ -333,6 +345,11 @@ bool Start() {
     }
     XrSystemProperties props{XR_TYPE_SYSTEM_PROPERTIES};
     xr.GetSystemProperties(st.instance, st.system, &props);
+    XrInstanceProperties runtime{XR_TYPE_INSTANCE_PROPERTIES};
+    if (xr.GetInstanceProperties && XR_SUCCEEDED(xr.GetInstanceProperties(st.instance, &runtime))) {
+        std::printf("VR: runtime %s %u.%u.%u\n", runtime.runtimeName, XR_VERSION_MAJOR(runtime.runtimeVersion),
+                    XR_VERSION_MINOR(runtime.runtimeVersion), unsigned(XR_VERSION_PATCH(runtime.runtimeVersion)));
+    }
     std::printf("VR: headset %s\n", props.systemName);
     return true;
 }
@@ -1758,6 +1775,37 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         head_now = location.pose;
         head_now_valid = true;
     }
+    // The runtime's own eyes (their fields of view and places): logged when they change, for comparing runtimes.
+    if (xr.LocateViews) {
+        XrViewLocateInfo view_info{XR_TYPE_VIEW_LOCATE_INFO};
+        view_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        view_info.displayTime = st.frame_state.predictedDisplayTime;
+        view_info.space = st.local;
+        XrViewState view_state{XR_TYPE_VIEW_STATE};
+        uint32_t count = 0;
+        XrView located[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+        if (XR_SUCCEEDED(xr.LocateViews(st.session, &view_info, &view_state, 2, &count, located)) && count == 2) {
+            st.eyes[0] = located[0], st.eyes[1] = located[1];
+            const XrVector3f a = located[0].pose.position, b = located[1].pose.position;
+            const float dist = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+            const float now[6] = {located[0].fov.angleLeft, located[0].fov.angleRight, located[1].fov.angleLeft,
+                                  located[1].fov.angleRight, dist, located[0].fov.angleUp};
+            bool changed = false;
+            for (int i = 0; i < 6; ++i) changed |= std::fabs(now[i] - st.logged_eyes[i]) > (i == 4 ? 0.001f : 0.01f);
+            if (changed) {
+                std::copy(now, now + 6, st.logged_eyes);
+                const float d = 180.0f / Pi;
+                std::printf("VR: the runtime's eyes: left %.1f/%.1f/%.1f/%.1f, right %.1f/%.1f/%.1f/%.1f degrees "
+                            "(left/right/up/down), %.1f mm apart; our picture: %.1f degrees each side, eyes %.1f mm "
+                            "apart\n",
+                            located[0].fov.angleLeft * d, located[0].fov.angleRight * d, located[0].fov.angleUp * d,
+                            located[0].fov.angleDown * d, located[1].fov.angleLeft * d, located[1].fov.angleRight * d,
+                            located[1].fov.angleUp * d, located[1].fov.angleDown * d, dist * 1000.0f,
+                            cockpit_x.load() > 0.1f ? std::atan(1.0f / cockpit_x.load()) * d : 0.0f,
+                            settings.ipd * 1000.0f);
+            }
+        }
+    }
 
     // The frame's picture at the output resolution (the window's picture when there is none, or when the display
     // buffer is smaller than the window: loading screens).
@@ -1913,6 +1961,7 @@ void AfterSubmit() {
     XrCompositionLayerProjectionView views[2]{};
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerQuad hud{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerQuad screen{XR_TYPE_COMPOSITION_LAYER_QUAD};
     const XrCompositionLayerBaseHeader* layers[2] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer),
                                                      reinterpret_cast<XrCompositionLayerBaseHeader*>(&hud)};
     if (st.hud_acquired) {
@@ -2007,6 +2056,20 @@ void AfterSubmit() {
         layer.views = views;
         end.layerCount = 1;
         end.layers = layers;
+        if (!cockpit && settings.screen_quad) {
+            // a still screen: a panel screen_distance ahead of the recentred head, of the same angle
+            const Quat q = AxisAngle(0, 1, 0, -st.centre_yaw * Pi / 180.0f);
+            const XrVector3f ahead = Rotate(q, {0, 0, -settings.screen_distance});
+            screen.space = st.local;
+            screen.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            screen.subImage.swapchain = st.swapchain;
+            screen.subImage.imageRect = {{0, 0}, {int32_t(st.width), int32_t(st.height)}};
+            screen.pose.orientation = {q.x, q.y, q.z, q.w};
+            screen.pose.position = {st.centre_position.x + ahead.x, st.centre_position.y + ahead.y,
+                                    st.centre_position.z + ahead.z};
+            screen.size = {2.0f * settings.screen_distance * tan_x, 2.0f * settings.screen_distance * tan_y};
+            layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&screen);
+        }
         if (cockpit && st.hud_swapchain && NowUs() - st.hud_us < 500000) {
             // the HUD: a panel fixed ahead of the seat (the recentred head), level, facing the player; its last
             // picture stays up through a frame without one
