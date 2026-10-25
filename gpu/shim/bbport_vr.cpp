@@ -34,6 +34,9 @@
 //   cockpit_vfov = 90    the driver's head camera's vertical field of view in the headset, degrees (VR sets the
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
+//   runtime_fov = 1      the driver's head camera draws each eye with the field of view the runtime gives that eye
+//                        (often lopsided: wider outwards) and the eyes as far apart as the runtime says (ipd, when
+//                        set here, wins); 0: one symmetric field of view (cockpit_vfov) for both eyes
 //   screen_quad = 1      the still screen is a panel in the room (an OpenXR quad layer, screen_distance = 2 m
 //                        ahead); 0: a picture stated at the recentred head (some runtimes keep it on the face)
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
@@ -130,6 +133,8 @@ struct Settings {
     float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
     float turn_comp = 0.0f;
     bool screen_quad = true;
+    bool runtime_fov = true;
+    bool ipd_set = false; // ipd given in vr.ini
     float screen_distance = 2.0f;
     int reproject = 0;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
@@ -160,6 +165,7 @@ struct State {
     bool afr_frame = false;           // the two eyes' last pictures side by side
     bool frame_tagged = false;        // one picture, its head pose known exactly
     XrPosef frame_pose{};
+    int frame_eye = -1;      // the eye that frame was drawn for (-1: the middle)
     float frame_car[9]{};    // the car's axes (rows, world) of that frame: the turn compensation's reference
     bool turn_on = false;    // the car turn compensation (turn_comp, key_turn)
     XrView eyes[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}; // the runtime's eyes this frame (xrLocateViews, LOCAL space)
@@ -259,7 +265,8 @@ void ReadSettings() {
         else if (k == "smoothing") settings.smoothing = value != 0;
         else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
-        else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value;
+        else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
+        else if (k == "runtime_fov") settings.runtime_fov = value != 0;
         else if (k == "seat_x") settings.seat[0] = value;
         else if (k == "seat_y") settings.seat[1] = value;
         else if (k == "seat_z") settings.seat[2] = value;
@@ -510,6 +517,7 @@ struct HookCall {
     float car[9]{};      // the frame the head turns in (the car body's axes as rows, world): the car's turn
 };
 HookCall head_history[64];
+std::atomic<int> drawing_eye{-1}; // the eye the head hook set the camera up for last
 unsigned head_next = 0;
 
 // The head for the game, steadied: a "1 euro" filter (Casiez et al.), whose cut-off frequency rises with the speed:
@@ -693,6 +701,7 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     std::scoped_lock lock{head_mutex};
     HookCall& call = head_history[head_next++ % 64];
     call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye, camera};
+    drawing_eye = eye;
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k) call.car[i * 3 + k] = rest[i][k];
     hook_time_us = call.time_us;
@@ -754,10 +763,38 @@ struct alignas(16) CameraCopy {
 CameraCopy camera_copies[64];
 std::atomic<uint32_t> camera_copy_next{0};
 
+// The runtime's eyes (xrLocateViews, runtime_fov): each eye of the driver's head camera is drawn with its own field
+// of view, and the layer states it.
+std::mutex runtime_eye_mutex;
+XrFovf runtime_eye_fov[2]{};
+std::atomic<bool> runtime_eye_known{false};
+std::atomic<float> game_vfov{90.0f};         // the head camera's vertical angle the game is asked for (the FOV float)
+std::atomic<long long> eye_fov_us{0};        // the scene hook last drew the head camera with the runtime's eyes
+std::atomic<float> eye_x{0}, eye_y{0}, eye_z22{0}, eye_z32{0}; // that projection's terms
+
+// Both eyes' fields of view together (the middle camera of reproject = 2).
+XrFovf UnionFov(const XrFovf& a, const XrFovf& b) {
+    const float l = std::max(-a.angleLeft, -b.angleLeft), r = std::max(a.angleRight, b.angleRight);
+    const float x = std::max(l, r);
+    const float u = std::max(a.angleUp, b.angleUp), d = std::max(-a.angleDown, -b.angleDown);
+    return {-x, x, u, -d};
+}
+
+// The field of view a picture of `eye` (-1: the middle) was drawn with, if it was drawn with the runtime's.
+bool EyeFov(int eye, XrFovf& out) {
+    if (!settings.runtime_fov || !runtime_eye_known.load()) {
+        return false;
+    }
+    std::scoped_lock lock{runtime_eye_mutex};
+    out = eye < 0 ? UnionFov(runtime_eye_fov[0], runtime_eye_fov[1]) : runtime_eye_fov[eye & 1];
+    return true;
+}
+
 extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t camera) {
     const float* proj = reinterpret_cast<const float*>(camera) + 16;
     const float aspect = GameAspect(), render = RenderAspect();
-    if (!aspect || !render || std::fabs(render / aspect - 1.0f) < 0.01f) {
+    const bool own_fov = settings.runtime_fov && runtime_eye_known.load();
+    if (!aspect || !render || (!own_fov && std::fabs(render / aspect - 1.0f) < 0.01f)) {
         return camera; // the render has the game's shape
     }
     if (proj[11] != -1.0f || proj[0] <= 0.0f || proj[5] <= 0.0f) {
@@ -765,7 +802,7 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
     }
     const float ratio = proj[5] / proj[0] / aspect;
     const float vfov = 2.0f * std::atan(1.0f / proj[5]) * 180.0f / Pi;
-    const bool other_fov = std::fabs(vfov - settings.cockpit_vfov) >= 3.0f;
+    const bool other_fov = std::fabs(vfov - game_vfov.load()) >= 3.0f;
     const bool stale = NowUs() - hook_time_us.load() > 300000;
     if (settings.diag && ratio >= 0.96f && ratio <= 1.045f) {
         std::scoped_lock lock{pdiag.mutex};
@@ -780,11 +817,39 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
     CameraCopy& copy = camera_copies[camera_copy_next.fetch_add(1) % 64];
     std::memcpy(copy.bytes, reinterpret_cast<const void*>(camera), sizeof copy.bytes);
     float* const p = reinterpret_cast<float*>(copy.bytes) + 16;
-    p[0] = p[5] / render;
+    // The eye this camera was set up for: the head hook's call at its position (the game may set up the next frame's
+    // camera before this one is drawn), else the last one.
+    int eye = drawing_eye.load();
+    {
+        const float* world = reinterpret_cast<const float*>(camera);
+        std::scoped_lock lock{head_mutex};
+        for (const HookCall& c : head_history) {
+            const float dx = world[12] - c.position[0], dy = world[13] - c.position[1], dz = world[14] - c.position[2];
+            if (c.time_us && dx * dx + dy * dy + dz * dz < 0.002f * 0.002f) {
+                eye = c.eye;
+                break;
+            }
+        }
+    }
+    XrFovf fov{};
+    if (own_fov && EyeFov(eye, fov)) {
+        // the eye's own frustum (row vectors: P[2][0], P[2][1] its offsets, the game's jitter kept on top)
+        const float l = std::tan(fov.angleLeft), r = std::tan(fov.angleRight);
+        const float u = std::tan(fov.angleUp), d = std::tan(fov.angleDown);
+        p[0] = 2.0f / (r - l);
+        p[5] = 2.0f / (u - d);
+        p[8] += (r + l) / (r - l);
+        p[9] += (u + d) / (u - d);
+        eye_x = p[0], eye_y = p[5], eye_z22 = p[10], eye_z32 = p[14];
+        eye_fov_us = NowUs();
+    } else {
+        p[0] = p[5] / render;
+    }
     static bool told = false;
     if (!told) {
         told = true;
-        std::printf("VR: the driver's head camera drawn in the render's shape (%.3f, the game's aspect %.3f)\n", render,
+        std::printf("VR: the driver's head camera drawn %s (the render's shape %.3f, the game's aspect %.3f)\n",
+                    own_fov ? "with each eye's own field of view from the runtime" : "in the render's shape", render,
                     aspect);
     }
     return reinterpret_cast<uint64_t>(copy.bytes);
@@ -907,7 +972,15 @@ void SetFieldOfView() {
         return; // another game version: its address is not known to be this
     }
     float* const k = reinterpret_cast<float*>(runtime_image_base + 0x12efac4);
-    const float wanted = 0.5f * settings.cockpit_vfov / kCockpitVfov;
+    // With the runtime's eyes the game's own angle covers both (its culling), a little more; the projection is set
+    // per eye in the scene hook.
+    float vfov = settings.cockpit_vfov;
+    XrFovf both{};
+    if (EyeFov(-1, both)) {
+        vfov = 2.0f * std::max(both.angleUp, -both.angleDown) * 180.0f / Pi + 4.0f;
+    }
+    game_vfov = vfov;
+    const float wanted = 0.5f * vfov / kCockpitVfov;
     if (std::fabs(*k - wanted) < 1e-6f) {
         return;
     }
@@ -928,7 +1001,8 @@ std::atomic<float> cockpit_z22{0.0f}, cockpit_z32{0.0f}; // depth = near / dista
 std::atomic<long long> cockpit_time_us{0};
 bool Cockpit() {
     const long long now = NowUs();
-    return hook_installed && now - cockpit_time_us.load() <= 2000000 && now - hook_time_us.load() <= 300000;
+    return hook_installed && (now - cockpit_time_us.load() <= 2000000 || now - eye_fov_us.load() <= 2000000) &&
+           now - hook_time_us.load() <= 300000;
 }
 
 // ---- pictures ---------------------------------------------------------------------------------------------------------
@@ -1543,7 +1617,9 @@ void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t w
 // or from the background beside them when there is none.
 bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, GpuImage& out, float b,
                GpuImage* last_picture) {
-    const float x_scale = cockpit_x.load(), z22 = cockpit_z22.load(), z32 = cockpit_z32.load();
+    const bool own = NowUs() - eye_fov_us.load() <= 2000000;
+    const float x_scale = own ? eye_x.load() : cockpit_x.load(), z22 = own ? eye_z22.load() : cockpit_z22.load(),
+                z32 = own ? eye_z32.load() : cockpit_z32.load();
     const uint32_t w = entry.width, h = entry.height;
     if (!gpu.reproject_pipeline || x_scale <= 0.1f || z32 <= 0.0f ||
         !MakeImage(out, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
@@ -1776,7 +1852,9 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         head_now_valid = true;
     }
     // The runtime's own eyes (their fields of view and places): logged when they change, for comparing runtimes.
-    if (xr.LocateViews) {
+    static long long views_us = 0;
+    if (xr.LocateViews && NowUs() - views_us > 1000000) {
+        views_us = NowUs();
         XrViewLocateInfo view_info{XR_TYPE_VIEW_LOCATE_INFO};
         view_info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
         view_info.displayTime = st.frame_state.predictedDisplayTime;
@@ -1786,12 +1864,20 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         XrView located[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
         if (XR_SUCCEEDED(xr.LocateViews(st.session, &view_info, &view_state, 2, &count, located)) && count == 2) {
             st.eyes[0] = located[0], st.eyes[1] = located[1];
+            {
+                std::scoped_lock lock{runtime_eye_mutex};
+                runtime_eye_fov[0] = located[0].fov, runtime_eye_fov[1] = located[1].fov;
+            }
+            runtime_eye_known = located[0].fov.angleRight > located[0].fov.angleLeft;
             const XrVector3f a = located[0].pose.position, b = located[1].pose.position;
             const float dist = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
             const float now[6] = {located[0].fov.angleLeft, located[0].fov.angleRight, located[1].fov.angleLeft,
                                   located[1].fov.angleRight, dist, located[0].fov.angleUp};
             bool changed = false;
             for (int i = 0; i < 6; ++i) changed |= std::fabs(now[i] - st.logged_eyes[i]) > (i == 4 ? 0.001f : 0.01f);
+            if (!settings.ipd_set && dist > 0.045f && dist < 0.085f) {
+                settings.ipd = dist; // the runtime's eye distance (the headset's own setting)
+            }
             if (changed) {
                 std::copy(now, now + 6, st.logged_eyes);
                 const float d = 180.0f / Pi;
@@ -1867,6 +1953,7 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     st.width = width;
     st.height = height;
     st.frame_tagged = cockpit && made && made->tagged;
+    st.frame_eye = st.frame_tagged ? made->eye : -1;
     if (st.frame_tagged) {
         st.frame_pose = made->head;
         std::memcpy(st.frame_car, made->car, sizeof st.frame_car);
@@ -2049,6 +2136,15 @@ void AfterSubmit() {
                 v.subImage.imageRect.offset.x = int32_t(e * st.width);
             }
             v.fov = {-std::atan(tan_x), std::atan(tan_x), std::atan(tan_y), -std::atan(tan_y)};
+            // each picture's own field of view when the eyes were drawn with the runtime's: the eye it was drawn for
+            // (a picture made from another eye's keeps that eye's)
+            if (cockpit && st.frame_tagged) {
+                const int drawn = st.reproject_frame ? st.frame_eye : st.afr_frame ? (gpu.eye_valid[e] ? e : 1 - e) : -1;
+                XrFovf own{};
+                if ((st.reproject_frame || st.afr_frame) && EyeFov(drawn, own)) {
+                    v.fov = own;
+                }
+            }
             v.subImage.swapchain = st.swapchain;
         }
         layer.space = st.local;
