@@ -219,13 +219,16 @@ void CameraMotion::RecordMotion(vk::CommandBuffer cmdbuf, vk::ImageView depth_vi
 }
 
 void CameraMotion::OnConstants(const float* data) {
+    // The first one of a frame is the main camera. Checked before reading: data is in the constant ring, which can
+    // be VRAM read through the BAR (BB_RING_MEMORY=device), where every read is an uncached PCIe round trip; reading
+    // it for each g-buffer draw cost the recording stage ~2 ms a frame.
+    if (frame_has_camera) {
+        return;
+    }
     // Scene constants: far plane 3000, 1/far, and the render size.
     if (data[0] != 3000.0f || data[4] < 64.0f || data[5] < 64.0f ||
         std::abs(data[1] * data[0] - 1.0f) > 1e-3f) {
         return;
-    }
-    if (frame_has_camera) {
-        return; // the first one of a frame is the main camera
     }
     previous = current;
     std::memcpy(current.view.data(), data + 8, 12 * sizeof(float));

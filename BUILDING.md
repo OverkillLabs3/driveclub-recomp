@@ -46,3 +46,36 @@ time.
 A frame that misses its slot shows in the frame log as a long interval. Its line in the frame trace says whether
 the time went to read faults (the readback log then names the instruction and the writer), shader compiles,
 evictions or the GPU.
+
+## Seamless cubemap filtering
+
+Native Vulkan cube-array sampling is enabled automatically for eligible read-only,
+floating-point cubemap resources. This corrects reflection seams caused by filtering each
+cube face independently as a 2D-array layer. No environment variable or launch option is
+required.
+
+The initial implementation handles normalized explicit-LOD samples (including level 0).
+Storage, depth, integer, offset, gather, derivative and mixed/raw uses retain the array path,
+as do samplers that disable cube wrapping. The GPU must support `imageCubeArray`; eligible
+views must contain complete aligned cube faces. The shader/pipeline cache versions invalidate
+older translated shaders and resource layouts, including the earlier opt-in variants.
+
+### Regression checks (MSYS2 CLANG64, from the repository root)
+
+Build the runtime normally with `bash build.sh`, then run:
+
+```sh
+clang++ -O2 -std=c++20 tools/native_cube_coords_test.cpp -o out/native_cube_coords_test.exe
+out/native_cube_coords_test.exe
+clang++ -O2 -std=c++20 -Igpu/third_party/sirit/include \
+  -Igpu/third_party/sirit/externals/SPIRV-Headers/include \
+  tools/native_cube_shader_test.cpp out/gpu/third_party/sirit/src/libsirit.a \
+  -lfmt -o out/native_cube_shader_test.exe
+out/native_cube_shader_test.exe out/native_cube_test.spv
+spirv-val --target-env vulkan1.1 out/native_cube_test.spv
+```
+
+The coordinate test evaluates the production emitter helper against independent cube-face
+bases at centers, edges, corners and multiple array indices (2,430 cases). The shader test
+uses the same helper in a compute shader with both 2D-array and cube-array sampling, then
+validates the generated SPIR-V. These checks require no game files or captured resources.

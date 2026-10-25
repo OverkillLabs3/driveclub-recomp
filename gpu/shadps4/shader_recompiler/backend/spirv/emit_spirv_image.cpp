@@ -3,6 +3,7 @@
 
 #include <boost/container/static_vector.hpp>
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
+#include "shader_recompiler/backend/spirv/native_cube_coords.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/ir/microinstruction.h"
 
@@ -102,6 +103,9 @@ Id EmitImageSampleExplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, Id c
     const Id result_type = texture.data_types->Get(4);
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
+    if (texture.native_cube) {
+        coords = NativeCubeCoordinates(ctx, coords);
+    }
     ImageOperands operands;
     operands.Add(spv::ImageOperandsMask::Lod, lod);
     operands.AddOffset(ctx, offset);

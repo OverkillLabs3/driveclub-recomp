@@ -474,7 +474,10 @@ static void ffb_log_params(const char *what, int id, const LogiEffectParams *p) 
 /* Safety: the force the game set last keeps playing in the wheel until something stops it, after the game is gone
  * too (the runtime ends through _Exit or TerminateProcess): a direct drive base then spins or pushes into its lock
  * until it is reconnected. runtime_ffb_release asks the haptic thread to stop everything and let the wheel go before
- * the process ends; while the game does not read the wheel (hung, stuck loading) its forces are stopped. */
+ * the process ends; while the game does not read the wheel (hung, stuck loading) its forces are stopped.
+ * Never through the device gain: some drivers keep it as the wheel's own setting (Thrustmaster writes it to
+ * HKLM\...\tmhidusb\Parameters\<id>\OverallGain), so a gain of 0 left the wheel without force feedback in every
+ * program, across reboots. Stopping effects is a command the driver does not keep. */
 static volatile bool ffb_release_asked, ffb_release_done;
 static const char *volatile ffb_release_why;
 static uint64_t ffb_last_read_us;   /* when the game last read the wheel (logiWheelReadState) */
@@ -484,8 +487,7 @@ static bool ffb_guard(SDL_Haptic **haptic, bool *running) {
     if (ffb_release_asked) {
         if (*haptic) {
             SDL_StopHapticEffects(*haptic);
-            if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,0);
-            SDL_CloseHaptic(*haptic); *haptic=NULL;
+            SDL_CloseHaptic(*haptic); *haptic=NULL;   /* closing destroys the effects */
             printf("Runtime: FFB released (%s): the wheel's forces are stopped\n",ffb_release_why);
             fflush(stdout);
         }
@@ -496,27 +498,22 @@ static bool ffb_guard(SDL_Haptic **haptic, bool *running) {
     const uint64_t last=__atomic_load_n(&ffb_last_read_us,__ATOMIC_RELAXED);
     if (last && now_us()-last>500000) {
         if (!ffb_held) {
-            /* The device's gain to 0 silences every effect as it is (the game's and any other), and back to 100
-             * gives them back; a wheel without a gain has its effects stopped and started again. */
+            /* every effect stops; each kind starts its own again once it is no longer marked running */
             ffb_held=true;
-            if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,0);
-            else {
-                SDL_StopHapticEffects(*haptic);
-                for (int i=0;i<LOGI_EFFECTS;++i) running[i]=false;
-            }
+            SDL_StopHapticEffects(*haptic);
+            for (int i=0;i<LOGI_EFFECTS;++i) running[i]=false;
+            sw.running=false;
+            pw.running=pw.damper_running=pw.slip_running=false;
             static unsigned n; if (n++<20) printf("Runtime: FFB: the game stopped reading the wheel; its forces are off until it does\n");
         }
         return true;
     }
     if (ffb_held) {
         ffb_held=false;
-        if (SDL_GetHapticFeatures(*haptic)&SDL_HAPTIC_GAIN) SDL_SetHapticGain(*haptic,100);
-        else {
-            /* the effects as the game has them now (it may have changed them meanwhile) start again */
-            pthread_mutex_lock(&ffb.m);
-            for (int i=0;i<LOGI_EFFECTS;++i) ffb.fx[i].dirty=ffb.fx[i].used;
-            pthread_mutex_unlock(&ffb.m);
-        }
+        /* the effects as the game has them now (it may have changed them meanwhile) start again */
+        pthread_mutex_lock(&ffb.m);
+        for (int i=0;i<LOGI_EFFECTS;++i) ffb.fx[i].dirty=ffb.fx[i].used;
+        pthread_mutex_unlock(&ffb.m);
         static unsigned n; if (n++<20) printf("Runtime: FFB: the game reads the wheel again; forces back on\n");
     }
     return false;
@@ -592,7 +589,9 @@ static void *ffb_thread(void *unused) {
             printf("Runtime: FFB on %s: constant %s, spring %s, damper %s, square %s, gain %s\n",SDL_GetHapticName(haptic),
                    f&SDL_HAPTIC_CONSTANT ? "yes" : "no",f&SDL_HAPTIC_SPRING ? "yes" : "no",f&SDL_HAPTIC_DAMPER ? "yes" : "no",
                    f&SDL_HAPTIC_SQUARE ? "yes" : "no",f&SDL_HAPTIC_GAIN ? "yes" : "no");
-            if (f&SDL_HAPTIC_GAIN) SDL_SetHapticGain(haptic,ffb_zero ? 0 : 100);  /* the gains are applied to the forces themselves */
+            /* The device gain is left as the player set it in the wheel's software: some drivers keep a gain set
+             * here as their own setting (see the safety note above). The gains are applied to the forces themselves,
+             * and BB_FFB_DRY=2 makes every force zero there. */
             pthread_mutex_lock(&ffb.m);
             for (int i=0;i<LOGI_EFFECTS;++i) ffb.fx[i].dirty=ffb.fx[i].used;
             ffb.autocenter_dirty=true;

@@ -95,6 +95,11 @@ public:
     void FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds);
     void CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, bool src_gds);
     u32 ReadDataFromGds(u32 gsd_offset);
+    /// bbport: the next submission ends with a device -> host memory barrier (a host read of GPU-written memory
+    /// after waiting for it, e.g. ReadDataFromGds after Finish()).
+    void RequestHostReadBarrier() {
+        scheduler.RequestHostReadBarrier();
+    }
     bool InvalidateMemory(VAddr addr, u64 size, bool assume_locks = false);
     /// GPU thread, before a write the guest can observe (see Scheduler::WaitHostCopies).
     void WaitHostCopies() {
@@ -111,8 +116,10 @@ public:
     /// thread while the draw pipeline is in use (PipelinedTasks), else here after a drain.
     using OrderedTask = void (*)(Rasterizer& rasterizer, const u8* data);
     /// Returns true when the task was handed to the recording thread (not run yet).
+    /// `writes_guest_memory`: a PipelinedMemoryWrites task that writes guest memory, so the next
+    /// pipeline selection waits for it (WaitQueuedMemoryWrites); a flip signal or a DMA into GDS does not.
     bool RunInOrder(OrderedTask task, const void* data, u32 size,
-                    u64 toggle = BbToggle::PipelinedTasks);
+                    u64 toggle = BbToggle::PipelinedTasks, bool writes_guest_memory = true);
     /// bbport: stage A, before a pipeline selection: WriteData/DMA queued for stage B may write the
     /// descriptor tables the selection walks; wait until stage B has run the last one.
     void WaitQueuedMemoryWrites();
@@ -151,6 +158,23 @@ public:
     bool ReadMemory(VAddr addr, u64 size, bool assume_locks = false);
     /// bbport: BB_FAULT_EMULATE: true unless every byte of the range is GPU mapped and not GPU written.
     bool IsRangeGpuWritten(VAddr addr, u64 size);
+    /// bbport: BufferCache::SnapshotGpuRange (background readers).
+    bool SnapshotGpuRange(VAddr addr, u64 size, void* out) {
+        return buffer_cache.SnapshotGpuRange(addr, size, out);
+    }
+    /// bbport: BufferCache::RecordTaggedSnapshot / ReadTaggedSnapshot (BB_EXPOSURE_EXACT).
+    bool RecordTaggedSnapshot(VAddr addr, u32 size, u32 tag, u64 id) {
+        return buffer_cache.RecordTaggedSnapshot(addr, size, tag, id);
+    }
+    /// bbport: BB_EXACT_EOP_FLUSH: ends the submission after an EOP's snapshot copies (on the thread that runs the
+    /// EOP, which owns the scheduler as for the draw-batch flush).
+    void FlushAtExactEop() {
+        scheduler.Flush();
+    }
+    bool ReadTaggedSnapshot(VAddr addr, u32 size, u32 tag, u64 id, void* out, bool* pending, u64* ticks,
+                            u64 wait_ns = 0) {
+        return buffer_cache.ReadTaggedSnapshot(addr, size, tag, id, out, pending, ticks, wait_ns);
+    }
     /// bbport: BB_FAULT_EMULATE: queues a guest store that touches no GPU-written byte (BufferCache::
     /// QueueUntrackedStore); false when the usual write fault path must run.
     bool StoreUntracked(VAddr addr, const void* data, u32 size);
@@ -216,6 +240,25 @@ private:
         std::array<float, 2> target_scale{};
     } begin_memo;
     u64 begin_memo_hits = 0, begin_memo_misses = 0;
+    /// bbport: inputs of the last UpdateDynamicState: the register words its five
+    /// Update* functions read, and the members they use. Equal inputs give equal dynamic state, which is still
+    /// in DynamicState (only those functions write it), so they are skipped; CommitWith runs every draw.
+    /// BB_DYN_MEMO=0 turns it off.
+    struct DynMemo {
+        static constexpr std::array<std::pair<u32, u32>, 9> Ranges{{
+            {0xA000, 20}, {0xA080, 52}, {0xA103, 108}, {0xA200, 7}, {0xA282, 1},
+            {0xA292, 1}, {0xA2A5, 1}, {0xA2DF, 5}, {0xC242, 1}}};
+        static constexpr u32 Words = 196;
+        bool valid = false;
+        const GraphicsPipeline* pipeline = nullptr;
+        bool is_indexed = false;
+        bool feedback_loop = false;
+        std::array<float, 2> jitter{};
+        std::array<float, 2> scale{};
+        std::array<u32, Words> words{};
+    };
+    mutable DynMemo dyn_memo;
+    mutable u64 dyn_memo_hits = 0, dyn_memo_misses = 0;
     void Resolve();
     void DepthStencilCopy(bool is_depth, bool is_stencil);
     void EliminateFastClear();
@@ -279,7 +322,7 @@ private:
                       bool on_helper = false);
     bool BindResources(const Pipeline* pipeline);
     void BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
-                      Shader::Backend::Bindings& binding, u32& write_index);
+                      Shader::Backend::Bindings& binding, u32& write_index, u32 sampler0 = 0);
     /// bbport: a stage's resolved textures remembered by its prepared T# hashes
     /// (TextureSetMemo): a hit only redoes the per-draw effects (binding flags, transitions).
     struct TextureSetEntry {
@@ -546,6 +589,7 @@ private:
         u32 size;
         u64 offset; ///< in the ring
         VAddr address;
+        bool host_copy{}; ///< also in the ring's cached copy: read it there (ConstantRing::HostCopy)
     };
     struct PendingWrite {
         VAddr begin;

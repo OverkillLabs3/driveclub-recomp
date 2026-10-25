@@ -160,6 +160,15 @@ void PollHotkeys() {
         down = now;
         return pressed;
     };
+    static bool f3_down = false;
+    if (edge(VK_F3, f3_down) && SDL_GetKeyboardFocus()) {
+        const int reference = s.motion_blur_reference == 30 ? 60 : 30;
+        s.motion_blur_reference = reference;
+        Note(reference == 30 ? "Motion blur: Slow (30 FPS exposure)  F3: Fast"
+                             : "Motion blur: Fast (60 FPS exposure)  F3: Slow");
+        std::printf("MotionBlur: F3 %s\n", reference == 30 ? "Slow" : "Fast");
+        std::fflush(stdout);
+    }
     static bool f12_down = false;
     if (edge(VK_F12, f12_down)) {
         if (!SceneDebug::Enabled()) {

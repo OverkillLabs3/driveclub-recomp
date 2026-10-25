@@ -43,7 +43,12 @@ inline std::atomic<std::uint64_t> rb_pickup_ns{0}, rb_gpu_ns{0}, rb_pending_ns{0
 /// BB_READBACK_LOG: guest instruction of the calling thread's current read fault, and the tag of
 /// the GPU work that last bound guest memory for writing (shader hash; fill/copy markers).
 inline thread_local std::uint64_t fault_rip = 0;
+/// BB_READBACK_LOG: the 8 bytes at the stack pointer of the current read fault (a leaf function's return address).
+inline thread_local std::uint64_t fault_ret = 0;
 inline std::atomic<std::uint64_t> writer_tag{0};
+/// Readbacks requested by this thread do not flush the open submission (background fetches, page_manager.cpp
+/// BB_EXPOSURE_STALE / BB_CLOUD_STALE): they wait for the next submission instead of adding one.
+inline thread_local bool lazy_readback = false;
 /// Shader/pipeline compiles and texture evictions (cumulative counts).
 inline std::atomic<std::uint64_t> compiles{0}, evictions{0};
 

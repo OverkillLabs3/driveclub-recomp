@@ -13,11 +13,14 @@ class Instance;
 
 namespace VideoCore {
 
+/// bbport: whether a sampler made from this S# filters anisotropically (the game's request or BB_ANISO's override).
+bool UsesAnisotropy(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler, bool is_depth);
+
 class Sampler {
 public:
     explicit Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
                      const AmdGpu::BorderColorBuffer border_color_base, bool is_depth,
-                     float extra_lod_bias = 0.0f);
+                     float extra_lod_bias = 0.0f, bool isotropic = false);
     ~Sampler();
 
     Sampler(const Sampler&) = delete;

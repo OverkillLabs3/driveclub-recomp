@@ -15,6 +15,11 @@ class Rasterizer;
 
 namespace VideoCore {
 
+/// bbport: BB_EXPOSURE_EXACT=1 (page_manager.cpp): at an EOP whose label belongs to an exposure readback slot, records
+/// a snapshot of that slot's payload tagged with the label's value. Called where the EOP runs in order with the draws.
+/// immediate: the EOP writes its own data (Data32Low / Data64), not a clock or counter.
+void ExposureExactAtEop(Vulkan::Rasterizer& rasterizer, VAddr label, u32 tag, bool immediate);
+
 struct UffdImpl;
 struct SignalImpl;
 

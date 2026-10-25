@@ -92,6 +92,8 @@ struct Values {
     std::atomic<float> reactive_threshold{0.2f};
     std::atomic<float> reactive_max{0.9f};
     std::atomic<int> debug_view{DebugNone};
+    // 0: unmodified control; 30: Slow; 60: Fast. F3 switches the two exposure presets.
+    std::atomic<int> motion_blur_reference{0};
     std::atomic<bool> show_fps{true}; // ssport: on by default
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
     std::atomic<bool> fsr4_auto_exposure{true};

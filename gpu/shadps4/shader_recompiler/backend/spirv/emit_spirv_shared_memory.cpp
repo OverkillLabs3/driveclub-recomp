@@ -11,14 +11,13 @@ namespace Shader::Backend::SPIRV {
 namespace {
 // Out of range workgroup memory reads give zero and writes do nothing, as on the console GPU. The
 // host leaves them undefined, and AMD fills the tile borders of some compute passes with garbage
-// (a lattice of white squares).
-bool BoundsChecked() {
-    static const bool on = [] { const char* e = std::getenv("BB_LDS_BOUNDS"); return !e || e[0] != '0'; }();
-    return on;
+// (a lattice of white squares). Profile::lds_bounds_checks: on unless BB_LDS_BOUNDS=0 (vk_pipeline_cache.cpp).
+bool BoundsChecked(const EmitContext& ctx) {
+    return ctx.profile.lds_bounds_checks;
 }
 
 Id SharedLoad(EmitContext& ctx, Id offset, u32 shift, Id elem_type, Id ptr_type, Id var, Id zero) {
-    if (!BoundsChecked()) {
+    if (!BoundsChecked(ctx)) {
         const Id index{ctx.OpShiftRightLogical(ctx.U32[1], offset, ctx.ConstU32(shift))};
         return ctx.OpLoad(elem_type, ctx.EmitSharedMemoryAccess(ptr_type, var, index));
     }
@@ -38,7 +37,7 @@ Id SharedLoad(EmitContext& ctx, Id offset, u32 shift, Id elem_type, Id ptr_type,
 }
 
 void SharedStore(EmitContext& ctx, Id offset, u32 shift, Id ptr_type, Id var, Id value) {
-    if (!BoundsChecked()) {
+    if (!BoundsChecked(ctx)) {
         const Id index{ctx.OpShiftRightLogical(ctx.U32[1], offset, ctx.ConstU32(shift))};
         ctx.OpStore(ctx.EmitSharedMemoryAccess(ptr_type, var, index), value);
         return;

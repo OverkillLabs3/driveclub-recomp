@@ -13,6 +13,10 @@
 
 #include <miniz.h>
 
+namespace Serialization {
+u32 ShaderCacheVersion(); // vk_pipeline_serialization.cpp: base + the shader-changing switches that are on
+}
+
 #include <condition_variable>
 #include <functional>
 #include <future>
@@ -110,7 +114,10 @@ void DataBase::Open() {
             mz_zip_writer_init_file(&zip_ar, cache_path.string().c_str(), 0);
         }
     } else {
-        cache_path = GetUserPath(PathType::CacheDir) / game_info.GameSerial();
+        // bbport: one folder per shader binary version, which includes the switches that change translated shaders:
+        // with one shared folder, alternating two builds or two switch settings cleared each other's caches.
+        cache_path = GetUserPath(PathType::CacheDir) /
+                     fmt::format("{}-s{}", game_info.GameSerial(), Serialization::ShaderCacheVersion());
         if (!std::filesystem::exists(cache_path)) {
             std::filesystem::create_directories(cache_path);
         }

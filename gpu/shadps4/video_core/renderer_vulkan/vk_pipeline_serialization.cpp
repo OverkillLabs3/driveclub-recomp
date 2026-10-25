@@ -17,10 +17,21 @@ static const u32 ShaderBinaryVersion = [] {
     // The switches that change the translated shaders are part of the version, so cached shaders never mix.
     const char* nan = std::getenv("BB_NAN_MINMAX");
     const char* undef = std::getenv("BB_UNDEF_ZERO");
-    return 32u + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u);
+    const char* lds = std::getenv("BB_LDS_BOUNDS");
+    const char* wide = std::getenv("BB_WIDE_LOADS");
+    // The generation sits above the switch bits and changes with the translator or the serialized layout (66:
+    // upstream's base 64 plus this branch's translator changes).
+    return (66u << 16) + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u) +
+           (lds && lds[0] == '0' ? 8u : 0u) + (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
+           (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u); // WideLoads: on unless =0
 }();
-static constexpr u32 ShaderMetaVersion = 7u; // bbport: ImageResource::needs_native
-static constexpr u32 PipelineKeyVersion = 5u; // bbport: Info layout (ImageResource::needs_native)
+/// bbport: the whole version names the cache folder (cache_storage.cpp): each switch combination and each version
+/// base keeps its own, so an A/B of a switch, or two builds of different bases, never clear each other's shaders.
+u32 ShaderCacheVersion() {
+    return ShaderBinaryVersion;
+}
+static constexpr u32 ShaderMetaVersion = 8u; // bbport: ImageResource::native_cube
+static constexpr u32 PipelineKeyVersion = 6u; // bbport: native cube images and sampler cube-wrap specialization
 } // namespace Serialization
 
 namespace Vulkan {

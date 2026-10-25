@@ -4,6 +4,7 @@
 #pragma once
 
 #include <bitset>
+#include <cstring>
 
 #include "common/types.h"
 #include "shader_recompiler/backend/bindings.h"
@@ -67,6 +68,7 @@ struct FMaskSpecialization {
 struct SamplerSpecialization {
     u8 force_unnormalized : 1;
     u8 force_degamma : 1;
+    u8 disable_cube_wrap : 1;
 
     bool operator==(const SamplerSpecialization&) const = default;
 };
@@ -153,6 +155,7 @@ struct StageSpecialization {
                      [](auto& spec, const auto& desc, AmdGpu::Sampler sharp) {
                          spec.force_unnormalized = sharp.force_unnormalized;
                          spec.force_degamma = sharp.force_degamma;
+                         spec.disable_cube_wrap = sharp.disable_cube_wrap;
                      });
 
         // Initialize runtime_info fields that rely on analysis in tessellation passes
@@ -247,6 +250,75 @@ struct StageSpecialization {
 
     void Serialize(Serialization::Archive& ar) const;
     bool Deserialize(Serialization::Archive& ar);
+};
+
+/// bbport: everything StageSpecialization's constructor reads, as bytes: the parsed fetch shader, each sharp it
+/// fetches (same GetSharp calls, in the same order) with its memory address cleared and its validity kept, the
+/// runtime info and the start bindings. Equal keys give equal specializations, so a program whose key matches its
+/// previous lookup reuses that permutation without building and comparing a StageSpecialization (BB_SPEC_MEMO).
+/// Tessellation stages also read constant buffers from memory: no key for them.
+struct StageSpecializationKey {
+    boost::container::small_vector<u8, 1024> bytes;
+    RuntimeInfo runtime_info{};
+    Backend::Bindings start{};
+
+    bool operator==(const StageSpecializationKey& other) const {
+        return start == other.start && runtime_info == other.runtime_info && bytes.size() == other.bytes.size() &&
+               std::memcmp(bytes.data(), other.bytes.data(), bytes.size()) == 0;
+    }
+
+    static bool Supported(const Info& info) {
+        return info.sw_stage != SwStage::TessellationControl && info.sw_stage != SwStage::TessellationEval;
+    }
+
+    void Build(const Info& info, const RuntimeInfo& runtime_info_, Backend::Bindings start_) {
+        bytes.clear();
+        runtime_info = runtime_info_;
+        start = start_;
+        const auto put = [this](const auto& value) {
+            const auto* raw = reinterpret_cast<const u8*>(&value);
+            bytes.insert(bytes.end(), raw, raw + sizeof(value));
+        };
+        const auto buffer = [&](AmdGpu::Buffer sharp) {
+            sharp.base_address = 0;
+            sharp.num_records = sharp.num_records != 0; // operator bool
+            put(sharp);
+        };
+        const auto image = [&](AmdGpu::Image sharp) {
+            const u8 valid = static_cast<bool>(sharp);
+            sharp.base_address = 0;
+            put(sharp);
+            put(valid);
+        };
+        const auto fetch = Gcn::ParseFetchShader(info);
+        put(u8(fetch.has_value()));
+        if (fetch) {
+            put(fetch->size);
+            put(fetch->vertex_offset_sgpr);
+            put(fetch->instance_offset_sgpr);
+            put(u32(fetch->attributes.size()));
+            for (const auto& attrib : fetch->attributes) {
+                put(attrib);
+            }
+            if (info.sw_stage == SwStage::Vertex) {
+                for (const auto& attrib : fetch->attributes) {
+                    buffer(attrib.GetSharp(info));
+                }
+            }
+        }
+        for (const auto& desc : info.buffers) {
+            buffer(desc.GetSharp(info));
+        }
+        for (const auto& desc : info.images) {
+            image(desc.GetSharp(info));
+        }
+        for (const auto& desc : info.fmasks) {
+            image(desc.GetSharp(info));
+        }
+        for (const auto& desc : info.samplers) {
+            put(desc.GetSharp(info));
+        }
+    }
 };
 
 } // namespace Shader

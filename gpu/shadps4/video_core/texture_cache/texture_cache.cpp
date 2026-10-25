@@ -881,15 +881,21 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
 ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure_valid) {
     ImageIds image_ids;
-    ForEachImageInRegion(address, size, [&](ImageId image_id, Image& image) {
-        if (image.info.guest_address != address) {
-            return;
+    // bbport (upstream shadPS4 #5240): only images that start at `address` qualify, and an image is registered on
+    // every page it covers, its first one included: that page alone holds all of them. Walking every page of a
+    // large texel buffer range cost tens of microseconds per bind (inFAMOUS: 23.2 -> 30.7 FPS).
+    if (const auto it = page_table.find(address >> Traits::PageBits); it != nullptr) {
+        for (const ImageId image_id : *it) {
+            Image& image = slot_images[image_id];
+            if (image.info.guest_address != address) {
+                continue;
+            }
+            if (ensure_valid && !image.SafeToDownload()) {
+                continue;
+            }
+            image_ids.push_back(image_id);
         }
-        if (ensure_valid && !image.SafeToDownload()) {
-            return;
-        }
-        image_ids.push_back(image_id);
-    });
+    }
     if (image_ids.size() == 1) {
         // Sometimes image size might not exactly match with requested buffer size
         // If we only found 1 candidate image use it without too many questions.
@@ -1105,14 +1111,15 @@ void TextureCache::RefreshImage(Image& image) {
 
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
                                      AmdGpu::BorderColorBuffer border_color_base,
-                                     const bool is_depth, float extra_lod_bias) {
-    // Compare and plain uses of one S# need separate samplers; so do extra LOD biases.
-    const u64 hash = HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
-                                 u64(std::bit_cast<u32>(extra_lod_bias)));
+                                     const bool is_depth, float extra_lod_bias, bool isotropic) {
+    // Compare and plain uses of one S# need separate samplers; so do extra LOD biases and isotropic ones.
+    const u64 hash = HashCombine(HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
+                                             u64(std::bit_cast<u32>(extra_lod_bias))),
+                                 u64(isotropic));
 
     std::scoped_lock lock{samplers_mutex};
     const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base,
-                                                        is_depth, extra_lod_bias);
+                                                        is_depth, extra_lod_bias, isotropic);
     if (new_sampler) {
         samplers.at(hash).lru_id = sampler_lru_cache.Insert(hash, gc_tick);
     } else {

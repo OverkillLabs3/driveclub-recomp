@@ -88,6 +88,9 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.frame_gen_multiplier = std::clamp(i, 2, 4);
     } else if (key == "frame_gen_fit_display") {
         v.frame_gen_fit_display = i != 0;
+    } else if (key == "motion_blur_reference") {
+        v.motion_blur_reference = value == "long" || value == "30" ? 30
+                                : value == "short" || value == "60" ? 60 : 0;
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
     } else if (key == "fsr4_auto_exposure") {
@@ -164,6 +167,7 @@ void Load() {
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_AA", "aa"},                            {"BB_AA_SCALE", "aa_scale"},                            {"BB_FRAME_GEN", "frame_gen"},              {"BB_FRAME_GEN_MULTIPLIER", "frame_gen_multiplier"},
         {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
+        {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
     };
     for (const auto& [env, key] : env_keys) {
@@ -247,6 +251,7 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
+    std::fprintf(file, "motion_blur_reference=%d\n", v.motion_blur_reference.load());
     std::fprintf(file, "aa_scale=%s", AaScaleName(v.aa_scale));
     std::fputc(10, file);
     std::fprintf(file, "aa=%s", AaName(v.aa_mode));

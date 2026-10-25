@@ -367,6 +367,9 @@ public:
         return OpStore(pointer, object, std::span<const MemoryAccessLiteral>({memory_access...}));
     }
 
+    /// Length of the run-time array that is member `array_member` of the structure `structure` points to.
+    Id OpArrayLength(Id result_type, Id structure, Literal array_member);
+
     /// Create a pointer into a composite object that can be used with OpLoad and OpStore.
     Id OpAccessChain(Id result_type, Id base, std::span<const Id> indexes = {});
 

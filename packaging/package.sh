@@ -12,7 +12,7 @@ OUT="release/$NAME"
 bash build.sh
 mkdir -p out/launcher
 windres -I launcher launcher/launcher.rc -O coff -o out/launcher/launcher.res.o
-clang++ -O2 -std=c++20 -municode -mwindows -static -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp out/launcher/launcher.res.o   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt
+clang++ -O2 -std=c++20 -municode -mwindows -static -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp out/launcher/launcher.res.o   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt -lcomctl32
 # The steering wheel tools, SDL linked in: WheelSetup is a window; FfbTest a console program (-mconsole after the SDL
 # flags, which bring -mwindows).
 sdl_static="$(pkg-config --static --libs sdl3)"

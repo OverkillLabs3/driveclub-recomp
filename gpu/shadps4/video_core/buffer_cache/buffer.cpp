@@ -27,6 +27,10 @@ std::string_view BufferTypeName(MemoryType type) {
         return "HostCached";
     case MemoryType::Stream:
         return "Stream";
+    case MemoryType::StreamRing:
+        return "StreamRing";
+    case MemoryType::Gds:
+        return "Gds";
     case MemoryType::DeviceLocal:
         return "DeviceLocal";
     case MemoryType::Sparse:
@@ -41,10 +45,11 @@ std::string_view BufferTypeName(MemoryType type) {
 /// "device" (shadPS4's choice) is VRAM written through the PCIe BAR: cheap with AMD Smart Access
 /// Memory on a desktop, but on a laptop NVIDIA GPU these writes took half of that thread's time
 /// on laptops measured so. "cached" is cached system memory the GPU reads over PCIe
-/// instead; "host" is uncached system memory. The default is cached on NVIDIA and Intel and
-/// device on AMD (SetStreamPlacementDefault).
+/// instead; "host" is uncached system memory. The default is device on AMD, and on NVIDIA when
+/// the game renders at 1080p or more; cached otherwise (SetStreamPlacementDefault).
 enum class StreamPlacement { Device, Host, Cached };
 static std::atomic<int> stream_default{int(StreamPlacement::Device)};
+static std::atomic<int> planned_render_height{0};
 static StreamPlacement StreamMemory() {
     static const StreamPlacement placement = [] {
         const char* env = std::getenv("BB_STREAM_MEMORY");
@@ -66,13 +71,61 @@ static StreamPlacement StreamMemory() {
     return placement;
 }
 
-void SetStreamPlacementDefault(u32 vendor_id) {
-    // NVIDIA 0x10DE, Intel 0x8086: cached system memory. AMD keeps VRAM (Smart Access Memory).
-    stream_default = int(vendor_id == 0x1002 ? StreamPlacement::Device : StreamPlacement::Cached);
+// bbport: BB_RING_MEMORY=device|host|cached: the constant ring (stage A's copies of small read-only guest buffers,
+// read by every draw's shaders) placed apart from the stream buffer. Default: as the stream buffer (cached system
+// memory on NVIDIA). On an RTX 3070 Laptop (720p render, 4K output, uncapped) the ring in VRAM gives much
+// steadier frames (1% low 55 -> 65, p99 16 -> 13 ms, jitter 2.0 -> 0.65) but ~7% fewer FPS: stage A, the limit,
+// writes 7-9 MB a frame through the BAR (+0.4 ms), and the GPU saves only ~0.6 ms a frame of constant reads.
+static StreamPlacement RingMemory() {
+    static const StreamPlacement placement = [] {
+        const char* env = std::getenv("BB_RING_MEMORY");
+        if (!env) {
+            return StreamMemory();
+        }
+        const std::string_view value = env;
+        if (value == "device") {
+            return StreamPlacement::Device;
+        }
+        return value == "host" ? StreamPlacement::Host : StreamPlacement::Cached;
+    }();
+    static const bool reported = [] {
+        std::printf("GPU: constant ring in %s memory\n",
+                    placement == StreamPlacement::Device ? "device" : placement == StreamPlacement::Host ? "host" : "cached host");
+        return true;
+    }();
+    (void)reported;
+    return placement;
+}
+static bool IsStream(MemoryType type) {
+    return type == MemoryType::Stream || type == MemoryType::StreamRing;
+}
+static StreamPlacement PlacementOf(MemoryType type) {
+    return type == MemoryType::StreamRing ? RingMemory() : StreamMemory();
 }
 
+void SetStreamPlacementRenderHeight(s32 height) {
+    planned_render_height = height;
+}
+
+s32 PlannedRenderHeight() {
+    return planned_render_height.load();
+}
+
+void SetStreamPlacementDefault(u32 vendor_id) {
+    // AMD keeps VRAM (Smart Access Memory). NVIDIA 0x10DE: VRAM from 1080p render up, where the GPU is the limit:
+    // 1440p uncapped 66.7 -> 79.1 FPS, sd 6.2 -> 2.7 ms, the 13/22 ms alternation nearly gone; capped 60 1% low
+    // 48.2 -> 56.3; 1080p render / 4K output 93.9 -> 99.0, 1% low 51.1 -> 57.1. At 720p
+    // render the draw recording thread is the limit and its BAR writes cost ~7%: cached system
+    // memory there. Intel 0x8086: cached.
+    const bool device = vendor_id == 0x1002 || (vendor_id == 0x10DE && planned_render_height.load() >= 1080);
+    stream_default = int(device ? StreamPlacement::Device : StreamPlacement::Cached);
+}
+
+// bbport: GDS gets GPU atomics and occasional CPU reads (ReadDataFromGds reads the mapping without an
+// invalidate), so it stays in mapped coherent memory, cached as with the stream buffer's cached placement,
+// whatever the stream buffer's placement (VRAM from 1080p render on NVIDIA).
 [[nodiscard]] VkMemoryPropertyFlags MemoryUsagePreferredVmaFlags(MemoryType type) {
-    if (type == MemoryType::Stream && StreamMemory() == StreamPlacement::Cached) {
+    if (type == MemoryType::Gds || (IsStream(type) && PlacementOf(type) == StreamPlacement::Cached)) {
         return VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
     }
     return type != MemoryType::DeviceLocal ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -80,15 +133,17 @@ void SetStreamPlacementDefault(u32 vendor_id) {
 }
 
 [[nodiscard]] VmaAllocationCreateFlags MemoryUsageVmaFlags(MemoryType type) {
-    if (type == MemoryType::Stream && StreamMemory() == StreamPlacement::Cached) {
+    if (IsStream(type) && PlacementOf(type) == StreamPlacement::Cached) {
         return VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
     }
     switch (type) {
     case MemoryType::HostUncached:
     case MemoryType::Stream:
+    case MemoryType::StreamRing:
         return VMA_ALLOCATION_CREATE_MAPPED_BIT |
                VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     case MemoryType::HostCached:
+    case MemoryType::Gds:
         return VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
     case MemoryType::DeviceLocal:
     default:
@@ -97,15 +152,17 @@ void SetStreamPlacementDefault(u32 vendor_id) {
 }
 
 [[nodiscard]] VmaMemoryUsage MemoryUsageVma(MemoryType type) {
-    if (type == MemoryType::Stream && StreamMemory() != StreamPlacement::Device) {
+    if (IsStream(type) && PlacementOf(type) != StreamPlacement::Device) {
         return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     }
     switch (type) {
     case MemoryType::DeviceLocal:
     case MemoryType::Stream:
+    case MemoryType::StreamRing:
         return VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     case MemoryType::HostUncached:
     case MemoryType::HostCached:
+    case MemoryType::Gds:
         return VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     default:
         return VMA_MEMORY_USAGE_UNKNOWN;
@@ -140,7 +197,10 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
             .flags =
                 VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | bda_flag | MemoryUsageVmaFlags(mem_type),
             .usage = MemoryUsageVma(mem_type),
-            .requiredFlags = 0,
+            .requiredFlags = mem_type == MemoryType::Gds
+                                 ? VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+                                 : VkMemoryPropertyFlags(0),
             .preferredFlags = MemoryUsagePreferredVmaFlags(mem_type),
             .pool = VK_NULL_HANDLE,
             .pUserData = nullptr,
@@ -212,6 +272,9 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
             mapped_data = std::span<u8>{std::bit_cast<u8*>(alloc_info.pMappedData), size_bytes};
         }
         is_coherent = property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        is_host_cached = property_flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        ASSERT_MSG(mem_type != MemoryType::Gds || (!mapped_data.empty() && is_coherent),
+                   "GDS requires a coherent CPU mapping");
     }
 }
 

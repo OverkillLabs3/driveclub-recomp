@@ -28,6 +28,12 @@ Id Module::OpStore(Id pointer, Id object, std::span<const MemoryAccessLiteral> m
     return *code << spv::Op::OpStore << pointer << object << memory_access << EndOp{};
 }
 
+Id Module::OpArrayLength(Id result_type, Id structure, Literal array_member) {
+    code->Reserve(5);
+    return *code << OpId{spv::Op::OpArrayLength, result_type} << structure << array_member
+                 << EndOp{};
+}
+
 Id Module::OpAccessChain(Id result_type, Id base, std::span<const Id> indexes) {
     assert(!indexes.empty());
     code->Reserve(4 + indexes.size());

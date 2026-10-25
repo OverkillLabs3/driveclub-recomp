@@ -11,21 +11,39 @@
 
 namespace VideoCore {
 
-Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
-                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth, float extra_lod_bias) {
-    using namespace Vulkan;
-    // bbport: BB_ANISO=0|2|4|8|16 (the launcher's Anisotropic filtering): colour samplers that
-    // filter linearly across mip levels get at least that much anisotropy even where the game
-    // asked for none. Roads and terrain at a shallow angle stay sharp. Depth compares and point
-    // samplers are left alone. 0 keeps the game's own. Default: 16x, 4x on integrated GPUs.
+// bbport: BB_ANISO=0|2|4|8|16 (the launcher's Anisotropic filtering): colour samplers that
+// filter linearly across mip levels get at least that much anisotropy even where the game
+// asked for none. Roads and terrain at a shallow angle stay sharp. Depth compares and point
+// samplers are left alone. 0 keeps the game's own. Default: 16x, 4x on integrated GPUs.
+static int OverrideAnisotropy(const Vulkan::Instance& instance) {
     static const int override_af = [&] {
         const char* env = std::getenv("BB_ANISO");
         const int value = env ? std::atoi(env) : (instance.IsIntegrated() ? 4 : 16);
         return value == 2 || value == 4 || value == 8 || value == 16 ? value : 0;
     }();
-    const bool force_af = override_af && !is_depth && sampler.MaxLod() > sampler.MinLod() &&
-                          LiverpoolToVK::Filter(sampler.xy_min_filter) == vk::Filter::eLinear &&
-                          LiverpoolToVK::Filter(sampler.xy_mag_filter) == vk::Filter::eLinear;
+    return override_af;
+}
+
+static bool ForceAnisotropy(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler, bool is_depth) {
+    using namespace Vulkan;
+    return OverrideAnisotropy(instance) && !is_depth && sampler.MaxLod() > sampler.MinLod() &&
+           LiverpoolToVK::Filter(sampler.xy_min_filter) == vk::Filter::eLinear &&
+           LiverpoolToVK::Filter(sampler.xy_mag_filter) == vk::Filter::eLinear;
+}
+
+bool UsesAnisotropy(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler, bool is_depth) {
+    return instance.IsAnisotropicFilteringSupported() &&
+           (ForceAnisotropy(instance, sampler, is_depth) || AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
+            AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
+}
+
+// isotropic: bbport, no anisotropy at all (BB_CUBE_LOD_RANGE=2: a sample at an explicit LOD reads one level).
+Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sampler,
+                 const AmdGpu::BorderColorBuffer border_color_base, const bool is_depth, float extra_lod_bias,
+                 bool isotropic) {
+    using namespace Vulkan;
+    const int override_af = OverrideAnisotropy(instance);
+    const bool force_af = ForceAnisotropy(instance, sampler, is_depth);
     {
         // Proof in the log that the override does something: how many samplers it raised.
         static std::atomic<unsigned> seen{0}, forced{0}, already{0};
@@ -40,9 +58,7 @@ Sampler::Sampler(const Vulkan::Instance& instance, const AmdGpu::Sampler& sample
                         instance.IsAnisotropicFilteringSupported() ? "" : " (the GPU does not support it)");
         }
     }
-    const bool anisotropy_enable = instance.IsAnisotropicFilteringSupported() &&
-                                   (force_af || AmdGpu::IsAnisoFilter(sampler.xy_mag_filter) ||
-                                    AmdGpu::IsAnisoFilter(sampler.xy_min_filter));
+    const bool anisotropy_enable = !isotropic && UsesAnisotropy(instance, sampler, is_depth);
     const float max_anisotropy =
         anisotropy_enable ? std::clamp(force_af ? std::max(float(override_af), sampler.MaxAniso())
                                                 : sampler.MaxAniso(),

@@ -212,7 +212,9 @@ public:
     LockType lock;
 
 private:
-    static constexpr size_t GPU_SEQ_PAGES = 64;
+    // bbport: 16 KB, the smallest readback window (BB_READBACK_WINDOW_KB): a window's early copy stays valid while
+    // only its neighbours are written.
+    static constexpr size_t GPU_SEQ_PAGES = 4;
     /**
      * Notify tracker about changes in the CPU tracking state of a word in the buffer
      *

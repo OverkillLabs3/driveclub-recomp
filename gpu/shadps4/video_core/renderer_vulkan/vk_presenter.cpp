@@ -1307,18 +1307,31 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
                                vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
                                {}, {}, pre_barriers);
-        const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
-        cmdbuf.clearColorImage(swapchain_image, vk::ImageLayout::eTransferDstOptimal, black, color_range);
-        const vk::MemoryBarrier clear_done{
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-        };
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
+        const vk::ImageBlit blit =
+            MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height);
+        // bbport: the clear only fills the bars around a frame of another aspect ratio; a blit covering the
+        // whole swapchain image skips it (a 4K clear and a barrier per frame). BB_PRESENT_CLEAR=1: always clear.
+        static const bool always_clear = [] {
+            const char* env = std::getenv("BB_PRESENT_CLEAR");
+            return env && env[0] == '1';
+        }();
+        const bool covers = blit.dstOffsets[0].x == 0 && blit.dstOffsets[0].y == 0 &&
+                            blit.dstOffsets[1].x == s32(extent.width) &&
+                            blit.dstOffsets[1].y == s32(extent.height);
+        if (always_clear || !covers) {
+            const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+            cmdbuf.clearColorImage(swapchain_image, vk::ImageLayout::eTransferDstOptimal, black,
+                                   color_range);
+            const vk::MemoryBarrier clear_done{
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                   vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
+        }
         cmdbuf.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
-                         vk::ImageLayout::eTransferDstOptimal,
-                         MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
-                         vk::Filter::eLinear);
+                         vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
         // bbport: VR: the headset gets this frame too.
         if (last) {
             BbVr::g_queue_mutex = &Scheduler::submit_mutex;

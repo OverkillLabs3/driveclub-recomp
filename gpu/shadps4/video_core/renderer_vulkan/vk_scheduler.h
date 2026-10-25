@@ -958,11 +958,16 @@ private:
     /// A submission wrote buffer memory the CPU will read straight from the mapping: the next submission ends with
     /// a barrier that makes those writes visible to the host.
     std::atomic<bool> host_read_barrier{false};
-    std::atomic<size_t> queued_chunks{0}; ///< recorder_queue.size() for lock-free polling
+    /// recorder_queue.size() for lock-free polling. Written by both threads at every hand-off: a cache line of its
+    /// own, apart from the flags the recording caller reads on every Record() (direct_mode, recording_threaded).
+    alignas(64) std::atomic<size_t> queued_chunks{0};
+    char queued_chunks_line[56]{};
     bool recorder_sleeping = false; ///< waiting on recorder_cv (guarded by recorder_mutex)
     bool direct_mode = false; ///< the command buffer is recorded on the caller's thread
     u64 host_copies_issued = 0;
-    std::atomic<u64> host_copies_done{0};
+    /// Written by the recording thread after each host copy: a cache line of its own.
+    alignas(64) std::atomic<u64> host_copies_done{0};
+    char host_copies_done_line[56]{};
     std::atomic<u64> deferred_signals_issued{0}; ///< by the thread recording (A or B)
     std::shared_ptr<std::atomic<u64>> deferred_signals_done =
         std::make_shared<std::atomic<u64>>(0);

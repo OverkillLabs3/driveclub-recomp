@@ -951,6 +951,41 @@ void ResourcePatchingPass(Shader::Info& info, const ResourceDiscoveryList& resou
         }
     }
 
+    // Eligible GCN cube samples filter across faces in hardware. Mixed/raw
+    // operations and intentionally non-seamless samplers keep the array route.
+    if (profile.supports_native_cube_array) {
+        for (auto& desc : info.images) {
+            const auto sharp = desc.GetSharp(info);
+            desc.native_cube = sharp.IsCube() && !desc.is_written && !desc.is_depth &&
+                !desc.needs_native && !AmdGpu::IsInteger(sharp.GetNumberFmt()) &&
+                sharp.width == sharp.height && sharp.NumSamples() == 1 &&
+                sharp.base_array % 6 == 0 && sharp.NumViewLayers(desc.is_array) % 6 == 0;
+        }
+        for (const auto& usage : resources) {
+            const auto& inst = *usage.user;
+            if (!IsImageInstruction(inst) || !inst.Arg(0).IsImmediate()) {
+                continue;
+            }
+            const u32 handle = inst.Arg(0).U32();
+            const u32 index = handle & 0xffff;
+            if (index >= info.images.size() || !info.images[index].native_cube) {
+                continue;
+            }
+            const auto flags = inst.Flags<IR::TextureInstInfo>();
+            const bool supported = inst.GetOpcode() == IR::Opcode::ImageSampleRaw &&
+                (flags.has_lod || flags.force_level0) && !flags.has_derivatives &&
+                !flags.has_offset && !flags.is_depth && !flags.is_gather && !flags.is_unnormalized;
+            if (!supported) {
+                info.images[index].native_cube = false;
+                continue;
+            }
+            const auto sampler = info.samplers[handle >> 16].GetSharp(info);
+            if (sampler.disable_cube_wrap || sampler.force_unnormalized) {
+                info.images[index].native_cube = false;
+            }
+        }
+    }
+
     // Pass 2: Patch instruction args
     for (const auto& usage : resources) {
         IR::Inst& inst = *usage.user;

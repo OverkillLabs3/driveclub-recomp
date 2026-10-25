@@ -5,6 +5,7 @@
 
 #include <array>
 #include <unordered_map>
+#include <vector>
 #include <sirit/sirit.h>
 
 #include "shader_recompiler/backend/bindings.h"
@@ -320,6 +321,7 @@ public:
         AmdGpu::ImageType view_type;
         bool is_integer = false;
         bool is_storage = false;
+        bool native_cube = false;
         MipStorageFallbackMode mip_fallback_mode{};
     };
 
@@ -330,6 +332,7 @@ public:
         F32,
         U64,
         F64,
+        U32x4, ///< bbport: BB_WIDE_LOADS
         NumAlias,
     };
 
@@ -351,6 +354,7 @@ public:
         BufferType buffer_type;
         std::array<Id, u32(PointerSize::NumClass)> offsets;
         std::array<BufferSpv, u32(PointerType::NumAlias)> aliases;
+        u32 unified{}; ///< bbport: the descriptor binding its aliases share (DefineWideAlias)
 
         template <class Self>
         auto& Alias(this Self& self, PointerType alias) {
@@ -405,6 +409,20 @@ public:
 
     Id read_const{};
     Id read_const_dynamic{};
+
+    /// bbport: BB_WIDE_LOADS (emit_spirv_context_get_set.cpp PlanWideLoads): four ReadConstBuffer of one buffer
+    /// at dwords first..first+3 from one base, read as one 16-byte load where the index allows it.
+    struct WideGroup {
+        u32 handle;
+        const IR::Inst* base; ///< nullptr: the index is the immediate `first` alone
+        u32 first;
+        Id result;
+    };
+    std::vector<WideGroup> wide_groups;
+    std::unordered_map<const IR::Inst*, std::pair<u32, u32>> wide_members; ///< member -> (group, component)
+    /// The buffer's 16-byte alias (PointerType::U32x4), defined on first use with the buffer's own binding (before
+    /// the entry point is declared, which lists it).
+    void DefineWideAlias(u32 handle);
 
 private:
     void DefineArithmeticTypes();

@@ -160,17 +160,73 @@ static ABI __attribute__((noreturn)) void stack_fail(void) {
     fputs("STOP: guest stack protector detected corruption\n", stderr);
     exit(22);
 }
+/* bbport (BB_GUEST_MEMOPS, gpu/shadps4/video_core/page_manager.cpp): ranges on pages that also hold GPU-written
+ * bytes, but none of those bytes, go through the backing view instead of faulting in the CRT's wide moves (which
+ * waited for a download). bbgpu_guest_read/write return 0 when not handled: the CRT function runs. Calls under
+ * MEMOPS_MIN bytes use plain moves, which the fault handler emulates already; calls touching no page with GPU
+ * data (bbgpu_guest_gpu_pages) take the CRT directly. */
+int bbgpu_guest_read(void *out, uintptr_t addr, uint64_t size);
+int bbgpu_guest_write(uintptr_t addr, const void *data, uint64_t size);
+int bbgpu_guest_gpu_pages(uintptr_t addr, uint64_t size);
+#define MEMOPS_MIN 32
+#define MEMOPS_CHUNK 4096
+static _Thread_local uint8_t memops_a[MEMOPS_CHUNK], memops_b[MEMOPS_CHUNK];
+static void memops_copy(void *dst, const void *src, size_t size) {
+    for (size_t done = 0; done < size;) {
+        const size_t n = size - done < MEMOPS_CHUNK ? size - done : MEMOPS_CHUNK;
+        if (!bbgpu_guest_read(memops_a, (uintptr_t)src + done, n)) memcpy(memops_a, (const uint8_t *)src + done, n);
+        if (!bbgpu_guest_write((uintptr_t)dst + done, memops_a, n)) memcpy((uint8_t *)dst + done, memops_a, n);
+        done += n;
+    }
+}
 static ABI void *guest_memset(void *dst, int value, size_t size) {
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memset(dst, value, size);
+    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    if (size >= MEMOPS_MIN && bbgpu_guest_gpu_pages((uintptr_t)dst, size)) {
+        memset(memops_a, value, size < MEMOPS_CHUNK ? size : MEMOPS_CHUNK);
+        for (size_t done = 0; done < size;) {
+            const size_t n = size - done < MEMOPS_CHUNK ? size - done : MEMOPS_CHUNK;
+            if (!bbgpu_guest_write((uintptr_t)dst + done, memops_a, n)) memset((uint8_t *)dst + done, value, n);
+            done += n;
+        }
+        return dst;
+    }
+    return memset(dst, value, size);
 }
 static ABI void *guest_memcpy(void *dst, const void *src, size_t size) {
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcpy(dst, src, size);
+    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    if (size >= MEMOPS_MIN &&
+        (bbgpu_guest_gpu_pages((uintptr_t)dst, size) || bbgpu_guest_gpu_pages((uintptr_t)src, size))) {
+        memops_copy(dst, src, size); /* memcpy ranges do not overlap: chunk by chunk is the same copy */
+        return dst;
+    }
+    return memcpy(dst, src, size);
 }
 static ABI void *guest_memmove(void *dst, const void *src, size_t size) {
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memmove(dst, src, size);
+    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    /* Overlapping moves keep the CRT (a forward chunked copy could read bytes it already overwrote). */
+    const uintptr_t d = (uintptr_t)dst, s = (uintptr_t)src;
+    if (size >= MEMOPS_MIN && (d + size <= s || s + size <= d) &&
+        (bbgpu_guest_gpu_pages(d, size) || bbgpu_guest_gpu_pages(s, size))) {
+        memops_copy(dst, src, size);
+        return dst;
+    }
+    return memmove(dst, src, size);
 }
 static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
-    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed); return memcmp(a, b, size);
+    atomic_fetch_add_explicit(&memory_calls,1,memory_order_relaxed);
+    if (size >= MEMOPS_MIN &&
+        (bbgpu_guest_gpu_pages((uintptr_t)a, size) || bbgpu_guest_gpu_pages((uintptr_t)b, size))) {
+        for (size_t done = 0; done < size;) {
+            const size_t n = size - done < MEMOPS_CHUNK ? size - done : MEMOPS_CHUNK;
+            if (!bbgpu_guest_read(memops_a, (uintptr_t)a + done, n)) memcpy(memops_a, (const uint8_t *)a + done, n);
+            if (!bbgpu_guest_read(memops_b, (uintptr_t)b + done, n)) memcpy(memops_b, (const uint8_t *)b + done, n);
+            const int c = memcmp(memops_a, memops_b, n);
+            if (c) return c;
+            done += n;
+        }
+        return 0;
+    }
+    return memcmp(a, b, size);
 }
 static ABI size_t guest_strlen(const char *text) { return strlen(text); }
 static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {

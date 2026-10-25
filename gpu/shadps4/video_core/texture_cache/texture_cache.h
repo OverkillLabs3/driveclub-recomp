@@ -206,9 +206,10 @@ public:
 
     /// Retrieves the sampler that matches the provided S# descriptor.
     /// extra_lod_bias: bbport, added to the S#'s bias (reduced scene rendering).
+    /// isotropic: bbport, without anisotropy (BB_CUBE_LOD_RANGE=2).
     [[nodiscard]] vk::Sampler GetSampler(const AmdGpu::Sampler& sampler,
                                          AmdGpu::BorderColorBuffer border_color_base,
-                                         bool is_depth, float extra_lod_bias = 0.0f);
+                                         bool is_depth, float extra_lod_bias = 0.0f, bool isotropic = false);
 
     /// Retrieves the image with the specified id.
     Image* TryGetImage(ImageId id, u64 uid) {

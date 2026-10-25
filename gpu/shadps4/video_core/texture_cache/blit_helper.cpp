@@ -350,6 +350,70 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
     scheduler.GetDynamicState().Invalidate();
 }
 
+void BlitHelper::CopyDepthToColor(u32 width, u32 height, vk::Format depth_format, vk::Format color_format,
+                                  vk::Image source, vk::Image dest) {
+    const auto device = instance.GetDevice();
+    const vk::ImageViewUsageCreateInfo src_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
+    const auto [src_view_result, src_view] = device.createImageView({
+        .pNext = &src_usage_ci, .image = source, .viewType = vk::ImageViewType::e2D, .format = depth_format,
+        .subresourceRange{vk::ImageAspectFlagBits::eDepth, 0U, 1U, 0U, 1U},
+    });
+    ASSERT_MSG(src_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+               vk::to_string(src_view_result));
+    const vk::ImageViewUsageCreateInfo dst_usage_ci{.usage = vk::ImageUsageFlagBits::eColorAttachment};
+    const auto [dst_view_result, dst_view] = device.createImageView({
+        .pNext = &dst_usage_ci, .image = dest, .viewType = vk::ImageViewType::e2D, .format = color_format,
+        .subresourceRange{vk::ImageAspectFlagBits::eColor, 0U, 1U, 0U, 1U},
+    });
+    ASSERT_MSG(dst_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
+               vk::to_string(dst_view_result));
+    scheduler.DeferOperation([device, src_view, dst_view] {
+        device.destroyImageView(src_view);
+        device.destroyImageView(dst_view);
+    });
+
+    Vulkan::RenderState state{};
+    state.width = width;
+    state.height = height;
+    state.num_layers = 1;
+    state.num_color_attachments = 1;
+    state.color_attachments[0].image_view = dst_view;
+    state.color_attachments[0].image_layout = vk::ImageLayout::eColorAttachmentOptimal;
+    state.color_attachments[0].is_clear = true;
+    scheduler.BeginRendering(state);
+
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const vk::DescriptorImageInfo image_info = {
+        .sampler = VK_NULL_HANDLE,
+        .imageView = src_view,
+        .imageLayout = vk::ImageLayout::eDepthStencilReadOnlyOptimal,
+    };
+    const vk::WriteDescriptorSet texture_write = {
+        .dstSet = VK_NULL_HANDLE,
+        .dstBinding = 0U,
+        .dstArrayElement = 0U,
+        .descriptorCount = 1U,
+        .descriptorType = vk::DescriptorType::eSampledImage,
+        .pImageInfo = &image_info,
+    };
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *single_texture_pl_layout, 0U,
+                                texture_write);
+    // The single-sample copy shader: texelFetch of the source, written unchanged (.r is the depth).
+    const MsPipelineKey key{1U, color_format, false};
+    auto it = std::ranges::find(ms_image_copy_pl, key, &MsPipeline::first);
+    if (it == ms_image_copy_pl.end()) {
+        CreateMsCopyPipeline(key);
+        it = --ms_image_copy_pl.end();
+    }
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *it->second);
+    cmdbuf.setViewportWithCount(vk::Viewport{0.f, 0.f, float(width), float(height), 0.f, 1.f});
+    cmdbuf.setScissorWithCount(vk::Rect2D{{0, 0}, {width, height}});
+    cmdbuf.draw(3, 1, 0, 0);
+
+    scheduler.EndRendering();
+    scheduler.GetDynamicState().Invalidate();
+}
+
 void BlitHelper::CreateShaders() {
     const auto device = instance.GetDevice();
     fs_tri_vertex = Vulkan::CompileSPV(FS_TRI_VERT, device);

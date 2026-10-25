@@ -113,6 +113,11 @@ public:
         return features.depthBounds;
     }
 
+    /// Returns true if arrays of cube images can be sampled.
+    bool IsCubeArraySupported() const {
+        return features.imageCubeArray;
+    }
+
     /// Returns true if 16-bit floats are supported in shaders
     bool IsShaderFloat16Supported() const {
         return vk12_features.shaderFloat16;

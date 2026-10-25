@@ -883,6 +883,7 @@ void EmitContext::DefineBuffers() {
 
         // Define aliases depending on the shader usage.
         auto& spv_buffer = buffers.emplace_back(binding.buffer++, desc.buffer_type);
+        spv_buffer.unified = binding.unified;
         if (True(desc.used_types & IR::Type::U64)) {
             spv_buffer.Alias(PointerType::U64) =
                 DefineBuffer(desc.is_written, is_coherent, 3, desc.buffer_type, U64);
@@ -905,6 +906,21 @@ void EmitContext::DefineBuffers() {
         }
         ++binding.unified;
     }
+}
+
+void EmitContext::DefineWideAlias(u32 handle) {
+    auto& spv_buffer = buffers[handle];
+    if (Sirit::ValidId(spv_buffer.Alias(PointerType::U32x4).id)) {
+        return;
+    }
+    // Same decorations as the buffer's other aliases (DefineBuffers), on the same binding; DefineBuffer takes the
+    // binding from binding.unified, which has moved on by now.
+    const auto& desc = info.buffers[handle];
+    const bool is_coherent = desc.buffer_type == BufferType::SharedMemory || desc.GetSharp(info).mtype == 3;
+    const u32 next_unified = binding.unified;
+    binding.unified = spv_buffer.unified;
+    spv_buffer.Alias(PointerType::U32x4) = DefineBuffer(desc.is_written, is_coherent, 4, desc.buffer_type, U32[4]);
+    binding.unified = next_unified;
 }
 
 spv::ImageFormat GetFormat(const AmdGpu::Image& image) {
@@ -987,6 +1003,10 @@ spv::ImageFormat GetFormat(const AmdGpu::Image& image) {
 Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     const auto image = desc.GetSharp(ctx.info);
     const auto format = desc.is_atomic ? GetFormat(image) : spv::ImageFormat::Unknown;
+    if (desc.native_cube) {
+        ctx.AddCapability(spv::Capability::SampledCubeArray);
+        return ctx.TypeImage(sampled_type, spv::Dim::Cube, false, true, false, 1, format);
+    }
     const auto type = image.GetViewType(desc.is_array);
     const u32 sampled = desc.is_written ? 2 : 1;
     switch (type) {
@@ -1039,6 +1059,7 @@ void EmitContext::DefineImagesAndSamplers() {
             .view_type = sharp.GetViewType(image_desc.is_array),
             .is_integer = is_integer,
             .is_storage = is_storage,
+            .native_cube = image_desc.native_cube,
             .mip_fallback_mode = mip_fallback_mode,
         });
         interfaces.push_back(id);

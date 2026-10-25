@@ -128,6 +128,8 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Anisotropic filtering:** keeps textures on roads and terrain sharp at a shallow angle. **Automatic** is 16x (4x on integrated graphics); you can also choose Off, 2x, 4x, 8x or 16x.
 
+**Motion blur exposure** (Detail > Effects): **Slow** (default) keeps the original 30 FPS exposure for a cinematic look; **Fast** uses the shorter 60 FPS exposure. Both keep their selected exposure on Unlocked. Hover each choice for its description. **F3** switches between them in-game; the launcher selection is saved for the next launch. This choice remains available with FSR or DLSS anti-aliasing.
+
 **Unlock DLC content:** off by default. Unlocks the add-on cars, bikes, tours and livery decals. The launcher reads the vehicle list, the tour list and the livery list from your own game archive and builds changed copies that the game uses. Your game folders are not modified.
 
 **Gameplay:** player name, borderless fullscreen, FPS counter, motion blur and depth of field off, no reset-to-track timer, no track barriers, and photo mode options.

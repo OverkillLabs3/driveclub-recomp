@@ -7,9 +7,14 @@
 #include <cstdlib>
 #include <optional>
 #include <set>
+#include <chrono>
+#include <mutex>
+#include <unordered_set>
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_settings.h"
+#include "bbport_motion_blur.h"
+extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "bbport_toggles.h"
 #include "bbport_vr.h"
 #include "bbport_frametrace.h"
@@ -26,6 +31,8 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "bbport_recent.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
+#include "video_core/renderer_vulkan/vk_cube_lod_check.h"
+#include "video_core/texture_cache/sampler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -41,6 +48,7 @@ namespace Vulkan {
 
 namespace {
 DriveMotion* g_drive_motion = nullptr;
+bool g_taa_noted = false; ///< BindBuffers noted the anti-aliasing camera last time (its threads, one at a time)
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
 // vectors from them.
 void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
@@ -69,6 +77,32 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
         BbVr::NoteProjection(f[48], f[48 + 5], f[48 + 10], f[48 + 14]); // VR: tells the driver's head camera apart
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
+}
+// Validate the motion-blur pass independently of resolution / shader permutation.
+// It consumes camera constants, post-process constants, and 64 object motion matrices.
+bool MotionBlurConstants(const Shader::Info& stage, u32 index, u64 size) {
+    if (BbSettings::Get().motion_blur_reference.load() == 0 ||
+        stage.sw_stage != Shader::SwStage::Fragment || index != 1 ||
+        size != DriveMotionBlur::Bytes || stage.buffers.size() < 3) return false;
+    return !stage.buffers[0].IsSpecial() && !stage.buffers[2].IsSpecial() &&
+           stage.buffers[0].GetSharp(stage).GetSize() == 512 &&
+           stage.buffers[2].GetSharp(stage).GetSize() == 12288;
+}
+bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
+    const int reference = BbSettings::Get().motion_blur_reference.load();
+    float raw_dt=0; uint64_t stamp=0;
+    runtime_motion_blur_clock(&raw_dt,&stamp);
+    static thread_local DriveMotionBlur::IntervalHistory history;
+    const float dt = history.Observe(stamp,raw_dt);
+    if (!DriveMotionBlur::Correct(data, size, dt, reference)) return false;
+    static std::atomic<int> logged_reference{};
+    if (logged_reference.exchange(reference) != reference) {
+        std::printf("MotionBlur: %s shader=%08x simulated_dt=%.6f coefficient=%.6f\n",
+                    reference == 30 ? "Slow" : "Fast", u32(stage.pgm_hash), dt,
+                    reinterpret_cast<const float*>(data)[DriveMotionBlur::ExposureWord]);
+        std::fflush(stdout);
+    }
+    return true;
 }
 } // namespace
 
@@ -608,13 +642,29 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             return;
         }
         u8* dst = constant_ring->Data(*offset);
+        const bool motion_blur = MotionBlurConstants(stage, index, size);
+        // bbport: the bindings the CPU reads again (the anti-aliasing camera check's 416/512-byte slots 0 and 1, the
+        // 864-byte camera motion constants, the cube prefilter's LOD, the motion-blur correction) are written to the
+        // ring's cached copy first when the ring is VRAM: reading write-combined memory back over PCIe cost ~1.5 ms a
+        // frame on the draw recording thread with DLAA/DLSS/FSR or frame generation on (the camera check runs then).
+        const bool host_read =
+            constant_ring->HasHostCopy() &&
+            (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+             (size == 512 && BbVr::Active()) || // VR: the G-buffer camera (BbVr::NoteCameraConstants)
+             (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
+        u8* write = host_read ? constant_ring->HostCopy(*offset) : dst;
         if (source) {
-            std::memcpy(dst, source, size);
+            std::memcpy(write, source, size);
         } else {
-            memory->CopySparseMemory(address, dst, size);
+            memory->CopySparseMemory(address, write, size);
+        }
+        // Patch only this draw's shadow, before publishing it to the recording thread.
+        if (motion_blur) CorrectMotionBlur(stage, write, size);
+        if (host_read) {
+            std::memcpy(dst, write, size);
         }
         constant_ring->Flush(*offset, size);
-        out.push_back({index, static_cast<u32>(size), *offset, address});
+        out.push_back({index, static_cast<u32>(size), *offset, address, host_read});
     };
     for (u32 index = 0; index < stage.buffers.size(); ++index) {
         const auto& desc = stage.buffers[index];
@@ -659,20 +709,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     std::array<u16, AmdGpu::RegDirty::NumBlocks> blocks;
     u32 num_blocks = 0;
-#ifdef __GLIBCXX__
-    for (size_t block = dirty.blocks._Find_first(); block < dirty.blocks.size();
-         block = dirty.blocks._Find_next(block)) {
-        blocks[num_blocks++] = static_cast<u16>(block);
-    }
-#else
-    if (dirty.blocks.any()) {
-        for (size_t block = 0; block < dirty.blocks.size(); ++block) {
-            if (dirty.blocks.test(block)) {
-                blocks[num_blocks++] = static_cast<u16>(block);
-            }
-        }
-    }
-#endif
+    dirty.blocks.ForEach([&](u32 block) { blocks[num_blocks++] = static_cast<u16>(block); });
     const auto stages =
         pipeline ? pipeline->GetStages() : std::span<const Shader::Info* const>{};
     // Constants: copied here into the ring, the recording thread only binds them.
@@ -835,7 +872,8 @@ void Rasterizer::RetireSubmission() {
     }
 }
 
-bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 toggle) {
+bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 toggle,
+                            bool writes_guest_memory) {
     if (!UseDrawPipe() || BbToggle::Disabled(toggle)) {
         DrainDrawPipe(DrawPipe::ReasonRasterizer);
         task(*this, static_cast<const u8*>(data));
@@ -848,7 +886,12 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
     BbCopy::FlushBatch();
     draw_pipe->Commit(total);
     ResolvePendingWrites();
-    if (toggle == BbToggle::PipelinedMemoryWrites) {
+    // bbport: BB_MEMWAIT_ALL=1: every PipelinedMemoryWrites task holds back the next selection, as before.
+    static const bool all_tasks = [] {
+        const char* env = std::getenv("BB_MEMWAIT_ALL");
+        return env && env[0] == '1';
+    }();
+    if (toggle == BbToggle::PipelinedMemoryWrites && (writes_guest_memory || all_tasks)) {
         last_memory_task = draw_pipe->Head();
     }
     return true;
@@ -2651,6 +2694,9 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
             if (!desc.IsSpecial() && desc.is_written && texture_cache.ClearMeta(address)) {
                 // Assume all slices were updates
                 LOG_TRACE(Render_Vulkan, "Metadata update skipped");
+                // bbport: the next draw takes the full path, which turns the pending clear into one (the memo only
+                // looks at register clears). Same recording thread as BeginRendering.
+                begin_memo.valid = false;
                 return true;
             }
         }
@@ -2791,6 +2837,23 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
     const u64 alignment = instance.StorageMinAlignment();
+    // bbport: the anti-aliasing pass's camera (NoteTaaBuffer) only feeds frame generation and DriveAA. Recognising
+    // it reads every 416/512-byte constant buffer of slots 0 and 1, and from 1080p render the constant ring is in VRAM:
+    // uncached reads over PCIe, ~14% of the draw recording thread at 1440p.
+    // Skipped while neither runs (checked per call: both can be switched on in game); BB_TAA_SNIFF=1 always.
+    static const bool sniff_always = [] {
+        const char* env = std::getenv("BB_TAA_SNIFF");
+        return env && env[0] == '1';
+    }();
+    // VR needs the projection too (BbVr::NoteProjection: the driver's head camera's field of view).
+    const bool note_taa = sniff_always || BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
+                          drive_aa->Active() || BbVr::Active();
+    // While neither consumer runs the camera is not refreshed: its readiness is dropped when they go off, so one
+    // switched back on waits for both constant buffers again instead of an old camera.
+    if (g_taa_noted && !note_taa && g_drive_motion) {
+        g_drive_motion->Consume();
+    }
+    g_taa_noted = note_taa;
     for (u32 buffer_index = 0; buffer_index < stage.buffers.size(); ++buffer_index) {
         const auto& desc = stage.buffers[buffer_index];
         const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, buffer_index) : nullptr;
@@ -2798,11 +2861,14 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             // Copied by the GPU command thread into the constant ring (read-only).
             if (!desc.IsSpecial()) {
                 // The copy the draw binds, made at decode: the guest memory may hold a later draw's values.
-                const u8* ring_data = constant_ring->Data(ring->offset);
+                const u8* ring_data = ring->host_copy ? constant_ring->HostCopy(ring->offset)
+                                                      : constant_ring->Data(ring->offset);
                 if (ring->size == 864 && gbuffer_draw) {
                     camera_motion->OnConstants(reinterpret_cast<const float*>(ring_data));
                 }
-                NoteTaaBuffer(stage.pgm_hash, buffer_index, ring_data, ring->size);
+                if (note_taa) {
+                    NoteTaaBuffer(stage.pgm_hash, buffer_index, ring_data, ring->size);
+                }
                 if (ring->size == 512 && vr_draw_targets == 3 && BbVr::Active()) {
                     BbVr::NoteCameraConstants(reinterpret_cast<const float*>(ring_data));
                 }
@@ -2859,7 +2925,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else {
             const auto vsharp =
                 prepared ? prepared->buffer_sharps[buffer_index] : desc.GetSharp(stage);
-            if (vsharp.base_address != 0 && memory->IsValidGpuMapping(vsharp.base_address, 0)) NoteTaaBuffer(stage.pgm_hash, buffer_index, reinterpret_cast<const void*>(vsharp.base_address), vsharp.GetSize());
+            if (note_taa && vsharp.base_address != 0 && memory->IsValidGpuMapping(vsharp.base_address, 0)) {
+                NoteTaaBuffer(stage.pgm_hash, buffer_index, reinterpret_cast<const void*>(vsharp.base_address),
+                              vsharp.GetSize());
+            }
             if (vsharp.GetSize() == 864 && gbuffer_draw &&
                 memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                 camera_motion->OnConstants(reinterpret_cast<const float*>(vsharp.base_address));
@@ -2900,6 +2969,18 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 }
                 auto [buffer, offset] = buffer_cache.ObtainBuffer(
                     vsharp.base_address, size, desc.is_written, desc.is_formatted);
+                // The non-ring path needs its own immutable copy as well. Never modify
+                // shared guest constants or a GPU-written buffer in place.
+                if (!desc.is_written && MotionBlurConstants(stage, buffer_index, size) &&
+                    !buffer_cache.IsRegionGpuModified(vsharp.base_address, size)) {
+                    std::array<float, DriveMotionBlur::Bytes / sizeof(float)> shadow;
+                    memory->CopySparseMemory(vsharp.base_address, reinterpret_cast<u8*>(shadow.data()), size);
+                    if (CorrectMotionBlur(stage, shadow.data(), size)) {
+                        auto& stream = buffer_cache.GetStreamBuffer();
+                        offset = stream.Copy(shadow.data(), size, alignment);
+                        buffer = &stream;
+                    }
+                }
                 // DriveClub reads hardware HTILE for local-light/probe culling. Vulkan depth
                 // writes do not update that guest metadata; captured tiles stay at 0x0000000f.
                 // In this shader bits 18..31 are Zmin and bits 12..17 encode the Z span through
@@ -3001,7 +3082,8 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const AmdGpu::
                                                                    u64 hash) {
     std::array<u64, 4> key;
     std::memcpy(key.data(), &sharp, sizeof(key));
-    const u32 flags = u32(res.is_written) | u32(res.is_depth) << 1 | u32(res.is_array) << 2;
+    const u32 flags = u32(res.is_written) | u32(res.is_depth) << 1 | u32(res.is_array) << 2 |
+                      u32(res.native_cube) << 3;
     // Two-way set associative: a frame binds a few thousand distinct T#s.
     auto* set = &image_desc_cache[(hash % (image_desc_cache.size() / 2)) * 2];
     const auto matches = [&](const ImageDescCacheEntry& e) {
@@ -3036,6 +3118,72 @@ Rasterizer::ImageDescCacheEntry& Rasterizer::CachedImageDescEntry(const AmdGpu::
     return entry;
 }
 
+
+// BB_RANGE_BARRIERS: see BindTextures.
+static bool RangeBarriers() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_RANGE_BARRIERS");
+        return !env || env[0] != '0';
+    }();
+    return on;
+}
+
+static bool Overlap(const VideoCore::SubresourceRange& a, const VideoCore::SubresourceRange& b) {
+    return a.base.level < b.base.level + b.extent.levels && b.base.level < a.base.level + a.extent.levels &&
+           a.base.layer < b.base.layer + b.extent.layers && b.base.layer < a.base.layer + a.extent.layers;
+}
+
+/// Whether a compute dispatch using `image` in GENERAL can go without a barrier after the dispatches since the
+/// image's last barrier; if so its ranges join theirs.
+template <typename Ranges>
+static bool ContinueGeneralRun(VideoCore::Image& image, const Ranges& read, const Ranges& written) {
+    auto& run = image.backing->general_ranges;
+    const auto& state = image.backing->state;
+    static std::atomic<u64> skipped{0}, barriers{0}, logged{0};
+    const bool same_state = run.valid && run.epoch == image.backing->access_epoch &&
+                            image.backing->subresource_states.empty() && state.layout == vk::ImageLayout::eGeneral &&
+                            state.access_mask == (vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite) &&
+                            run.read.size() + read.size() <= 64 && run.written.size() + written.size() <= 64;
+    const auto hits = [](const auto& ranges, const auto& others) {
+        for (const auto& r : ranges) {
+            for (const auto& o : others) {
+                if (Overlap(r, o)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+    const bool skip =
+        same_state && !hits(read, run.written) && !hits(written, run.written) && !hits(written, run.read);
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 24) {
+        std::string text;
+        for (const auto* ranges : {&read, &written}) {
+            text += ranges == &read ? " reads" : " writes";
+            for (const auto& r : *ranges) {
+                text += fmt::format(" [mip {}+{} layer {}+{}]", r.base.level, r.extent.levels, r.base.layer,
+                                    r.extent.layers);
+            }
+        }
+        std::printf("BB_RANGE_BARRIERS: image %llx %ux%u%s: %s\n",
+                    static_cast<unsigned long long>(image.info.guest_address),
+                    image.info.size.width, image.info.size.height, text.c_str(),
+                    skip ? "no barrier" : same_state ? "barrier (overlap)" : "barrier (new run)");
+    }
+    if (!skip) {
+        barriers.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    run.read.insert(run.read.end(), read.begin(), read.end());
+    run.written.insert(run.written.end(), written.begin(), written.end());
+    if ((skipped.fetch_add(1, std::memory_order_relaxed) & 4095) == 0) {
+        std::printf("BB_RANGE_BARRIERS: %llu compute barriers skipped, %llu kept (image %llx %ux%u, %u mips, %u layers)\n",
+                    static_cast<unsigned long long>(skipped.load()), static_cast<unsigned long long>(barriers.load()),
+                    static_cast<unsigned long long>(image.info.guest_address), image.info.size.width,
+                    image.info.size.height, image.info.resources.levels, image.info.resources.layers);
+    }
+    return true;
+}
 
 void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* prepared,
                               Shader::Backend::Bindings& binding, u32& write_index,
@@ -3222,6 +3370,158 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         image_descriptor_array_sizes.push_back(num_bindings);
     }
 
+    // bbport: BB_RANGE_BARRIERS (default on, =0 off). A compute dispatch that samples an image and stores into it
+    // binds the whole image in GENERAL, and every such dispatch emitted a full barrier: DriveClub's cube prefilter
+    // (cs c56053b9, 54 dispatches a frame, one mip of one face each) ran one dispatch at a time, ~10 us each even for
+    // 1x1 mips. Such a dispatch needs no barrier when what it reads does not
+    // overlap what the dispatches since the last barrier wrote, and what it writes overlaps nothing they read or
+    // wrote; any other access to the image (GetBarriers bumps access_epoch) ends that run.
+    struct GeneralUse {
+        VideoCore::ImageId id;
+        boost::container::small_vector<VideoCore::SubresourceRange, 4> read, written;
+        bool handled;
+        bool narrowed;
+    };
+    boost::container::small_vector<GeneralUse, 4> general_uses;
+    // bbport: BB_CUBE_LOD_RANGE (=2 default, =1, =0 off). The cube prefilter (cs c56053b9) samples the cube with one
+    // explicit LOD, CB dword 22 converted from an integer, and stores one face of one mip. Its read range is the levels
+    // that LOD selects (Vulkan level selection with the sampler's clamps and mip mode) instead of the whole view, so
+    // the faces of one mip need no barrier between them. Gated on: sampler bias 0 (it applies to an explicit LOD), no
+    // view minimum LOD, the ring copy of the CB (the bytes the GPU reads), one sampled image and one sampler.
+    // =1 narrows only for an isotropic sampler (BB_ANISO forces anisotropy on this one), and a
+    // linear mip mode keeps the next level as read (fetched with weight 0). =2 narrows at an integer LOD and samples
+    // that dispatch with point mips and no anisotropy (the same texels and weights: one level, zero derivatives), after
+    // CubeLodSelfTest showed on this GPU that the two samplers return identical bits (once per S# and format; a
+    // failure keeps the whole view; BB_CUBE_LOD_RANGE_SELFTEST=0 skips it). Any doubt: the whole view.
+    struct CubeLod {
+        float lambda;
+        bool linear;
+        AmdGpu::Sampler sharp;
+    };
+    std::optional<CubeLod> cube_lod;
+    u32 cube_sampler = 0; // BindSamplers: 1 isotropic, 2 point mips
+    static const int cube_mode = [] {
+        // Default =2; =0 off.
+        const char* env = std::getenv("BB_CUBE_LOD_RANGE");
+        return !env ? 2 : env[0] == '0' ? 0 : env[0] == '1' ? 1 : 2;
+    }();
+    if (cube_mode && RangeBarriers() && stage.sw_stage == Shader::SwStage::Compute &&
+        stage.pgm_hash == 0xc56053b9 && stage.samplers.size() == 1 && !stage.buffers.empty() &&
+        !stage.buffers[0].IsSpecial() && !stage.samplers[0].is_depth &&
+        std::ranges::count_if(image_bindings, [](const auto& b) {
+            return b.second->type != VideoCore::TextureCache::BindingType::Storage;
+        }) == 1) {
+        const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, 0) : nullptr;
+        const auto ssharp = prepared ? prepared->sampler_sharps[0] : stage.samplers[0].GetSharp(stage);
+        const bool anisotropic = VideoCore::UsesAnisotropy(instance, ssharp, false);
+        u32 lod = ~0u;
+        if (ring && ring->size >= 23 * sizeof(u32) && ssharp.LodBias() == 0.0f &&
+            ssharp.MinLod() <= ssharp.MaxLod() && (cube_mode == 2 || !anisotropic)) {
+            const u8* ring_data = ring->host_copy ? constant_ring->HostCopy(ring->offset)
+                                                  : constant_ring->Data(ring->offset);
+            std::memcpy(&lod, ring_data + 22 * sizeof(u32), sizeof(lod));
+            cube_lod = CubeLod{std::min(std::max(float(lod), ssharp.MinLod()), ssharp.MaxLod()),
+                               ssharp.mip_filter == AmdGpu::MipFilter::Linear, ssharp};
+        }
+        static std::atomic<u32> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+            std::printf("BB_CUBE_LOD_RANGE: ring %s lod %u bias %.3f min %.3f max %.3f mip filter %u%s -> %s\n",
+                        ring ? "yes" : "no", lod, ssharp.LodBias(), ssharp.MinLod(), ssharp.MaxLod(),
+                        u32(ssharp.mip_filter.Value()), anisotropic ? " anisotropic" : "",
+                        cube_lod ? "narrow" : "whole view");
+        }
+    }
+    // BB_CUBE_LOD_RANGE=2: whether the swapped sampler samples like the game's on this GPU (CubeLodSelfTest).
+    const auto cube_sampler_verified = [&](const AmdGpu::Sampler& game, const AmdGpu::Sampler& swapped,
+                                           const VideoCore::ImageViewInfo& view) {
+        static const bool skip = [] {
+            const char* env = std::getenv("BB_CUBE_LOD_RANGE_SELFTEST");
+            return env && env[0] == '0';
+        }();
+        if (skip) {
+            return true;
+        }
+        static std::mutex mutex;
+        static std::unordered_map<u64, bool> verified;
+        // The test image is shaped like the sampled view: its format, swizzle, level count, and a cube view when the
+        // shader samples the cube natively (seamless filtering across faces).
+        const bool cube = view.type == AmdGpu::ImageType::Cube;
+        const std::array<u32, 7> shape{u32(view.format),      view.range.extent.levels, u32(view.mapping.r),
+                                       u32(view.mapping.g), u32(view.mapping.b),       u32(view.mapping.a),
+                                       u32(cube)};
+        const u64 hash = XXH3_64bits(&game, sizeof(game)) ^ (XXH3_64bits(shape.data(), sizeof(shape)) * 31);
+        std::scoped_lock lk{mutex};
+        if (const auto it = verified.find(hash); it != verified.end()) {
+            return it->second;
+        }
+        const auto reference = texture_cache.GetSampler(game, Regs().ta_bc_base, false, 0.0f);
+        const auto candidate = texture_cache.GetSampler(swapped, Regs().ta_bc_base, false, 0.0f, true);
+        const bool ok = CubeLodSelfTest(instance, reference, candidate, view.format, view.range.extent.levels,
+                                        view.mapping,
+                                        VideoCore::UsesAnisotropy(instance, game, false)
+                                            ? "game sampler (anisotropic) vs point mips, isotropic"
+                                            : "game sampler vs point mips, isotropic",
+                                        cube);
+        verified.emplace(hash, ok);
+        return ok;
+    };
+    if (RangeBarriers() && stage.sw_stage == Shader::SwStage::Compute) {
+        for (const auto& [id, desc_ptr] : image_bindings) {
+            if (!id) {
+                continue;
+            }
+            const auto& image = texture_cache.GetImage(id);
+            if (!image.binding.force_general || image.binding.is_target || image.info.props.is_depth ||
+                image.scene_proxy) {
+                continue;
+            }
+            const auto it = std::ranges::find(general_uses, id, &GeneralUse::id);
+            GeneralUse& use =
+                it != general_uses.end() ? *it : general_uses.emplace_back(GeneralUse{id, {}, {}, false, false});
+            const bool stored = desc_ptr->type == VideoCore::TextureCache::BindingType::Storage;
+            auto range = desc_ptr->view_info.range;
+            if (!stored && cube_lod && range.extent.levels > 0 && desc_ptr->view_info.min_lod == 0) {
+                // Vulkan: d' = clamp(lambda, 0, q); nearest: ceil(d' + 0.5) - 1 or floor(d' + 0.5) (both
+                // allowed); linear: floor(d') and min(floor(d') + 1, q).
+                const u32 q = range.extent.levels - 1;
+                const float d = std::min(std::max(cube_lod->lambda, 0.0f), float(q));
+                const bool integer = float(u32(d)) == d;
+                bool narrow = true;
+                u32 lo, hi;
+                if (cube_mode == 2) {
+                    // One level, sampled with point mips and no anisotropy.
+                    auto swapped = cube_lod->sharp;
+                    swapped.mip_filter.Assign(AmdGpu::MipFilter::Point);
+                    narrow = integer && cube_sampler_verified(cube_lod->sharp, swapped, desc_ptr->view_info);
+                    lo = hi = u32(d);
+                } else if (cube_lod->linear) {
+                    lo = u32(std::floor(d));
+                    hi = std::min(lo + 1, q);
+                } else {
+                    lo = u32(std::ceil(d + 0.5f)) - 1;
+                    hi = std::min(u32(std::floor(d + 0.5f)), q);
+                }
+                if (narrow) {
+                    const auto view = range;
+                    range.base.level += lo;
+                    range.extent.levels = hi - lo + 1;
+                    use.narrowed = true;
+                    cube_sampler = cube_mode == 2 ? 3 : 0;
+                    static std::atomic<u32> logged{0};
+                    if (logged.fetch_add(1, std::memory_order_relaxed) < 64) {
+                        std::printf("BB_CUBE_LOD_RANGE: image %llx lambda %.3f %s view [mip %u+%u] -> reads [mip "
+                                    "%u+%u layer %u+%u]%s\n",
+                                    static_cast<unsigned long long>(image.info.guest_address), cube_lod->lambda,
+                                    cube_lod->linear ? "linear" : "nearest", view.base.level, view.extent.levels,
+                                    range.base.level, range.extent.levels, range.base.layer, range.extent.layers,
+                                    cube_sampler ? " (point mips, isotropic)" : "");
+                    }
+                }
+            }
+            (stored ? use.written : use.read).push_back(range);
+        }
+    }
+
     // Second pass to re-bind images that were updated after binding
     for (u32 binding_index = 0; binding_index < image_bindings.size(); ++binding_index) {
         auto& [image_id, desc_ptr] = image_bindings[binding_index];
@@ -3297,10 +3597,36 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             // target in feedback loop. Depth images are excluded because they can't be bound as
             // storage and feedback loop doesn't make sense for them
             if ((binding.force_general || binding.is_target) && !image.info.props.is_depth) {
+                const auto use = std::ranges::find(general_uses, image_id, &GeneralUse::id);
                 if (instance.IsAttachmentFeedbackLoopLayoutSupported() && image.binding.is_target) {
                     barrier |= runtime.Transit(
                         &image, vk::ImageLayout::eAttachmentFeedbackLoopOptimalEXT,
                         vk::PipelineStageFlagBits2::eAllGraphics, vk::AccessFlagBits2::eShaderRead);
+                } else if (use != general_uses.end()) {
+                    // BB_RANGE_BARRIERS: once per image and dispatch.
+                    if (!use->handled) {
+                        use->handled = true;
+                        const bool joined = ContinueGeneralRun(image, use->read, use->written);
+                        if (use->narrowed) {
+                            static std::atomic<u64> cube_skips{0}, cube_total{0};
+                            cube_skips.fetch_add(joined, std::memory_order_relaxed);
+                            if ((cube_total.fetch_add(1, std::memory_order_relaxed) & 2047) == 0) {
+                                std::printf("BB_CUBE_LOD_RANGE: %llu of %llu dispatches without a barrier\n",
+                                            static_cast<unsigned long long>(cube_skips.load()),
+                                            static_cast<unsigned long long>(cube_total.load()));
+                            }
+                        }
+                        if (!joined) {
+                            barrier |= runtime.Transit(
+                                &image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
+                                vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+                            auto& run = image.backing->general_ranges;
+                            run.read.assign(use->read.begin(), use->read.end());
+                            run.written.assign(use->written.begin(), use->written.end());
+                            run.epoch = image.backing->access_epoch;
+                            run.valid = true;
+                        }
+                    }
                 } else {
                     barrier |= runtime.Transit(
                         &image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eAllCommands,
@@ -3375,17 +3701,22 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
         binding.unified += array_size;
     }
 
-    BindSamplers(stage, prepared, binding, write_index);
+    BindSamplers(stage, prepared, binding, write_index, cube_sampler);
 }
 
 void Rasterizer::BindSamplers(const Shader::Info& stage, const PreparedStage* prepared,
-                              Shader::Backend::Bindings& binding, u32& write_index) {
+                              Shader::Backend::Bindings& binding, u32& write_index, u32 sampler0) {
     for (u32 sampler_index = 0; sampler_index < stage.samplers.size(); ++sampler_index) {
         const auto& sampler = stage.samplers[sampler_index];
         auto ssharp =
             prepared ? prepared->sampler_sharps[sampler_index] : sampler.GetSharp(stage);
+        // BB_CUBE_LOD_RANGE=2 (BindTextures): sampler 0 with point mips (2) and without anisotropy (1).
+        const bool isotropic = sampler_index == 0 && (sampler0 & 1);
+        if (sampler_index == 0 && (sampler0 & 2)) {
+            ssharp.mip_filter.Assign(AmdGpu::MipFilter::Point);
+        }
         const auto vk_sampler = texture_cache.GetSampler(
-            ssharp, Regs().ta_bc_base, sampler.is_depth, sampler.is_depth ? 0.0f : sampler_lod_bias);
+            ssharp, Regs().ta_bc_base, sampler.is_depth, sampler.is_depth ? 0.0f : sampler_lod_bias, isotropic);
         image_infos.emplace_back(vk_sampler, VK_NULL_HANDLE, vk::ImageLayout::eGeneral);
         auto& set_write = set_writes[write_index++];
         set_write.dstSet = VK_NULL_HANDLE;
@@ -3543,6 +3874,10 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
                     (unsigned long long)texture_set_why[2], (unsigned long long)texture_set_why[3]);
         std::printf("  scene proxies sampled directly: %llu bindings\n",
                     static_cast<unsigned long long>(proxy_samples));
+        std::printf("  dynamic state memo: %llu hits, %llu misses\n",
+                    static_cast<unsigned long long>(dyn_memo_hits),
+                    static_cast<unsigned long long>(dyn_memo_misses));
+        dyn_memo_hits = dyn_memo_misses = 0;
         proxy_samples = 0;
         texture_set_why = {};
         begin_memo_hits = begin_memo_misses = texture_set_hits = texture_set_misses = 0;
@@ -3762,18 +4097,39 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         // Stencil writes can be enabled while depth writes are off.
         const bool stencil_write =
             has_stencil && regs.depth_control.stencil_enable && !desc.view_info.is_storage;
-        const auto new_layout = desc.view_info.is_storage
+        auto new_layout = desc.view_info.is_storage
                                     ? has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
                                                   : vk::ImageLayout::eDepthAttachmentOptimal
                                 : stencil_write
                                     ? vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal
-                                : has_stencil ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
-                                              : vk::ImageLayout::eDepthReadOnlyOptimal;
+                                // BB_FEWER_BARRIERS: the layout textures sample depth in, also without stencil,
+                                // so a read-only depth target that is also sampled stops flipping between two
+                                // read-only layouts (a barrier each time).
+                                : has_stencil || VideoCore::FewerBarriers()
+                                    ? vk::ImageLayout::eDepthStencilReadOnlyOptimal
+                                    : vk::ImageLayout::eDepthReadOnlyOptimal;
+        // BB_FEWER_BARRIERS: a pass that clears depth or stencil writes them whatever the draw's write enables
+        //: it gets a writable layout and write access.
+        const bool clears = (is_depth_clear && regs.depth_buffer.DepthValid()) ||
+                            (is_stencil_clear && regs.depth_buffer.StencilValid());
+        if (VideoCore::FewerBarriers() && clears &&
+            (new_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal ||
+             new_layout == vk::ImageLayout::eDepthReadOnlyOptimal ||
+             new_layout == vk::ImageLayout::eDepthReadOnlyStencilAttachmentOptimal)) {
+            new_layout = has_stencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal
+                                     : vk::ImageLayout::eDepthAttachmentOptimal;
+        }
+        // BB_FEWER_BARRIERS: a read-only depth target only reads (its store op is NONE, vk_scheduler.cpp
+        // BeginRendering), so sampling it next needs no barrier.
+        const bool depth_read_only = VideoCore::FewerBarriers() &&
+                                     (new_layout == vk::ImageLayout::eDepthStencilReadOnlyOptimal ||
+                                      new_layout == vk::ImageLayout::eDepthReadOnlyOptimal);
         if (!reduced) needs_barrier |= runtime.Transit(&image, new_layout,
                                          vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                              vk::PipelineStageFlagBits2::eLateFragmentTests,
-                                         vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
-                                             vk::AccessFlagBits2::eDepthStencilAttachmentRead,
+                                         depth_read_only ? vk::AccessFlagBits2::eDepthStencilAttachmentRead
+                                                         : vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+                                                               vk::AccessFlagBits2::eDepthStencilAttachmentRead,
                                          desc.view_info.range);
 
         state.width = std::min<u32>(state.width, image.info.size.width);
@@ -3940,7 +4296,32 @@ void Rasterizer::DepthStencilCopy(bool is_depth, bool is_stencil) {
         regs.depth_buffer.StencilAddress(), regs.depth_buffer.DepthWriteAddress(),
         regs.depth_buffer.StencilWriteAddress()));
 
-    runtime.CopyDepthStencil(&read_image, &write_image, sub_range);
+    // bbport: BB_DEPTH_COPY_ASPECTS (default on, =0 off): only the planes the guest copies (force_z / force_stencil
+    // dirty+valid) instead of both planes of a D32S8 image. A correctness change: this path never ran in a race
+    //, so it is unmeasured; the ~1 ms once blamed on it was the depth->R32F form copy.
+    static const bool aspects_only = [] {
+        const char* env = std::getenv("BB_DEPTH_COPY_ASPECTS");
+        return !env || env[0] != '0';
+    }();
+    vk::ImageAspectFlags aspects = vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil;
+    if (aspects_only) {
+        aspects = (is_depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlags{}) |
+                  (is_stencil ? vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlags{});
+    }
+    if (BbStats::enabled) {
+        static std::mutex logged_mutex;
+        static std::unordered_set<VAddr> logged;
+        std::scoped_lock lk{logged_mutex};
+        if (logged.size() < 16 && logged.insert(regs.depth_buffer.DepthWriteAddress()).second) {
+            std::printf("Depth-stencil copy %#llx -> %#llx %ux%u %s, depth %d stencil %d, layers %u+%u\n",
+                        static_cast<unsigned long long>(regs.depth_buffer.DepthAddress()),
+                        static_cast<unsigned long long>(regs.depth_buffer.DepthWriteAddress()),
+                        write_image.info.size.width, write_image.info.size.height,
+                        vk::to_string(write_image.info.pixel_format).c_str(), int(is_depth), int(is_stencil),
+                        sub_range.base.layer, sub_range.extent.layers);
+        }
+    }
+    runtime.CopyDepthStencil(&read_image, &write_image, aspects, sub_range);
 
     ScopeMarkerEnd();
 }
@@ -3951,7 +4332,9 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
     ASSERT_MSG(address % 4 == 0 && num_bytes % 4 == 0,
                "FillBuffer address and size must be a multiple of 4 bytes");
     if (!is_gds) {
-        texture_cache.ClearMeta(address);
+        if (texture_cache.ClearMeta(address)) {
+            begin_memo.valid = false; // as in IsComputeMetaClear (the draw pipe is drained above)
+        }
         if (!buffer_cache.IsRegionGpuModified(address, num_bytes)) {
             u32* buffer = std::bit_cast<u32*>(address);
             std::fill(buffer, buffer + (num_bytes / sizeof(u32)), value);
@@ -4124,11 +4507,48 @@ void Rasterizer::UnmapMemory(VAddr addr, u64 size) {
 }
 
 void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool is_indexed) const {
-    UpdateViewportScissorState();
-    UpdateDepthStencilState();
-    UpdatePrimitiveState(is_indexed);
-    UpdateRasterizationState();
-    UpdateColorBlendingState(pipeline);
+    static const bool memo_on = [] {
+        const char* env = std::getenv("BB_DYN_MEMO");
+        return !(env && env[0] == '0');
+    }();
+    auto& m = dyn_memo;
+    const u32* reg_words = Regs().reg_array.data();
+    bool same = memo_on && m.valid && m.pipeline == pipeline && m.is_indexed == is_indexed &&
+                m.feedback_loop == attachment_feedback_loop && m.jitter == draw_jitter &&
+                m.scale == target_scale;
+    if (same) {
+        // Fixed-size SSE compares (a memcmp call per range costs more than the work it saves).
+        const u32* c = m.words.data();
+        same = Common::BytesEqual<20 * 4>(reg_words + 0xA000, c) &&
+               Common::BytesEqual<52 * 4>(reg_words + 0xA080, c + 20) &&
+               Common::BytesEqual<108 * 4>(reg_words + 0xA103, c + 72) &&
+               Common::BytesEqual<7 * 4>(reg_words + 0xA200, c + 180) && reg_words[0xA282] == c[187] &&
+               reg_words[0xA292] == c[188] && reg_words[0xA2A5] == c[189] &&
+               Common::BytesEqual<5 * 4>(reg_words + 0xA2DF, c + 190) && reg_words[0xC242] == c[195];
+    }
+    if (same) {
+        ++dyn_memo_hits;
+    } else {
+        ++dyn_memo_misses;
+        UpdateViewportScissorState();
+        UpdateDepthStencilState();
+        UpdatePrimitiveState(is_indexed);
+        UpdateRasterizationState();
+        UpdateColorBlendingState(pipeline);
+        if (memo_on) {
+            u32* cached = m.words.data();
+            for (const auto& [first, count] : DynMemo::Ranges) {
+                std::memcpy(cached, reg_words + first, count * sizeof(u32));
+                cached += count;
+            }
+            m.pipeline = pipeline;
+            m.is_indexed = is_indexed;
+            m.feedback_loop = attachment_feedback_loop;
+            m.jitter = draw_jitter;
+            m.scale = target_scale;
+            m.valid = true;
+        }
+    }
 
     auto& dynamic_state = scheduler.GetDynamicState();
     dynamic_state.CommitWith(instance.IsDepthBoundsSupported(),

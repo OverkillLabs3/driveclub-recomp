@@ -9,6 +9,7 @@
 
 #include <array>
 #include <atomic>
+#include <memory>
 
 #include "common/assert.h"
 #include "common/types.h"
@@ -23,8 +24,13 @@ public:
 
     ConstantRing(const Instance& instance, Scheduler& scheduler_)
         : scheduler{scheduler_},
-          buffer{instance, 0, Capacity, VideoCore::MemoryType::Stream, "bbport constant ring"} {
+          buffer{instance, 0, Capacity, VideoCore::MemoryType::StreamRing, "bbport constant ring"} {
         ASSERT(!buffer.mapped_data.empty());
+        // Reading the ring back is slow when it is not host-cached (VRAM through the BAR, from 1080p render on
+        // NVIDIA): the copies the CPU reads again go to a cached copy at the same offsets as well (HostCopy).
+        if (!buffer.is_host_cached) {
+            host_copy = std::make_unique_for_overwrite<u8[]>(Capacity);
+        }
     }
 
     [[nodiscard]] vk::Buffer Handle() const noexcept {
@@ -51,6 +57,17 @@ public:
 
     [[nodiscard]] u8* Data(u64 offset) noexcept {
         return buffer.mapped_data.data() + offset;
+    }
+
+    /// Whether the ring keeps a cached copy for CPU reads (it is not host-cached itself).
+    [[nodiscard]] bool HasHostCopy() const noexcept {
+        return host_copy != nullptr;
+    }
+
+    /// The cached copy at `offset` (HasHostCopy only): stage A writes a binding there first when the CPU reads it
+    /// again (RingBinding::host_copy), then copies it into the ring.
+    [[nodiscard]] u8* HostCopy(u64 offset) noexcept {
+        return host_copy.get() + offset;
     }
 
     /// Stage A, after writing: makes the bytes visible to the GPU.
@@ -105,6 +122,7 @@ private:
         u64 tick;
     };
     Scheduler& scheduler;
+    std::unique_ptr<u8[]> host_copy; ///< see HostCopy
     VideoCore::Buffer buffer;
     u64 position = 0;     ///< stage A
     u64 retired = 0;      ///< stage A: the GPU is done with everything before this

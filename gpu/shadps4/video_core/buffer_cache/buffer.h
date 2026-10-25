@@ -29,6 +29,10 @@ namespace VideoCore {
 /// Hints and requirements for the backing memory type of a commit
 /// bbport: default place of the stream buffer for a GPU vendor (BB_STREAM_MEMORY overrides).
 void SetStreamPlacementDefault(u32 vendor_id);
+/// bbport: the game's render height (0 unknown), set before the Vulkan instance: picks the NVIDIA default.
+void SetStreamPlacementRenderHeight(s32 height);
+/// bbport: that height (0 unknown); above 1080 the GPU is the limit on NVIDIA laptops.
+s32 PlannedRenderHeight();
 
 enum class MemoryType : u8 {
     DeviceLocal,  ///< Requests device local buffer.
@@ -36,6 +40,8 @@ enum class MemoryType : u8 {
     HostCached,   ///< Requires a host visible memory type optimized for GPU to CPU readbacks
     Stream,       ///< Requests device local host visible buffer, falling back host memory.
     Sparse,       ///< Requires an unbacked sparse resident buffer.
+    StreamRing,   ///< bbport: Stream memory for the constant ring, placed by BB_RING_MEMORY (buffer.cpp).
+    Gds,          ///< bbport: GDS: mapped, coherent, cached host memory; not moved with the stream buffer.
 };
 
 constexpr vk::BufferUsageFlags ReadFlags =
@@ -133,6 +139,7 @@ struct Buffer {
     size_t size_bytes = 0;
     std::span<u8> mapped_data{};
     bool is_coherent{};
+    bool is_host_cached{}; ///< bbport: CPU reads of the mapping are cached (not write-combined VRAM or BAR)
     MemoryType mem_type{MemoryType::DeviceLocal};
     UniqueBuffer buffer;
 };

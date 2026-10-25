@@ -262,6 +262,10 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     mip_hashes.resize(info.resources.levels);
     vk::ImageCreateFlags flags{vk::ImageCreateFlagBits::eMutableFormat |
                                vk::ImageCreateFlagBits::eExtendedUsage};
+    if (!info.props.is_volume && info.size.width == info.size.height &&
+        info.resources.layers >= 6 && info.num_samples == 1) {
+        flags |= vk::ImageCreateFlagBits::eCubeCompatible;
+    }
     if (info.props.is_volume) {
         flags |= vk::ImageCreateFlagBits::e2DArrayCompatible;
         if (instance.Is2dViewOf3dSupported()) {
@@ -373,12 +377,22 @@ ImageView& Image::FindView(const ImageViewInfo& view_info, bool ensure_guest_sam
     return (*slot_image_views)[view_id];
 }
 
+bool FewerBarriers() {
+    static const bool on = [] {
+        // On unless =0.
+        const char* env = std::getenv("BB_FEWER_BARRIERS");
+        return !env || env[0] != '0';
+    }();
+    return on;
+}
+
 void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::AccessFlags2 dst_mask,
                         vk::PipelineStageFlags2 dst_stage,
                         std::optional<SubresourceRange> subres_range) {
     auto& last_state = backing->state;
     auto& subresource_states = backing->subresource_states;
     auto& dirty = backing->dirty_subresources;
+    ++backing->access_epoch;
     Common::Perf::Add(Common::Perf::BarrierCalls);
     const size_t barriers_before = barriers.size();
     SCOPE_EXIT {
@@ -390,10 +404,31 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
     constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |
                                  vk::AccessFlagBits2::eShaderWrite |
                                  vk::AccessFlagBits2::eMemoryWrite;
+    // Whether the stages an image's last barrier reached (plus reads merged since) cover `wanted`.
+    const auto stages_cover = [](vk::PipelineStageFlags2 have, vk::PipelineStageFlags2 wanted) {
+        return static_cast<bool>(have & vk::PipelineStageFlagBits2::eAllCommands) || !(wanted & ~have);
+    };
+    // BB_FEWER_BARRIERS: every read skipped below must lie in the stages the image's last
+    // barrier reached (a fragment-shader read then a compute read of the same state).
+    const bool fewer = FewerBarriers();
     const auto needs_barrier = [&](const State& state) {
         const bool is_write = static_cast<bool>(state.access_mask & write_flags);
-        return state.layout != dst_layout || state.access_mask != dst_mask || is_write;
+        return state.layout != dst_layout || state.access_mask != dst_mask || is_write ||
+               (fewer && !stages_cover(state.pl_stage, dst_stage));
     };
+    // BB_FEWER_BARRIERS=1, whole images only: a read after reads in the same layout needs no barrier when an earlier
+    // barrier already made the image visible to that kind of access (every kind the image was read with since its
+    // last write is kept in its access mask); its stage joins the image's for the next barrier. On NVIDIA every
+    // barrier call costs the same whatever it holds, so only skipping one saves anything.
+    constexpr auto any_write = write_flags | vk::AccessFlagBits2::eColorAttachmentWrite |
+                               vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    const auto reads_only = [&](const State& state) {
+        return fewer && state.layout == dst_layout && !(state.access_mask & any_write) && !(dst_mask & any_write);
+    };
+    const auto read_merge = [&](const State& state) {
+        return reads_only(state) && !(dst_mask & ~state.access_mask) && stages_cover(state.pl_stage, dst_stage);
+    };
+    bool full_path = false;
     const auto transition = [&](State& state, u32 mip, u32 layer) {
         // NOTE: this may produce a lot of small barriers.
         // If this becomes a problem, we can optimize it by merging adjacent barriers.
@@ -426,7 +461,8 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
     const bool partially_transited = !subresource_states.empty();
 
-    if (needs_partial_transition && !partially_transited && !needs_barrier(last_state)) {
+    if (needs_partial_transition && !partially_transited &&
+        (!needs_barrier(last_state) || read_merge(last_state))) {
         // The whole image is in a single state. A sub range that is already in the requested
         // state needs no barrier, and splitting the state per subresource here would make every
         // later full transition walk all subresources (common when sampling one layer or one mip
@@ -525,6 +561,11 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         if (!needs_barrier(last_state)) {
             return;
         }
+        if (read_merge(last_state)) {
+            last_state.pl_stage |= dst_stage;
+            return;
+        }
+        full_path = true;
 
         barriers.emplace_back(vk::ImageMemoryBarrier2{
             .srcStageMask = last_state.pl_stage,
@@ -546,8 +587,10 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         });
     }
 
+    // A read-only barrier between reads leaves the image visible to the kinds of read it already was.
+    const bool keep_reads = full_path && reads_only(last_state);
     last_state.layout = dst_layout;
-    last_state.access_mask = dst_mask;
+    last_state.access_mask = keep_reads ? last_state.access_mask | dst_mask : dst_mask;
     last_state.pl_stage = dst_stage;
 }
 

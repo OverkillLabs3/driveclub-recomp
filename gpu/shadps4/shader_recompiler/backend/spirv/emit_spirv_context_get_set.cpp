@@ -8,7 +8,12 @@
 #include "shader_recompiler/ir/attribute.h"
 #include "shader_recompiler/ir/microinstruction.h"
 #include "shader_recompiler/ir/patch.h"
+#include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/runtime_info.h"
+
+#include <algorithm>
+#include <unordered_map>
+#include <ranges>
 
 #include <magic_enum/magic_enum.hpp>
 
@@ -69,7 +74,181 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
     }
 }
 
-Id EmitReadConstBuffer(EmitContext& ctx, u32 handle, Id index) {
+// bbport: BB_WIDE_LOADS=1. GCN's S_BUFFER_LOAD_DWORDX2/X4/X8/X16 arrive here as runs of single-dword ReadConstBuffer
+// and BUFFER_LOAD_DWORDX2/X3/X4 as LoadBuffer*xN, which this backend used to split into dword loads; the NVIDIA
+// compiler does not merge 32-bit storage-buffer loads by itself: a 1440p pass reading 64 vec4 constants per pixel
+// takes 865 us as dwords and 675-681 us as 16-byte loads on an RTX 3070 Laptop (a standalone Vulkan probe).
+// 49% of the game's 12,675 constant reads sit in 16-byte-aligned runs of four and 28% more in 8-byte-aligned pairs.
+// A run of four outside loops becomes one 16-byte load when its effective index (base + first + the binding's
+// offset) is 4-aligned and the bytes lie inside the binding; otherwise the same dword loads as before. The result is
+// the same bytes either way. Loops keep dword loads: a light loop reading a run of four per iteration, ps ec4eb2ed,
+// went 0.21 -> 0.27 ms with the check inside the loop. Pairs and BUFFER_LOAD x2/x3/x4 measured about 3% slower. Part
+// of the shader cache version (vk_pipeline_serialization.cpp). On by default (GPU busy -0.07 ms a frame, +0.9% FPS at
+// 1440p render); =0 turns it off.
+bool WideLoads() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_WIDE_LOADS");
+        return !env || !env[0] || env[0] == '1';
+    }();
+    return on;
+}
+
+// Finds the runs before the program is emitted. A run is four ReadConstBuffer in one block, of one guest
+// buffer, at dwords first..first+3 from one base value, first 4-aligned, with nothing between the
+// first and the last of them that may write memory or have another side effect, so the wide load can take the place
+// of all of them at the first.
+void PlanWideLoads(EmitContext& ctx, const IR::Program& program) {
+    if (!WideLoads()) {
+        return;
+    }
+    // Blocks inside a loop: between a header and the block that branches back to it (blocks are in program order).
+    std::unordered_map<const IR::Block*, u32> order;
+    for (const IR::Block* block : program.blocks) {
+        order.emplace(block, u32(order.size()));
+    }
+    std::vector<bool> in_loop(program.blocks.size());
+    for (const IR::Block* block : program.blocks) {
+        const u32 header = order.at(block);
+        for (const IR::Block* pred : block->ImmPredecessors()) {
+            const auto it = order.find(pred);
+            if (it != order.end() && it->second >= header) {
+                std::fill(in_loop.begin() + header, in_loop.begin() + it->second + 1, true);
+            }
+        }
+    }
+    for (const IR::Block* block : program.blocks) {
+        if (in_loop[order.at(block)]) {
+            continue;
+        }
+        struct Slot {
+            const IR::Inst* inst;
+            u32 pos;
+        };
+        struct Run {
+            u32 handle;
+            const IR::Inst* base;
+            u32 first;
+            std::array<Slot, 4> slots;
+        };
+        std::vector<Run> runs;
+        std::vector<u32> side_effects;
+        u32 pos = 0;
+        for (const IR::Inst& inst : block->Instructions()) {
+            ++pos;
+            if (inst.MayHaveSideEffects()) {
+                side_effects.push_back(pos);
+                continue;
+            }
+            if (inst.GetOpcode() != IR::Opcode::ReadConstBuffer || !inst.Arg(0).IsImmediate()) {
+                continue;
+            }
+            const u32 handle = inst.Arg(0).U32();
+            if (handle >= ctx.buffers.size() || ctx.buffers[handle].buffer_type != BufferType::Guest ||
+                !Sirit::ValidId(ctx.buffers[handle].Alias(PointerType::U32).id)) {
+                continue;
+            }
+            const IR::Inst* base = nullptr;
+            u32 offset = 0;
+            const IR::Value index = inst.Arg(1);
+            if (index.IsImmediate()) {
+                offset = index.U32();
+            } else {
+                const IR::Inst* def = index.Inst();
+                if (def->GetOpcode() == IR::Opcode::IAdd32 && def->Arg(1).IsImmediate() &&
+                    !def->Arg(0).IsImmediate()) {
+                    base = def->Arg(0).Inst();
+                    offset = def->Arg(1).U32();
+                } else if (def->GetOpcode() == IR::Opcode::IAdd32 && def->Arg(0).IsImmediate() &&
+                           !def->Arg(1).IsImmediate()) {
+                    base = def->Arg(1).Inst();
+                    offset = def->Arg(0).U32();
+                } else {
+                    base = def;
+                }
+            }
+            const u32 first = offset & ~3u;
+            auto it = std::ranges::find_if(
+                runs, [&](const Run& r) { return r.handle == handle && r.base == base && r.first == first; });
+            if (it == runs.end()) {
+                runs.push_back({handle, base, first, {}});
+                it = std::prev(runs.end());
+            }
+            Slot& slot = it->slots[offset & 3u];
+            if (!slot.inst) {
+                slot = {&inst, pos};
+            }
+        }
+        for (const Run& run : runs) {
+            const auto& slots = run.slots;
+            if (!std::ranges::all_of(slots, [](const Slot& s) { return s.inst != nullptr; })) {
+                continue;
+            }
+            const auto [lo, hi] = std::ranges::minmax(slots | std::views::transform(&Slot::pos));
+            if (std::ranges::any_of(side_effects, [&](u32 p) { return p > lo && p < hi; })) {
+                continue;
+            }
+            const u32 group = u32(ctx.wide_groups.size());
+            ctx.wide_groups.push_back({run.handle, run.base, run.first, Id{}});
+            for (u32 i = 0; i < 4; ++i) {
+                ctx.wide_members[slots[i].inst] = {group, i};
+            }
+            ctx.DefineWideAlias(run.handle);
+        }
+    }
+}
+
+// Four dwords from `index` (in dwords, binding offset included): one 16-byte load when the index is a multiple of 4
+// and the bytes lie inside the binding (OpArrayLength of the wide alias), else the same dword loads as before.
+// Returns U32[4].
+static Id EmitWideDwordLoad(EmitContext& ctx, const EmitContext::BufferDefinition& buffer, Id index) {
+    const auto [wide_id, wide_pointer] = buffer.Alias(PointerType::U32x4);
+    const Id wide_index{ctx.OpShiftRightLogical(ctx.U32[1], index, ctx.ConstU32(2U))};
+    const auto load_wide = [&] {
+        return ctx.OpLoad(ctx.U32[4], ctx.OpAccessChain(wide_pointer, wide_id, ctx.u32_zero_value, wide_index));
+    };
+    const auto [narrow_id, narrow_pointer] = buffer.Alias(PointerType::U32);
+    const Id aligned{ctx.OpIEqual(ctx.U1[1], ctx.OpBitwiseAnd(ctx.U32[1], index, ctx.ConstU32(3U)),
+                                  ctx.u32_zero_value)};
+    const Id inside{ctx.OpULessThan(ctx.U1[1], wide_index, ctx.OpArrayLength(ctx.U32[1], wide_id, 0U))};
+    const Id wide{ctx.OpLogicalAnd(ctx.U1[1], aligned, inside)};
+    const Id before = ctx.OpLabel(), wide_label = ctx.OpLabel(), narrow_label = ctx.OpLabel(),
+             merge = ctx.OpLabel();
+    ctx.OpBranch(before);
+    ctx.AddLabel(before);
+    ctx.OpSelectionMerge(merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(wide, wide_label, narrow_label);
+    ctx.AddLabel(wide_label);
+    const Id loaded_wide{load_wide()};
+    ctx.OpBranch(merge);
+    ctx.AddLabel(narrow_label);
+    std::array<Id, 4> dwords;
+    for (u32 i = 0; i < 4; ++i) {
+        const Id index_i = i == 0 ? index : ctx.OpIAdd(ctx.U32[1], index, ctx.ConstU32(i));
+        dwords[i] = ctx.OpLoad(ctx.U32[1], ctx.OpAccessChain(narrow_pointer, narrow_id, ctx.u32_zero_value, index_i));
+    }
+    const Id loaded_narrow{ctx.OpCompositeConstruct(ctx.U32[4], dwords)};
+    ctx.OpBranch(merge);
+    ctx.AddLabel(merge);
+    return ctx.OpPhi(ctx.U32[4], loaded_wide, wide_label, loaded_narrow, narrow_label);
+}
+
+Id EmitReadConstBuffer(EmitContext& ctx, IR::Inst* inst, u32 handle, Id index) {
+    if (const auto it = ctx.wide_members.find(inst); it != ctx.wide_members.end()) {
+        auto& group = ctx.wide_groups[it->second.first];
+        if (!Sirit::ValidId(group.result)) {
+            // The first member of the run in program order: every base is defined before it.
+            const auto& buffer = ctx.buffers[group.handle];
+            Id first = group.base ? group.base->Definition<Id>() : ctx.ConstU32(group.first);
+            if (group.base && group.first != 0) {
+                first = ctx.OpIAdd(ctx.U32[1], first, ctx.ConstU32(group.first));
+            }
+            if (const Id offset = buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {
+                first = ctx.OpIAdd(ctx.U32[1], first, offset);
+            }
+            group.result = EmitWideDwordLoad(ctx, buffer, first);
+        }
+        return ctx.OpCompositeExtract(ctx.U32[1], group.result, it->second.second);
+    }
     const auto& buffer = ctx.buffers[handle];
     if (const Id offset = buffer.Offset(PointerSize::B32); Sirit::ValidId(offset)) {
         index = ctx.OpIAdd(ctx.U32[1], index, offset);

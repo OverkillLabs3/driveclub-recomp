@@ -168,7 +168,10 @@ public:
     /// Statistics (stage A): packets, drains that had to wait, cycles waited, cycles stage B
     /// spent running packets.
     u64 packets = 0, drains = 0, drain_cycles = 0;
-    std::atomic<u64> busy_cycles{0};
+    /// Stage B adds to it after every packet: a cache line of its own, apart from stage A's counters above and its
+    /// write position below (sharing one cost both stages a cache miss per packet).
+    alignas(64) std::atomic<u64> busy_cycles{0};
+    char busy_cycles_line[56]{};
 
 private:
     struct Header {
@@ -189,6 +192,11 @@ private:
 
     void Run(std::stop_token stop) {
         Common::SetCurrentThreadName("bb:DrawRec");
+        // The renderer's bottleneck: a core of its own and the GPU threads' priority (BB_CORE_OWNERS bit 2).
+        if (BbThreads::CoreOwners() & BbThreads::kDrawThread) {
+            BbThreads::MakeImportant();
+            BbThreads::ReserveCoreForCurrentThread(BbThreads::kDrawThread);
+        }
         on_stage_b = true;
         stage_b_tid.store(static_cast<u32>(gettid()), std::memory_order_release);
         BbStats::pipe_stage_b.store(static_cast<u32>(gettid()), std::memory_order_relaxed);

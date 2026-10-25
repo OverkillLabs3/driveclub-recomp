@@ -82,6 +82,10 @@ public:
     vk::DeviceSize size_bytes{};
 };
 
+/// bbport: BB_FEWER_BARRIERS, on unless =0 (image.cpp GetBarriers, vk_rasterizer.cpp depth target setup,
+/// vk_scheduler.cpp BeginRendering).
+bool FewerBarriers();
+
 struct Image {
     explicit Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime,
                    Common::SlotVector<ImageView>& slot_image_views, const ImageInfo& info);
@@ -189,6 +193,16 @@ public:
         bool dirty_overflow{};
         /// Incremented on every per subresource state change.
         u64 state_version{};
+        /// bbport: incremented on every barrier request (GetBarriers), whatever its result.
+        u64 access_epoch{};
+        /// bbport: subresources that compute dispatches binding this image in GENERAL (sampled and stored at
+        /// once) read and wrote since its last barrier, while access_epoch was `epoch` (vk_rasterizer.cpp
+        /// BindTextures, BB_RANGE_BARRIERS).
+        struct {
+            boost::container::small_vector<SubresourceRange, 8> read, written;
+            u64 epoch;
+            bool valid;
+        } general_ranges{};
         /// Last partial transition, a repeat of it with no state change in between is a no-op.
         struct {
             SubresourceRange range;

@@ -36,6 +36,11 @@ public:
     void CopyBetweenMsImages(u32 width, u32 height, u32 num_samples, vk::Format pixel_format,
                              bool src_msaa, vk::Image source, vk::Image dest);
 
+    /// bbport: the depth plane of `source` (in eDepthStencilReadOnlyOptimal) into the single-sample colour image
+    /// `dest` (in eColorAttachmentOptimal) with a full-screen draw: texel for texel, a float depth into R32F.
+    void CopyDepthToColor(u32 width, u32 height, vk::Format depth_format, vk::Format color_format,
+                          vk::Image source, vk::Image dest);
+
 private:
     void CreateShaders();
     void CreatePipelineLayouts();

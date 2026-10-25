@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// bbport: BB_CUBE_LOD_RANGE_SELFTEST (vk_cube_lod_check.cpp). Samples a 2D array at integer explicit LODs, as the
+// cube prefilter (cs c56053b9) does, and stores the raw result bits: run once per sampler and compared on the CPU.
+// CUBE=1: the same through a cube-array view (native cube sampling, filtering across face edges).
+#version 450
+
+layout(local_size_x = 64) in;
+
+#ifdef CUBE
+layout(binding = 0) uniform textureCubeArray tex;
+#else
+layout(binding = 0) uniform texture2DArray tex;
+#endif
+layout(binding = 1) uniform sampler samp;
+layout(binding = 2, std430) writeonly buffer Result {
+    uvec4 result[];
+};
+
+layout(push_constant) uniform Constants {
+    uint count;
+    uint layers;
+    uint lods; // LODs 0..lods-1 (beyond the last level too: the clamp)
+    uint size; // texels per side of level 0
+};
+
+uint Hash(uint x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= count) {
+        return;
+    }
+    const uint h = Hash(i * 3u + 1u);
+    const float lod = float(i % lods);
+    // Random positions over [-0.25, 1.25) (edges and the clamp modes), every fourth on a level-0 texel centre.
+    vec2 uv = vec2(float(Hash(h) & 0xffffu), float(Hash(h ^ 0x9e3779b9u) & 0xffffu)) / 65536.0 * 1.5 - 0.25;
+    if ((h & 3u) == 0u) {
+        uv = (floor(uv * float(size)) + 0.5) / float(size);
+    }
+    const float layer = float(Hash(h + 7u) % layers);
+#ifdef CUBE
+    // The direction through (uv) on face `layer` (Vulkan's face order); uv outside [0, 1] reaches the next face.
+    const vec2 c = uv * 2.0 - 1.0;
+    const uint face = uint(layer) % 6u;
+    const vec3 dir = face == 0u ? vec3(1.0, -c.y, -c.x)
+                   : face == 1u ? vec3(-1.0, -c.y, c.x)
+                   : face == 2u ? vec3(c.x, 1.0, c.y)
+                   : face == 3u ? vec3(c.x, -1.0, -c.y)
+                   : face == 4u ? vec3(c.x, -c.y, 1.0)
+                                : vec3(-c.x, -c.y, -1.0);
+    result[i] = floatBitsToUint(textureLod(samplerCubeArray(tex, samp), vec4(dir, float(uint(layer) / 6u)), lod));
+#else
+    result[i] = floatBitsToUint(textureLod(sampler2DArray(tex, samp), vec3(uv, layer), lod));
+#endif
+}

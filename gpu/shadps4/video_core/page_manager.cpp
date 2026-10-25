@@ -16,6 +16,15 @@
 #include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
+#include <array>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <thread>
+
 #ifndef _WIN64
 #include <sys/mman.h>
 #include "common/adaptive_mutex.h"
@@ -547,6 +556,157 @@ bool EmulateNonGpuArith(CONTEXT* ctx, const ZydisDecodedInstruction& inst, const
     return true;
 }
 
+// bbport: BB_FAULT_EMULATE_LANES (default on, =0 off). Lane selects and bitwise ops reading memory: blendps/pd,
+// pblendw, vpblendd, shufps, insertps and and/andn/or/xor (ps, pd, integer), legacy SSE and VEX.128. None raises an FP
+// exception. At 4K, eboot FUN_00611de0 (per-view setup; 0x61203d: vblendps keeps the w of a vec4 it rewrites) reads
+// CPU bytes of a page whose other 768 bytes cs c6edad8b writes; not emulated, each read waited for the end of the
+// GPU frame (~12 ms, ~21/s: the 4K alternation).
+enum class LaneOp { Blend16, Blend32, Blend64, Shuf32, Insert32, And, AndN, Or, Xor };
+struct LaneForm {
+    LaneOp op;
+    u8 bytes; // memory operand size
+    bool imm;
+    bool vex;
+};
+
+bool ClassifyLane(ZydisMnemonic m, LaneForm& f) {
+    struct Entry {
+        ZydisMnemonic legacy, vex;
+        LaneOp op;
+        u8 bytes;
+        bool imm;
+    };
+    static constexpr Entry table[] = {
+        {ZYDIS_MNEMONIC_BLENDPS, ZYDIS_MNEMONIC_VBLENDPS, LaneOp::Blend32, 16, true},
+        {ZYDIS_MNEMONIC_BLENDPD, ZYDIS_MNEMONIC_VBLENDPD, LaneOp::Blend64, 16, true},
+        {ZYDIS_MNEMONIC_PBLENDW, ZYDIS_MNEMONIC_VPBLENDW, LaneOp::Blend16, 16, true},
+        {ZYDIS_MNEMONIC_INVALID, ZYDIS_MNEMONIC_VPBLENDD, LaneOp::Blend32, 16, true},
+        {ZYDIS_MNEMONIC_SHUFPS, ZYDIS_MNEMONIC_VSHUFPS, LaneOp::Shuf32, 16, true},
+        {ZYDIS_MNEMONIC_INSERTPS, ZYDIS_MNEMONIC_VINSERTPS, LaneOp::Insert32, 4, true},
+        {ZYDIS_MNEMONIC_ANDPS, ZYDIS_MNEMONIC_VANDPS, LaneOp::And, 16, false},
+        {ZYDIS_MNEMONIC_ANDPD, ZYDIS_MNEMONIC_VANDPD, LaneOp::And, 16, false},
+        {ZYDIS_MNEMONIC_PAND, ZYDIS_MNEMONIC_VPAND, LaneOp::And, 16, false},
+        {ZYDIS_MNEMONIC_ANDNPS, ZYDIS_MNEMONIC_VANDNPS, LaneOp::AndN, 16, false},
+        {ZYDIS_MNEMONIC_ANDNPD, ZYDIS_MNEMONIC_VANDNPD, LaneOp::AndN, 16, false},
+        {ZYDIS_MNEMONIC_PANDN, ZYDIS_MNEMONIC_VPANDN, LaneOp::AndN, 16, false},
+        {ZYDIS_MNEMONIC_ORPS, ZYDIS_MNEMONIC_VORPS, LaneOp::Or, 16, false},
+        {ZYDIS_MNEMONIC_ORPD, ZYDIS_MNEMONIC_VORPD, LaneOp::Or, 16, false},
+        {ZYDIS_MNEMONIC_POR, ZYDIS_MNEMONIC_VPOR, LaneOp::Or, 16, false},
+        {ZYDIS_MNEMONIC_XORPS, ZYDIS_MNEMONIC_VXORPS, LaneOp::Xor, 16, false},
+        {ZYDIS_MNEMONIC_XORPD, ZYDIS_MNEMONIC_VXORPD, LaneOp::Xor, 16, false},
+        {ZYDIS_MNEMONIC_PXOR, ZYDIS_MNEMONIC_VPXOR, LaneOp::Xor, 16, false},
+    };
+    for (const auto& e : table) {
+        if ((e.legacy != ZYDIS_MNEMONIC_INVALID && m == e.legacy) || m == e.vex) {
+            f = {e.op, e.bytes, e.imm, m == e.vex};
+            return true;
+        }
+    }
+    return false;
+}
+
+bool LaneEmulation() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_FAULT_EMULATE_LANES");
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+
+bool EmulateNonGpuLane(CONTEXT* ctx, const ZydisDecodedInstruction& inst, const ZydisDecodedOperand* ops,
+                       VAddr fault, Vulkan::Rasterizer* rasterizer) {
+    LaneForm f;
+    if (!LaneEmulation() || !ClassifyLane(inst.mnemonic, f) || !Encodable(inst) ||
+        (inst.attributes & (ZYDIS_ATTRIB_HAS_LOCK | ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
+                            ZYDIS_ATTRIB_HAS_REPNE))) {
+        return false;
+    }
+    const u32 regs_visible = f.vex ? 3 : 2; // dst, (VEX: src1), memory
+    if (inst.operand_count_visible != regs_visible + (f.imm ? 1 : 0)) {
+        return false;
+    }
+    const ZydisDecodedOperand& dst = ops[0];
+    const ZydisDecodedOperand& src1 = f.vex ? ops[1] : ops[0];
+    const ZydisDecodedOperand& mem = ops[regs_visible - 1];
+    const auto is_xmm = [](const ZydisDecodedOperand& o) {
+        return o.type == ZYDIS_OPERAND_TYPE_REGISTER && o.reg.value >= ZYDIS_REGISTER_XMM0 &&
+               o.reg.value <= ZYDIS_REGISTER_XMM15;
+    };
+    if (!is_xmm(dst) || !is_xmm(src1) || mem.type != ZYDIS_OPERAND_TYPE_MEMORY ||
+        mem.mem.segment == ZYDIS_REGISTER_FS || mem.mem.segment == ZYDIS_REGISTER_GS || mem.size / 8 != f.bytes ||
+        (f.imm && ops[regs_visible].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)) {
+        return false;
+    }
+    M128A* const ymm_upper = f.vex ? YmmUpper(ctx) : nullptr;
+    if (f.vex && !ymm_upper) {
+        return false;
+    }
+    ZydisRegisterContext regs{};
+    for (const ZydisRegister r : kGprs) {
+        regs.values[r] = *Gpr(ctx, r);
+    }
+    ZyanU64 ea = 0;
+    if (!ZYAN_SUCCESS(ZydisCalcAbsoluteAddressEx(&inst, &mem, ctx->Rip, &regs, &ea))) {
+        return false;
+    }
+    if (fault < ea || fault >= ea + f.bytes) {
+        return false;
+    }
+    alignas(16) u8 b[16]{};
+    if (!ReadOperand(rasterizer, ea, b, f.bytes)) {
+        return false;
+    }
+    alignas(16) u8 a[16];
+    std::memcpy(a, &ctx->Xmm0 + (src1.reg.value - ZYDIS_REGISTER_XMM0), 16);
+    const u32 imm = f.imm ? u32(ops[regs_visible].imm.value.u & 0xff) : 0;
+    alignas(16) u8 out[16];
+    std::memcpy(out, a, 16);
+    const auto lanes = [&](u32 width, u32 count) {
+        for (u32 i = 0; i < count; ++i) {
+            if (imm & (1u << i)) {
+                std::memcpy(out + i * width, b + i * width, width);
+            }
+        }
+    };
+    switch (f.op) {
+    case LaneOp::Blend16: lanes(2, 8); break;
+    case LaneOp::Blend32: lanes(4, 4); break;
+    case LaneOp::Blend64: lanes(8, 2); break;
+    case LaneOp::Shuf32:
+        std::memcpy(out + 0, a + 4 * (imm & 3), 4);
+        std::memcpy(out + 4, a + 4 * ((imm >> 2) & 3), 4);
+        std::memcpy(out + 8, b + 4 * ((imm >> 4) & 3), 4);
+        std::memcpy(out + 12, b + 4 * ((imm >> 6) & 3), 4);
+        break;
+    case LaneOp::Insert32: // memory form: the 32-bit operand goes to lane imm[5:4], then imm[3:0] zeroes lanes
+        std::memcpy(out + 4 * ((imm >> 4) & 3), b, 4);
+        for (u32 i = 0; i < 4; ++i) {
+            if (imm & (1u << i)) {
+                std::memset(out + 4 * i, 0, 4);
+            }
+        }
+        break;
+    case LaneOp::And:
+    case LaneOp::AndN:
+    case LaneOp::Or:
+    case LaneOp::Xor:
+        for (u32 i = 0; i < 16; ++i) {
+            out[i] = f.op == LaneOp::And    ? u8(a[i] & b[i])
+                     : f.op == LaneOp::AndN ? u8(~a[i] & b[i])
+                     : f.op == LaneOp::Or   ? u8(a[i] | b[i])
+                                            : u8(a[i] ^ b[i]);
+        }
+        break;
+    }
+    const u32 index = dst.reg.value - ZYDIS_REGISTER_XMM0;
+    std::memcpy(&ctx->Xmm0 + index, out, 16);
+    if (f.vex) {
+        std::memset(ymm_upper + index, 0, sizeof(M128A)); // VEX.128 zeroes bits 255:128
+    }
+    ctx->Rip += inst.length;
+    return true;
+}
+
 bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
     CONTEXT* ctx = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord;
     ZydisDecodedInstruction inst;
@@ -559,7 +719,8 @@ bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterize
     if (kind == Load::None) {
         return EmulateNonGpuCompare(ctx, inst, ops, fault, rasterizer) ||
                EmulateNonGpuArith(ctx, inst, ops, fault, rasterizer) ||
-               EmulateNonGpuIntAlu(ctx, inst, ops, fault, rasterizer);
+               EmulateNonGpuIntAlu(ctx, inst, ops, fault, rasterizer) ||
+               EmulateNonGpuLane(ctx, inst, ops, fault, rasterizer);
     }
     if (kind == Load::XmmLane || !Encodable(inst) || inst.operand_count_visible != 2 ||
         (inst.attributes & (ZYDIS_ATTRIB_HAS_LOCK | ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
@@ -725,6 +886,9 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
 } // namespace
 #endif
 
+// bbport: the rasterizer for bbgpu_guest_read/write (Impl is private to PageManager).
+Vulkan::Rasterizer* g_memops_rasterizer = nullptr;
+
 struct PageManager::Impl {
     struct PageState {
         u8 num_write_watchers : 7;
@@ -822,6 +986,7 @@ struct PageManager::Impl {
             BbStats::Timer timer{BbStats::t_read_faults};
             BbTrace::fault_rip = Common::FaultInstructionPointer(context);
 #ifdef _WIN64
+            BbTrace::fault_ret = *reinterpret_cast<const u64*>(((EXCEPTION_POINTERS*)context)->ContextRecord->Rsp);
             // Only read faults from GPU read protection (a page holding GPU data).
             if (!is_gpu_thread && FaultEmulation() && rasterizer->IsPageGpuModified(addr) &&
                 PageEmulationBudgetLeft(addr)) {
@@ -1011,6 +1176,7 @@ private:
 public:
     UffdImpl(Vulkan::Rasterizer* rasterizer_) : Impl() {
         rasterizer = rasterizer_;
+        g_memops_rasterizer = rasterizer_; // bbgpu_guest_read/write
         uffd = syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
         if (uffd == -1) {
             LOG_ERROR(Common_Memory,
@@ -1135,6 +1301,7 @@ public:
 struct SignalImpl : public PageManager::Impl {
     SignalImpl(Vulkan::Rasterizer* rasterizer_) : Impl() {
         rasterizer = rasterizer_;
+        g_memops_rasterizer = rasterizer_; // bbgpu_guest_read/write
 
         // Should be called first.
         constexpr auto priority = std::numeric_limits<u32>::min();
@@ -1201,3 +1368,1252 @@ template void PageManager::UpdatePageWatchersForRegion<false, false>(VAddr base_
                                                                      RegionBits& mask) const;
 
 } // namespace VideoCore
+
+// bbport: BB_GUEST_MEMOPS (default on, =0 off). The guest's memcpy/memset/memmove/memcmp are the host CRT's
+// (src/runtime.c). On a page that also holds GPU-written bytes, the CRT's wide stores and loads (AVX, rep stos)
+// fault and cannot be emulated, so every such call waited for a download of the page's GPU data even when it
+// touched none of those bytes (DriveClub: memsets of ~90 KB at 0x4005730020 and copies next to GPU-written
+// counters, ~40% of the main thread's waits in day races). Ranges with no GPU-written byte are done here through
+// the unprotected backing view, stores queued for the GPU copy like emulated stores (Rasterizer::StoreUntracked).
+// 0 from these: not handled (no GPU page involved, or GPU-written bytes): the caller runs the CRT function.
+namespace {
+bool GuestMemops() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_GUEST_MEMOPS");
+        // Default on: +4% uncapped at 720p render on an RTX 3070 Laptop; neutral at a 60 FPS cap (the waits moved
+        // to the trueSKY pages).
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+bool AnyGpuPage(Vulkan::Rasterizer* r, VAddr addr, u64 size) {
+    for (VAddr page = Common::AlignDown(addr, 4096); page < addr + size; page += 4096) {
+        if (r->IsPageGpuModified(page)) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+extern "C" int bbgpu_guest_read(void* out, uintptr_t addr, uint64_t size) {
+    auto* r = VideoCore::g_memops_rasterizer;
+    if (!r || !GuestMemops() || size == 0 || r->IsGpuSideThread() || !AnyGpuPage(r, addr, size) ||
+        r->IsRangeGpuWritten(addr, size)) {
+        return 0;
+    }
+    return runtime_memory_read_backing(addr, out, size) ? 1 : 0;
+}
+
+extern "C" int bbgpu_guest_write(uintptr_t addr, const void* data, uint64_t size) {
+    auto* r = VideoCore::g_memops_rasterizer;
+    if (!r || !GuestMemops() || size == 0 || r->IsGpuSideThread() || !AnyGpuPage(r, addr, size) ||
+        r->IsRangeGpuWritten(addr, size)) {
+        return 0;
+    }
+    const auto* src = static_cast<const u8*>(data);
+    VAddr at = addr;
+    u64 left = size;
+    while (left) {
+        const u64 n = std::min<u64>(left, Common::AlignDown(at, 4096) + 4096 - at);
+        if (r->IsPageGpuModified(at)) {
+            if (!r->StoreUntracked(at, src, u32(n))) {
+                // Not eligible after all (a download in flight, ...): the rest takes the usual write faults.
+                std::memcpy(reinterpret_cast<void*>(at), src, left);
+                return 1;
+            }
+        } else {
+            std::memcpy(reinterpret_cast<void*>(at), src, n); // no GPU data on this page: at most a tracking fault
+        }
+        at += n;
+        src += n;
+        left -= n;
+    }
+    return 1;
+}
+
+// 1 when a guest memory operation over the range may need the backing path (memops on, a page with GPU data).
+extern "C" int bbgpu_guest_gpu_pages(uintptr_t addr, uint64_t size) {
+    auto* r = VideoCore::g_memops_rasterizer;
+    return r && GuestMemops() && size != 0 && !r->IsGpuSideThread() && AnyGpuPage(r, addr, size);
+}
+
+// bbport: BB_EXPOSURE_STALE=1 (opt-in; src/probe.c retargets the calls): DriveClub's auto-exposure (eboot
+// FUN_00702750) asks the readback getter for its two luminance histograms in latency mode and copies each one (1 KB)
+// with memcpy at 0x702ad2 / 0x702afc. The game expects them 2-3 frames old (it reads in latency mode), but
+// here the GPU runs ~3 submissions behind the recording, so each copy waited for the GPU on the main thread. While a
+// histogram still holds GPU-written bytes not delivered, the copy returns the last histogram delivered from that
+// address and a helper thread fetches the new one (it takes the fault and the wait); otherwise it is a plain copy.
+// Exposure never sees missing data: the first copy from an address always waits.
+namespace {
+struct ExposureShadow {
+    uintptr_t src = 0;
+    u64 size = 0;
+    bool valid = false;
+    bool fetching = false;
+    std::chrono::steady_clock::time_point delivered{}; ///< when `data` was read from the GPU or guest memory
+    std::array<u8, 4096> data{};
+};
+// A shadow older than this is not served (the address may belong to another object by now: the real read runs).
+constexpr auto kShadowMaxAge = std::chrono::milliseconds(250);
+bool Fresh(const ExposureShadow& s) {
+    return s.valid && std::chrono::steady_clock::now() - s.delivered < kShadowMaxAge;
+}
+std::mutex g_exposure_mutex;
+std::condition_variable g_exposure_cv;
+std::array<ExposureShadow, 16> g_exposure{};
+std::deque<size_t> g_exposure_queue;
+u64 g_exposure_stale = 0, g_exposure_plain = 0, g_exposure_fetched = 0;
+
+// Under g_exposure_mutex. Null when the table is full (then the copy is plain).
+ExposureShadow* ExposureSlot(uintptr_t src, u64 size) {
+    for (auto& s : g_exposure) {
+        if (s.src == src && s.size == size) {
+            return &s;
+        }
+    }
+    for (auto& s : g_exposure) {
+        if (!s.src) {
+            s.src = src;
+            s.size = size;
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+void ExposureFetcher() {
+    BbTrace::lazy_readback = true; // its downloads ride the next submission
+    std::array<u8, 4096> buf;
+    std::unique_lock lk{g_exposure_mutex};
+    for (;;) {
+        g_exposure_cv.wait(lk, [] { return !g_exposure_queue.empty(); });
+        auto& slot = g_exposure[g_exposure_queue.front()];
+        g_exposure_queue.pop_front();
+        const uintptr_t src = slot.src;
+        const u64 size = slot.size;
+        lk.unlock();
+        // A snapshot of the GPU's bytes, waited for here; guest memory when the GPU no longer holds the range. Not
+        // a guest read: a read fault would deliver the window and, when the GPU keeps rewriting it, end in a
+        // synchronous download on the GPU command thread (every ~8 frames with BB_CLOUD_STALE).
+        auto* r = VideoCore::g_memops_rasterizer;
+        bool got = r && r->SnapshotGpuRange(src, size, buf.data());
+        // A failed snapshot also means its bounded GPU wait may have timed out. Backing bytes
+        // are authoritative only after no undelivered GPU bytes remain. Otherwise keep the
+        // previous delivery time: publishing stale backing as fresh would defeat the age limit.
+        if (!got && (!r || !r->IsRangeGpuWritten(src, size))) {
+            got = runtime_memory_read_backing(src, buf.data(), size) != 0;
+        }
+        lk.lock();
+        if (got) {
+            std::memcpy(slot.data.data(), buf.data(), size);
+            slot.valid = true;
+            slot.delivered = std::chrono::steady_clock::now();
+        }
+        slot.fetching = false;
+        ++g_exposure_fetched;
+    }
+}
+
+PS4_SYSV_ABI void* ExposureCopy(void* dst, const void* src, u64 size) {
+    auto* r = VideoCore::g_memops_rasterizer;
+    const auto at = reinterpret_cast<uintptr_t>(src);
+    const bool tracked = size <= 4096;
+    if (r && tracked && r->IsRangeGpuWritten(at, size)) {
+        std::scoped_lock lk{g_exposure_mutex};
+        auto* slot = ExposureSlot(at, size);
+        if (slot && Fresh(*slot)) {
+            if (!slot->fetching) {
+                slot->fetching = true;
+                g_exposure_queue.push_back(size_t(slot - g_exposure.data()));
+                g_exposure_cv.notify_one();
+            }
+            std::memcpy(dst, slot->data.data(), size);
+            if ((++g_exposure_stale & 4095) == 0) {
+                std::printf("Exposure histograms: %llu served from the last delivered copy, %llu plain, %llu fetched\n",
+                            (unsigned long long)g_exposure_stale, (unsigned long long)g_exposure_plain,
+                            (unsigned long long)g_exposure_fetched);
+            }
+            return dst;
+        }
+    }
+    std::memcpy(dst, src, size); // delivered, or the first copy from this address: the real data
+    if (tracked) {
+        std::scoped_lock lk{g_exposure_mutex};
+        if (auto* slot = ExposureSlot(at, size); slot && !slot->fetching) {
+            std::memcpy(slot->data.data(), dst, size);
+            slot->valid = true;
+            slot->delivered = std::chrono::steady_clock::now();
+        }
+        ++g_exposure_plain;
+    }
+    return dst;
+}
+
+// The exposure value (8 bytes, eboot 0x702b0d: the getter for obj+0x10, then vmovss from the pointer it returns at
+// 0x702b29 / 0x702b2d): the same, by returning a pointer to the last delivered value. Main thread only.
+using ReadbackGetter = PS4_SYSV_ABI bool (*)(void* obj, u32 frame, void** out, u32* count);
+ReadbackGetter g_real_getter = nullptr;
+alignas(16) thread_local u8 g_served_value[16]; // read by the caller after return: per thread
+
+PS4_SYSV_ABI bool ExposureValueGet(void* obj, u32 frame, void** out, u32* count) {
+    if (!g_real_getter(obj, frame, out, count)) {
+        return false;
+    }
+    auto* r = VideoCore::g_memops_rasterizer;
+    const auto at = reinterpret_cast<uintptr_t>(*out);
+    constexpr u64 size = 8;
+    if (!r || !at) {
+        return true;
+    }
+    if (r->IsRangeGpuWritten(at, size)) {
+        std::scoped_lock lk{g_exposure_mutex};
+        auto* slot = ExposureSlot(at, size);
+        if (!slot) {
+            return true;
+        }
+        if (!slot->fetching) {
+            slot->fetching = true;
+            g_exposure_queue.push_back(size_t(slot - g_exposure.data()));
+            g_exposure_cv.notify_one();
+        }
+        if (Fresh(*slot)) {
+            std::memcpy(g_served_value, slot->data.data(), size);
+            *out = g_served_value;
+            ++g_exposure_stale;
+        }
+        return true; // not valid yet: the game reads the real value (and waits) this once
+    }
+    u8 value[size];
+    std::memcpy(value, reinterpret_cast<const void*>(at), size);
+    std::scoped_lock lk{g_exposure_mutex};
+    if (auto* slot = ExposureSlot(at, size); slot && !slot->fetching) {
+        std::memcpy(slot->data.data(), value, size);
+        slot->valid = true;
+        slot->delivered = std::chrono::steady_clock::now();
+    }
+    ++g_exposure_plain;
+    return true;
+}
+
+std::once_flag g_fetcher_started;
+void StartFetcher() {
+    std::call_once(g_fetcher_started, [] { std::thread(ExposureFetcher).detach(); });
+}
+
+// Under g_exposure_mutex: queues a fetch of the slot unless one is queued or running.
+void QueueFetch(ExposureShadow* slot) {
+    if (!slot->fetching) {
+        slot->fetching = true;
+        g_exposure_queue.push_back(size_t(slot - g_exposure.data()));
+        g_exposure_cv.notify_one();
+    }
+}
+
+// BB_CLOUD_STALE=1 (opt-in, see bbgpu_cloud_hook; src/probe.c retargets eboot 0x60265e): trueSKY's cloud sample (FUN_00601df0) asks the
+// getter for the previous frame's result (a 16-byte point and a GDS count) and keeps its old point when told "not
+// ready" (the last completed copy is safe for it: it feeds the lightning state machine).
+// The getter's count read waited for the GPU (~4 ms, the main thread's largest wait once exposure stopped waiting).
+// The slot is picked exactly as the getter does (labels included); while its count or point holds GPU bytes not
+// delivered, the last delivered pair is returned and the helper thread fetches the new one.
+uintptr_t g_image_base = 0;
+alignas(16) thread_local u8 g_served_cloud[16];
+u64 g_cloud_stale = 0, g_cloud_plain = 0;
+
+struct GetterPick {
+    bool ok = false;
+    uintptr_t data = 0, count = 0;
+    u32 slot = 0, want = 0; ///< the slot and the generation the getter tests its label against
+};
+// Mirrors eboot FUN_00758980 without reading the count.
+GetterPick PickGetterSlot(const u8* obj, u32 frame) {
+    const u32 flags = *reinterpret_cast<const u32*>(obj + 0x10);
+    u32 slot = 0, want = frame;
+    if (flags & 0x10) {
+        const u32 cur = *reinterpret_cast<const u32*>(obj + 0x80);
+        if (frame != 0) {
+            slot = cur;
+            if (*reinterpret_cast<const u32*>(obj + 0x48 + slot * 0x30) != frame) {
+                return {};
+            }
+        } else {
+            const u32 owner = *reinterpret_cast<const u32*>(obj + 0x84);
+            const u32 gen = *reinterpret_cast<const u32*>(obj + 0x88);
+            const bool mine = owner == *reinterpret_cast<const u32*>(g_image_base + 0x2749f58);
+            const u32 lag = mine ? 3 : 2;
+            if (gen <= lag) {
+                return {};
+            }
+            slot = mine ? 1 - cur : cur;
+            want = gen - lag;
+        }
+    }
+    // obj+0x40 holds a pointer to the label's pointer (758a11-758a19: two loads, then the compare).
+    const u32* label = **reinterpret_cast<u32** const*>(obj + 0x40 + slot * 0x30);
+    if (*label != want) {
+        return {};
+    }
+    return {true, *reinterpret_cast<const uintptr_t*>(obj + 0x20 + slot * 0x30),
+            (flags & 0x20) ? *reinterpret_cast<const uintptr_t*>(obj + 0x28 + slot * 0x30) : 0, slot, want};
+}
+
+PS4_SYSV_ABI bool CloudGet(void* obj, u32 frame, void** out, u32* count) {
+    auto* r = VideoCore::g_memops_rasterizer;
+    const GetterPick pick = r ? PickGetterSlot(static_cast<const u8*>(obj), frame) : GetterPick{};
+    if (!pick.ok || !pick.data || !pick.count) {
+        return g_real_getter(obj, frame, out, count); // not ready (or not a counted buffer): as before
+    }
+    constexpr u64 size = 16;
+    if (r->IsRangeGpuWritten(pick.count, 4) || r->IsRangeGpuWritten(pick.data, size)) {
+        std::scoped_lock lk{g_exposure_mutex};
+        auto* c = ExposureSlot(pick.count, 4);
+        auto* d = ExposureSlot(pick.data, size);
+        if (c && d) {
+            QueueFetch(c);
+            QueueFetch(d);
+            if (Fresh(*c) && Fresh(*d)) {
+                std::memcpy(g_served_cloud, d->data.data(), size);
+                u32 n;
+                std::memcpy(&n, c->data.data(), 4);
+                const u32 most = *reinterpret_cast<const u32*>(static_cast<const u8*>(obj) + 0xc);
+                *out = g_served_cloud;
+                *count = n > most ? most : n;
+                ++g_cloud_stale;
+                return true;
+            }
+        }
+        // Nothing delivered yet: the real getter (it waits) this once.
+    }
+    const bool ok = g_real_getter(obj, frame, out, count);
+    u8 point[size];
+    u32 n;
+    std::memcpy(point, reinterpret_cast<const void*>(pick.data), size);
+    std::memcpy(&n, reinterpret_cast<const void*>(pick.count), 4);
+    std::scoped_lock lk{g_exposure_mutex};
+    auto* c = ExposureSlot(pick.count, 4);
+    auto* d = ExposureSlot(pick.data, size);
+    if (c && d && !c->fetching && !d->fetching) {
+        std::memcpy(c->data.data(), &n, 4);
+        std::memcpy(d->data.data(), point, size);
+        c->valid = d->valid = true;
+        c->delivered = d->delivered = std::chrono::steady_clock::now();
+    }
+    if ((++g_cloud_plain & 1023) == 0) {
+        std::printf("Cloud sample: %llu served from the last delivered pair, %llu plain\n",
+                    (unsigned long long)g_cloud_stale, (unsigned long long)g_cloud_plain);
+    }
+    return ok;
+}
+// bbport: BB_EXPOSURE_EXACT / BB_CLOUD_EXACT (default on, =0 off; replace BB_EXPOSURE_STALE / BB_CLOUD_STALE): the
+// exposure's three getter calls and the cloud sample's (src/probe.c) get exactly the generation
+// the game asked for without waiting when the GPU has done it. The emulator writes a readback label when the command
+// is recorded, not when the GPU has run the work before it (liverpool.cpp RunEventWriteEop), so the getter passes and
+// the payload (or count) read then waits for the GPU (a fault download recorded into the current submission: it
+// waits for work after the producer too). Here every slot's label address is registered with its payload (and GDS
+// count); at that label's EOP (in order with the draws) copies of them are recorded and tagged with the value the
+// label gets (the generation) and the registration's lifetime id. The slot and the generation the getter tests are
+// taken from its inputs before it runs (PickGetterSlot mirrors eboot 0x758980, both latency branches), and the label
+// must still hold that generation afterwards (a label only grows). Snapshots of that generation done on the GPU are
+// served (host copies, no wait). Not recorded, not done yet, or anything changed while the getter ran: the game's
+// own read (it waits if the GPU holds the bytes), as before. Nothing else is ever served: no other generation, no
+// "not ready" the getter would not have returned (the real getter decides that).
+// Lifetime: a label belongs to one slot of one object; registering it for another object or payload drops the old
+// registration, and a registration whose object's issue counter (+0x88) goes back, or whose label gets a lower
+// generation at an EOP, gets a new id: snapshots of the old lifetime never match again.
+// BB_EXPOSURE_EXACT_VERIFY=1: after each serve the real bytes are read too (they wait). Equal: matched. Different:
+// kept until a later snapshot of the same range is done; equal to one with a higher generation, the real read saw a
+// newer producer (the exposure's next dispatch is recorded before its getters, eboot 0x702a59): newer. Otherwise
+// unexplained (printed). Counted per call site (0, 1 histograms, 2 exposure value, 3 cloud).
+struct ExactLabel {
+    const void* obj = nullptr;
+    VAddr label = 0;
+    VAddr payload = 0;
+    u32 size = 0;
+    VAddr count = 0;  ///< the slot's GDS count (4 bytes), 0 when none
+    u64 id = 0;       ///< lifetime identity carried by its snapshots
+    u32 last_gen = 0; ///< the object's issue counter (+0x88) at the last getter call
+    u32 last_tag = 0; ///< the last generation an EOP wrote to the label
+    bool tagged = false;
+    bool flush = false; ///< end the submission after its snapshot (ExactEopFlush)
+};
+std::mutex g_exact_mutex;
+std::vector<ExactLabel> g_exact_labels; // under g_exact_mutex
+u64 g_exact_ids = 0;                    // under g_exact_mutex
+std::atomic<u32> g_exact_count{0};
+std::atomic<u64> g_exact_recorded{0}, g_exact_epochs{0};
+// The exposure (FUN_00702750) and the cloud sample (FUN_00601df0) may run on different guest threads: the stats and
+// open mismatches are under g_exact_stats_mutex.
+struct ExactStats {
+    u64 served = 0, pending = 0, missing = 0, plain = 0, raced = 0, verified = 0, matched = 0, newer = 0,
+        unexplained = 0, waited = 0, wait_ns = 0, rewritten = 0, nonempty = 0, deferred = 0, sorting = 0;
+};
+std::array<ExactStats, 6> g_exact_stats{};
+u64 g_exact_other = 0;
+struct ExactMismatch {
+    u32 site = 0;
+    VAddr addr = 0;
+    u32 generation = 0;
+    u64 id = 0;
+    u32 calls = 0;
+    std::vector<u8> real;
+};
+std::vector<ExactMismatch> g_exact_mismatches;
+std::mutex g_exact_stats_mutex; // the stats and mismatches above
+
+bool EnvOne(const char* name) {
+    const char* env = std::getenv(name);
+    return env && env[0] == '1';
+}
+// BB_EXPOSURE_EXACT=2: the hooks run and log (BB_EXPOSURE_LOG) but never serve: the game's ordinary reads, as the
+// reference for temporal comparisons.
+// Default on: =0 restores the game's own reads (or BB_EXPOSURE_STALE's last-delivered copies when that is set).
+u32 ExposureExactMode() {
+    static const u32 mode = [] {
+        const char* env = std::getenv("BB_EXPOSURE_EXACT");
+        return !env || !env[0] ? 1u : env[0] == '1' || env[0] == '2' ? u32(env[0] - '0') : 0u;
+    }();
+    return mode;
+}
+bool ExposureExact() {
+    return ExposureExactMode() != 0;
+}
+bool CloudExact() { // default on, =0 off (then BB_CLOUD_STALE=1 or the game's own wait)
+    static const bool on = [] {
+        const char* env = std::getenv("BB_CLOUD_EXACT");
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+bool ExactVerify() {
+    static const bool on = EnvOne("BB_EXPOSURE_EXACT_VERIFY");
+    return on;
+}
+// BB_EXACT_WAIT=0 off: a snapshot the GPU has not done yet but whose submission has gone is waited for (up to 100 ms)
+// instead of the guest's read fault, which copies again behind all current work and waits for that.
+u64 ExactWaitNs() {
+    static const u64 ns = [] {
+        const char* env = std::getenv("BB_EXACT_WAIT");
+        return env && env[0] == '0' ? 0ull : 100'000'000ull;
+    }();
+    return ns;
+}
+
+// BB_EXACT_DEFER (default on, =0 off; in-race timing unchanged at a 60 FPS cap, no visible change around late answers
+// uncapped): the query results (site 4) and the crowd heights (site 5) are polled every frame, and "not ready" leaves
+// the request standing (eboot 0x1051f43 / 0x574d80).
+// While the requested generation's snapshot is recorded but the GPU has not done it, they are told "not ready" instead
+// of reading the data, which waits for the GPU (the label is written when the command processor reaches the EOP; on a
+// PS4 it is written when the GPU gets there). After 16 such answers to one request the game reads and waits as before.
+bool ExactDefer() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_EXACT_DEFER");
+        return !(env && env[0] == '0');
+    }();
+    return on;
+}
+// BB_EXACT_EOP_FLUSH (on with BB_EXACT_DEFER, =0 off): the submission ends right after the query's and the crowd's
+// snapshot copies, so a snapshot is "done" when the GPU has run the work up to their EOP, not the rest of the batch
+// after it. "Not ready" then means what it means on a PS4: the GPU has not reached the EOP.
+bool ExactEopFlush() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_EXACT_EOP_FLUSH");
+        return ExactDefer() && !(env && env[0] == '0');
+    }();
+    return on;
+}
+struct ExactDeferral {
+    const void* obj = nullptr;
+    u32 want = 0, times = 0;
+    std::chrono::steady_clock::time_point first{}; ///< the first "not ready"
+};
+// Per site, one entry per outstanding request (a site can serve several objects in turn: two query objects in batch
+// 44): freed when the request is answered; with all four in use the game reads and waits.
+std::array<std::array<ExactDeferral, 4>, 6> g_exact_deferrals{};
+// Under g_exact_stats_mutex: whether this request may be told "not ready" once more.
+bool DeferExact(u32 site, const void* obj, u32 want) {
+    auto& list = g_exact_deferrals[site];
+    auto it = std::ranges::find_if(list, [&](const ExactDeferral& d) { return d.obj == obj; });
+    if (it == list.end()) {
+        it = std::ranges::find_if(list, [](const ExactDeferral& d) { return d.obj == nullptr; });
+        if (it == list.end()) {
+            return false;
+        }
+        *it = {obj, want, 0, std::chrono::steady_clock::now()};
+    } else if (it->want != want) {
+        *it = {obj, want, 0, std::chrono::steady_clock::now()};
+    }
+    if (it->times == 16) {
+        return false; // 16 answers given: the game reads (counted as 16)
+    }
+    ++it->times;
+    return true;
+}
+// Per site: requests answered after 1, 2, 3, 4, 5-15 and 16 "not ready" answers (the game polls once a frame), and
+// the time from the first "not ready" to the answer.
+std::array<std::array<u64, 6>, 6> g_exact_defer_frames{};
+std::array<u64, 6> g_exact_defer_ns{};
+// Under g_exact_stats_mutex: the object's request `want` was answered (served, or read by the game): its entry is
+// freed, and how long it was put off is counted (the first 24 logged). An entry for an older
+// request (a caller that moves on to a new one instead of asking again) is freed without being counted.
+void EndDeferral(u32 site, const void* obj, u32 want, char path) {
+    for (auto& d : g_exact_deferrals[site]) {
+        if (d.obj != obj) {
+            continue;
+        }
+        if (d.times && d.want == want) {
+            const u32 n = d.times;
+            ++g_exact_defer_frames[site][n <= 4 ? n - 1 : n < 16 ? 4 : 5];
+            const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
+                                                                                 d.first)
+                                .count();
+            g_exact_defer_ns[site] += u64(ns);
+            static u32 logged = 0;
+            if (++logged <= 24) {
+                std::printf("Exposure exact site %u: request %u of %p answered (%c) after %u \"not ready\", %.1f ms\n",
+                            site, d.want, obj, path, n, ns / 1e6);
+            }
+        }
+        d = {};
+    }
+}
+
+struct ExactSlots {
+    VAddr labels[2]{}, payloads[2]{}, counts[2]{};
+};
+// The object's two slots (flags 0x10: payload pointer at +0x20 + i * 0x30, count pointer at +0x28, pointer to the
+// label pointer at +0x40). Without flag 0x10 the getter uses slot 0 only
+// (eboot 0x75898b) and slot 1's fields are not the object's: they are not read.
+ExactSlots ReadExactSlots(const u8* o, bool counted) {
+    ExactSlots s;
+    const u32 slots = (*reinterpret_cast<const u32*>(o + 0x10) & 0x10) ? 2 : 1;
+    for (u32 i = 0; i < slots; ++i) {
+        s.payloads[i] = *reinterpret_cast<const u64*>(o + 0x20 + i * 0x30);
+        s.counts[i] = counted ? *reinterpret_cast<const u64*>(o + 0x28 + i * 0x30) : 0;
+        const auto* label_ptr = *reinterpret_cast<const u64* const*>(o + 0x40 + i * 0x30);
+        s.labels[i] = label_ptr ? *label_ptr : 0;
+    }
+    return s;
+}
+
+// Under g_exact_mutex: registers both slots (a label now another slot's drops its old registration; a new
+// incarnation at the same addresses gets new ids). Returns the id of the selected slot's registration.
+u64 RegisterExactSlots(const u8* o, u32 size, const ExactSlots& s, u32 slot, bool flush = false) {
+    const u32 gen = *reinterpret_cast<const u32*>(o + 0x88);
+    std::erase_if(g_exact_labels, [&](const ExactLabel& e) {
+        bool listed = false, label_used = false;
+        for (u32 i = 0; i < 2; ++i) {
+            label_used |= e.label == s.labels[i];
+            listed |= e.label == s.labels[i] && e.payload == s.payloads[i] && e.count == s.counts[i];
+        }
+        return (label_used || e.obj == o) && !(e.obj == o && listed);
+    });
+    u64 id = 0;
+    for (u32 i = 0; i < 2; ++i) {
+        if (!s.labels[i] || !s.payloads[i]) {
+            continue;
+        }
+        auto it = std::ranges::find_if(g_exact_labels, [&](const ExactLabel& e) {
+            return e.obj == o && e.label == s.labels[i] && e.payload == s.payloads[i] && e.count == s.counts[i];
+        });
+        if (it == g_exact_labels.end()) {
+            g_exact_labels.push_back({o, s.labels[i], s.payloads[i], size, s.counts[i], ++g_exact_ids, gen, 0, false,
+                                      flush});
+            it = g_exact_labels.end() - 1;
+            std::printf("Exposure exact: slot %u of %p: payload %llx (%u bytes), count %llx, label %llx, id %llu\n",
+                        i, (const void*)o, (unsigned long long)s.payloads[i], size, (unsigned long long)s.counts[i],
+                        (unsigned long long)s.labels[i], (unsigned long long)it->id);
+        } else if (gen < it->last_gen) { // the object was made again at the same addresses
+            it->id = ++g_exact_ids;
+            it->tagged = false;
+            g_exact_epochs.fetch_add(1, std::memory_order_relaxed);
+        }
+        it->last_gen = gen;
+        it->size = size;
+        it->flush = flush;
+        if (i == slot) {
+            id = it->id;
+        }
+    }
+    if (g_exact_labels.size() > 16) {
+        g_exact_labels.erase(g_exact_labels.begin(), g_exact_labels.end() - 16);
+    }
+    g_exact_count.store(u32(g_exact_labels.size()), std::memory_order_release);
+    return id;
+}
+
+// BB_EXPOSURE_LOG=<file> (diagnostic): one line per exact readback answer (time, object, slot, generation,
+// path, snapshot ticks, value). Off unless the variable is set.
+FILE* ExposureLog() {
+    static FILE* file = [] {
+        const char* path = std::getenv("BB_EXPOSURE_LOG");
+        FILE* f = path && path[0] ? std::fopen(path, "w") : nullptr;
+        if (f) {
+            std::fprintf(f, "# E t_ms site obj slot frame gen id path tick0 tick1 value\n");
+        }
+        return f;
+    }();
+    return file;
+}
+
+// value: the exposure value the game gets (site 2), else 0.
+void LogExact(u32 site, const void* obj, u32 slot, u32 generation, u64 id, char path, const u64* ticks,
+              u64 value = 0) {
+    FILE* f = ExposureLog();
+    if (!f) {
+        return;
+    }
+    const auto* o = static_cast<const u8*>(obj);
+    static std::mutex m;
+    std::scoped_lock lk{m};
+    std::fprintf(f, "E %.3f %u %p %u %u %u %llu %c %llu %llu %016llx\n",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch())
+                     .count(),
+                 site, obj, slot, *reinterpret_cast<const u32*>(o + 0x88), generation, (unsigned long long)id, path,
+                 (unsigned long long)ticks[0], (unsigned long long)ticks[1], (unsigned long long)value);
+    static u32 lines = 0;
+    if ((++lines & 255) == 0) {
+        std::fflush(f);
+    }
+}
+
+// Under g_exact_stats_mutex: compares a served copy with the real bytes (read here: it waits).
+void VerifyExact(u32 site, VAddr addr, const u8* served, u32 size, u32 generation, u64 id) {
+    auto& st = g_exact_stats[site];
+    ++st.verified;
+    ExactMismatch m{site, addr, generation, id, 0, std::vector<u8>(size)};
+    std::memcpy(m.real.data(), reinterpret_cast<const void*>(addr), size);
+    if (std::memcmp(served, m.real.data(), size) == 0) {
+        ++st.matched;
+    } else {
+        // Acceptance counts raw matches only: every mismatch is printed when it happens; the
+        // resolver below only says whether a later snapshot holds the same bytes.
+        static u32 printed = 0;
+        if (++printed <= 32) {
+            std::printf("Exposure exact: MISMATCH site %u addr %llx generation %u id %llu\n", site,
+                        (unsigned long long)addr, generation, (unsigned long long)id);
+        }
+        g_exact_mismatches.push_back(std::move(m));
+    }
+}
+
+// Under g_exact_stats_mutex: mismatches waiting for a later snapshot of the same range.
+void ResolveExactMismatches(Vulkan::Rasterizer& r) {
+    static std::vector<u8> later; // as large as the mismatch (the crowd's 8 KB)
+    std::erase_if(g_exact_mismatches, [&](ExactMismatch& m) {
+        later.resize(std::max(later.size(), m.real.size()));
+        for (u32 k = 1; k <= 4; ++k) {
+            const u32 next = m.generation + k;
+            bool pending = false;
+            if (r.ReadTaggedSnapshot(m.addr, u32(m.real.size()), next, m.id, later.data(), &pending, nullptr) &&
+                std::memcmp(later.data(), m.real.data(), m.real.size()) == 0) {
+                ++g_exact_stats[m.site].newer;
+                return true;
+            }
+        }
+        if (++m.calls < 96) {
+            return false;
+        }
+        if (++g_exact_stats[m.site].unexplained <= 16) {
+            std::printf("Exposure exact: UNEXPLAINED mismatch site %u addr %llx generation %u id %llu\n", m.site,
+                        (unsigned long long)m.addr, m.generation, (unsigned long long)m.id);
+        }
+        return true;
+    });
+}
+
+// Under g_exact_stats_mutex.
+void PrintExactStats() {
+    static u64 calls = 0;
+    if ((++calls & 511) != 1) {
+        return;
+    }
+    for (u32 i = 0; i < g_exact_stats.size(); ++i) {
+        const auto& t = g_exact_stats[i];
+        std::printf("Exposure exact site %u: %llu served (%llu with data; %llu after a %.1f ms average wait for the "
+                    "snapshot), "
+                    "%llu read by the game (pending %llu, missing %llu), %llu plain, "
+                    "%llu raced, %llu deferred, %llu sorting; verified %llu: %llu matched, %llu newer, %llu "
+                    "unexplained; %llu copies changed by the caller\n",
+                    i, (unsigned long long)t.served, (unsigned long long)t.nonempty, (unsigned long long)t.waited,
+                    t.waited ? t.wait_ns / 1e6 / double(t.waited) : 0.0, (unsigned long long)(t.pending + t.missing),
+                    (unsigned long long)t.pending, (unsigned long long)t.missing, (unsigned long long)t.plain,
+                    (unsigned long long)t.raced, (unsigned long long)t.deferred, (unsigned long long)t.sorting,
+                    (unsigned long long)t.verified,
+                    (unsigned long long)t.matched,
+                    (unsigned long long)t.newer, (unsigned long long)t.unexplained, (unsigned long long)t.rewritten);
+    }
+    for (u32 i = 3; i <= 5; ++i) {
+        const auto& h = g_exact_defer_frames[i];
+        if (h[0] + h[1] + h[2] + h[3] + h[4] + h[5]) {
+            const u64 n = h[0] + h[1] + h[2] + h[3] + h[4] + h[5];
+            std::printf("Exposure exact site %u: deferred requests answered after 1 / 2 / 3 / 4 / 5-15 / 16 \"not "
+                        "ready\": %llu / %llu / %llu / %llu / %llu / %llu, %.1f ms on average\n",
+                        i, (unsigned long long)h[0], (unsigned long long)h[1], (unsigned long long)h[2],
+                        (unsigned long long)h[3], (unsigned long long)h[4], (unsigned long long)h[5],
+                        g_exact_defer_ns[i] / 1e6 / double(n));
+        }
+    }
+    std::printf("Exposure exact: %llu snapshots recorded, %llu other reads, %llu lifetimes renewed, %zu mismatches "
+                "open\n",
+                (unsigned long long)g_exact_recorded.load(std::memory_order_relaxed),
+                (unsigned long long)g_exact_other, (unsigned long long)g_exact_epochs.load(std::memory_order_relaxed),
+                g_exact_mismatches.size());
+}
+
+// The exposure (flags 0x16, latency mode): sites 0, 1 (histograms, 1 KB) and 2 (value, 8 bytes). Site 5
+// (BB_CROWD_EXACT, default on, =0 off): the crowd ground heights of eboot FUN_00574d30 (getter call 0x574d79; flags
+// 0x10f, one slot, explicit frame, polled every frame until ready), 512 x 16 bytes, read by its loop at 0x574df0 (the
+// GPU writes them in FUN_00575f30; the loop's reads waited 4-35 ms, ~40 per race).
+template <u32 Site>
+PS4_SYSV_ABI bool ExposureExactGet(void* obj, u32 frame, void** out, u32* count) {
+    constexpr u32 Size = Site == 2 ? 8 : Site == 5 ? 0x2000 : 0x400;
+    constexpr u32 Flags = Site == 5 ? 0x10f : 0x16;
+    const auto* o = static_cast<const u8*>(obj);
+    auto* r = VideoCore::g_memops_rasterizer;
+    const u32 flags = *reinterpret_cast<const u32*>(o + 0x10);
+    const int mode = Site == 5 ? 1 : ExposureExactMode();
+    if constexpr (Site == 5) {
+        static std::atomic<u32> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+            std::printf("Exposure exact site 5: object %p flags %#x +0xc %u, frame %u%s\n", obj, flags,
+                        *reinterpret_cast<const u32*>(o + 0xc), frame, flags == Flags ? "" : ": not served");
+        }
+    }
+    const bool exposure_obj = r && flags == Flags;
+    const GetterPick pick = exposure_obj ? PickGetterSlot(o, frame) : GetterPick{};
+    const ExactSlots slots = exposure_obj ? ReadExactSlots(o, false) : ExactSlots{};
+    if (!g_real_getter(obj, frame, out, count)) {
+        return false;
+    }
+    const auto at = reinterpret_cast<uintptr_t>(*out);
+    if (!pick.ok || pick.data != at || slots.payloads[pick.slot] != at || !slots.labels[pick.slot]) {
+        std::scoped_lock lk{g_exact_stats_mutex};
+        ++g_exact_other;
+        if (Site == 5 && ExactDefer()) {
+            EndDeferral(Site, obj, frame, 'O');
+        }
+        return true;
+    }
+    const u32 generation = pick.want;
+    const bool raced = *reinterpret_cast<const u32*>(slots.labels[pick.slot]) != generation;
+    u64 id = 0;
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        id = RegisterExactSlots(o, Size, slots, pick.slot, Site == 5 && ExactEopFlush());
+    }
+    // Read by the caller right after the return (memcpy at 0x702ad2 / 0x702afc, vmovss at 0x702b29; the crowd's loop
+    // at 0x574df0).
+    alignas(16) thread_local u8 buf[Size < 16 ? 16 : Size];
+    u64 ticks[3]{};
+    bool pending = false;
+    char path;
+    const bool defer = Site == 5 && ExactDefer();
+    const bool done = !raced && id &&
+                      r->ReadTaggedSnapshot(at, Size, generation, id, buf, &pending, ticks,
+                                            mode == 1 && !defer ? ExactWaitNs() : 0);
+    std::scoped_lock lk{g_exact_stats_mutex};
+    auto& st = g_exact_stats[Site];
+    if (ticks[2]) {
+        ++st.waited;
+        st.wait_ns += ticks[2];
+    }
+    if (raced) {
+        path = 'R';
+        ++st.raced;
+    } else if (done && mode == 1) {
+        path = 'X';
+        *out = buf;
+        ++st.served;
+        ++st.nonempty;
+        if (ExactVerify()) {
+            VerifyExact(Site, at, buf, Size, generation, id);
+        }
+    } else if (done) {
+        path = 'S'; // BB_EXPOSURE_EXACT=2: would have been served
+        ++st.served;
+    } else if (defer && pending && DeferExact(Site, obj, generation)) {
+        path = 'D'; // "not ready": asked again next frame
+        ++st.deferred;
+    } else if (r->IsRangeGpuWritten(at, Size)) {
+        path = pending ? 'Y' : 'Z'; // the game's read waits, as without the hook
+        ++(pending ? st.pending : st.missing);
+    } else {
+        path = 'P'; // delivered: the game's read does not wait
+        ++st.plain;
+    }
+    if (defer && path != 'D') {
+        EndDeferral(Site, obj, generation, path);
+    }
+    if (!g_exact_mismatches.empty()) {
+        ResolveExactMismatches(*r);
+    }
+    if (ExposureLog()) {
+        u64 value = 0;
+        if constexpr (Site == 2) {
+            std::memcpy(&value, *out, 8); // the game's own read follows at once: it waits the same
+        }
+        LogExact(Site, obj, pick.slot, generation, id, path, ticks, value);
+    }
+    PrintExactStats();
+    return path != 'D';
+}
+
+// The getter's count clamp (eboot 0x758a34: cmp/cmova with the maximum at +0xc, unsigned).
+u32 ClampCount(u32 n, u32 most) {
+    return n > most ? most : n;
+}
+enum class CloudServe { RealGetter, NoPoint, Point };
+// What the cloud hook may serve: the requested generation's count snapshot, and its point snapshot unless the
+// clamped count is 0 (the caller then does not read the point, eboot FUN_00601df0). Anything else: the real getter.
+CloudServe DecideCloudServe(bool have_count, u32 clamped, bool have_point) {
+    if (!have_count) {
+        return CloudServe::RealGetter;
+    }
+    if (clamped == 0) {
+        return CloudServe::NoPoint;
+    }
+    return have_point ? CloudServe::Point : CloudServe::RealGetter;
+}
+
+// The cloud sample (flags 0x36: two slots, GDS count; explicit request), site 3: the getter's count read (eboot
+// 0x758a32) is what waits, so the getter itself is mirrored when the count and point snapshots of the requested
+// generation are done; otherwise (and for "not ready", decided before any count read) the real getter runs.
+// Site 3: the cloud sample (flags 0x36), the 16-byte point the caller copies.
+// Site 4 (BB_QUERY_EXACT, default on, =0 off): the query results of eboot FUN_01051f00 (getter call 0x1051f3c), which
+// may sort the entries in place (0x1051f5b; such requests keep the real path) and copies count x 32 bytes (memcpy
+// 0x1051f6f): the slot's whole payload, the maximum count (+0xc) x 32 bytes, for objects with a count (flags 0x20; one
+// slot without 0x10). Its count and payload reads were the main thread's largest GPU waits at 1440p (327 + 279 per
+// race, ~5 ms each).
+constexpr u32 QueryMaxBytes = 256 * 1024;
+// The real getter's answer for a request the hook does not serve; a deferred request's entry is freed when it is
+// answered.
+template <u32 Site>
+bool RealGetterAnswer(void* obj, u32 frame, void** out, u32* count, char path) {
+    const bool ready = g_real_getter(obj, frame, out, count);
+    if (ready && Site == 4 && ExactDefer()) {
+        std::scoped_lock lk{g_exact_stats_mutex};
+        EndDeferral(Site, obj, frame, path); // explicit requests: the generation asked for is the frame
+    }
+    return ready;
+}
+// sort: site 4 only, FUN_01051f00's argument that makes it sort the results in place (r14b, passed by the thunk in r8):
+// such requests keep the real path, so the game sorts its own payload. Site 3 ignores it.
+template <u32 Site>
+PS4_SYSV_ABI bool CountedExactGet(void* obj, u32 frame, void** out, u32* count, u32 sort) {
+    const auto* o = static_cast<const u8*>(obj);
+    auto* r = VideoCore::g_memops_rasterizer;
+    const u32 flags = *reinterpret_cast<const u32*>(o + 0x10);
+    const u32 maximum = *reinterpret_cast<const u32*>(o + 0xc);
+    // The maximum is checked before it is multiplied (no wrap to a small size).
+    const bool eligible =
+        Site == 3 ? flags == 0x36 : (flags & 0x20) && maximum != 0 && maximum <= QueryMaxBytes / 32u;
+    const u32 Size = Site == 3 ? 16u : eligible ? maximum * 32u : 0u;
+    if constexpr (Site == 4) {
+        static std::atomic<u32> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+            std::printf("Exposure exact site 4: object %p flags %#x maximum %u entries (%u bytes), frame %u%s\n", obj,
+                        flags, maximum, Size, frame, eligible ? "" : ": not served");
+        }
+    }
+    const bool sorting = Site == 4 && (sort & 0xff) != 0;
+    if (!r || frame == 0 || !eligible || sorting) {
+        {
+            std::scoped_lock lk{g_exact_stats_mutex};
+            ++(sorting ? g_exact_stats[Site].sorting : g_exact_other);
+        }
+        return RealGetterAnswer<Site>(obj, frame, out, count, 'O');
+    }
+    const GetterPick pick = PickGetterSlot(o, frame);
+    if (!pick.ok || !pick.data || !pick.count) {
+        // "not ready": the real getter returns it without a count read
+        return RealGetterAnswer<Site>(obj, frame, out, count, 'O');
+    }
+    const ExactSlots slots = ReadExactSlots(o, true);
+    u64 id = 0;
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        id = RegisterExactSlots(o, Size, slots, pick.slot, Site == 4 && ExactEopFlush());
+    }
+    thread_local std::vector<u8> buffer; // operator new: 16-byte aligned, as the point's copy needs
+    if (buffer.size() < Size) {
+        buffer.resize(Size);
+    }
+    u8* const point = buffer.data();
+    // Verify mode: whether the caller changed the copy served last time (FUN_01051f00 sorts it in place when asked),
+    // checked before this call overwrites it.
+    thread_local std::vector<u8> last_served;
+    const bool rewritten = ExactVerify() && !last_served.empty() &&
+                           std::memcmp(point, last_served.data(), last_served.size()) != 0;
+    last_served.clear();
+    u32 n = 0;
+    u64 ticks[3]{};
+    bool count_pending = false, point_pending = false;
+    const bool defer = Site == 4 && ExactDefer();
+    const u64 wait_ns = defer ? 0 : ExactWaitNs();
+    const bool have_count =
+        id && slots.payloads[pick.slot] == pick.data && slots.counts[pick.slot] == pick.count &&
+        r->ReadTaggedSnapshot(pick.count, 4, pick.want, id, &n, &count_pending, ticks, wait_ns);
+    const u32 clamped = have_count ? ClampCount(n, *reinterpret_cast<const u32*>(o + 0xc)) : 0;
+    // The point of the same generation and lifetime only; none needed when the count is 0.
+    const bool have_point = have_count && clamped != 0 &&
+                            r->ReadTaggedSnapshot(pick.data, Size, pick.want, id, point, &point_pending, nullptr,
+                                                  wait_ns);
+    const CloudServe how = DecideCloudServe(have_count, clamped, have_point);
+    const bool raced = slots.labels[pick.slot] && *reinterpret_cast<const u32*>(slots.labels[pick.slot]) != pick.want;
+    char path;
+    std::unique_lock lk{g_exact_stats_mutex};
+    auto& st = g_exact_stats[Site];
+    st.rewritten += rewritten;
+    if (ticks[2]) {
+        ++st.waited;
+        st.wait_ns += ticks[2];
+    }
+    if (how != CloudServe::RealGetter && !raced) {
+        // As the getter: *out is the slot's payload pointer (here the point's copy), *count the clamped count.
+        *out = how == CloudServe::Point ? static_cast<void*>(point) : reinterpret_cast<void*>(pick.data);
+        *count = clamped;
+        path = 'X';
+        ++st.served;
+        st.nonempty += how == CloudServe::Point;
+        if (ExactVerify()) {
+            // One request: the raw count and, when served, the point (the real reads wait).
+            ++st.verified;
+            u32 real_n;
+            std::memcpy(&real_n, reinterpret_cast<const void*>(pick.count), 4);
+            // The bytes the caller reads: the point (site 3), count x 32 (site 4).
+            const u32 compared = Site == 3 ? Size : clamped * 32u;
+            const bool same = real_n == n && (how != CloudServe::Point ||
+                                              std::memcmp(point, reinterpret_cast<const void*>(pick.data), compared) == 0);
+            if (how == CloudServe::Point) {
+                last_served.assign(point, point + compared);
+            }
+            if (same) {
+                ++st.matched;
+            } else if (++st.unexplained <= 32) {
+                std::printf("Exposure exact: MISMATCH site %u count %llx point %llx generation %u id %llu: count %u "
+                            "vs real %u\n",
+                            Site, (unsigned long long)pick.count, (unsigned long long)pick.data, pick.want,
+                            (unsigned long long)id, n, real_n);
+            }
+        }
+    } else if (defer && !raced && (count_pending || point_pending) && DeferExact(Site, obj, pick.want)) {
+        path = 'D'; // "not ready": asked again next frame
+        ++st.deferred;
+    } else {
+        const bool waits = r->IsRangeGpuWritten(pick.count, 4) || r->IsRangeGpuWritten(pick.data, Size);
+        path = raced ? 'R' : !waits ? 'P' : (count_pending || point_pending) ? 'Y' : 'Z';
+        ++(raced ? st.raced : !waits ? st.plain : (count_pending || point_pending) ? st.pending : st.missing);
+    }
+    if (defer && path == 'X') {
+        EndDeferral(Site, obj, pick.want, path);
+    }
+    if (!g_exact_mismatches.empty()) {
+        ResolveExactMismatches(*r);
+    }
+    LogExact(Site, obj, pick.slot, pick.want, id, path, ticks);
+    PrintExactStats();
+    lk.unlock();
+    if (path == 'X' || path == 'D') {
+        return path == 'X';
+    }
+    return RealGetterAnswer<Site>(obj, frame, out, count, path);
+}
+
+// At an EOP: record(payload or count, size, tag, id) for every registration of the label (renewing its id first
+// when the generation went back). Separate from the rasterizer for the self-test. Returns whether a registration that
+// wants the submission ended there recorded a snapshot.
+template <typename Record>
+bool ExactEop(VAddr label, u32 tag, bool immediate, Record&& record) {
+    if (g_exact_count.load(std::memory_order_acquire) == 0 || !immediate) {
+        return false;
+    }
+    std::array<ExactLabel, 16> hits{};
+    u32 n = 0;
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        for (auto& e : g_exact_labels) {
+            if (e.label != label || n == hits.size()) {
+                continue;
+            }
+            if (e.tagged && tag < e.last_tag) { // a generation lower than the last: a new lifetime
+                e.id = ++g_exact_ids;
+                g_exact_epochs.fetch_add(1, std::memory_order_relaxed);
+            }
+            e.tagged = true;
+            e.last_tag = tag;
+            hits[n++] = e;
+        }
+    }
+    bool flush = false;
+    for (u32 i = 0; i < n; ++i) {
+        if (record(hits[i].payload, hits[i].size, tag, hits[i].id)) {
+            g_exact_recorded.fetch_add(1, std::memory_order_relaxed);
+            flush |= hits[i].flush;
+        }
+        if (hits[i].count && record(hits[i].count, 4u, tag, hits[i].id)) {
+            g_exact_recorded.fetch_add(1, std::memory_order_relaxed);
+            flush |= hits[i].flush;
+        }
+    }
+    return flush;
+}
+
+// BB_EXPOSURE_EXACT_SELFTEST=1: the slot/generation choice and the lifetime rules on fake
+// objects in host memory, before the game starts (no GPU): lag 2 and lag 3, a label not yet written (not ready),
+// a lower generation at an EOP and a lower issue counter (new lifetime ids), a label taken over by another object,
+// non-immediate EOP data. Prints one line per failed check and a summary; leaves the registry empty.
+void ExposureExactSelfTest() {
+    constexpr uintptr_t kOwnerGlobal = 0x2749f58;
+    std::vector<u8> image(kOwnerGlobal + 8);
+    const uintptr_t saved_base = g_image_base;
+    g_image_base = reinterpret_cast<uintptr_t>(image.data());
+    struct Fake {
+        alignas(16) u8 obj[0x100]{};
+        alignas(16) u8 payload[2][0x400]{};
+        u32 count[2]{};
+        alignas(8) u32 label[2]{};
+        u64 label_ptr[2]{}; // the slot's +0x40 points here; it holds the label address
+        void Init(u32 flags, u32 gen, u32 cur, u32 owner) {
+            *reinterpret_cast<u32*>(obj + 0x10) = flags;
+            for (u32 i = 0; i < 2; ++i) {
+                label_ptr[i] = reinterpret_cast<u64>(&label[i]);
+                *reinterpret_cast<u64*>(obj + 0x20 + i * 0x30) = reinterpret_cast<u64>(payload[i]);
+                *reinterpret_cast<u64*>(obj + 0x28 + i * 0x30) = reinterpret_cast<u64>(&count[i]);
+                *reinterpret_cast<u64*>(obj + 0x40 + i * 0x30) = reinterpret_cast<u64>(&label_ptr[i]);
+            }
+            *reinterpret_cast<u32*>(obj + 0x80) = cur;
+            *reinterpret_cast<u32*>(obj + 0x84) = owner;
+            *reinterpret_cast<u32*>(obj + 0x88) = gen;
+        }
+    };
+    auto a = std::make_unique<Fake>(), b = std::make_unique<Fake>();
+    u32 checks = 0, failed = 0;
+    auto check = [&](bool ok, const char* what) {
+        ++checks;
+        if (!ok) {
+            ++failed;
+            std::printf("Exposure exact self-test: FAILED %s\n", what);
+        }
+    };
+    struct Rec {
+        VAddr addr;
+        u32 size, tag;
+        u64 id;
+    };
+    std::vector<Rec> recs;
+    auto record = [&](VAddr addr, u32 size, u32 tag, u64 id) {
+        recs.push_back({addr, size, tag, id});
+        return true;
+    };
+    auto reg = [&](Fake& f, u32 size, u32 slot) {
+        std::scoped_lock lk{g_exact_mutex};
+        return RegisterExactSlots(f.obj, size, ReadExactSlots(f.obj, false), slot);
+    };
+    *reinterpret_cast<u32*>(image.data() + kOwnerGlobal) = 7;
+
+    // Lag 2 (owner not this thread's): the current slot, generation - 2.
+    a->Init(0x16, 10, 0, 1);
+    a->label[0] = 8;
+    GetterPick p = PickGetterSlot(a->obj, 0);
+    check(p.ok && p.slot == 0 && p.want == 8 && p.data == reinterpret_cast<uintptr_t>(a->payload[0]), "lag 2 pick");
+    // Lag 3 (owner is): the other slot, generation - 3.
+    a->Init(0x16, 10, 0, 7);
+    a->label[1] = 7;
+    p = PickGetterSlot(a->obj, 0);
+    check(p.ok && p.slot == 1 && p.want == 7 && p.data == reinterpret_cast<uintptr_t>(a->payload[1]), "lag 3 pick");
+    // The label still holds an older generation: not ready (nothing is served; the real getter says so too).
+    a->label[1] = 5;
+    check(!PickGetterSlot(a->obj, 0).ok, "older label is not ready");
+
+    // Registration and EOPs.
+    a->Init(0x16, 10, 0, 1);
+    a->label[0] = 8;
+    const u64 id0 = reg(*a, 0x400, 0);
+    check(id0 != 0, "registered");
+    recs.clear();
+    ExactEop(reinterpret_cast<VAddr>(&a->label[0]), 8, true, record);
+    check(recs.size() == 1 && recs[0].addr == reinterpret_cast<VAddr>(a->payload[0]) && recs[0].size == 0x400 &&
+              recs[0].tag == 8 && recs[0].id == id0,
+          "EOP records the slot's payload with its generation and id");
+    recs.clear();
+    ExactEop(reinterpret_cast<VAddr>(&a->label[0]), 9, false, record);
+    check(recs.empty(), "non-immediate EOP data records nothing");
+    ExactEop(reinterpret_cast<VAddr>(&a->label[0]) + 0x1000, 9, true, record);
+    check(recs.empty(), "unregistered label records nothing");
+    // A lower generation at the label: a new lifetime id before the snapshot is recorded.
+    ExactEop(reinterpret_cast<VAddr>(&a->label[0]), 2, true, record);
+    check(recs.size() == 1 && recs[0].id != id0 && recs[0].tag == 2, "lower EOP generation renews the id");
+    const u64 id1 = recs.empty() ? 0 : recs[0].id;
+    check(reg(*a, 0x400, 0) == id1, "getter sees the renewed id");
+    // The object made again at the same addresses: its issue counter goes back.
+    *reinterpret_cast<u32*>(a->obj + 0x88) = 3;
+    const u64 id2 = reg(*a, 0x400, 0);
+    check(id2 != id1 && id2 != id0, "lower issue counter renews the id");
+    // Another object takes over slot 0's label with its own payload.
+    b->Init(0x16, 4, 0, 1);
+    b->label_ptr[0] = reinterpret_cast<u64>(&a->label[0]);
+    const u64 idb = reg(*b, 0x400, 0);
+    recs.clear();
+    ExactEop(reinterpret_cast<VAddr>(&a->label[0]), 4, true, record);
+    check(recs.size() == 1 && recs[0].addr == reinterpret_cast<VAddr>(b->payload[0]) && recs[0].id == idb,
+          "a label taken over records only the new owner's payload");
+    // A counted object (the cloud): payload and count, same tag and id.
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        g_exact_labels.clear();
+        g_exact_count.store(0);
+    }
+    a->Init(0x36, 20, 1, 1);
+    *reinterpret_cast<u32*>(a->obj + 0x48 + 1 * 0x30) = 19;
+    a->label[1] = 19;
+    p = PickGetterSlot(a->obj, 19);
+    check(p.ok && p.slot == 1 && p.want == 19 && p.count == reinterpret_cast<uintptr_t>(&a->count[1]),
+          "explicit request picks the current slot");
+    check(!PickGetterSlot(a->obj, 18).ok, "explicit request for another frame is not ready");
+    u64 idc = 0;
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        idc = RegisterExactSlots(a->obj, 16, ReadExactSlots(a->obj, true), 1);
+    }
+    recs.clear();
+    ExactEop(reinterpret_cast<VAddr>(&a->label[1]), 19, true, record);
+    check(recs.size() == 2 && recs[0].size == 16 && recs[1].addr == reinterpret_cast<VAddr>(&a->count[1]) &&
+              recs[1].size == 4 && recs[0].tag == 19 && recs[1].tag == 19 && recs[0].id == idc && recs[1].id == idc,
+          "counted slot records point and count");
+
+    // The snapshot lookup around ReadTaggedSnapshot's wait: done only when the entry found has finished; an entry
+    // replaced during the wait by a newer unfinished copy of the same key is pending, a dropped one is missing.
+    {
+        struct Entry {
+            u32 key;
+            u64 tick;
+        };
+        std::vector<Entry> entries{{1, 5}, {2, 7}};
+        u64 gpu = 5;
+        const auto done_at = [&](u64 t) { return gpu >= t; };
+        const auto key1 = [](const Entry& e) { return e.key == 1; };
+        bool done = false;
+        check(VideoCore::BufferCache::LookupSnapshot(entries, key1, done_at, &done) == &entries[0] && done,
+              "lookup: finished copy is done");
+        gpu = 4;
+        check(VideoCore::BufferCache::LookupSnapshot(entries, key1, done_at, &done) && !done,
+              "lookup: unfinished copy is pending");
+        gpu = 5;
+        entries[0].tick = 9; // replaced while the reader waited for tick 5
+        check(VideoCore::BufferCache::LookupSnapshot(entries, key1, done_at, &done) && !done,
+              "lookup: replacement after the wait is pending");
+        entries.erase(entries.begin());
+        check(!VideoCore::BufferCache::LookupSnapshot(entries, key1, done_at, &done) && !done,
+              "lookup: dropped entry is missing");
+    }
+    // Cloud counts: zero, nonzero, clamped (unsigned, as cmova), and what may be served.
+    check(ClampCount(0, 8) == 0 && ClampCount(5, 8) == 5 && ClampCount(8, 8) == 8 && ClampCount(20, 8) == 8 &&
+              ClampCount(0xffffffffu, 8) == 8,
+          "count clamp");
+    check(DecideCloudServe(false, 0, false) == CloudServe::RealGetter &&
+              DecideCloudServe(false, 5, true) == CloudServe::RealGetter,
+          "no count snapshot: the real getter");
+    check(DecideCloudServe(true, 0, false) == CloudServe::NoPoint, "count 0: served without a point");
+    check(DecideCloudServe(true, 5, true) == CloudServe::Point, "count and point snapshots: served");
+    check(DecideCloudServe(true, 5, false) == CloudServe::RealGetter, "count without its point: the real getter");
+
+    {
+        std::scoped_lock lk{g_exact_mutex};
+        g_exact_labels.clear();
+        g_exact_count.store(0);
+    }
+    g_exact_recorded.store(0);
+    g_exact_epochs.store(0);
+    g_image_base = saved_base;
+    std::printf("Exposure exact self-test: %u of %u checks passed\n", checks - failed, checks);
+}
+} // namespace
+
+void VideoCore::ExposureExactAtEop(Vulkan::Rasterizer& rasterizer, VAddr label, u32 tag, bool immediate) {
+    if (ExactEop(label, tag, immediate, [&](VAddr addr, u32 size, u32 t, u64 id) {
+            return rasterizer.RecordTaggedSnapshot(addr, size, t, id);
+        })) {
+        rasterizer.FlushAtExactEop();
+    }
+}
+
+// For src/probe.c: BB_EXPOSURE_EXACT=1, the hook of the exposure getter call `site`, or 0.
+extern "C" uintptr_t bbgpu_exposure_exact_hook(uintptr_t real_getter, int site) {
+    if (!ExposureExact()) {
+        return 0;
+    }
+    if (site == 0 && EnvOne("BB_EXPOSURE_EXACT_SELFTEST")) {
+        ExposureExactSelfTest();
+    }
+    g_image_base = real_getter - 0x758980; // PickGetterSlot's latency branch reads a global
+    g_real_getter = reinterpret_cast<ReadbackGetter>(real_getter);
+    return site == 0   ? reinterpret_cast<uintptr_t>(&ExposureExactGet<0>)
+           : site == 1 ? reinterpret_cast<uintptr_t>(&ExposureExactGet<1>)
+                       : reinterpret_cast<uintptr_t>(&ExposureExactGet<2>);
+}
+
+// For src/probe.c: the hook of the exposure value's getter call; real_getter is eboot 0x758980. 0 unless
+// BB_EXPOSURE_STALE=1: the last delivered value is served without matching the generation the getter selected.
+extern "C" uintptr_t bbgpu_exposure_value_hook(uintptr_t real_getter) {
+    const char* env = std::getenv("BB_EXPOSURE_STALE");
+    if (!env || env[0] != '1') { // opt-in: the served value can be older than the generation the game selected
+        return 0;
+    }
+    g_real_getter = reinterpret_cast<ReadbackGetter>(real_getter);
+    return reinterpret_cast<uintptr_t>(&ExposureValueGet);
+}
+
+// For src/probe.c: the hook of FUN_01051f00's getter call (eboot 0x1051f3c), or 0. BB_QUERY_EXACT (default on,
+// =0 off): the requested generation's count and results, recorded at its EOP like the exposure and cloud (CountedExactGet<4>).
+extern "C" uintptr_t bbgpu_query_hook(uintptr_t image_base) {
+    const char* env = std::getenv("BB_QUERY_EXACT");
+    if (env && env[0] == '0') {
+        return 0;
+    }
+    g_image_base = image_base;
+    g_real_getter = reinterpret_cast<ReadbackGetter>(image_base + 0x758980);
+    return reinterpret_cast<uintptr_t>(&CountedExactGet<4>);
+}
+
+// For src/probe.c: the hook of FUN_00574d30's getter call (eboot 0x574d79), or 0. BB_CROWD_EXACT (default on,
+// =0 off): the requested generation's crowd ground heights, recorded at its EOP (ExposureExactGet<5>).
+extern "C" uintptr_t bbgpu_crowd_hook(uintptr_t image_base) {
+    const char* env = std::getenv("BB_CROWD_EXACT");
+    if (env && env[0] == '0') {
+        return 0;
+    }
+    g_image_base = image_base;
+    g_real_getter = reinterpret_cast<ReadbackGetter>(image_base + 0x758980);
+    return reinterpret_cast<uintptr_t>(&ExposureExactGet<5>);
+}
+
+// For src/probe.c: the hook of the cloud sample's getter call (BB_CLOUD_STALE=1), or 0. Opt-in: at 1440p it halves
+// frame-time jitter at the same FPS (1.49 -> 0.81-0.84 ms), but the count and the point are fetched
+// separately (not one producer generation), and a replayed successful result resets the caller's age timer
+// (0x602678) and validity (0x60269f) that the game would let expire. Needs one coherent result
+// per generation, or "not ready" while none is delivered, before it can be a default.
+extern "C" uintptr_t bbgpu_cloud_hook(uintptr_t image_base) {
+    if (CloudExact()) { // BB_CLOUD_EXACT (default on, see ExposureExactAtEop): the requested generation, exactly
+        g_image_base = image_base;
+        g_real_getter = reinterpret_cast<ReadbackGetter>(image_base + 0x758980);
+        return reinterpret_cast<uintptr_t>(&CountedExactGet<3>);
+    }
+    const char* env = std::getenv("BB_CLOUD_STALE");
+    if (!(env && env[0] == '1')) {
+        return 0;
+    }
+    g_image_base = image_base;
+    g_real_getter = reinterpret_cast<ReadbackGetter>(image_base + 0x758980);
+    StartFetcher();
+    return reinterpret_cast<uintptr_t>(&CloudGet);
+}
+
+// The hook for src/probe.c, or 0 unless BB_EXPOSURE_STALE=1.
+extern "C" uintptr_t bbgpu_exposure_hook(void) {
+    const char* env = std::getenv("BB_EXPOSURE_STALE");
+    if (!env || env[0] != '1') { // opt-in: the served value can be older than the generation the game selected
+        return 0;
+    }
+    StartFetcher();
+    return reinterpret_cast<uintptr_t>(&ExposureCopy);
+}

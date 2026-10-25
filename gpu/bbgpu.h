@@ -13,6 +13,7 @@ typedef struct {
     uint32_t sdk_version;       /* from the eboot's procparam */
     uint32_t psf_attributes;    /* param.sfo ATTRIBUTE */
     int32_t width, height;      /* initial window size */
+    int32_t render_height;      /* the game's 3D render height after patches and upscaling, 0 unknown */
 } BbGpuConfig;
 /* Registers kernel event queues (needed with or without graphics). */
 void bbgpu_register_kernel(void);
@@ -44,6 +45,17 @@ void bbgpu_print_recent_passes(void);
  * heap allocator (eboot 0x753a80) and the GDS-count site of the VideoShared one; called as wrapper(size, align, tag, site).
  * 0: not enabled. */
 uintptr_t bbgpu_shared_alloc_hook(uintptr_t real_alloc, uintptr_t image_base);
+/* BB_EXPOSURE_STALE=1 (gpu/shadps4/video_core/page_manager.cpp): the hook for the auto-exposure histogram copies
+ * (SysV memcpy signature). 0: not enabled. */
+uintptr_t bbgpu_exposure_hook(void);
+uintptr_t bbgpu_exposure_value_hook(uintptr_t real_getter);
+/* BB_EXPOSURE_EXACT=1: the hook of the exposure's getter call `site` (0, 1 histograms at 0x702ab9 / 0x702ae3, 2 the
+ * value at 0x702b0d). 0: not enabled. */
+uintptr_t bbgpu_exposure_exact_hook(uintptr_t real_getter, int site);
+/* BB_CLOUD_STALE=1: the hook of the cloud sample's getter call (eboot 0x60265e). 0: not enabled. */
+uintptr_t bbgpu_cloud_hook(uintptr_t image_base);
+uintptr_t bbgpu_query_hook(uintptr_t image_base);
+uintptr_t bbgpu_crowd_hook(uintptr_t image_base);
 #ifdef __cplusplus
 }
 #endif

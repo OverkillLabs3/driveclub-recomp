@@ -321,6 +321,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             bool(vk12_props.shaderSignedZeroInfNanPreserveFloat64),
         .supports_image_load_store_lod = instance_.IsImageLoadStoreLodSupported(),
         .supports_native_cube_calc = instance_.IsAmdGcnShaderSupported(),
+        .supports_native_cube_array = instance_.IsCubeArraySupported(),
         .supports_trinary_minmax = instance_.IsAmdShaderTrinaryMinMaxSupported(),
         .supports_buffer_fp32_atomic_min_max =
             instance_.IsShaderAtomicFloatBuffer32MinMaxSupported(),
@@ -361,6 +362,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     if (!std::getenv("DR_NO_WAVE_FIX")) {
         profile.lds_barriers_multi_wave = true;
         profile.wave_memory_barriers = true;
+    }
+    // Workgroup memory bounds checks (the AMD white squares): on everywhere. Off they leave out-of-range accesses
+    // undefined for no measured gain (1440p 78.8 vs 78.4-79.9 FPS). BB_LDS_BOUNDS=0 off.
+    if (const char* env = std::getenv("BB_LDS_BOUNDS")) {
+        profile.lds_bounds_checks = env[0] != '0';
+    } else {
+        profile.lds_bounds_checks = true;
     }
     WarmUp();
 
@@ -442,6 +450,15 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!RefreshGraphicsKey(sel)) {
         return nullptr;
     }
+    // bbport: the key is still built from the current state every draw; only the map probe is skipped when it
+    // equals the last draw's key. BB_PIPELINE_LASTKEY=0 probes the map every draw.
+    static const bool last_key = [] {
+        const char* env = std::getenv("BB_PIPELINE_LASTKEY");
+        return !(env && env[0] == '0');
+    }();
+    if (last_key && last_graphics_pipeline && sel.graphics_key == last_graphics_key) {
+        return last_graphics_pipeline;
+    }
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -470,6 +487,8 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!it->second->Handle()) {
         return nullptr;
     }
+    last_graphics_key = sel.graphics_key;
+    last_graphics_pipeline = it->second.get();
     return it->second.get();
 }
 
@@ -940,6 +959,35 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     info.pgm_base = params.Base(); // Needs to be actualized for inline cbuffer address fixup
     info.user_data = params.user_data;
     info.RefreshFlatBuf();
+
+    // bbport: BB_SPEC_MEMO (default 1): a program whose specialization inputs equal its previous lookup's reuses that
+    // permutation without building and comparing a StageSpecialization (~13% of the GPU command thread).
+    // 0 = off; 2 = check: also build the specialization on every hit and count hits whose permutation differs.
+    static const int spec_memo = [] {
+        const char* env = std::getenv("BB_SPEC_MEMO");
+        return env ? std::atoi(env) : 1;
+    }();
+    static u64 memo_lookups = 0, memo_hits = 0, memo_mismatches = 0;
+    thread_local Shader::StageSpecializationKey key;
+    const bool keyed = spec_memo != 0 && Shader::StageSpecializationKey::Supported(info);
+    if (keyed) {
+        key.Build(info, runtime_info, binding);
+        if ((++memo_lookups & ((1u << 20) - 1)) == 0) {
+            std::printf("Spec memo: %.1f%% of lookups reused the previous permutation (%llu checked hits differed)\n",
+                        100.0 * memo_hits / memo_lookups, static_cast<unsigned long long>(memo_mismatches));
+        }
+        if (program->memo_valid && program->last_used < program->modules.size() && program->memo_key == key) {
+            const size_t idx = program->last_used;
+            if (spec_memo == 2 && !(program->modules[idx].spec ==
+                                    Shader::StageSpecialization(info, runtime_info, profile, binding))) {
+                ++memo_mismatches;
+            }
+            ++memo_hits;
+            info.AddBindings(binding);
+            return std::make_tuple(&program->info, program->modules[idx].module,
+                                   program->modules[idx].spec.fetch_shader_data, HashCombine(params.hash, idx));
+        }
+    }
     auto spec = Shader::StageSpecialization(info, runtime_info, profile, binding);
 
     size_t perm_idx = program->modules.size();
@@ -968,6 +1016,11 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
         perm_idx = std::distance(program->modules.begin(), it);
         perm_hash = HashCombine(params.hash, perm_idx);
     }
+    if (keyed) {
+        program->memo_key = key;
+        program->memo_valid = true;
+        program->last_used = perm_idx;
+    }
     return std::make_tuple(&program->info, module,
                            program->modules[perm_idx].spec.fetch_shader_data, perm_hash);
 }
@@ -991,6 +1044,7 @@ std::optional<vk::ShaderModule> PipelineCache::ReplaceShader(vk::ShaderModule mo
             if (std::holds_alternative<GraphicsPipelineKey>(key)) {
                 auto& graphics_key = std::get<GraphicsPipelineKey>(key);
                 graphics_pipelines.erase(graphics_key);
+                last_graphics_pipeline = nullptr;
             } else if (std::holds_alternative<ComputePipelineKey>(key)) {
                 auto& compute_key = std::get<ComputePipelineKey>(key);
                 compute_pipelines.erase(compute_key);

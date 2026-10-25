@@ -123,6 +123,7 @@ struct ImageResource {
     /// bbport: read other than by normalized sampling without offsets (texel loads, size
     /// queries, offsets): needs the native-size image, not a reduced scene proxy.
     bool needs_native{};
+    bool native_cube{}; ///< sampled-only seamless cube view; raw uses retain 2D arrays
     u8 constant_mip_index{};
     MipStorageFallbackMode mip_fallback_mode{};
     SharpFetchPostOp post_op{};

@@ -51,6 +51,9 @@ struct Program {
     Shader::Info info;
     ModuleList modules{};
     size_t last_used = 0; ///< bbport: permutation of the previous lookup, compared first
+    /// bbport (BB_SPEC_MEMO): the specialization inputs of the lookup that chose `last_used`.
+    Shader::StageSpecializationKey memo_key;
+    bool memo_valid = false;
     /// bbport: `info` as translated, for draw-preparation workers (they must not read `info`,
     /// whose user data the GPU thread rewrites every draw). Guarded by programs_mutex.
     std::unique_ptr<Shader::Info> info_template;
@@ -197,6 +200,11 @@ private:
     tsl::robin_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_pipelines;
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     PipelineSelection sel{}; ///< GPU thread selection state
+    /// bbport: the pipeline of the last draw and its key (BB_PIPELINE_LASTKEY): consecutive draws mostly select
+    /// the same pipeline, and comparing the fresh key with the last one is cheaper than hashing it and probing
+    /// the map. Forgotten when pipelines are erased.
+    GraphicsPipelineKey last_graphics_key{};
+    const GraphicsPipeline* last_graphics_pipeline = nullptr;
     ComputePipelineKey compute_key{};
     u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
 
