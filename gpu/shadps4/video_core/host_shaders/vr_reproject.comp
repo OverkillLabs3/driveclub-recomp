@@ -3,7 +3,9 @@
 // so each pixel moves along its row by k * (depth + z22) pixels (reversed depth: depth + z22 = near / distance).
 // Pass 0 keeps, for each pixel of the other eye, the nearest picture pixel that lands there (atomic max of the depth
 // bits); pass 1 copies that pixel's colour; pass 2 fills what nothing landed on: a one-pixel crack from its farther
-// neighbour, a hole behind a near object from that eye's own last picture (alternate frames: the frame before).
+// neighbour, a hole behind a near object from that eye's own last picture (alternate frames: the frame before), or,
+// without one (reproject = 2: both eyes from a frame drawn between them), from the nearest landed pixel along the row
+// on the farther side: the background it uncovered.
 #version 450
 #extension GL_EXT_samplerless_texture_functions : require
 
@@ -59,7 +61,26 @@ void main() {
         } else if (have_last != 0) {
             c = imageLoad(last_img, p);
         } else {
-            c = imageLoad(picture_img, p);
+            // the first landed pixel on each side, within 256: the farther one is the uncovered background
+            ivec2 l = ivec2(-1), r = ivec2(-1);
+            uint lb = 0u, rb = 0u;
+            for (int d = 2; d <= 256 && (lb == 0u || rb == 0u); ++d) {
+                if (lb == 0u && p.x - d >= 0) {
+                    lb = imageLoad(hit_img, p - ivec2(d, 0)).r;
+                    l = p - ivec2(d, 0);
+                }
+                if (rb == 0u && p.x + d < extent.x) {
+                    rb = imageLoad(hit_img, p + ivec2(d, 0)).r;
+                    r = p + ivec2(d, 0);
+                }
+            }
+            if (lb != 0u && (rb == 0u || lb <= rb)) {
+                c = imageLoad(out_img, l);
+            } else if (rb != 0u) {
+                c = imageLoad(out_img, r);
+            } else {
+                c = imageLoad(picture_img, p);
+            }
         }
         imageStore(out_img, p, c);
     }

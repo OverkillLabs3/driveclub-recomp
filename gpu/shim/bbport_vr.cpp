@@ -41,8 +41,10 @@
 //                        that eye moves instead. key_turn (9) switches it on and off while driving
 //   reproject = 0        1: each frame the other eye is made from this frame's picture and depth (moved sideways by
 //                        the eye distance; what was hidden comes from that eye's last picture): both eyes show the
-//                        same moment, every frame. Needs the HUD drawn apart and an eye-shaped size. key_reproject (8)
-//                        switches it while driving
+//                        same moment, every frame. Needs the HUD drawn apart and an eye-shaped size.
+//                        2: the game draws from between the eyes (no alternate frames) and both eyes are made from it,
+//                        each moved half the eye distance; what was hidden is filled from the background beside it.
+//                        key_reproject (8) goes off, 1, 2 while driving
 //   hud_distance = 1.1, hud_width = 1.4, hud_y = 0
 //                        the HUD panel: metres ahead of the seat, its width (16:9), metres above the eyes
 // The recentre key (0, or keypad 5) makes the direction the head faces straight ahead.
@@ -123,7 +125,7 @@ struct Settings {
     bool hud_layer = true;
     float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
     float turn_comp = 0.0f;
-    bool reproject = false;
+    int reproject = 0;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     int keys[9] = {'0', '2', '1', '5', '6', '4', '3', '9', '8'}; // and the turn compensation, the reprojection
 } settings;
@@ -154,7 +156,6 @@ struct State {
     XrPosef frame_pose{};
     float frame_car[9]{};    // the car's axes (rows, world) of that frame: the turn compensation's reference
     bool turn_on = false;    // the car turn compensation (turn_comp, key_turn)
-    bool reproject_on = false;  // the other eye made from this frame (reproject, key_reproject)
     bool reproject_frame = false; // this frame's layer: both eyes at the frame's head
     bool cockpit_shown = false;
     long long cockpit_left_us = 0; // when the cockpit view was left last
@@ -165,6 +166,9 @@ struct State {
 } st;
 
 std::atomic<bool> active{false};
+// The eyes made from depth (reproject, key_reproject): 0 off, 1 the other eye from each alternate frame, 2 both eyes
+// from a frame drawn between them.
+std::atomic<int> reproject_mode{0};
 std::string instance_extension_storage, device_extension_storage;
 std::deque<std::string> extension_names;
 
@@ -262,7 +266,7 @@ void ReadSettings() {
         else if (k == "hud_width" && value > 0.1f) settings.hud_width = value;
         else if (k == "hud_y") settings.hud_y = value;
         else if (k == "turn_comp" && value >= 0.0f && value <= 1.0f) settings.turn_comp = value;
-        else if (k == "reproject") settings.reproject = value != 0;
+        else if (k == "reproject" && value >= 0 && value <= 2) settings.reproject = int(value);
     }
     std::fclose(f);
 #endif
@@ -662,7 +666,7 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     // Alternate frames: each call is the next eye, ipd/2 along the head's own x axis (the camera's x row points left:
     // the left eye is on its + side).
     int eye = -1;
-    if (settings.afr) {
+    if (settings.afr && reproject_mode.load(std::memory_order_relaxed) != 2) {
         eye = state.next_eye;
         state.next_eye ^= 1;
         const float side = eye == 0 ? settings.ipd * 0.5f : -settings.ipd * 0.5f;
@@ -941,8 +945,10 @@ struct Gpu {
         GpuImage hud;     // split: the HUD (premultiplied), TRANSFER_SRC_OPTIMAL
         GpuImage whole;   // split: scene and HUD, SHADER_READ_ONLY_OPTIMAL (the window samples it)
         bool split = false;
-        GpuImage other;   // reprojected: the other eye from this frame, TRANSFER_SRC_OPTIMAL
+        GpuImage other;   // reprojected: the other eye from this frame, TRANSFER_SRC_OPTIMAL (mode 2: the left)
+        GpuImage right;   // mode 2: the right eye
         bool reprojected = false;
+        bool both = false; // mode 2: both eyes made (other, right)
         uint32_t width = 0, height = 0;
         bool valid = false;
         unsigned last_use = 0;
@@ -1240,8 +1246,11 @@ void ReadKeys() {
             if (k == 0) {
                 st.have_centre = false;
             } else if (k == 8) {
-                st.reproject_on = !st.reproject_on;
-                std::printf("VR: the other eye from this frame's depth %s\n", st.reproject_on ? "on" : "off");
+                const int mode = (reproject_mode.load() + 1) % 3;
+                reproject_mode = mode;
+                std::printf("VR: eyes from depth: %s\n", mode == 0   ? "off (alternate frames)"
+                                                       : mode == 1 ? "1 (the other eye from each frame)"
+                                                                   : "2 (both eyes from the middle)");
             } else if (k == 7) {
                 st.turn_on = !st.turn_on;
                 std::printf("VR: car turn compensation %s (%.2f)\n", st.turn_on ? "on" : "off",
@@ -1288,7 +1297,7 @@ void AppendInstanceExtensions(std::vector<const char*>& extensions) {
     }
     ReadSettings();
     st.turn_on = settings.turn_comp > 0.0f;
-    st.reproject_on = settings.reproject;
+    reproject_mode = settings.reproject;
     if (!Start() || !xr.GetVulkanInstanceExtensionsKHR) {
         st.failed = true;
         std::printf("VR: off\n");
@@ -1485,7 +1494,7 @@ void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t w
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
     // the frame's scene depth, for the other eye (reproject)
     gpu.depth_ok[index] = false;
-    if (depth && st.reproject_on && depth_width == width && depth_height == height &&
+    if (depth && reproject_mode.load() != 0 && depth_width == width && depth_height == height &&
         (depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT || depth_format == VK_FORMAT_D32_SFLOAT) &&
         MakeDepth(gpu.depths[index], width, height, depth_format)) {
         // `depth` is in TRANSFER_SRC_OPTIMAL and stays so
@@ -1513,17 +1522,19 @@ void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t w
 // The other eye (`other`) from the frame's picture and depth: the camera moved by the eye distance along its own x
 // axis (to the right for the right eye). A point at `distance` moves by -b * x_scale / distance in NDC, and
 // 1 / distance = (depth + z22) / z32 (reversed depth), so k = -b * x_scale / z32 * width / 2 pixels per unit.
-bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, int other) {
+// `out`: the picture seen from `b` metres to the side (right positive); holes from `last` (that eye's last picture),
+// or from the background beside them when there is none.
+bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, GpuImage& out, float b,
+               GpuImage* last_picture) {
     const float x_scale = cockpit_x.load(), z22 = cockpit_z22.load(), z32 = cockpit_z32.load();
     const uint32_t w = entry.width, h = entry.height;
     if (!gpu.reproject_pipeline || x_scale <= 0.1f || z32 <= 0.0f ||
-        !MakeImage(entry.other, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
+        !MakeImage(out, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT) ||
         !MakeImage(gpu.hits, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_FORMAT_R32_UINT)) {
         return false;
     }
-    GpuImage& last = gpu.eye_picture[other];
-    const bool have_last = gpu.eye_valid[other] && last.view && last.width == w && last.height == h;
-    const float b = other == 1 ? settings.ipd : -settings.ipd;
+    GpuImage& last = last_picture ? *last_picture : entry.picture;
+    const bool have_last = last_picture && last.view && last.width == w && last.height == h;
     const float k = -b * x_scale / z32 * float(w) * 0.5f;
     Barrier(cmd, entry.picture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
@@ -1531,7 +1542,7 @@ bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, i
         Barrier(cmd, last.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
     }
-    Barrier(cmd, entry.other.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT,
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT,
             VK_ACCESS_SHADER_WRITE_BIT);
     Barrier(cmd, gpu.hits.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -1545,7 +1556,7 @@ bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, i
                                       {VK_NULL_HANDLE, have_last ? last.view : entry.picture.view,
                                        VK_IMAGE_LAYOUT_GENERAL},
                                       {VK_NULL_HANDLE, gpu.hits.view, VK_IMAGE_LAYOUT_GENERAL},
-                                      {VK_NULL_HANDLE, entry.other.view, VK_IMAGE_LAYOUT_GENERAL}};
+                                      {VK_NULL_HANDLE, out.view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSet writes[5]{};
     for (uint32_t i = 0; i < 5; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1568,13 +1579,12 @@ bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, i
         Barrier(cmd, last.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     }
-    Barrier(cmd, entry.other.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     static bool told = false;
     if (!told) {
         told = true;
-        std::printf("VR: the other eye from this frame's depth (%ux%u, %.1f pixels at 1 m)\n", w, h,
-                    -b * x_scale * float(w) * 0.5f);
+        std::printf("VR: eyes from depth (%ux%u, %.1f pixels at 1 m)\n", w, h, -b * x_scale * float(w) * 0.5f);
     }
     return true;
 }
@@ -1614,6 +1624,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     entry->valid = false;
     entry->split = false;
     entry->reprojected = false;
+    entry->both = false;
     if (!MakeImage(entry->picture, display_width, display_height,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
         return VK_NULL_HANDLE;
@@ -1665,8 +1676,18 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             std::memcpy(entry->car, camera.car, sizeof camera.car);
             entry->split = true;
             entry->valid = true;
-            entry->reprojected = st.reproject_on && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index] &&
-                                 Reproject(cmd, *entry, gpu.depths[scene_index], 1 - camera.eye);
+            const int mode = reproject_mode.load();
+            if (mode == 1 && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index]) {
+                const int other = 1 - camera.eye;
+                entry->reprojected = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other,
+                                               other == 1 ? settings.ipd : -settings.ipd,
+                                               gpu.eye_valid[other] ? &gpu.eye_picture[other] : nullptr);
+            } else if (mode == 2 && camera.found && camera.eye < 0 && gpu.depth_ok[scene_index]) {
+                entry->both = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other, -0.5f * settings.ipd,
+                                        nullptr) &&
+                              Reproject(cmd, *entry, gpu.depths[scene_index], entry->right, 0.5f * settings.ipd,
+                                        nullptr);
+            }
             return whole_view; // the window shows both together
         }
     }
@@ -1823,9 +1844,17 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     const VkImage target = st.images[index].image;
     Barrier(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
             VK_ACCESS_TRANSFER_WRITE_BIT);
-    st.afr_frame = settings.afr && cockpit && (gpu.eye_valid[0] || gpu.eye_valid[1]);
-    st.reproject_frame = st.afr_frame && eye >= 0 && made->reprojected && made->other.width == width;
-    if (st.reproject_frame) {
+    const bool both = cockpit && made && made->tagged && made->both && made->other.width == width &&
+                      made->right.width == width;
+    // mode 2 draws from the middle: no eye's last picture is current
+    st.afr_frame = settings.afr && cockpit &&
+                   (both || ((gpu.eye_valid[0] || gpu.eye_valid[1]) && reproject_mode.load() != 2));
+    st.reproject_frame = st.afr_frame && ((eye >= 0 && made->reprojected && made->other.width == width) || both);
+    if (both) {
+        // both eyes made from this frame, drawn between them
+        Copy(cmd, made->other.image, target, width, height, 0);
+        Copy(cmd, made->right.image, target, width, height, int32_t(width));
+    } else if (st.reproject_frame) {
         // both eyes of this frame: its own picture and the other eye made from it
         Copy(cmd, gpu.eye_picture[eye].image, target, width, height, int32_t(eye * width));
         Copy(cmd, made->other.image, target, width, height, int32_t((1 - eye) * width));
