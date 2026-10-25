@@ -646,8 +646,10 @@ static void *ffb_thread(void *unused) {
                 printf("\n");
             }
         }
-        /* The physics model takes over from the game's spring, constant force and damper while a car is driven; in the
-         * menus and replays the game's forces come back. */
+        /* The physics model owns the wheel only while a car is controlled.
+         * Do not start the guest's hardware spring in intros, menus or replays:
+         * it is unrelated to the physics output and can oscillate a T300 even
+         * before the first driving sample. Other models retain guest effects. */
         const bool physics=ffb_physics && ffb_physics_live();
         { static bool was;
           if (was && !physics) {
@@ -660,7 +662,7 @@ static void *ffb_thread(void *unused) {
         for (int i=0;i<LOGI_EFFECTS;++i) {
             /* with the software model the spring and the constant force are worked into its own force */
             if (!used[i] || ffb_zero || (ffb_software && (want[i].type==LOGI_SPRING || want[i].type==LOGI_CONSTANT)) ||
-                (physics && want[i].type!=LOGI_PERIODIC)) {
+                (ffb_physics && (!physics || want[i].type!=LOGI_PERIODIC))) {
                 if (sdl_id[i]>=0) { SDL_DestroyHapticEffect(haptic,sdl_id[i]); sdl_id[i]=-1; running[i]=false; }
                 continue;
             }
