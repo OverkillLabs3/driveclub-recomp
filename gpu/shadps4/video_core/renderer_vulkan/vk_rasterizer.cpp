@@ -2689,7 +2689,9 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                         XXH3_64bits(record.data(), sizeof(record)),
                         record[16], record[17], record[18], record[32], record[33], record[34]);
                 }
-                geometry = XXH3_64bits_withSeed(record.data(), sizeof(record), geometry);
+                if (capture_frame) {
+                    geometry = XXH3_64bits_withSeed(record.data(), sizeof(record), geometry);
+                }
                 motion_instances.push_back(XXH3_64bits_withSeed(record.data(), sizeof(record), streams));
             }
             // Unreadable or unqualified model data must use native/camera reprojection.
