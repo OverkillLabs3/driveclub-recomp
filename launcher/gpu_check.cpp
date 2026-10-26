@@ -12,12 +12,18 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 #include "gpu_check.h"
 
+
 namespace {
+
+GpuCapabilities capabilities;
+std::wstring ExeDir();
 
 std::wstring Widen(const char* text) {
   const int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
@@ -47,8 +53,29 @@ struct Candidate {
 struct Outcome {
   std::wstring message;  // "" fine, or when the check could not be completed
   int use_index = -1;    // >= 0: the renderer must use this card
+  GpuCapabilities capabilities;
 };
 
+GpuCapabilities FeatureSupport(const Candidate& card) {
+  auto support = CapabilitiesForGpu(card.name);
+  const auto runtime = ExeDir() + L"\\runtime\\";
+  support.dlss_runtime = GetFileAttributesW((runtime + L"bbport_dlss.dll").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                         GetFileAttributesW((runtime + L"nvngx_dlss.dll").c_str()) != INVALID_FILE_ATTRIBUTES;
+  auto neural_runtime = std::filesystem::path(runtime);
+  if (const wchar_t* env = _wgetenv(L"BB_NR_RUNTIME"); env && *env) {
+    neural_runtime = env;
+    if (_wcsicmp(neural_runtime.extension().c_str(), L".dll") == 0) neural_runtime = neural_runtime.parent_path();
+  }
+  support.neural_runtime = GetFileAttributesW((neural_runtime / L"nvngx_dlssnr.dll").c_str()) != INVALID_FILE_ATTRIBUTES &&
+                           GetFileAttributesW((runtime + L"bbport_nr_nvngx.dll").c_str()) != INVALID_FILE_ATTRIBUTES;
+  if (!support.dlss_runtime) {
+    support.dlss = false;
+    support.frame_multiplier_max = 0;
+  }
+  if (GetFileAttributesW((runtime + L"nvngx_dlssg.dll").c_str()) == INVALID_FILE_ATTRIBUTES) support.frame_multiplier_max = 0;
+  if (!support.neural_runtime) support.neural = false;
+  return support;
+}
 const wchar_t* kTail = L" Update the graphics driver; if it still does not run, this card is not supported."
                        L" (To start anyway, turn on 'Skip the graphics card check' in the launcher.)";
 
@@ -168,10 +195,20 @@ Outcome Query() {
     return a.local_memory > b.local_memory;
   });
 
-  if (devices.front().problem.empty()) return {};  // the renderer's own choice is fine
+  wchar_t override_index[32];
+  if (GetEnvironmentVariableW(L"BB_GPU_ID", override_index, 32) > 0) {
+    const int index = _wtoi(override_index);
+    if (index >= 0) {
+      for (const auto& card : devices) {
+        if (card.index == index) return {card.problem, -1, FeatureSupport(card)};
+      }
+      return {};
+    }
+  }
+  if (devices.front().problem.empty()) return {L"", -1, FeatureSupport(devices.front())};
   // The renderer would pick a card that cannot run it: take the first one that can.
   for (const Candidate& c : devices) {
-    if (c.problem.empty() && c.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) return {L"", c.index};
+    if (c.problem.empty() && c.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_CPU) return {L"", c.index, FeatureSupport(c)};
   }
   // Only software renderers: say so rather than blaming one of them.
   const bool only_software = std::all_of(devices.begin(), devices.end(), [](const Candidate& c) {
@@ -200,13 +237,14 @@ std::wstring ExeDir() {
 
 int GpuCheckChildMain(const wchar_t* result_path) {
   const Outcome outcome = Query();
-  std::string text;
-  if (outcome.message.empty()) {
-    text = "ok\n";
-    if (outcome.use_index >= 0) text += "index=" + std::to_string(outcome.use_index) + "\n";
-  } else {
-    text = "bad\n" + Narrow(outcome.message);
-  }
+  const auto& c = outcome.capabilities;
+  std::string text = outcome.message.empty() ? "ok\n" : "bad\n";
+  text += "index=" + std::to_string(outcome.use_index) + "\nname=" + Narrow(c.name) +
+          "\nchecked=" + std::to_string(c.checked) + "\ndlss=" + std::to_string(c.dlss) +
+          "\nframe_max=" + std::to_string(c.frame_multiplier_max) + "\nneural=" + std::to_string(c.neural) +
+          "\nreflex=" + std::to_string(c.reflex) + "\nfsr411=" + std::to_string(c.fsr411) +
+          "\ndlss_runtime=" + std::to_string(c.dlss_runtime) + "\nneural_runtime=" + std::to_string(c.neural_runtime) +
+          "\nmessage=" + Narrow(outcome.message) + "\n";
   FILE* f = _wfopen(result_path, L"wb");
   if (f) {
     std::fwrite(text.data(), 1, text.size(), f);
@@ -216,6 +254,7 @@ int GpuCheckChildMain(const wchar_t* result_path) {
 }
 
 std::wstring CheckGpu() {
+  capabilities = {};
   if (FileExists(ExeDir() + L"\\skip_gpu_check.txt") || GetEnvironmentVariableW(L"DRIVECLUB_SKIP_GPU_CHECK", nullptr, 0) > 0) {
     return L"";
   }
@@ -256,14 +295,60 @@ std::wstring CheckGpu() {
     std::fclose(f);
   }
   DeleteFileW(result.c_str());
-  if (text.rfind("bad\n", 0) == 0 && code == 1) return Widen(text.c_str() + 4);
+  const auto value = [&](const char* key) {
+    const std::string prefix = std::string("\n") + key + "=";
+    const auto start = text.find(prefix);
+    if (start == std::string::npos) return std::string{};
+    const auto begin = start + prefix.size();
+    return text.substr(begin, text.find('\n', begin) - begin);
+  };
+  capabilities.checked = value("checked") == "1";
+  capabilities.name = Widen(value("name").c_str());
+  capabilities.dlss = value("dlss") == "1";
+  capabilities.frame_multiplier_max = std::atoi(value("frame_max").c_str());
+  capabilities.neural = value("neural") == "1";
+  capabilities.reflex = value("reflex") == "1";
+  capabilities.fsr411 = value("fsr411") == "1";
+  capabilities.dlss_runtime = value("dlss_runtime") == "1";
+  capabilities.neural_runtime = value("neural_runtime") == "1";
+  if (text.rfind("bad\n", 0) == 0 && code == 1) return Widen(value("message").c_str());
   if (text.rfind("ok\n", 0) == 0) {
     const size_t at = text.find("index=");
-    if (at != std::string::npos && GetEnvironmentVariableW(L"BB_GPU_ID", nullptr, 0) == 0) {
+    if (at != std::string::npos && std::atoi(text.c_str() + at + 6) >= 0 && GetEnvironmentVariableW(L"BB_GPU_ID", nullptr, 0) == 0) {
       SetEnvironmentVariableW(L"BB_GPU_ID", Widen(std::to_string(std::atoi(text.c_str() + at + 6)).c_str()).c_str());
     }
   }
   return L"";
+}
+
+const GpuCapabilities& GraphicsCapabilities() { return capabilities; }
+
+GpuCapabilities CapabilitiesForGpu(const std::wstring& name) {
+  GpuCapabilities support;
+  support.checked = !name.empty();
+  support.name = name;
+  std::wstring model = name;
+  std::transform(model.begin(), model.end(), model.begin(), [](wchar_t c) { return std::towupper(c); });
+  const auto rtx = model.find(L"RTX");
+  if (rtx != std::wstring::npos) {
+    const int number = _wtoi(model.c_str() + rtx + 3);
+    int series = number % 100 >= 50 ? number / 100 : 0;
+    if (model.find(L"ADA") != std::wstring::npos) series = 40;
+    if (model.find(L"BLACKWELL") != std::wstring::npos) series = 50;
+    support.dlss = support.reflex = support.fsr411 = true;
+    support.frame_multiplier_max = series == 50 ? 6 : series == 40 ? 2 : 0;
+    support.neural = series == 50;
+  } else if (const auto gtx = model.find(L"GTX"); gtx != std::wstring::npos) {
+    const int number = _wtoi(model.c_str() + gtx + 3);
+    support.reflex = number >= 900;
+    support.fsr411 = number >= 1000;
+  } else if (const auto rx = model.find(L"RADEON RX"); rx != std::wstring::npos) {
+    const int number = _wtoi(model.c_str() + rx + 9);
+    support.fsr411 = number >= 5000;
+  } else if (model.find(L"INTEL") != std::wstring::npos && model.find(L"ARC") != std::wstring::npos) {
+    support.fsr411 = true;
+  }
+  return support;
 }
 
 std::wstring CheckCpu() {

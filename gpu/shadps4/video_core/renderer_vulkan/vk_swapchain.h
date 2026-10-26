@@ -29,10 +29,10 @@ public:
     void Recreate(u32 width, u32 height);
 
     /// Acquires the next image in the swapchain.
-    bool AcquireNextImage();
+    bool AcquireNextImage(Scheduler& scheduler);
 
     /// Presents the current image and move to the next one
-    bool Present();
+    bool Present(u64 latency_id = 0);
 
     vk::SurfaceKHR GetSurface() const {
         return surface;
@@ -78,6 +78,10 @@ public:
         return image_acquired[frame_index];
     }
 
+    void MarkAcquireSubmitted(u64 tick) {
+        image_acquired_ticks[frame_index] = tick;
+    }
+
     [[nodiscard]] vk::Semaphore GetPresentReadySemaphore() const {
         return present_ready[image_index];
     }
@@ -87,6 +91,13 @@ public:
     }
 
     void SetHDR(bool hdr);
+
+    /// bbport: NVIDIA Reflex low-latency mode on this swapchain (VK_NV_low_latency2).
+    void SetReflex(int mode);
+    void BeforeInput();
+    u64 BeginLatencyRender();
+    void MarkLatency(u64 id, VkLatencyMarkerNV marker);
+    void EndLatencyPresent(u64 id);
 
     bool GetHDR() const {
         return needs_hdr;
@@ -122,6 +133,15 @@ private:
 
 private:
     const Instance& instance;
+    void MarkLatencyLocked(u64 id, VkLatencyMarkerNV marker);
+    std::mutex latency_mutex;
+    std::mutex input_mutex;
+    vk::UniqueSemaphore latency_semaphore;
+    u64 latency_input_id = 0;
+    u64 latency_tick = 0;
+    u64 latency_generation = 0;
+    u64 latency_presented = 0;
+    u64 latency_reported = 0;
     const Frontend::WindowSDL& window;
     vk::SwapchainKHR swapchain{};
     vk::SurfaceKHR surface{};
@@ -134,6 +154,7 @@ private:
     std::vector<vk::Image> images;
     std::vector<vk::ImageView> images_view;
     std::vector<vk::Semaphore> image_acquired;
+    std::vector<u64> image_acquired_ticks;
     std::vector<vk::Semaphore> present_ready;
     u32 width = 0;
     u32 height = 0;
@@ -143,6 +164,7 @@ private:
     bool needs_recreation = true;
     bool needs_hdr = false;    // The game requested HDR swapchain
     bool supports_hdr = false; // SC supports HDR output
+    int reflex_mode = -1;
 };
 
 } // namespace Vulkan

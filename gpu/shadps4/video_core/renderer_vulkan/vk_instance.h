@@ -99,6 +99,26 @@ public:
         return present_queue;
     }
 
+    /// bbport: NVIDIA Reflex low-latency mode and present IDs (VK_NV_low_latency2).
+    bool HasLowLatency2() const {
+        return low_latency2;
+    }
+    PFN_vkSetLatencySleepModeNV SetLatencySleepModeFn() const {
+        return set_latency_sleep_mode;
+    }
+    PFN_vkSetLatencyMarkerNV SetLatencyMarkerFn() const {
+        return set_latency_marker;
+    }
+    PFN_vkLatencySleepNV LatencySleepFn() const {
+        return latency_sleep;
+    }
+    PFN_vkGetLatencyTimingsNV GetLatencyTimingsFn() const {
+        return get_latency_timings;
+    }
+    PFN_vkQueueNotifyOutOfBandNV QueueNotifyOutOfBandFn() const {
+        return queue_notify_out_of_band;
+    }
+
     TracyVkCtx GetProfilerContext() const {
         return profiler_context;
     }
@@ -338,6 +358,14 @@ public:
         return IsFsr4Int8Supported() && mixed_float_dot_product;
     }
 
+    /// bbport: the portable FSR 4.1.1 replay (assets built with FSR411_PORTABLE=1). The
+    /// shaders need Int8/Int16 and SPV_KHR_integer_dot_product, but not the Valve mixed-dot
+    /// extension, so NVIDIA and other Vulkan drivers can run them.
+    bool IsFsr411PortableSupported() const {
+        return vk12_features.shaderInt8 && features.shaderInt16 &&
+               vk13_features.shaderIntegerDotProduct;
+    }
+
     /// VK_KHR_shader_clock is supported.
     bool IsShaderSubgroupClockSupported() const {
         return shader_clock && shader_clock_features.shaderSubgroupClock;
@@ -422,6 +450,14 @@ public:
     /// Returns the maximum size of compute shared memory.
     u32 MaxComputeSharedMemorySize() const {
         return properties.limits.maxComputeSharedMemorySize;
+    }
+
+    u32 MaxVertexOutputComponents() const {
+        return properties.limits.maxVertexOutputComponents;
+    }
+
+    u32 MaxFragmentInputComponents() const {
+        return properties.limits.maxFragmentInputComponents;
     }
 
     /// Returns the maximum sampler LOD bias.
@@ -622,6 +658,13 @@ private:
     bool shader_clock{};
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
+    bool present_id{};              // VK_KHR_present_id (Reflex frame attribution)
+    bool low_latency2{};            // VK_NV_low_latency2 (NVIDIA Reflex low-latency mode)
+    PFN_vkSetLatencySleepModeNV set_latency_sleep_mode{};
+    PFN_vkSetLatencyMarkerNV set_latency_marker{};
+    PFN_vkLatencySleepNV latency_sleep{};
+    PFN_vkGetLatencyTimingsNV get_latency_timings{};
+    PFN_vkQueueNotifyOutOfBandNV queue_notify_out_of_band{};
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};

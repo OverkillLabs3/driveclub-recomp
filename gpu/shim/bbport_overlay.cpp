@@ -212,6 +212,13 @@ void PollHotkeys() {
     }
     f9_down = f9;
     f10_down = f10;
+    static bool f11_down = false;
+    const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+    if (f11 && !f11_down && s.aa_mode == BbSettings::AaDlss) {
+        const int preset = s.dlss_model.load();
+        s.dlss_model = preset < 10 ? 10 : preset < 13 ? preset + 1 : 0;
+    }
+    f11_down = f11;
     // Page Up / Page Down: HDR brightness (SDR white) in steps of 25 nits, kept for the next start.
     static bool page_up_down = false, page_down_down = false;
     const bool brighter = edge(VK_PRIOR, page_up_down), darker = edge(VK_NEXT, page_down_down);
@@ -345,9 +352,15 @@ void FpsCounter() {
             const char* keys = up ? (s.dlss_supported ? "F10 FSR/DLSS" : "")
                                   : (s.dlss_supported ? "F9 off, F10 FSR/DLSS" : "F9 off");
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
-                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : "FSR 3.1",
+                        s.aa_effective == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA")
+                            : s.aa_effective == BbSettings::AaFsr411 ? "FSR 4.1.1" : "FSR 3.1.5",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
                         s.aa_running ? " on" : " waiting", *keys ? "  (" : "", keys, *keys ? ")" : "");
+            if (s.aa_mode == BbSettings::AaDlss) {
+                const int preset = s.dlss_model.load();
+                const char* name = preset == 10 ? "J" : preset == 11 ? "K" : preset == 12 ? "L" : preset == 13 ? "M" : "Auto";
+                ImGui::Text("DLSS SR preset: %s  (F11)", name);
+            }
         } else if (g_aa_used) {
             ImGui::Text("AA: game  (F9 on)");
         }

@@ -774,6 +774,7 @@ static void camera_fov_apply(void) {}
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
+    if (handle==1) bbgpu_reflex_input_sample();
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }

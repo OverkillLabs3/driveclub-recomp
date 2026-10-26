@@ -893,6 +893,8 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
         frame = presenter->PrepareFrame(group, buffer.address_left);
     }
 
+    const u64 latency_id = frame->latency_id;
+    presenter->BeginLatencyPresent(latency_id);
     {
         std::scoped_lock lock{mutex};
         requests.push({
@@ -907,6 +909,7 @@ void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_
             .ahead_ns = BbTrace::ahead_wait_ns.load(std::memory_order_relaxed),
         });
     }
+    presenter->EndLatencyPresent(latency_id);
     request_cv.notify_one();
 }
 

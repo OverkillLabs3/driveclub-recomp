@@ -47,7 +47,12 @@ if [ ! -f "$OUT/runtime/SDL3.dll" ] || [ "$(find "$OUT/runtime" -name '*.dll' | 
   exit 1
 fi
 # DLSS frame generation: the bridge built from gpu/dlss_bridge and NVIDIA's DLSS libraries.
-cp packaging/dlss_bin/bbport_dlss.dll packaging/dlss_bin/nvngx_dlss.dll packaging/dlss_bin/nvngx_dlssg.dll "$OUT/runtime/"
+DLSS_BIN="${DLSS_BIN:-packaging/dlss_bin}"
+cp "$DLSS_BIN/bbport_dlss.dll" "$DLSS_BIN/nvngx_dlss.dll" "$DLSS_BIN/nvngx_dlssg.dll" \
+  "$DLSS_BIN/bbport_nr_nvngx.dll" "$OUT/runtime/"
+if [ -f "$DLSS_BIN/nvngx_dlssnr.dll" ]; then
+  cp "$DLSS_BIN/nvngx_dlssnr.dll" "$OUT/runtime/"
+fi
 mkdir -p "$OUT/licenses"
 cp packaging/dlss/NVIDIA-DLSS-LICENSE.txt packaging/dlss/dlss_bridge-LICENSE.txt "$OUT/licenses/"
 # DLLs the game program loads by name at run time.

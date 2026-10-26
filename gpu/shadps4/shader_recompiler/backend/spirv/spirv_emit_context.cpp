@@ -524,6 +524,9 @@ void EmitContext::DefineInputs() {
 
         const auto num_params = runtime_info.hw.gs.in_vertex_data_size / 4 - 1u;
         for (int param_id = 0; param_id < num_params; ++param_id) {
+            if (!info.loads.GetAny(IR::Attribute::Param0 + param_id)) {
+                continue;
+            }
             const Id type{TypeArray(F32[4], ConstU32(num_verts_in))};
             const Id id{DefineInput(type, param_id)};
             Name(id, fmt::format("gs_in_attr{}", param_id));

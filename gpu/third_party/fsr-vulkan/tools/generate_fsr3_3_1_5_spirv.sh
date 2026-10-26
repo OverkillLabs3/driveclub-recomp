@@ -5,7 +5,7 @@
 # Generate the public SDK 2.3 FSR3.1.5 HLSL upscaler passes as Vulkan SPIR-V.
 # This is deliberately a narrow, Q2RTX-compatible permutation: linear HDR,
 # low-resolution unjittered current-to-previous motion vectors, conventional
-# (not inverted) depth, and the Lanczos-2 reproject path.  The resulting eleven
+# or inverted depth, and the Lanczos-2 reproject path. The resulting modules
 # modules are an auditable bridge milestone, not yet a complete FfxInterface
 # backend or a replacement for the proven FSR3.1.4 path.
 
@@ -55,7 +55,8 @@ validate_module() {
 expected_dxc_sha256=7bb324044a6e5ad5a89070457f91a21e0854985d8e66bd88fc01a222315eaa66
 actual_dxc_sha256=$(sha256sum -- "$DXC_BIN")
 actual_dxc_sha256=${actual_dxc_sha256%% *}
-if [[ $actual_dxc_sha256 != "$expected_dxc_sha256" && ${FSR3_315_ALLOW_UNPINNED_DXC:-0} != 1 ]]; then
+windows_dxc_sha256=ce11bb02f6027055e0b9f8c062d13b14f373c876a16557a4fa744314117d31e7
+if [[ $actual_dxc_sha256 != "$expected_dxc_sha256" && $actual_dxc_sha256 != "$windows_dxc_sha256" && ${FSR3_315_ALLOW_UNPINNED_DXC:-0} != 1 ]]; then
     printf 'DXC SHA-256 mismatch\nexpected: %s\nactual:   %s\n' \
         "$expected_dxc_sha256" "$actual_dxc_sha256" >&2
     printf 'Set FSR3_315_ALLOW_UNPINNED_DXC=1 only for an intentional generator update.\n' >&2
@@ -93,7 +94,6 @@ common_args=(
     -DFFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT=1
     -DFFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS=1
     -DFFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS=0
-    -DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH=0
     # The generic HLSL SPD quad path reuses LDS between wave reductions.  GPU-AV
     # correctly exposes its cross-wave shared-memory hazards on the RDNA2 Vulkan
     # target. Select AMD's documented LDS-only permutation instead: it has an
@@ -134,11 +134,14 @@ declare -A cbv_shifts=(
     [shading_change_pyramid]=12
 )
 
+for inverted in 0 1; do
+suffix=""
+[[ $inverted == 0 ]] || suffix=_inverted
 for pass in "${passes[@]}"; do
     source="$shader_dir/ffx_fsr3upscaler_${pass}_pass.hlsl"
-    output="$output_dir/fsr3_3_1_5_${pass}.spv"
+    output="$output_dir/fsr3_3_1_5_${pass}${suffix}.spv"
     [[ -f $source ]] || { printf 'missing SDK shader: %s\n' "$source" >&2; exit 1; }
-    "$DXC_BIN" "${common_args[@]}" \
+    "$DXC_BIN" "${common_args[@]}" -DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH="$inverted" \
         -fvk-u-shift "${uav_shifts[$pass]}" all \
         -fvk-b-shift "${cbv_shifts[$pass]}" all \
         -DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=0 \
@@ -149,16 +152,18 @@ done
 # The SDK creates a distinct AccumulateSharpen pipeline and selects it when a
 # dispatch requests RCAS. Its HLSL changes at compile time, so it cannot share
 # the ordinary Accumulate module even though both derive from one source file.
-"$DXC_BIN" "${common_args[@]}" \
+"$DXC_BIN" "${common_args[@]}" -DFFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH="$inverted" \
     -fvk-u-shift "${uav_shifts[accumulate]}" all \
     -fvk-b-shift "${cbv_shifts[accumulate]}" all \
     -DFFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING=1 \
     "$shader_dir/ffx_fsr3upscaler_accumulate_pass.hlsl" \
-    -Fo "$output_dir/fsr3_3_1_5_accumulate_sharpen.spv"
-validate_module "$output_dir/fsr3_3_1_5_accumulate_sharpen.spv"
+    -Fo "$output_dir/fsr3_3_1_5_accumulate_sharpen${suffix}.spv"
+validate_module "$output_dir/fsr3_3_1_5_accumulate_sharpen${suffix}.spv"
+
+done
 
 (cd "$output_dir" && sha256sum -- *.spv | LC_ALL=C sort > SHA256SUMS)
 python3 "$script_dir/package_fsr3_3_1_5_spirv.py" "$output_dir" \
     "$output_dir/ffx_vk_fsr3_3_1_5_embedded_spirv.h"
 printf 'Generated and validated %s FSR3.1.5 Vulkan modules in %s\n' \
-    "$(( ${#passes[@]} + 1 ))" "$output_dir"
+    "$(( 2 * (${#passes[@]} + 1) ))" "$output_dir"

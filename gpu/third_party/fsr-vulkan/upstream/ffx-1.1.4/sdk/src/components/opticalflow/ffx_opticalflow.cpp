@@ -26,6 +26,11 @@
 #include <cfloat>       // for FLT_EPSILON
 #include "FidelityFX/host/ffx_opticalflow.h"
 
+#if !defined(_countof) && !defined(_MSC_VER)
+// MinGW does not declare the MSVC-only _countof macro.
+#define _countof(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
+
 #ifdef __clang__
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wsign-compare"

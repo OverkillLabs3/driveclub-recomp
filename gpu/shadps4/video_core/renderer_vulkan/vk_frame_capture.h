@@ -9,10 +9,12 @@
 
 #include <atomic>
 #include <cstdio>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
 #include "common/types.h"
+#include "video_core/renderer_vulkan/vk_common.h"
 
 namespace VideoCore {
 struct ImageInfo;
@@ -20,8 +22,22 @@ struct ImageInfo;
 
 namespace Vulkan {
 
+class Instance;
+class Scheduler;
+
 class FrameCapture {
 public:
+    struct DumpImage {
+        vk::Image image; ///< in layout General
+        u32 width, height, bytes_per_pixel;
+        const char* name;
+        const char* format;
+        vk::ImageAspectFlagBits aspect = vk::ImageAspectFlagBits::eColor;
+    };
+    static int DumpFrame();
+    static void DumpImages(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
+                           int frame, std::initializer_list<DumpImage> images);
+
     /// Flips seen so far.
     static u64 Flips() {
         return flips.load(std::memory_order_relaxed);

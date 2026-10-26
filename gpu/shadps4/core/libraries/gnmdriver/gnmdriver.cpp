@@ -71,6 +71,7 @@ std::condition_variable cv_lock{};
 std::mutex m_wait_idle{};
 std::mutex m_submit_lock{};
 static u64 frames_submitted{};      // frame counter
+static u64 latency_frame_id{};
 static bool send_init_packet{true}; // initialize HW state before first game's submit in a frame
 static s32 sdk_version{0};
 
@@ -2187,27 +2188,28 @@ static inline s32 PerformSubmit(u32 count, const u32* dcb_gpu_addrs[], u32* dcb_
     }
 
     if (send_init_packet) {
+        latency_frame_id = presenter ? presenter->BeginLatencyRender() : 0;
         if (sdk_version < Common::ElfInfo::FW_200) {
-            liverpool->SubmitGfx(InitSequence, {});
+            liverpool->SubmitGfx(InitSequence, {}, latency_frame_id);
         } else if (sdk_version < Common::ElfInfo::FW_400) {
             if (sceKernelIsNeoMode()) {
                 if (!UseNeoCompatSequences) {
-                    liverpool->SubmitGfx(InitSequence200Neo, {});
+                    liverpool->SubmitGfx(InitSequence200Neo, {}, latency_frame_id);
                 } else {
-                    liverpool->SubmitGfx(InitSequence200NeoCompat, {});
+                    liverpool->SubmitGfx(InitSequence200NeoCompat, {}, latency_frame_id);
                 }
             } else {
-                liverpool->SubmitGfx(InitSequence200, {});
+                liverpool->SubmitGfx(InitSequence200, {}, latency_frame_id);
             }
         } else {
             if (sceKernelIsNeoMode()) {
                 if (!UseNeoCompatSequences) {
-                    liverpool->SubmitGfx(InitSequence350Neo, {});
+                    liverpool->SubmitGfx(InitSequence350Neo, {}, latency_frame_id);
                 } else {
-                    liverpool->SubmitGfx(InitSequence350NeoCompat, {});
+                    liverpool->SubmitGfx(InitSequence350NeoCompat, {}, latency_frame_id);
                 }
             } else {
-                liverpool->SubmitGfx(InitSequence350, {});
+                liverpool->SubmitGfx(InitSequence350, {}, latency_frame_id);
             }
         }
         send_init_packet = false;
@@ -2250,7 +2252,7 @@ static inline s32 PerformSubmit(u32 count, const u32* dcb_gpu_addrs[], u32* dcb_
                 .base_addr = reinterpret_cast<uintptr_t>(ccb),
             });
         }
-        liverpool->SubmitGfx(dcb_span, ccb_span);
+        liverpool->SubmitGfx(dcb_span, ccb_span, latency_frame_id);
     }
     return ORBIS_OK;
 }

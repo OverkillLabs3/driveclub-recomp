@@ -4,6 +4,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <span>
 #include "common/types.h"
 #include "shader_recompiler/frontend/tessellation.h"
@@ -83,13 +84,15 @@ struct SwVertexRuntimeInfo {
 /// clip-space positions per referenced vertex and read the previous frame's; the
 /// fragment shader writes the screen-space difference to an extra color attachment.
 struct MotionVectors {
-    static constexpr u32 CurrentLocation = 30;  ///< varying: current clip position
-    static constexpr u32 PreviousLocation = 31; ///< varying: previous clip position, z = valid
+    // Leave 32 interface components for built-ins, including subgroup inputs.
+    static constexpr u32 CurrentLocation = 22;  ///< varying: current clip position
+    static constexpr u32 PreviousLocation = 23; ///< varying: previous clip position, z = valid
     static constexpr u32 Output = 7;            ///< color attachment index
     /// Per-draw parameters (u32x4: store base, load base, vertices per instance, flags) and
     /// the position array (vec4 per vertex; element 0 is scratch), fixed for the session.
     static inline u64 params_address = 0;
     static inline u64 positions_address = 0;
+    static inline std::atomic<u64> render_size{0};
     static constexpr u32 FlagStore = 1;
     static constexpr u32 FlagLoad = 2;
 };

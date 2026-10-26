@@ -91,6 +91,7 @@ enum FgProfileKey : u64 {
     FgProfileEvaluate = 5, ///< FSR/DLSS frame interpolation
     FgProfileCompose = 6,  ///< the UI over the generated frames
     FgProfileTail = 7,     ///< after FG: the game's own rendering of the next frame
+    FgProfileNeural = 8,   ///< Neural Rendering before HUD composition and frame generation
 };
 
 /// The game's camera of a frame: near and far planes, vertical field of view (radians).
@@ -108,8 +109,8 @@ struct FrameGenCamera {
 
 class FrameGenerator {
 public:
-    /// Frames generated per game frame at most (DLSS 4x).
-    static constexpr u32 MaxGenerated = 3;
+    /// Frames generated per game frame at most (DLSS 6x MFG: five generated frames).
+    static constexpr u32 MaxGenerated = 5;
     /// The format of the frames read and written (the Presenter's frame images).
     static constexpr vk::Format ColorFormat = vk::Format::eR8G8B8A8Unorm;
     struct Output {

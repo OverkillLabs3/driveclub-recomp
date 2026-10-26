@@ -117,7 +117,7 @@ Dlss::Dlss() : impl{std::make_unique<Impl>()} {
                      : nullptr;
     impl->api = get_api ? get_api() : nullptr;
     // ABI 1 bridges (DLSS only) still work; Frame Generation needs ABI 2.
-    if (!impl->api || impl->api->abi < 1 || impl->api->abi > BBPORT_DLSS_BRIDGE_ABI) {
+    if (!impl->api || impl->api->abi < 1 || (impl->api->abi > 2 && impl->api->abi != BBPORT_DLSS_BRIDGE_ABI)) {
         impl->Disable("bbport_dlss.dll is missing or from another version");
         return;
     }
@@ -191,7 +191,7 @@ void Dlss::Initialize(vk::Instance instance, vk::PhysicalDevice physical, vk::De
         return impl->Disable("NVIDIA NGX initialization failed (update the GPU driver)");
     }
     impl->available = true;
-    if (impl->api->abi >= 2) {
+    if (impl->api->abi == BBPORT_DLSS_BRIDGE_ABI) {
         impl->frame_gen_max = std::max(0, impl->api->FrameGenMaxCount());
     } else {
         std::printf("DLSS: bbport_dlss.dll predates Frame Generation (rebuild it with "
@@ -267,7 +267,7 @@ bool Dlss::CreateFrameGen(vk::CommandBuffer command, const FrameGenDesc& desc) {
     }
     impl->frame_gen.reset();
     const BbDlssgFeature feature{desc.width, desc.height, static_cast<VkFormat>(desc.format),
-                                 desc.render_width, desc.render_height};
+                                 desc.render_width, desc.render_height, desc.preset};
     if (!impl->api->FrameGenCreate(command, &feature)) {
         return false;
     }

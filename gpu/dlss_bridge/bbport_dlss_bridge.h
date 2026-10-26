@@ -15,7 +15,8 @@ extern "C" {
 #endif
 
 // 2: DLSS Frame Generation (the FrameGen* members; an ABI 1 bridge has DLSS only).
-#define BBPORT_DLSS_BRIDGE_ABI 2
+// 5: Frame Generation model preset in the feature descriptor; NR uses its own bridge.
+#define BBPORT_DLSS_BRIDGE_ABI 5
 
 typedef void (*BbDlssLogFn)(int warning, const char* message);
 
@@ -58,6 +59,7 @@ typedef struct BbDlssgFeature {
     VkFormat format;
     uint32_t render_width;  // depth and motion vectors
     uint32_t render_height;
+    uint32_t preset;        // 2 B (quality), 3 C (performance)
 } BbDlssgFeature;
 
 typedef struct BbDlssgEvaluate {
@@ -73,7 +75,7 @@ typedef struct BbDlssgEvaluate {
     float camera_fov;       // vertical, radians
     int32_t depth_inverted;
     int32_t reset;
-    uint32_t multi_frame_count; // frames generated for this pair (1: 2x .. 3: 4x)
+    uint32_t multi_frame_count; // frames generated for this pair (1: 2x .. 5: 6x)
     uint32_t multi_frame_index; // 1 .. multi_frame_count, in order
     // Row-major, row vectors (v * m), D3D clip space (y up, depth 0 at the near plane): the
     // projection, current clip to previous clip and back. has_matrices 0: a camera that stood

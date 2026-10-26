@@ -191,12 +191,6 @@ vk::ImageView CameraMotion::PrepareObjectMotion(vk::CommandBuffer cmdbuf, u32 wi
     return object_motion->PrepareRead(cmdbuf, width, height, valid);
 }
 
-void CameraMotion::AdvanceObjectMotionFrame() {
-    if (object_motion && object_motion->Enabled()) {
-        object_motion->OnFrameStart();
-    }
-}
-
 void CameraMotion::RecordMotion(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                                 vk::ImageView motion_view, u32 width, u32 height,
                                 vk::ImageView color_view) {

@@ -35,6 +35,8 @@ int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
 int bbgpu_overlay_captures_input(void);
 /* A short line at the top of the screen for a few seconds (a hotkey's new value). */
 void bbgpu_overlay_note(const char *text_utf8);
+/* Reflex pacing and input marker before the primary controller is sampled. */
+void bbgpu_reflex_input_sample(void);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 /* Frames presented so far (a freeze watchdog reads it). */

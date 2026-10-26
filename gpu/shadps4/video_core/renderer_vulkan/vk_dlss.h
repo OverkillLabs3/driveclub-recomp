@@ -78,6 +78,7 @@ public:
         u32 width, height; ///< backbuffer
         vk::Format format;
         u32 render_width, render_height; ///< depth and motion vectors
+        u32 preset = 3;
         bool operator==(const FrameGenDesc&) const = default;
     };
     struct FrameGenFrame {

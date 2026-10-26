@@ -21,6 +21,8 @@
 // THE SOFTWARE.
 
 #include <mutex>
+#include <cmath>  // log2 (not pulled in transitively by recent libc++)
+#include <new>  // placement new
 #include <FidelityFX/host/ffx_interface.h>
 #include <FidelityFX/host/ffx_util.h>
 #include <FidelityFX/host/ffx_assert.h>

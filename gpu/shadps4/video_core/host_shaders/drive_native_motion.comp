@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform texture2D gbuffer_tex;
+layout(binding = 1) uniform texture2D depth_tex;
+layout(binding = 2, std430) readonly buffer Transforms {
+    mat4 clip_to_previous[64]; // CPU row matrices are read transposed by GLSL.
+};
+layout(binding = 3, rgba32f) uniform writeonly image2D native_img;
+#ifdef HAS_PREVIOUS_IDS
+layout(binding = 4) uniform utexture2D previous_ids_tex;
+#endif
+layout(push_constant) uniform Constants {
+    vec2 size;
+    vec2 jitter;
+    vec2 previous_jitter;
+    uint count;
+};
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(size)))) {
+        return;
+    }
+    const float depth = texelFetch(depth_tex, pixel, 0).r;
+    const uint flags = uint(texelFetch(gbuffer_tex, pixel, 0).a * 255.0);
+    const uint index = flags & 63u;
+    const vec2 uv = (vec2(pixel) + 0.5 - jitter) / size;
+    vec2 motion = vec2(0.0);
+    bool valid = index < count && (flags & 64u) == 0u;
+    if (valid) {
+        const vec4 clip = vec4(2.0 * uv.x - 1.0, 1.0 - 2.0 * uv.y, depth, 1.0);
+        const vec4 previous = clip_to_previous[index] * clip;
+        valid = previous.w > 1e-9 && !any(isnan(previous)) && !any(isinf(previous));
+        if (valid) {
+            const vec2 previous_uv = vec2(0.5, -0.5) * previous.xy / previous.w + 0.5;
+#ifdef HAS_PREVIOUS_IDS
+            const vec2 previous_pixel = previous_uv * size + previous_jitter;
+            valid = all(greaterThanEqual(previous_pixel, vec2(0.0))) &&
+                    all(lessThan(previous_pixel, size));
+            if (valid) {
+                valid = (texelFetch(previous_ids_tex, ivec2(previous_pixel), 0).r & 63u) == index;
+            }
+#endif
+            motion = (previous_uv - uv) * size;
+        }
+    }
+    imageStore(native_img, pixel, vec4(motion, valid ? 1.0 : 0.0, depth));
+}

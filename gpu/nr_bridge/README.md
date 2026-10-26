@@ -1,8 +1,8 @@
 # Neural rendering (experimental, off)
 
 An optional pass that runs NVIDIA's DLSS Neural Rendering model on the picture. It is for people who want to
-tinker and send improvements. It is off by default, is not offered in the launcher, and the release does not
-contain the model.
+tinker and send improvements. It is off by default. The launcher exposes controls when compatible hardware,
+the adapter and the model are available. The release includes the adapter but does not contain the model.
 
 ## What is in the source
 
@@ -22,9 +22,10 @@ The hooks are a few lines each: the presenter (final frame, stage `Present`), th
 
 ## Turning it on
 
-1. Build `bbport_nr_nvngx.dll` and put it with your own `nvngx_dlssnr.dll` in the folder `BB_NR_RUNTIME` points
-   to (or next to `DriveClubGame.exe` in `runtime`).
-2. Set `nr_enabled=1` in the settings file (or `BB_NEURAL=1`), then start the game. It must be set before the
+1. Put your own `nvngx_dlssnr.dll` next to `DriveClubGame.exe` in `runtime`, or point `BB_NR_RUNTIME` at its
+   folder or DLL path. The adapter `bbport_nr_nvngx.dll` stays next to `DriveClubGame.exe`; source builds can
+   build it separately with the provided CMake target.
+2. Enable Neural Rendering in the launcher, or set `nr_enabled=1` in the settings file (or `BB_NEURAL=1`), then start the game. It must be set before the
    start, because the extensions are requested when the device is created.
 3. **F7** switches it off and on, **F6** steps through the styles of the first pass.
 

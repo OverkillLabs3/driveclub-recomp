@@ -142,6 +142,10 @@ extern "C" FfxVkFsr3_3_1_5Result ffxVkFsr3_3_1_5UpscalerContextCreate(
         description.flags |= FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE;
     if (createInfo->autoExposure)
         description.flags |= FFX_FSR3UPSCALER_ENABLE_AUTO_EXPOSURE;
+    if (createInfo->depthInverted)
+        description.flags |= FFX_FSR3UPSCALER_ENABLE_DEPTH_INVERTED;
+    if (createInfo->depthInfinite)
+        description.flags |= FFX_FSR3UPSCALER_ENABLE_DEPTH_INFINITE;
     const FfxErrorCode result = ffxFsr3UpscalerContextCreate(&owned->context, &description);
     if (result != FFX_OK) {
         ffxVkFsr3_3_1_5DestroyBridge(owned->bridge);

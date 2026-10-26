@@ -548,6 +548,54 @@ if(FFX_VK_PORTABLE_BUILD_FSR3_3_1_5_SCAFFOLD)
             -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ffx_1_1_4_portability.hpp"
             -Wall -Wextra -Wpedantic)
     endif()
+
+    # One library for the 3.1.5 upscaler and the 3.1.6 frame generator.  Both effects need the
+    # SDK 2.3 core helpers and the Vulkan bridge; linking the separate ready-made targets would
+    # define that closure twice.  Hosts that want both (the DriveClub renderer does) link this.
+    add_library(ffx_vulkan_fsr3_vk_up315_fg316 STATIC
+        src/ffx_vk_fsr3_3_1_5_bridge.cpp
+        src/ffx_vk_fsr3_3_1_5_upscaler.cpp
+        src/ffx_vk_fsr3_3_1_5_shaderblobs_stub.cpp
+        src/ffx_vk_fsr3_3_1_6_framegen.cpp
+        "${FFX_2_3_0_ROOT}/upscalers/fsr3/internal/ffx_fsr3upscaler.cpp"
+        $<TARGET_OBJECTS:ffx_vulkan_fsr3_framegen_3_1_6_scaffold>
+        $<TARGET_OBJECTS:ffx_vulkan_fsr3_sdk_core_3_1_5_scaffold>
+    )
+    add_library(ffx-vulkan::fsr3-vk-up315-fg316 ALIAS
+        ffx_vulkan_fsr3_vk_up315_fg316)
+    set_property(TARGET ffx_vulkan_fsr3_vk_up315_fg316 PROPERTY
+        EXPORT_NAME fsr3-vk-up315-fg316)
+    set_target_properties(ffx_vulkan_fsr3_vk_up315_fg316 PROPERTIES
+        CXX_STANDARD 20 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    target_include_directories(ffx_vulkan_fsr3_vk_up315_fg316
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            "${FFX_2_3_0_ROOT}/api/include"
+            "${FFX_2_3_0_ROOT}/api/internal"
+            "${FFX_2_3_0_ROOT}/upscalers/include"
+            "${FFX_2_3_0_ROOT}/upscalers/fsr3/include"
+            "${FFX_2_3_0_ROOT}/upscalers/fsr3/internal"
+            "${FFX_2_3_0_ROOT}/framegeneration/fsr3/include"
+            "${FFX_2_3_0_ROOT}/framegeneration/fsr3/internal"
+            "${FFX_2_3_0_GENERATED_FSR3FRAMEGENERATION}")
+    target_link_libraries(ffx_vulkan_fsr3_vk_up315_fg316
+        PUBLIC ffx-vulkan::portable Vulkan::Vulkan)
+    target_compile_definitions(ffx_vulkan_fsr3_vk_up315_fg316 PRIVATE
+        FFX_VK_PORTABLE_NO_WATERMARK=1
+        ${FFX_3_1_5_PRIVATE_SYMBOL_DEFINITIONS}
+        # The 1.1.4 backend keeps the unversioned SDK blob accessor; the 3.1.5 host must use a
+        # private name or it would resolve to the 1.1.4 blob table (and vice versa).
+        fsr3UpscalerGetPermutationBlobByIndex=ffxVk315Fsr3UpscalerGetPermutationBlobByIndex
+        fsr3UpscalerIsWave64=ffxVk315Fsr3UpscalerIsWave64)
+    if(MSVC)
+        target_compile_options(ffx_vulkan_fsr3_vk_up315_fg316 PRIVATE /W4)
+    else()
+        target_compile_options(ffx_vulkan_fsr3_vk_up315_fg316 PRIVATE
+            -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ffx_1_1_4_portability.hpp"
+            -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 # Convenience integration surface for a Vulkan application that vendors this

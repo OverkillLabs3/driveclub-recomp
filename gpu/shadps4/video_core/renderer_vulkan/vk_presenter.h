@@ -42,6 +42,7 @@ struct Frame {
     vk::Fence present_done;
     vk::Semaphore ready_semaphore;
     u64 ready_tick;
+    u64 latency_id{};
     bool is_hdr{false};
     u8 id{};
 
@@ -95,6 +96,22 @@ public:
         return swapchain.HasHDR();
     }
 
+    void BeforeInput() {
+        swapchain.BeforeInput();
+    }
+
+    u64 BeginLatencyRender() {
+        return swapchain.BeginLatencyRender();
+    }
+
+    void BeginLatencyPresent(u64 id) {
+        swapchain.MarkLatency(id, VK_LATENCY_MARKER_PRESENT_START_NV);
+    }
+
+    void EndLatencyPresent(u64 id) {
+        swapchain.EndLatencyPresent(id);
+    }
+
     void SetHDR(bool enable) {
         // bbport: with HDR output the swapchain stays HDR10 whatever the game's output mode
         // (it asks for SDR every frame).
@@ -141,7 +158,7 @@ private:
     /// bbport: blits `image` (General layout) into a swapchain image with the overlay and
     /// presents it. `last`: the game frame itself, which also signals the frame's fence.
     /// False when the swapchain could not give an image.
-    bool PresentImage(Frame* frame, vk::Image image, bool last);
+    bool PresentImage(Frame* frame, vk::Image image, bool last, u64 latency_id);
 
     void SetExpectedGameSize(s32 width, s32 height);
 
