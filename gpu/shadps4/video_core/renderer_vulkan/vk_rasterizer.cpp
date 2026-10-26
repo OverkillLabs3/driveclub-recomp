@@ -83,7 +83,7 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
 // Validate the motion-blur pass independently of resolution / shader permutation.
 // It consumes camera constants, post-process constants, and 64 object motion matrices.
 bool MotionBlurConstants(const Shader::Info& stage, u32 index, u64 size) {
-    if (BbSettings::Get().motion_blur_reference.load() == 0 ||
+    if ((BbSettings::Get().motion_blur_reference.load() == 0 && !BbVr::Active()) ||
         stage.sw_stage != Shader::SwStage::Fragment || index != 1 ||
         size != DriveMotionBlur::Bytes || stage.buffers.size() < 3) return false;
     return !stage.buffers[0].IsSpecial() && !stage.buffers[2].IsSpecial() &&
@@ -91,6 +91,15 @@ bool MotionBlurConstants(const Shader::Info& stage, u32 index, u64 size) {
            stage.buffers[2].GetSharp(stage).GetSize() == 12288;
 }
 bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
+    if (BbVr::Active()) {
+        // VR: no camera motion blur (DriveMotionBlur::Zero)
+        const bool zeroed = DriveMotionBlur::Zero(data, size);
+        static std::atomic<bool> told{};
+        if (zeroed && !told.exchange(true)) {
+            std::printf("MotionBlur: off in VR (shader=%08x)\n", u32(stage.pgm_hash));
+        }
+        return zeroed;
+    }
     const int reference = BbSettings::Get().motion_blur_reference.load();
     float raw_dt=0; uint64_t stamp=0;
     runtime_motion_blur_clock(&raw_dt,&stamp);
