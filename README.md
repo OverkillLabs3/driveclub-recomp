@@ -83,6 +83,8 @@ The **Handbrake** row listens on every controller, so a USB handbrake is found b
 
 Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that Windows lists as two controllers of one name, as a Fanatec base is, are picked by Wheel Setup (for the second, `wheel_device = FANATEC Wheel @col01`: the HID collection, which stays the same from start to start).
 
+The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a button of any controller, not only the wheel: a button box or a second controller is written with its name (`wheel_button = 3, cross, BBI-32 Button Box`). They also take a key, or a key with Ctrl, Shift or Alt, so a Stream Deck that sends keys works too (F13 to F24 are free for it); keys reach the game while its window is in front. The launcher's FFB gain + and − rows take a button or a key the same way.
+
 **Force feedback**
 - **Reworked Physics** (recommended): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top. It learns each car's tyres in the first corners.
 - **Original Physics** (the default): the forces the PS4 game made for a Logitech wheel. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal).
