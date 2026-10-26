@@ -85,7 +85,8 @@ static int same_name(int d, int *rank) {
 /* ---- the mapping, as default.ini has it and as edited here ---------------------------------------------------- */
 static const char *const pedal_key[]={"throttle","brake","clutch","handbrake"};
 static const char *const action_ps[]={"r1","l1","cross","circle","triangle","square","options","touchpad_left",
-                                      "touchpad_right","l3","r3","pad_up","pad_down","pad_left","pad_right"};
+                                      "touchpad_right","l3","r3","pad_up","pad_down","pad_left","pad_right",
+                                      "ffb_gain_up","ffb_gain_down"};   /* the last two: the runtime's, not PS4 buttons */
 #define NACT ((int)(sizeof action_ps/sizeof *action_ps))
 static const char *const gear_name[]={"1","2","3","4","5","6","r"};
 typedef struct { int axis, inv; } AxisSetting;   /* axis -1: none; inv -1: the game decides, 0 normal, 1 inverted */
@@ -201,7 +202,8 @@ static const char *row_label(int r) {
         {"Circle: back, handbrake","Кружок: назад, ручник"},{"Triangle: camera","Треугольник: камера"},{"Square","Квадрат"},
         {"Options: pause","Options: пауза"},{"Touchpad left: reset","Тачпад слева: сброс"},{"Touchpad right","Тачпад справа"},
         {"L3","L3"},{"R3","R3"},{"D-pad up","Крестовина вверх"},{"D-pad down","Крестовина вниз"},
-        {"D-pad left","Крестовина влево"},{"D-pad right","Крестовина вправо"}};
+        {"D-pad left","Крестовина влево"},{"D-pad right","Крестовина вправо"},
+        {"FFB gain + (this car)","Сила FFB + (эта машина)"},{"FFB gain - (this car)","Сила FFB - (эта машина)"}};
     static const char *const gear_label[7][2]={{"1st gear","1-я"},{"2nd gear","2-я"},{"3rd gear","3-я"},{"4th gear","4-я"},
                                                 {"5th gear","5-я"},{"6th gear","6-я"},{"Reverse","Задняя"}};
     if (r==R_STEER) return T("Steering","Руль");

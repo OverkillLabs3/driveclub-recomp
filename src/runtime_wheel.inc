@@ -58,6 +58,24 @@ static int ffb_center, ffb_slide;
  * and a damper that is strongest at a standstill. */
 static bool ffb_physics;
 static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_kerbs=50, ffb_ph_road=50, ffb_ph_slip=30, ffb_ph_damper=10;
+/* The tyres' trail follows how much of their grip the game's forces say is used (light at the real limit) and the force
+ * keeps falling past it; wheel_ffb_physics_tyre = classic: the trail from the brush model's slip, as before. */
+static bool ffb_ph_tyre_grip=true;
+/* The front tyres' braking and drive forces through the scrub radius (runtime_logiwheel.inc); wheel_ffb_physics_scrub =
+ * off leaves them out. */
+static bool ffb_ph_scrub=true;
+/* The trail from the grip in use by braking, drive and cornering together (the friction circle), and the tyres' grip
+ * learnt that way; wheel_ffb_physics_combined = off: from cornering alone. */
+static bool ffb_ph_combined=true;
+/* Self-centring from the steering axis' inclination (the front wheels' load, the steering angle); wheel_ffb_physics_centre
+ * = off leaves it out. */
+static bool ffb_ph_centre=true;
+/* Each front tyre's moment follows over its relaxation length (runtime_logiwheel.inc); wheel_ffb_physics_relax = off:
+ * the game's forces as they come, step by step. */
+static bool ffb_ph_relax=true;
+/* wheel_button = <n>, ffb_gain_up / ffb_gain_down: wheel buttons that make the physics model's force for the car being
+ * driven 5% stronger or weaker, kept for each car (runtime_logiwheel.inc, ffb_cars.ini); -1: not bound */
+static int ffb_gain_button[2]={-1,-1};
 
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
@@ -182,6 +200,11 @@ static void wheel_parse(const char *lhs, char *rhs) {
         else if (!strcmp(k,"road")) ffb_ph_road=v<0 ? 0 : v>200 ? 200 : v;
         else if (!strcmp(k,"slip")) ffb_ph_slip=v<0 ? 0 : v>200 ? 200 : v;
         else if (!strcmp(k,"damper")) ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v;
+        else if (!strcmp(k,"tyre")) { lower(rhs); ffb_ph_tyre_grip=strncmp(rhs,"classic",7)!=0; }
+        else if (!strcmp(k,"scrub")) { lower(rhs); ffb_ph_scrub=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
+        else if (!strcmp(k,"combined")) { lower(rhs); ffb_ph_combined=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
+        else if (!strcmp(k,"centre") || !strcmp(k,"center")) { lower(rhs); ffb_ph_centre=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
+        else if (!strcmp(k,"relax")) { lower(rhs); ffb_ph_relax=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
         return;
     }
     if (!strcmp(key,"ffb_strength")) { const int v=atoi(rhs); ffb_strength=v<0 ? 0 : v>1000 ? 1000 : v; return; }
@@ -219,6 +242,7 @@ static void wheel_parse(const char *lhs, char *rhs) {
         int index=-1; char name[32]="";
         if (sscanf(rhs," %d , %31s",&index,name)!=2 || index<0 || wheel_button_count>=(int)(sizeof wheel_buttons/sizeof *wheel_buttons)) return;
         lower(name);
+        if (!strcmp(name,"ffb_gain_up") || !strcmp(name,"ffb_gain_down")) { ffb_gain_button[name[9]=='d']=index; return; }
         int slot=wheel_button_count;
         wheel_buttons[slot].index=index;
         if (!strcmp(name,"touchpad") || !strcmp(name,"touchpad_left") || !strcmp(name,"touchpad_right") || !strcmp(name,"touchpad_center")) {
@@ -261,6 +285,8 @@ static const char wheel_default_config[]=
     "wheel_handbrake = none\n"
     "# Wheel buttons: wheel_button = <button number>, <PS4 button>; PS4 buttons as above (cross, r1, options,\n"
     "# pad_up, touchpad_left...). The paddles are usually the first two: shift down is l1, shift up is r1.\n"
+    "# ffb_gain_up and ffb_gain_down in place of a PS4 button: the force feedback of the car being driven 5% stronger\n"
+    "# or weaker (Reworked Physics), kept for each car in ffb_cars.ini (WheelSetup has them as FFB gain + and -).\n"
     "wheel_button = 0, r1\n"
     "wheel_button = 1, l1\n"
     "# The wheel's hat switch works as the d-pad.\n"
@@ -302,6 +328,13 @@ static const char wheel_default_config[]=
     "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force (0..30, for gear and belt wheels),\n"
     "# wheel_ffb_physics_kerbs, wheel_ffb_physics_road and wheel_ffb_physics_slip (0..200), wheel_ffb_physics_damper\n"
     "# (0..100). wheel_ffb_soft_lock, wheel_ffb_vibration_wave and wheel_ffb_invert apply too.\n"
+    "# The wheel goes light where the game's tyres run out of grip and keeps getting lighter in a slide, and the front\n"
+    "# tyres' braking and drive forces turn it through the steering geometry (a kerb under braking, torque steer), and\n"
+    "# braking hard into a corner lightens it as the front nears its limit (its grip used by braking and cornering\n"
+    "# together), and it centres itself when rolling with the wheel turned (the steering axis' inclination); the tyres'\n"
+    "# forces build up over their relaxation length (kerb strikes without full-force hits); wheel_ffb_physics_tyre =\n"
+    "# classic, wheel_ffb_physics_scrub = off, wheel_ffb_physics_combined = off, wheel_ffb_physics_centre = off and\n"
+    "# wheel_ffb_physics_relax = off go back to the model before those.\n"
     "# wheel_ffb_invert = true if the wheel pulls the wrong way.\n"
     "# H-pattern shifter: wheel_shifter = auto (a controller named \"Shifter\"), wheel (its buttons are on the wheel),\n"
     "# off, or part of its name; then one line per gear: wheel_gear = <button number>, <1..6 or r>. WheelSetup.exe\n"
