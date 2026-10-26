@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 // bbport: frame analyzer. Creating the file named by BB_CAPTURE_TRIGGER records the next full
 // frame: every render pass (targets, depth, draw count, shaders, sampled textures) and compute
@@ -36,10 +37,10 @@ public:
 
     /// GPU thread: whether passes are being looked at (armed or recording; cheap).
     static bool Active() {
-        return state.load(std::memory_order_relaxed) != Idle;
+        return BB_DIAGNOSTICS && state.load(std::memory_order_relaxed) != Idle;
     }
     /// GPU thread, at every draw/dispatch: starts or ends a recording at frame boundaries.
-    static void Poll();
+    static void Poll() {}
 
     static void BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_colors,
                           const VideoCore::ImageInfo* depth);

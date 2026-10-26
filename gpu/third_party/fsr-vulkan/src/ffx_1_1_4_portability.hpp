@@ -9,6 +9,35 @@
 
 #pragma once
 
+#if defined(__MINGW32__)
+
+// Newer C++ runtimes no longer pull these in indirectly.
+#include <cmath>
+#include <cstdarg>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cwchar>
+#include <new>
+
+#ifndef _countof
+#define _countof(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+
+inline int ffxSwprintfS(wchar_t* destination, std::size_t destinationSize, const wchar_t* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    const int result = std::vswprintf(destination, destinationSize, format, args);
+    va_end(args);
+    return result;
+}
+#define swprintf_s ffxSwprintfS
+
+using std::log2;
+
+#endif
+
 #if !defined(_WIN32)
 
 #include <cerrno>

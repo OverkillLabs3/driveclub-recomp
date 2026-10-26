@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -391,7 +392,7 @@ struct CompileTimer {
                                    std::chrono::steady_clock::now() - start)
                                    .count());
         ++g_bb_compiles;
-        BbTrace::compiles.fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbTrace::compiles.fetch_add(1, std::memory_order_relaxed);
     }
 };
 } // namespace
@@ -609,7 +610,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         // BB_MOTION_SELECT_LOG=1: each G-buffer vertex shader once, with its buffer sizes
         // and the selection, to find animated models that the size rule leaves out.
         static const bool select_log = [] {
-            const char* value = std::getenv("BB_MOTION_SELECT_LOG");
+            const char* value = BB_DIAGNOSTIC_ENV("BB_MOTION_SELECT_LOG");
             return value && value[0] == '1';
         }();
         if (select_log && vs) {

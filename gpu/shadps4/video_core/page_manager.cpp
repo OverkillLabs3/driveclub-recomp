@@ -1,3 +1,4 @@
+#include "../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -101,7 +102,7 @@ bool ReadOperand(Vulkan::Rasterizer* rasterizer, VAddr ea, void* out, u32 size) 
     if (!rasterizer->IsRangeGpuWritten(ea, size)) {
         return runtime_memory_read_backing(ea, out, size) != 0;
     }
-    BbStats::fault_emulate_gpu.fetch_add(1, std::memory_order_relaxed);
+    if constexpr (BB_DIAGNOSTICS) BbStats::fault_emulate_gpu.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
 
@@ -800,7 +801,7 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
     if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
             inst, ops, reinterpret_cast<void*>(ctx->Rip), 15))) {
-        BbStats::store_why[0].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[0].fetch_add(1, std::memory_order_relaxed);
         if (BbStats::enabled) {
             BbStats::NoteStoreSkip(ctx->Rip);
         }
@@ -811,7 +812,7 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
         inst.operand_count_visible != (kind == Load::XmmLane ? 3 : 2) ||
         (inst.attributes & (ZYDIS_ATTRIB_HAS_LOCK | ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
                             ZYDIS_ATTRIB_HAS_REPNE))) {
-        BbStats::store_why[0].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[0].fetch_add(1, std::memory_order_relaxed);
         if (BbStats::enabled) {
             BbStats::NoteStoreSkip(ctx->Rip);
         }
@@ -821,7 +822,7 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
     const ZydisDecodedOperand& src = ops[1];
     if (dst.type != ZYDIS_OPERAND_TYPE_MEMORY || dst.mem.segment == ZYDIS_REGISTER_FS ||
         dst.mem.segment == ZYDIS_REGISTER_GS) {
-        BbStats::store_why[1].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[1].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     ZydisRegisterContext regs{};
@@ -834,7 +835,7 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
     }
     const u32 size = dst.size / 8;
     if (size == 0 || size > 16 || fault < ea || fault >= ea + size) {
-        BbStats::store_why[2].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[2].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     alignas(16) u8 data[16]{};
@@ -874,7 +875,7 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
             std::memcpy(data, &v, size);
         }
     } else {
-        BbStats::store_why[3].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[3].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (!rasterizer->StoreUntracked(ea, data, size)) {
@@ -957,7 +958,7 @@ struct PageManager::Impl {
         // bbport: the draw recording thread handles its faults inline too (vk_draw_pipe.h).
         const auto is_gpu_thread = rasterizer->IsGpuSideThread();
         if (is_gpu_thread) {
-            BbStats::gpu_signal_faults.fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::gpu_signal_faults.fetch_add(1, std::memory_order_relaxed);
         }
         if (Common::IsWriteError(context)) {
             if (is_gpu_thread && BbStats::enabled) {
@@ -971,15 +972,15 @@ struct PageManager::Impl {
             if (!is_gpu_thread && FaultEmulation() && rasterizer->IsPageGpuModified(addr) &&
                 PageEmulationBudgetLeft(addr)) {
                 if (EmulateNonGpuStore(context, addr, rasterizer)) {
-                    BbStats::store_emulated.fetch_add(1, std::memory_order_relaxed);
+                    if constexpr (BB_DIAGNOSTICS) BbStats::store_emulated.fetch_add(1, std::memory_order_relaxed);
                     return true;
                 }
-                BbStats::store_emulate_declined.fetch_add(1, std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbStats::store_emulate_declined.fetch_add(1, std::memory_order_relaxed);
             }
 #endif
             return rasterizer->OnWriteFault(addr, is_gpu_thread);
         } else {
-            BbStats::read_faults.fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::read_faults.fetch_add(1, std::memory_order_relaxed);
             if (is_gpu_thread && BbStats::enabled) {
                 BbStats::NoteGpuReadFault(Common::FaultInstructionPointer(context));
             }
@@ -991,10 +992,10 @@ struct PageManager::Impl {
             if (!is_gpu_thread && FaultEmulation() && rasterizer->IsPageGpuModified(addr) &&
                 PageEmulationBudgetLeft(addr)) {
                 if (EmulateNonGpuLoad(context, addr, rasterizer)) {
-                    BbStats::fault_emulated.fetch_add(1, std::memory_order_relaxed);
+                    if constexpr (BB_DIAGNOSTICS) BbStats::fault_emulated.fetch_add(1, std::memory_order_relaxed);
                     return true;
                 }
-                BbStats::fault_emulate_declined.fetch_add(1, std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbStats::fault_emulate_declined.fetch_add(1, std::memory_order_relaxed);
                 // Declined loads are listed with the store skips (bit 63 set marks a load).
                 if (BbStats::enabled) {
                     BbStats::NoteStoreSkip(Common::FaultInstructionPointer(context) | (1ull << 63));

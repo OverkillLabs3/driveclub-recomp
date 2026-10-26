@@ -1,3 +1,5 @@
+#include <array>
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 
@@ -11,6 +13,7 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image_info.h"
 
+#if BB_DIAGNOSTICS
 namespace Vulkan {
 
 namespace {
@@ -90,7 +93,7 @@ void AddShader(Entry& entry, u64 hash) {
 }
 
 void Write(VAddr presented) {
-    const char* dir = std::getenv("BB_CAPTURE_DIR");
+    const char* dir = BB_DIAGNOSTIC_ENV("BB_CAPTURE_DIR");
     const std::string path =
         std::format("{}/frame_{}.txt", dir ? dir : ".", static_cast<long long>(std::time(nullptr)));
     FILE* f = std::fopen(path.c_str(), "w");
@@ -136,7 +139,7 @@ void Write(VAddr presented) {
 void FrameCapture::OnFlip(VAddr presented_address) {
     last_presented.store(presented_address, std::memory_order_relaxed);
     flips.fetch_add(1, std::memory_order_release);
-    static const char* trigger = std::getenv("BB_CAPTURE_TRIGGER");
+    static const char* trigger = BB_DIAGNOSTIC_ENV("BB_CAPTURE_TRIGGER");
     if (trigger && state.load(std::memory_order_relaxed) == Idle &&
         std::filesystem::exists(trigger)) {
         std::error_code ec;
@@ -146,7 +149,6 @@ void FrameCapture::OnFlip(VAddr presented_address) {
     }
 }
 
-void FrameCapture::Poll() {}
 
 bool FrameCapture::IsDisplayBuffer(VAddr address) {
     const u32 count = display_count.load(std::memory_order_acquire);
@@ -280,3 +282,48 @@ void FrameCapture::Note(const char* text) {
 }
 
 } // namespace Vulkan
+
+#else
+namespace Vulkan {
+namespace {
+std::mutex display_mutex;
+std::vector<VAddr> display_buffers;
+std::array<std::atomic<VAddr>, 16> display_list{};
+std::atomic<u32> display_count{0};
+}
+void FrameCapture::OnFlip(VAddr) { flips.fetch_add(1, std::memory_order_release); }
+bool FrameCapture::IsDisplayBuffer(VAddr address) {
+    const u32 count = display_count.load(std::memory_order_acquire);
+    for (u32 i = 0; i < count; ++i) {
+        if (display_list[i].load(std::memory_order_relaxed) == address) {
+            return true;
+        }
+    }
+    if (count < display_list.size()) {
+        return false;
+    }
+    std::scoped_lock lk{display_mutex};
+    return std::ranges::find(display_buffers, address) != display_buffers.end();
+}
+
+void FrameCapture::AddDisplayBuffer(VAddr address) {
+    std::scoped_lock lk{display_mutex};
+    if (std::ranges::find(display_buffers, address) == display_buffers.end()) {
+        display_buffers.push_back(address);
+        const u32 count = display_count.load(std::memory_order_relaxed);
+        if (count < display_list.size()) {
+            display_list[count].store(address, std::memory_order_relaxed);
+            display_count.store(count + 1, std::memory_order_release);
+        }
+    }
+}
+
+
+void FrameCapture::BeginPass(const VideoCore::ImageInfo* const*, u32, const VideoCore::ImageInfo*) {}
+void FrameCapture::Draw(u64, u64, u32, u32) {}
+void FrameCapture::Dispatch(u64, u32, u32, u32) {}
+void FrameCapture::Buffer(u64, u32, VAddr, const void*, u64) {}
+void FrameCapture::Sampled(const VideoCore::ImageInfo&, bool) {}
+void FrameCapture::Note(const char*) {}
+} // namespace Vulkan
+#endif

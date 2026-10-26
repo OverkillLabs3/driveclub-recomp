@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 
@@ -73,7 +74,7 @@ void DumpFrame(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer
     cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eGeneral, buffer,
                              vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
                                                  .imageExtent = {w, h, 1}});
-    const char* dir = std::getenv("BB_DUMP_DIR");
+    const char* dir = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
     char path[512];
     std::snprintf(path, sizeof(path), "%s/fg_%s_f%u_%ux%u.raw", dir && *dir ? dir : "out/dump", name,
                   frame, w, h);
@@ -91,7 +92,7 @@ void DumpFrame(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer
 extern "C" short __stdcall GetAsyncKeyState(int key);
 
 bool DumpWindow() {
-    static const char* env = std::getenv("BB_FG_DUMP");
+    static const char* env = BB_DIAGNOSTIC_ENV("BB_FG_DUMP");
     static u32 left = 0;
     static bool down = false;
     if (!env) {
@@ -112,7 +113,7 @@ bool DumpWindow() {
 } // namespace
 
 void FgProfiler::Init(const Instance& instance) {
-    const char* env = std::getenv("BB_FG_PROFILE");
+    const char* env = BB_DIAGNOSTIC_ENV("BB_FG_PROFILE");
     if (!env || env[0] != '1' || instance_ptr) {
         return;
     }

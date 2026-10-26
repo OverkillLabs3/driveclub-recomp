@@ -53,7 +53,7 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     // Pipeline selection limits the extra attachment and vertex stores to likely
     // animated draws. A setting or environment override can still disable the path.
-    if (!BbSettings::UpscalerOptIn() || !BbSettings::Get().object_motion ||
+    if (!BbSettings::MotionVectorsOptIn() || !BbSettings::Get().object_motion ||
         BbSettings::Get().upscaler == BbSettings::UpscalerOff) {
         std::puts("Object motion: off (enable in menu or BB_OBJECT_MOTION=1)");
         return;
@@ -122,7 +122,9 @@ void ObjectMotion::OnFrameStart() {
         params_ticks[slot] = 0;
     }
     params_used = 0;
-    written = false;
+    for (auto& target : images) {
+        target.written = false;
+    }
     scheduler.EndRendering();
     // Last frame's stores must be visible to this frame's loads. Also finish old reads
     // before the ping-pong half they reference is reused for writes.
@@ -163,19 +165,60 @@ u32 ObjectMotion::PrepareDraw(const DrawInfo& draw) {
 }
 
 void ObjectMotion::EnsureImage(u32 width, u32 height) {
-    if (image && width == image_width && height == image_height) {
-        return;
+    if (active_image < images.size()) {
+        auto& active = images[active_image];
+        if (width == active.width && height == active.height) {
+            active.last_use = ++image_use_serial;
+            return;
+        }
     }
+
+    for (u32 i = 0; i < images.size(); ++i) {
+        if (images[i].width == width && images[i].height == height) {
+            active_image = i;
+            images[i].last_use = ++image_use_serial;
+            return;
+        }
+    }
+
+    BbStats::motion_image_recreates.fetch_add(1, std::memory_order_relaxed);
     const auto device = instance.GetDevice();
-    if (image) {
-        scheduler.Finish();
+    if (images.size() >= MotionImageCacheSize) {
+        u32 victim = ~u32{0};
+        u64 oldest_use = ~u64{0};
+        for (u32 i = 0; i < images.size(); ++i) {
+            if (i != active_image && images[i].last_use < oldest_use) {
+                victim = i;
+                oldest_use = images[i].last_use;
+            }
+        }
+        if (victim != ~u32{0}) {
+            // Keep resources alive until commands that referenced them have completed. A global
+            // Finish here stalls the recording thread every time the guest changes target size.
+            scheduler.DeferOperation([retired = std::move(images[victim])] {});
+            images.erase(images.begin() + victim);
+            if (active_image > victim) {
+                --active_image;
+            } else if (active_image == victim) {
+                active_image = ~u32{0};
+            }
+        }
     }
-    view.reset();
-    image_layout = vk::ImageLayout::eUndefined;
-    image = VideoCore::UniqueImage(device, instance.GetAllocator());
-    image.Create(vk::ImageCreateInfo{
+
+    images.emplace_back();
+    active_image = static_cast<u32>(images.size() - 1);
+    auto& target = images.back();
+    target.width = width;
+    target.height = height;
+    target.last_use = ++image_use_serial;
+    target.written = false;
+    target.layout = vk::ImageLayout::eUndefined;
+    target.image = VideoCore::UniqueImage(device, instance.GetAllocator());
+    BbStats::MotionProfileTimer image_timer{
+        BbStats::motion_profile_ns[BbStats::MotionEnsureImageCreate]};
+    target.image.Create(vk::ImageCreateInfo{
         .imageType = vk::ImageType::e2D,
-        .format = vk::Format::eR32G32B32A32Sfloat,
+        .format = vk::Format::eR16G16B16A16Sfloat,
         .extent = {width, height, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -185,67 +228,86 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
                  vk::ImageUsageFlagBits::eTransferSrc,
         .initialLayout = vk::ImageLayout::eUndefined,
     });
-    view = Check(device.createImageViewUnique({
-        .image = vk::Image(image),
+    image_timer.Stop();
+    BbStats::MotionProfileTimer view_timer{
+        BbStats::motion_profile_ns[BbStats::MotionEnsureViewCreate]};
+    target.view = Check(device.createImageViewUnique({
+        .image = vk::Image(target.image),
         .viewType = vk::ImageViewType::e2D,
-        .format = vk::Format::eR32G32B32A32Sfloat,
+        .format = vk::Format::eR16G16B16A16Sfloat,
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }));
-    image_width = width;
-    image_height = height;
-    written = false;
+    view_timer.Stop();
 }
 
 void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
+    BbStats::motion_attach_calls.fetch_add(1, std::memory_order_relaxed);
+    BbStats::MotionProfileTimer profile_timer{
+        BbStats::motion_profile_ns[BbStats::MotionAttach]};
     constexpr u32 slot = Shader::MotionVectors::Output;
+    BbStats::MotionProfileTimer image_timer{
+        BbStats::motion_profile_ns[BbStats::MotionAttachEnsureImage]};
     EnsureImage(width, height);
+    image_timer.Stop();
+    auto& target = images[active_image];
     auto& attachment = state.color_attachments[slot];
     attachment = {};
-    attachment.image_view = *view;
+    attachment.image_view = *target.view;
     attachment.image_layout = vk::ImageLayout::eColorAttachmentOptimal;
-    if (!written || image_layout != vk::ImageLayout::eColorAttachmentOptimal) {
+    if (!target.written || target.layout != vk::ImageLayout::eColorAttachmentOptimal) {
+        BbStats::motion_attach_transitions.fetch_add(1, std::memory_order_relaxed);
         // Clear once per frame; later reads must not erase the validity of this history.
+        BbStats::MotionProfileTimer end_render_timer{
+            BbStats::motion_profile_ns[BbStats::MotionAttachEndRendering]};
         scheduler.EndRendering();
+        end_render_timer.Stop();
         const vk::ImageMemoryBarrier2 barrier{
             .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
             .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
             .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite |
                              vk::AccessFlagBits2::eColorAttachmentRead,
-            .oldLayout = image_layout,
+            .oldLayout = target.layout,
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .image = vk::Image(image),
+            .image = vk::Image(target.image),
             .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         };
         // Recorded in order on the recording thread: CommandBuffer() here switched the rest of
         // the submission (most of the G-buffer) to direct recording on the GPU thread.
+        BbStats::MotionProfileTimer record_timer{
+            BbStats::motion_profile_ns[BbStats::MotionAttachRecord]};
         scheduler.Record([barrier](vk::CommandBuffer cmd) {
             cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
         });
-        image_layout = vk::ImageLayout::eColorAttachmentOptimal;
-        attachment.is_clear = !written;
-        written = true;
+        record_timer.Stop();
+        target.layout = vk::ImageLayout::eColorAttachmentOptimal;
+        attachment.is_clear = !target.written;
+        target.written = true;
     }
     state.num_color_attachments = std::max<u16>(state.num_color_attachments, slot + 1);
 }
 
 vk::ImageView ObjectMotion::PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                         bool& valid) {
-    EnsureImage(std::max(image_width, 1u), std::max(image_height, 1u));
-    valid = written && width == image_width && height == image_height;
+    if (active_image >= images.size()) {
+        EnsureImage(1, 1);
+    }
+    auto& target = images[active_image];
+    target.last_use = ++image_use_serial;
+    valid = target.written && width == target.width && height == target.height;
     const vk::ImageMemoryBarrier2 barrier{
         .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
         .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
         .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
-        .oldLayout = image_layout,
+        .oldLayout = target.layout,
         .newLayout = vk::ImageLayout::eGeneral,
-        .image = vk::Image(image),
+        .image = vk::Image(target.image),
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     };
     cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier});
-    image_layout = vk::ImageLayout::eGeneral;
-    return *view;
+    target.layout = vk::ImageLayout::eGeneral;
+    return *target.view;
 }
 
 } // namespace Vulkan

@@ -1,3 +1,4 @@
+#include "../../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -91,8 +92,8 @@ static void WaitGpuIdle() {
     if (BbTrace::enabled && submission_lock != 0) {
         const s64 start = BbTrace::NowNs();
         cv_lock.wait(lock, [] { return submission_lock == 0; });
-        BbTrace::submit_lock_ns.fetch_add(u64(BbTrace::NowNs() - start), std::memory_order_relaxed);
-        BbTrace::submit_lock_waits.fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbTrace::submit_lock_ns.fetch_add(u64(BbTrace::NowNs() - start), std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbTrace::submit_lock_waits.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     cv_lock.wait(lock, [] { return submission_lock == 0; });

@@ -1,3 +1,4 @@
+#include "../bbport_diagnostics.h"
 // bbport: shadPS4 settings used by the video core, read once from BB_* environment
 // variables (defaults match shadPS4 except the pipeline cache, which is on).
 #pragma once
@@ -57,7 +58,7 @@ public:
     }
     bool IsCopyGpuBuffers() { static const auto value = Flag("BB_COPY_GPU_BUFFERS", false); return value; }
     bool IsDirectMemoryAccessEnabled() { static const auto value = Flag("BB_DIRECT_MEMORY_ACCESS", false); return value; }
-    bool IsDumpShaders() { static const auto value = Flag("BB_DUMP_SHADERS", false); return value; }
+    bool IsDumpShaders() { static const auto value = BB_DIAGNOSTICS && Flag("BB_DUMP_SHADERS", false); return value; }
     bool IsFsrEnabled() { static const auto value = Flag("BB_FSR1", false); return value; }
     bool IsHdrAllowed() { static const auto value = Flag("BB_HDR", false); return value; }
     bool IsNullGPU() { static const auto value = Flag("BB_NULL_GPU", false); return value; }
@@ -70,12 +71,12 @@ public:
     bool IsShaderCollect() { return false; }
     bool IsUserfaultfdTracking() { return false; }
     bool IsVkCrashDiagnosticEnabled() { return false; }
-    bool IsVkGuestMarkersEnabled() { static const auto value = Flag("BB_VK_MARKERS", false); return value; }
-    bool IsVkHostMarkersEnabled() { static const auto value = Flag("BB_VK_MARKERS", false); return value; }
+    bool IsVkGuestMarkersEnabled() { static const auto value = BB_DIAGNOSTICS && Flag("BB_VK_MARKERS", false); return value; }
+    bool IsVkHostMarkersEnabled() { static const auto value = BB_DIAGNOSTICS && Flag("BB_VK_MARKERS", false); return value; }
     bool IsVkValidationCoreEnabled() { return true; }
-    bool IsVkValidationEnabled() { static const auto value = Flag("BB_VK_VALIDATION", false); return value; }
+    bool IsVkValidationEnabled() { static const auto value = BB_DIAGNOSTICS && Flag("BB_VK_VALIDATION", false); return value; }
     bool IsVkValidationGpuEnabled() { return false; }
-    bool IsVkValidationSyncEnabled() { static const auto value = Flag("BB_VK_VALIDATION_SYNC", false); return value; }
+    bool IsVkValidationSyncEnabled() { static const auto value = BB_DIAGNOSTICS && Flag("BB_VK_VALIDATION_SYNC", false); return value; }
     // bbport co-op: online play through a shadNet server (BB_ONLINE=1, set by the launcher).
     static std::string Text(const char* name, const char* fallback) {
         const char* v = std::getenv(name);

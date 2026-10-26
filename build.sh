@@ -10,13 +10,19 @@ for tool in clang cmake ninja pkg-config; do
 done
 # Source paths in the binary (assert and log messages) are written relative to the repository.
 root="$(cygpath -m "$PWD")"
-cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO=off \
-    -DBB_LTO="${BB_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+case "${BB_DIAGNOSTICS:-OFF}" in
+    ON|on|1|TRUE|true) diagnostic=ON; build=out/gpu-diagnostics; output=out/DriveClubGame.diagnostics.exe ;;
+    OFF|off|0|FALSE|false) diagnostic=OFF; build=out/gpu; output=out/DriveClubGame.exe ;;
+    *) echo 'BB_DIAGNOSTICS must be ON or OFF.' >&2; exit 1 ;;
+esac
+
+cmake -S gpu -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO=off \
+    -DBB_DIAGNOSTICS="$diagnostic" -DBB_LTO="${BB_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_C_FLAGS="-ffile-prefix-map=$root=." -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$root=." >/dev/null
-if ! ninja -C out/gpu DriveClubGame > out/gpu-build.log 2>&1; then
-    grep -v '^\[' out/gpu-build.log | tail -40 >&2
-    echo 'Build failed (full log: out/gpu-build.log)' >&2
+if ! ninja -C "$build" DriveClubGame > "$build-build.log" 2>&1; then
+    grep -v '^[[]' "$build-build.log" | tail -40 >&2
+    echo "Build failed (full log: $build-build.log)" >&2
     exit 1
 fi
-cp out/gpu/DriveClubGame.exe out/
-echo "Built $PWD/out/DriveClubGame.exe"
+cp "$build/DriveClubGame.exe" "$output"
+echo "Built $PWD/$output"

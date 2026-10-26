@@ -1,3 +1,4 @@
+#include "bbport_diagnostics.h"
 // bbport: BB_FRAME_TRACE=<file> - one line per flip with where the frame's time went, to find
 // the causes of frame-time variance (the frame log only has the interval). Written by the
 // present thread (videoout/driver.cpp); the counters below are fed by the GPU command thread,
@@ -10,15 +11,17 @@
 
 namespace BbTrace {
 inline const bool enabled = [] {
-    const char* env = std::getenv("BB_FRAME_TRACE");
+    const char* env = BB_DIAGNOSTIC_ENV("BB_FRAME_TRACE");
     return env && env[0];
 }();
 inline std::int64_t NowNs() {
+    if constexpr (!BB_DIAGNOSTICS) return 0;
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();
 }
 inline void AtomicMax(std::atomic<std::uint64_t>& a, std::uint64_t v) {
+    if constexpr (!BB_DIAGNOSTICS) return;
     std::uint64_t cur = a.load(std::memory_order_relaxed);
     while (v > cur && !a.compare_exchange_weak(cur, v, std::memory_order_relaxed)) {
     }
@@ -56,6 +59,7 @@ inline std::atomic<std::uint64_t> compiles{0}, evictions{0};
 /// First read fault start and last read fault end since the last flip (ns, 0 = none).
 inline std::atomic<std::int64_t> read_fault_first_ns{0}, read_fault_last_end_ns{0};
 inline void NoteReadFault(std::int64_t start_ns, std::uint64_t ns) {
+    if constexpr (!BB_DIAGNOSTICS) return;
     std::int64_t zero = 0;
     read_fault_first_ns.compare_exchange_strong(zero, start_ns, std::memory_order_relaxed);
     read_fault_last_end_ns.store(start_ns + std::int64_t(ns), std::memory_order_relaxed);

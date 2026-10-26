@@ -2,6 +2,7 @@
 # drivers, adapted to the native_probe runtime through shims in shim/.
 cmake_minimum_required(VERSION 3.24)
 project(bbgpu LANGUAGES C CXX)
+option(BB_DIAGNOSTICS "Build capture, profiling and trace support" OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -213,7 +214,7 @@ if (WIN32)
     target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
     target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 endif()
-target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
+target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
 target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
     protobuf::libprotobuf)
@@ -236,6 +237,7 @@ set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf)
 target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
+target_compile_definitions(bbgpu PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
 # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against DriveClubGame.
 if (NOT WIN32)
@@ -268,10 +270,24 @@ if (WIN32)
     add_executable(DriveClubGame ../src/probe.c ${BB_RUNTIME} ../src/compat_win.c ../src/vulkan_smoke.c
         ../packaging/windows/DriveClubGame.rc)
     set_target_properties(DriveClubGame PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+    target_compile_definitions(DriveClubGame PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
     target_compile_options(DriveClubGame PRIVATE $<$<COMPILE_LANGUAGE:C>:-Wall -Wextra -Werror>)
     target_include_directories(DriveClubGame PRIVATE .. ../src)
     target_link_libraries(DriveClubGame PRIVATE bbgpu atrac9 onecore bcrypt ws2_32 -pthread)
     # The PS4 range (64 GiB - 1 TiB) must stay free: no high-entropy ASLR for heaps and stacks.
     # The guest main thread runs on the process stack: 16 MiB, committed (no stack probes).
     target_link_options(DriveClubGame PRIVATE -Wl,--disable-high-entropy-va "SHELL:-Xlinker --stack -Xlinker 16777216,16777216")
+endif()
+
+option(BB_BUILD_DIAGNOSTIC_TESTS "Build the diagnostics gate regression test" OFF)
+if (BB_BUILD_DIAGNOSTIC_TESTS)
+    add_executable(bb_diagnostics_gate_test ../tools/diagnostics_gate_test.cpp
+        shadps4/video_core/renderer_vulkan/vk_frame_capture.cpp)
+    target_include_directories(bb_diagnostics_gate_test PRIVATE shim shadps4)
+    target_compile_options(bb_diagnostics_gate_test PRIVATE -UNDEBUG)
+    target_compile_definitions(bb_diagnostics_gate_test PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
+    target_link_libraries(bb_diagnostics_gate_test PRIVATE Vulkan::Headers fmt::fmt)
+    add_executable(bb_quarantine_test ../tools/quarantine_test.cpp)
+    target_compile_options(bb_quarantine_test PRIVATE -UNDEBUG)
+    target_compile_definitions(bb_quarantine_test PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 endif()

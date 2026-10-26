@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -1308,6 +1309,8 @@ void Runtime::FlushBarriers() {
 // as raw blocks into BB_DUMP_DIR once per capture.
 void DumpVertexTexture(const Instance& instance, Scheduler& scheduler, Runtime& runtime,
                               VideoCore::Image& image) {
+#if BB_DIAGNOSTICS
+
     static std::set<u64> done;
     static u64 bucket = 0;
     const u64 now_bucket = u64(std::time(nullptr)) / 3;
@@ -1353,7 +1356,7 @@ void DumpVertexTexture(const Instance& instance, Scheduler& scheduler, Runtime& 
             .imageExtent = {w, h, 1}};
         cmdbuf.copyImageToBuffer(img, vk::ImageLayout::eTransferSrcOptimal, buffer, region);
     });
-    const char* dir = std::getenv("BB_DUMP_DIR");
+    const char* dir = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
     char path[600];
     std::snprintf(path, sizeof(path), "%s/vtex_%llx_%s_%ux%u.raw", dir && *dir ? dir : "out/dump",
                   static_cast<unsigned long long>(info.guest_address), vk::to_string(fmt).c_str(), w, h);
@@ -1366,6 +1369,8 @@ void DumpVertexTexture(const Instance& instance, Scheduler& scheduler, Runtime& 
         }
         vmaDestroyBuffer(allocator, buffer, allocation);
     });
+
+#endif
 }
 
 

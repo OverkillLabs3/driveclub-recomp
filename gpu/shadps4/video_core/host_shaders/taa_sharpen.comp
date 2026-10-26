@@ -32,8 +32,15 @@ void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}
 void main() {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(p, imageSize(result_img)))) return;
-    float amount = clamp(strength, 0.0, 2.0);
     vec3 center = loadColor(p);
+    float amount = clamp(strength, 0.0, 2.0);
+#ifdef HALF_INPUT
+    // Specular reflections and lamp glints can change independently of surface motion.
+    // DLSS has no reactive-mask input, so avoid post-sharpening HDR highlights where that
+    // temporal instability is most visible while retaining normal detail sharpening elsewhere.
+    float highlight = smoothstep(0.75, 2.5, max(center.r, max(center.g, center.b)));
+    amount *= mix(1.0, 0.15, highlight);
+#endif
     if (amount == 0.0) {
         imageStore(result_img, p, vec4(center, 1));
         return;

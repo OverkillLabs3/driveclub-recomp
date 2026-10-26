@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -219,9 +220,20 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
             over_budget_ci.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
             result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &over_budget_ci, &unsafe_buffer,
                                      &allocation, out_alloc_info);
+            if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+                // A card that is full (a 4 GB card with the texture cache at its limit): the buffer goes to
+                // system memory, where the card reaches it over the bus, instead of the game ending.
+                LOG_WARNING(Render_Vulkan, "The card's memory is full: a buffer of {} bytes is placed in system memory",
+                            buffer_ci.size);
+                VmaAllocationCreateInfo host_ci = over_budget_ci;
+                host_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+                host_ci.preferredFlags = 0;
+                result = vmaCreateBuffer(allocator, &buffer_ci_unsafe, &host_ci, &unsafe_buffer,
+                                         &allocation, out_alloc_info);
+            }
         }
-        BbStats::alloc_count[0].fetch_add(1, std::memory_order_relaxed);
-        BbStats::alloc_bytes[0].fetch_add(buffer_ci_unsafe.size, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::alloc_count[0].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::alloc_bytes[0].fetch_add(buffer_ci_unsafe.size, std::memory_order_relaxed);
         ASSERT_MSG(result == VK_SUCCESS, "Failed allocating buffer with error {}",
                    vk::to_string(vk::Result{result}));
         buffer = vk::Buffer{unsafe_buffer};

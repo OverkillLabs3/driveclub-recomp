@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -117,8 +118,8 @@ struct WaitRegMemTimer {
     }
     ~WaitRegMemTimer() {
         if (start != std::chrono::steady_clock::time_point{}) {
-            BbStats::wrm_waits[queue].fetch_add(1, std::memory_order_relaxed);
-            BbStats::wrm_wait_ns[queue].fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            if constexpr (BB_DIAGNOSTICS) BbStats::wrm_waits[queue].fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::wrm_wait_ns[queue].fetch_add(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                       std::chrono::steady_clock::now() - start)
                                                       .count(),
                                                   std::memory_order_relaxed);
@@ -186,15 +187,15 @@ void Liverpool::Process(std::stop_token stoken) {
 
     while (!stoken.stop_requested()) {
         {
-            const auto idle_start = std::chrono::steady_clock::now();
+            const auto idle_start = BB_DIAGNOSTICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::unique_lock lk{submit_mutex};
             Common::CondvarWait(submit_cv, lk, stoken,
                                 [this] { return num_commands || num_submits || submit_done; });
-            const auto idle_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            const auto idle_ns = !BB_DIAGNOSTICS ? 0 : std::chrono::duration_cast<std::chrono::nanoseconds>(
                                      std::chrono::steady_clock::now() - idle_start)
                                      .count();
-            BbStats::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
-            BbTrace::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbTrace::gpu_idle_ns.fetch_add(idle_ns, std::memory_order_relaxed);
         }
         if (stoken.stop_requested()) {
             break;
@@ -847,7 +848,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
     // Nested buffers (no draw_prep here) must keep the checksum in step while the workers run.
     const bool hash_registers = rasterizer && rasterizer->GetDrawPreparation().Enabled();
-    static const bool dcb_stats = EmulatorSettingsImpl::Flag("BB_DCB_STATS", false);
+    static const bool dcb_stats = BB_DIAGNOSTICS && EmulatorSettingsImpl::Flag("BB_DCB_STATS", false);
     const int dcb_depth = g_dcb_depth;
     if (dcb_stats) {
         ScanDcb(dcb, dcb_depth);
@@ -1471,7 +1472,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         draw_prep->EndSubmission();
     }
     if (seq != NoSeq && BbStats::enabled) {
-        BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
 #ifndef _WIN32 // bbport: per-thread rusage statistics are Linux-only
         if (rusage usage{}; getrusage(RUSAGE_THREAD, &usage) == 0) {
             BbStats::gpu_user_us.store(u64(usage.ru_utime.tv_sec) * 1000000 + usage.ru_utime.tv_usec,

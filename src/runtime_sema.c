@@ -1,3 +1,4 @@
+#include "../gpu/shim/bbport_diagnostics.h"
 /* Kernel semaphores: 32-bit IDs, counted tokens and FIFO waiters.
  * Priority-ordered semaphores are approximated by FIFO order. */
 #define _GNU_SOURCE
@@ -83,7 +84,7 @@ static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) 
     else {
         /* Priority-ordered semaphores (attr 2) are served FIFO: there is no
            PS4 priority scheduler, host threads run at equal priority. */
-        static int trace_sema=-1; if (trace_sema<0) trace_sema=getenv("BB_TRACE_SEMA")!=NULL; if (trace_sema) fprintf(stderr,"Runtime: blocking wait on semaphore %u (need %d, count %d)\n",id,need,s->count); /* deadlock diagnosis */
+        static int trace_sema=-1; if (trace_sema<0) trace_sema=BB_DIAGNOSTIC_ENV("BB_TRACE_SEMA")!=NULL; if (trace_sema) fprintf(stderr,"Runtime: blocking wait on semaphore %u (need %d, count %d)\n",id,need,s->count); /* deadlock diagnosis */
         Waiter w={.need=need};
         pthread_condattr_t attr;
         host_check(pthread_condattr_init(&attr));

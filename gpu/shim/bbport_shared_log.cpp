@@ -1,3 +1,4 @@
+#include "bbport_diagnostics.h"
 // bbport: BB_SHARED_LOG=<file> (off by default): which allocations share
 // 4 KB pages with GPU-written bytes in the game's CustomHeap(SystemShared) (0x3000000000, 49 MB). The loader retargets
 // the six call/jmp sites of its allocator (eboot FUN_00753a80) to Allocate below, which calls the allocator and logs
@@ -40,7 +41,7 @@ double NowMs() {
 
 FILE* File() {
     static FILE* f = [] {
-        const char* path = std::getenv("BB_SHARED_LOG");
+        const char* path = BB_DIAGNOSTIC_ENV("BB_SHARED_LOG");
         FILE* file = path && path[0] ? std::fopen(path, "w") : nullptr;
         if (file) {
             std::setvbuf(file, nullptr, _IOFBF, 1 << 16);

@@ -1,3 +1,4 @@
+#include "../../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -298,7 +299,7 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 // bbport: BB_FRAME_TRACE=<file> (bbport_frametrace.h): where each frame's time went.
 static void TraceFlip(s64 now_ns, s64 queued_ns, s64 guest_flip_ns, u64 prep_ns, u64 ahead_ns) {
     static FILE* file = [] {
-        const char* path = std::getenv("BB_FRAME_TRACE");
+        const char* path = BB_DIAGNOSTIC_ENV("BB_FRAME_TRACE");
         FILE* f = path && path[0] ? std::fopen(path, "w") : nullptr;
         if (f) {
             std::setvbuf(f, nullptr, _IOFBF, 1 << 16);
@@ -324,7 +325,7 @@ static void TraceFlip(s64 now_ns, s64 queued_ns, s64 guest_flip_ns, u64 prep_ns,
     const u64 rf_max = BbTrace::read_fault_thread_max_ns.exchange(0);
     const s64 rf_first = BbTrace::read_fault_first_ns.exchange(0);
     const s64 rf_last_end = BbTrace::read_fault_last_end_ns.exchange(0);
-    BbTrace::frame_gen.fetch_add(1, std::memory_order_relaxed);
+    if constexpr (BB_DIAGNOSTICS) BbTrace::frame_gen.fetch_add(1, std::memory_order_relaxed);
     const s64 done_ns = BbTrace::last_submit_done_ns.load();
     const double wall_ms = std::chrono::duration<double, std::milli>(
                                std::chrono::system_clock::now().time_since_epoch())
@@ -380,7 +381,7 @@ void VideoOutDriver::Flip(const Request& req) {
     // bbport: BB_FRAME_LOG=<file> - one line per flip: wall-clock time (ms since 1970, to line up with
     // a benchmark script) and the interval since the previous flip (ms), for 1%/0.1% lows and spikes.
     static FILE* frame_log = [] {
-        const char* path = std::getenv("BB_FRAME_LOG");
+        const char* path = BB_DIAGNOSTIC_ENV("BB_FRAME_LOG");
         FILE* file = path && path[0] ? std::fopen(path, "w") : nullptr;
         if (file) {
             std::setvbuf(file, nullptr, _IOFBF, 1 << 16);
@@ -404,7 +405,7 @@ void VideoOutDriver::Flip(const Request& req) {
     }
 
     // bbport: BB_FRAME_STATS=1 prints flip rate and frame time spread every 5 seconds.
-    static const bool frame_stats = EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);
+    static const bool frame_stats = BB_DIAGNOSTICS && EmulatorSettingsImpl::Flag("BB_FRAME_STATS", false);
     if (frame_stats) {
         using Clock = std::chrono::steady_clock;
         static Clock::time_point window_start = Clock::now(), last = window_start;

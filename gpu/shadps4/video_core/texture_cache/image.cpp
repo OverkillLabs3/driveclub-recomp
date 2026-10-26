@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -194,7 +195,7 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
                 pool_bytes -= pool[i].size_bytes;
                 pool[i] = pool.back();
                 pool.pop_back();
-                BbStats::alloc_count[3].fetch_add(1, std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbStats::alloc_count[3].fetch_add(1, std::memory_order_relaxed);
                 return;
             }
         }
@@ -240,8 +241,8 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         result = vmaCreateImage(allocator, &image_ci_unsafe, &host_ci, &unsafe_image,
                                 &allocation, &alloc_info);
     }
-    BbStats::alloc_count[1].fetch_add(1, std::memory_order_relaxed);
-    BbStats::alloc_bytes[1].fetch_add(alloc_info.size, std::memory_order_relaxed);
+    if constexpr (BB_DIAGNOSTICS) BbStats::alloc_count[1].fetch_add(1, std::memory_order_relaxed);
+    if constexpr (BB_DIAGNOSTICS) BbStats::alloc_bytes[1].fetch_add(alloc_info.size, std::memory_order_relaxed);
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
     image = vk::Image{unsafe_image};

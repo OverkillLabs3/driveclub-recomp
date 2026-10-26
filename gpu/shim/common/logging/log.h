@@ -1,3 +1,4 @@
+#include "../../bbport_diagnostics.h"
 // bbport: replaces shadPS4's spdlog-based logger with a small fmt sink.
 // Level from BB_GPU_LOG (trace|debug|info|warning|error; default warning).
 #pragma once
@@ -37,8 +38,13 @@ inline void Flush() {}
                                fmt::format(fmt_str __VA_OPT__(, ) __VA_ARGS__));                    \
         }                                                                                          \
     } while (false)
+#if BB_DIAGNOSTICS
 #define LOG_TRACE(log_class, ...) LOG_GENERIC(Common::Log::Class::log_class, spdlog::level::trace, __VA_ARGS__)
 #define LOG_DEBUG(log_class, ...) LOG_GENERIC(Common::Log::Class::log_class, spdlog::level::debug, __VA_ARGS__)
+#else
+#define LOG_TRACE(log_class, ...) do {} while (false)
+#define LOG_DEBUG(log_class, ...) do {} while (false)
+#endif
 #define LOG_INFO(log_class, ...) LOG_GENERIC(Common::Log::Class::log_class, spdlog::level::info, __VA_ARGS__)
 #define LOG_WARNING(log_class, ...) LOG_GENERIC(Common::Log::Class::log_class, spdlog::level::warn, __VA_ARGS__)
 #define LOG_ERROR(log_class, ...) LOG_GENERIC(Common::Log::Class::log_class, spdlog::level::err, __VA_ARGS__)

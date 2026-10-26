@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -7,10 +8,11 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
+#if BB_DIAGNOSTICS
 namespace Vulkan {
 
 void GpuProfiler::Init(const Instance& instance, Scheduler& scheduler) {
-    const char* env = std::getenv("BB_GPU_PROFILE");
+    const char* env = BB_DIAGNOSTIC_ENV("BB_GPU_PROFILE");
     if (!env || env[0] != '1' || instance_ptr) {
         return;
     }
@@ -119,3 +121,14 @@ void GpuProfiler::Print() {
 }
 
 } // namespace Vulkan
+
+#else
+namespace Vulkan {
+void GpuProfiler::Init(const Instance&, Scheduler&) {}
+GpuProfiler::GpuProfiler(const Instance&, Scheduler& s) : device{}, scheduler{s} {}
+void GpuProfiler::WriteTimestamp(u64) {}
+void GpuProfiler::BeginFrame() {}
+void GpuProfiler::Collect(u32) {}
+void GpuProfiler::Print() {}
+} // namespace Vulkan
+#endif

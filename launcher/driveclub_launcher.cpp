@@ -55,6 +55,20 @@ const Color kBg(255, 16, 18, 22), kCard(255, 24, 27, 33), kCardLine(255, 38, 42,
     kAccentHover(255, 240, 84, 58), kOff(255, 63, 69, 82), kWhite(255, 245, 246, 248), kOk(255, 90, 200, 120),
     kWarn(255, 240, 170, 60), kBad(255, 240, 96, 84);
 
+// The launcher's font: Segoe UI where there is one. Under Wine and Proton there often is not, and GDI+ then draws no text at
+// all, so the first of the others that exists is used.
+const FontFamily* UiFamily() {
+  static const FontFamily* family = []() -> const FontFamily* {
+    for (const wchar_t* name : {L"Segoe UI", L"Tahoma", L"Arial", L"Liberation Sans", L"DejaVu Sans", L"Verdana"}) {
+      auto* candidate = new FontFamily(name);
+      if (candidate->IsAvailable()) return candidate;
+      delete candidate;
+    }
+    return FontFamily::GenericSansSerif();
+  }();
+  return family;
+}
+
 constexpr float kMargin = 24.f, kGap = 18.f, kHeaderH = 92.f, kFooterH = 96.f, kPad = 22.f, kTitleH = 44.f;
 constexpr float kTabH = 46.f;  // the row of tabs under the header: one group of cards at a time
 constexpr float kWinW = 960.f;
@@ -134,6 +148,15 @@ const wchar_t* const kTabHint[kTabCount] = {
     L"Drive one circuit on its own and get back the frame rate and the 1% and 0.1% lows."};
 int g_tab = kTabGraphics;
 RectF g_tab_rect[kTabCount];
+// The Discord button in the header: where it was drawn (layout pixels, before scaling), and whether the pointer is on it.
+RectF g_discord_rect;
+bool g_hover_discord = false;
+const wchar_t* const kDiscordUrl = L"https://discord.gg/62b8jceumR";
+bool HitDiscord(float x, float y) {
+  const float m = 2.f * g_scale;
+  return g_discord_rect.Width > 0 && x >= g_discord_rect.X * g_scale - m && x <= (g_discord_rect.X + g_discord_rect.Width) * g_scale + m &&
+         y >= g_discord_rect.Y * g_scale - m && y <= (g_discord_rect.Y + g_discord_rect.Height) * g_scale + m;
+}
 // The Driving tab has tabs of its own, in a smaller row under the main one (HitTab gives them as kTabCount + n).
 enum { kSubAssists, kSubWheel, kSubCount };
 const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback"};
@@ -147,6 +170,7 @@ bool HasSubTabs() { return g_tab == kTabDriving; }
 bool OnPage(const Card& card) { return card.tab == g_tab && (card.sub < 0 || card.sub == g_subtab); }
 std::wstring g_status;
 std::wstring g_gpu_problem;  // from CheckGpu() at start; Play stays off while it is set, unless the check is skipped
+bool g_camera_patch = true;  // enabled by default; persisted in launcher.ini
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
 bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlays= in launcher.ini)
 bool g_vr = false;  // "VR headset (experimental)" (vr= in launcher.ini): BB_VR for the game
@@ -730,6 +754,9 @@ void BuildModel() {
                        00));
   const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
+  const int camera_patch = toggle(L"High-FPS camera workaround (experimental)",
+      L"Reduces camera, replay HUD and driver shake above 30 FPS. Behavior is still incorrect in some situations and does not match the 30 FPS reference. Enabled by default; restart the game after changing it.",
+      "@camera_patch", true);
   const int blur = g_blur_patch = toggle(L"Disable motion blur and depth of field",
                           L"They share one shader, so both are turned off together. Cannot be changed while FSR or DLSS anti-aliasing is on: they need the game's blur pass.",
                           "Disable motion blur and depth of field", false);
@@ -962,7 +989,7 @@ void BuildModel() {
   g_cards.push_back({L"ASSISTS", {g_drive_preset, g_drive[0].row, g_drive[1].row, g_drive[2].row, g_drive[3].row}, 0, kTabDriving,
                      L"In-game: the launcher leaves that setting alone and the game's own Options menu decides. Any other choice is set by the launcher every time the game starts."});
   g_cards.back().sub = kSubAssists;
-  g_cards.push_back({L"PATCHES", {blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
+  g_cards.push_back({L"PATCHES", {camera_patch, blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
                      L"Community patches for DriveClub version 1.28."});
   g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen}, 0, kTabBench});
   g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
@@ -1058,6 +1085,7 @@ void LoadSettings() {
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = line.substr(9) == "1";
+    if (line.rfind("camera_patch=", 0) == 0) g_camera_patch = line.substr(13) == "1";
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
     if (line.rfind("vr=", 0) == 0) g_vr = line.substr(3) == "1";
@@ -1123,6 +1151,10 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") {
       c.sel = g_check_updates ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@camera_patch") {
+      c.sel = g_camera_patch ? 1 : 0;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") {
@@ -1243,6 +1275,7 @@ void SaveSettings() {
     std::ofstream ini(IniPath().c_str(), std::ios::binary | std::ios::trunc);
     bool fps_on = false, fast_on = false, full_on = true, unlock_on = false;
     for (const auto& c : g_c) {
+      if (c.kind == Kind::Toggle && c.patches[0] == "@camera_patch") g_camera_patch = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@fps") fps_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@fast") fast_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@full") full_on = c.sel != 0;
@@ -1258,6 +1291,7 @@ void SaveSettings() {
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
+    ini << "camera_patch=" << (g_camera_patch ? 1 : 0) << "\r\n";
     ini << "motion_blur=" << (g_c[g_motion_blur].sel == 1 ? "fast" : "slow") << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
@@ -1561,7 +1595,7 @@ void RowLabel(Graphics& g, Ctl& c, int i, const Font& f, const RectF& r) {
   const bool hot = g_hover_info == i || g_info_open == i;
   Pen pen(hot ? kWhite : kMuted, 1.2f * S);
   g.DrawEllipse(&pen, c.info);
-  FontFamily fam(L"Segoe UI");
+  const FontFamily& fam = *UiFamily();
   Font fi(&fam, 10.5f * S, FontStyleBold, UnitPixel);
   Text(g, L"i", fi, RectF(c.info.X, c.info.Y + 0.5f * S, c.info.Width, c.info.Height), hot ? kWhite : kMuted, StringAlignmentCenter);
 }
@@ -1569,7 +1603,7 @@ void RowLabel(Graphics& g, Ctl& c, int i, const Font& f, const RectF& r) {
 // A rounded panel of wrapped text at (x, y) at most `width` wide, kept inside the window; returns its rectangle.
 RectF TextPanel(Graphics& g, const std::wstring& title, const std::wstring& body, float x, float y, float width, int w, int h, bool above) {
   const float S = g_scale, pad = 14 * S;
-  FontFamily fam(L"Segoe UI");
+  const FontFamily& fam = *UiFamily();
   Font ft(&fam, 14 * S, FontStyleBold, UnitPixel), fb(&fam, 13 * S, FontStyleRegular, UnitPixel);
   StringFormat mf;
   RectF tb{}, bb{};
@@ -1614,7 +1648,7 @@ void Paint(HDC hdc, int w, int h) {
   g.SetSmoothingMode(SmoothingModeAntiAlias);
   g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
   g.Clear(kBg);
-  FontFamily fam(L"Segoe UI");
+  const FontFamily& fam = *UiFamily();
   const float S = g_scale;
   g_oy = ContentOy();
   for (auto& c : g_c) c.info = RectF();  // set again for the rows drawn below
@@ -1643,6 +1677,33 @@ void Paint(HDC hdc, int w, int h) {
     g.FillEllipse(&dot, cr.X + 13 * S, cr.Y + 11 * S, 8 * S, 8 * S);
     Text(g, chip, fSeg, RectF(cr.X + 30 * S, cr.Y, cr.Width - 30 * S, cr.Height), chip_ok ? kOk : kWarn,
          StringAlignmentNear, StringAlignmentCenter, false, false);
+
+    // The Discord button, left of the chip: the community server.
+    g_discord_rect = RectF(g_win_w - kMargin - cw - 12.f - 30.f, 32.f, 30.f, 30.f);
+    const RectF dr = Scaled(g_discord_rect);
+    SolidBrush blurple(g_hover_discord ? Color(255, 112, 125, 255) : Color(255, 88, 101, 242));
+    g.FillEllipse(&blurple, dr);
+    // The mark: the face of the logo on a 24 x 24 grid, drawn in white with the two eyes cut out.
+    const float u = dr.Width * 0.62f / 24.f, ox = dr.X + dr.Width * 0.19f, oy = dr.Y + dr.Height * 0.21f;
+    const auto P = [&](float px, float py) { return PointF(ox + px * u, oy + py * u); };
+    GraphicsPath mark;
+    mark.StartFigure();
+    mark.AddBezier(P(4.5f, 4.2f), P(7.0f, 2.9f), P(9.5f, 2.4f), P(12.0f, 2.4f));
+    mark.AddBezier(P(12.0f, 2.4f), P(14.5f, 2.4f), P(17.0f, 2.9f), P(19.5f, 4.2f));
+    mark.AddBezier(P(19.5f, 4.2f), P(21.4f, 7.2f), P(22.5f, 11.0f), P(22.2f, 16.0f));
+    mark.AddBezier(P(22.2f, 16.0f), P(20.5f, 17.5f), P(18.7f, 18.4f), P(16.8f, 19.0f));
+    mark.AddLine(P(16.8f, 19.0f), P(15.8f, 17.2f));
+    mark.AddBezier(P(15.8f, 17.2f), P(16.6f, 16.9f), P(17.3f, 16.6f), P(18.0f, 16.1f));
+    mark.AddBezier(P(18.0f, 16.1f), P(15.0f, 17.5f), P(9.0f, 17.5f), P(6.0f, 16.1f));
+    mark.AddBezier(P(6.0f, 16.1f), P(6.7f, 16.6f), P(7.4f, 16.9f), P(8.2f, 17.2f));
+    mark.AddLine(P(8.2f, 17.2f), P(7.2f, 19.0f));
+    mark.AddBezier(P(7.2f, 19.0f), P(5.3f, 18.4f), P(3.5f, 17.5f), P(1.8f, 16.0f));
+    mark.AddBezier(P(1.8f, 16.0f), P(1.5f, 11.0f), P(2.6f, 7.2f), P(4.5f, 4.2f));
+    mark.CloseFigure();
+    SolidBrush white(Color(255, 255, 255, 255));
+    g.FillPath(&white, &mark);
+    g.FillEllipse(&blurple, ox + 5.9f * u, oy + 8.4f * u, 4.4f * u, 4.8f * u);
+    g.FillEllipse(&blurple, ox + 13.7f * u, oy + 8.4f * u, 4.4f * u, 4.8f * u);
   }
 
   // tabs: one page of cards at a time
@@ -1826,6 +1887,9 @@ void Paint(HDC hdc, int w, int h) {
   } else if (g_hover_browse >= 0) {
     msg = g_folder[g_hover_browse].hint;
     mc = kMuted;
+  } else if (g_hover_discord) {
+    msg = L"Join the DriveClub Recomp community on Discord.";
+    mc = kMuted;
   } else if (g_hover_tab >= 0) {
     msg = g_hover_tab < kTabCount ? kTabHint[g_hover_tab] : kSubHint[g_hover_tab - kTabCount];
     mc = kMuted;
@@ -1902,6 +1966,11 @@ std::wstring PatchXmlPath() {
 }
 
 std::wstring GameExe() {
+  wchar_t diagnostic[64] = {};
+  const DWORD length = GetEnvironmentVariableW(L"BB_DIAGNOSTIC_RUNTIME", diagnostic, 64);
+  if (length > 0 && length < 64 &&
+      std::wstring(diagnostic) == L"DriveClubGame.diagnostics.exe")
+    return g_runtime + L"\\DriveClubGame.diagnostics.exe";
   const std::wstring bundled = g_runtime + L"\\DriveClubGame.exe";
   return Exists(bundled) ? bundled : g_home + L"\\..\\DriveClubGame.exe";
 }
@@ -2123,6 +2192,14 @@ std::wstring Preflight() {
 
 std::wstring g_game_log;  // the log file of the game started last
 
+// Set on every start, including on -> off in the same launcher process.
+void SetCameraPatchEnvironment() {
+  bool on = false;
+  for (const Ctl& c : g_c)
+    if (c.patches[0] == "@camera_patch") on = c.sel != 0;
+  SetEnvironmentVariableW(L"BB_CAMERA_PATCH", on ? L"1" : L"0");
+}
+
 // Starts the game. With `process` the caller gets the game's process handle (and closes it).
 std::wstring StartGame(HANDLE* process = nullptr) {
   const std::wstring exe = GameExe();
@@ -2192,6 +2269,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
                      L"\" --app0-base \"" + g_folder[1].path + L"\" --user \"" + user + L"\" --mods \"" + g_home + L"\\mods\"" +
                      unlock_arg + graphics_arg + L" --stub-unresolved";
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
+  SetCameraPatchEnvironment();
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());
   SetEnvironmentVariableW(L"BB_PREFLIGHT_NOTE", g_preflight_note.empty() ? nullptr : std::wstring(g_preflight_note.begin(), g_preflight_note.end()).c_str());
   SetEnvironmentVariableW(L"BB_CRASH_DIR", (g_home + L"\\logs").c_str());
@@ -2881,6 +2959,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         g_hover_tab = tab;
         InvalidateRect(h, nullptr, FALSE);
       }
+      if (const bool on_discord = HitDiscord(x, y); on_discord != g_hover_discord) {
+        g_hover_discord = on_discord;
+        InvalidateRect(h, nullptr, FALSE);
+      }
       UpdateMotionBlurTooltip(h);
       TRACKMOUSEEVENT t{sizeof(t), TME_LEAVE, h, 0};
       TrackMouseEvent(&t);
@@ -2889,12 +2971,47 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSELEAVE:
       g_hover_ctl = g_hover_seg = g_hover_btn = g_hover_browse = g_hover_tab = -1;
       g_hover_info = -1;
+      g_hover_discord = false;
       g_bench_ran_hover = false;
       InvalidateRect(h, nullptr, FALSE);
       return 0;
+    case WM_SETCURSOR:
+      if (g_hover_discord && LOWORD(l) == HTCLIENT) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return TRUE;
+      }
+      break;
     case WM_LBUTTONDOWN: {
       const float x = float(GET_X_LPARAM(l)), y = float(GET_Y_LPARAM(l));
       if (g_busy) return 0;
+      if (HitDiscord(x, y)) {
+        // Where no browser can be opened the link goes to the clipboard. Under Wine and Proton ShellExecute reports success even
+        // when xdg-open is missing and nothing opens, so there the link is copied and shown every time.
+        const bool opened = reinterpret_cast<INT_PTR>(ShellExecuteW(h, L"open", kDiscordUrl, nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+        const bool wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
+        if (!opened || wine) {
+          bool copied = false;
+          if (OpenClipboard(h)) {
+            const size_t bytes = (wcslen(kDiscordUrl) + 1) * sizeof(wchar_t);
+            if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes)) {
+              if (void* p = GlobalLock(mem)) {
+                memcpy(p, kDiscordUrl, bytes);
+                GlobalUnlock(mem);
+                EmptyClipboard();
+                copied = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+              }
+              if (!copied) GlobalFree(mem);
+            }
+            CloseClipboard();
+          }
+          const wchar_t* lead = opened ? L"Discord opens in your browser. The link is also " : L"The browser could not be opened. The link is ";
+          g_status = std::wstring(lead) + (copied ? L"copied: " : L"here: ") + kDiscordUrl;
+          g_status_color = copied || opened ? kOk : kWarn;
+          g_status_sticky = true;
+          InvalidateRect(h, nullptr, FALSE);
+        }
+        return 0;
+      }
       CommitName();
       g_status_sticky = false;
       // the details panel: a click anywhere closes it; a click on an (i) opens it

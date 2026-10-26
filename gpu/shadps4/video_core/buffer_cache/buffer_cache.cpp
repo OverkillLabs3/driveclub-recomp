@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -308,9 +309,9 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         return !(env && env[0] == '0');
     }();
     if (assume_locks) {
-        BbStats::readback_paths[3].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[3].fetch_add(1, std::memory_order_relaxed);
     } else if (!offload_enabled || !readback_offload) {
-        BbStats::readback_paths[4].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[4].fetch_add(1, std::memory_order_relaxed);
     } else {
         // A request over several windows is read window by window: each is an offloaded copy
         // of its own instead of one synchronous download of the whole arena.
@@ -323,10 +324,10 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             at = part_end;
         }
         if (all_offloaded) {
-            BbStats::readback_paths[0].fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[0].fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        BbStats::readback_paths[2].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[2].fetch_add(1, std::memory_order_relaxed);
     }
     const auto flush_request = [this, device_addr, size, is_write] {
         const u32 first_block = device_addr >> block_shift;
@@ -442,7 +443,7 @@ namespace {
 // bbport: BB_READBACK_LOG=<file>: one line per guest read that downloads GPU-written data (see the header line).
 FILE* ReadbackLog() {
     static FILE* file = [] {
-        const char* path = std::getenv("BB_READBACK_LOG");
+        const char* path = BB_DIAGNOSTIC_ENV("BB_READBACK_LOG");
         FILE* f = path && path[0] ? std::fopen(path, "w") : nullptr;
         if (f) {
             std::setvbuf(f, nullptr, _IOFBF, 1 << 16);
@@ -535,7 +536,7 @@ struct BufferCache::Readback {
 bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
     const VAddr window = Common::AlignDown(device_addr, READBACK_WINDOW_SIZE);
     if (device_addr + size > window + READBACK_WINDOW_SIZE) {
-        BbStats::readback_paths[1].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[1].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     // A request still GPU modified after two rounds of its own takes the synchronous download,
@@ -551,13 +552,13 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
         liverpool->SendCommand<true>([this, &job] { RecordReadback(job); });
         const s64 t_recorded = timed ? BbTrace::NowNs() : 0;
         if (timed) {
-            BbTrace::rb_pickup_ns.fetch_add(u64(t_recorded - t_start), std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbTrace::rb_pickup_ns.fetch_add(u64(t_recorded - t_start), std::memory_order_relaxed);
         }
         if (job.busy) {
             std::unique_lock lk{readback_mutex};
             readback_cv.wait(lk, [&] { return !IsReadbackPending(window, READBACK_WINDOW_SIZE); });
             if (timed) {
-                BbTrace::rb_pending_ns.fetch_add(u64(BbTrace::NowNs() - t_recorded), std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbTrace::rb_pending_ns.fetch_add(u64(BbTrace::NowNs() - t_recorded), std::memory_order_relaxed);
             }
         } else {
             ++attempts;
@@ -572,8 +573,8 @@ bool BufferCache::OffloadReadback(VAddr device_addr, u64 size, bool is_write) {
                 scheduler.GetWorkSemaphore()->Wait(job.tick);
                 if (timed) {
                     const s64 t_done = BbTrace::NowNs();
-                    BbTrace::rb_gpu_ns.fetch_add(u64(t_done - t_recorded), std::memory_order_relaxed);
-                    BbTrace::rb_jobs.fetch_add(1, std::memory_order_relaxed);
+                    if constexpr (BB_DIAGNOSTICS) BbTrace::rb_gpu_ns.fetch_add(u64(t_done - t_recorded), std::memory_order_relaxed);
+                    if constexpr (BB_DIAGNOSTICS) BbTrace::rb_jobs.fetch_add(1, std::memory_order_relaxed);
                     if (log) {
                         std::scoped_lock lk{g_readback_log_mutex};
                         std::fprintf(log, "%.3f %u %lu %llx %llx o %d %.0f %.0f %.0f %llu %zu %llu %llu %llu %016llx %.0f %u %llx %llx %llu %llu %llx\n",
@@ -675,7 +676,7 @@ void BufferCache::RecordReadback(Readback& job) {
             if (same) {
                 // BB_READBACK_EARLY_VERIFY=N: every Nth use also makes the usual copy; FinishReadback compares.
                 static const int verify_every = [] {
-                    const char* env = std::getenv("BB_READBACK_EARLY_VERIFY");
+                    const char* env = BB_DIAGNOSTIC_ENV("BB_READBACK_EARLY_VERIFY");
                     return env ? std::atoi(env) : 0;
                 }();
                 static u64 uses = 0;
@@ -693,7 +694,7 @@ void BufferCache::RecordReadback(Readback& job) {
                 job.staging = it->staging;
                 job.tick = it->tick;
                 early_readbacks.erase(it);
-                BbStats::readback_paths[7].fetch_add(1, std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[7].fetch_add(1, std::memory_order_relaxed);
                 if (job.early_verify.buffer) {
                     // Packed offsets of the verify copy, in the same order as job.copies.
                     job.spans.clear();
@@ -744,7 +745,7 @@ void BufferCache::RecordReadback(Readback& job) {
             // and compare the two: a driver or memory type that behaves differently switches the direct path off.
             ++direct_reads;
             const u32 every = direct_reads <= 512 ? 8u : 128u;
-            const char* verify_env = std::getenv("BB_READBACK_VERIFY");
+            const char* verify_env = BB_DIAGNOSTIC_ENV("BB_READBACK_VERIFY");
             job.verify = verify_env ? (std::atoi(verify_env) > 0 && (direct_reads % std::atoi(verify_env)) == 0)
                                     : (direct_reads % every) == 0;
             const u64 stamped = window_write_tick[(job.window / READBACK_WINDOW_SIZE) & 4095];
@@ -916,7 +917,7 @@ void BufferCache::FinishReadback(const Readback& job) {
                 std::memcpy(const_cast<u8*>(early), job.spans[i].src, job.copies[i].size);
             }
         }
-        BbStats::readback_paths[9].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[9].fetch_add(1, std::memory_order_relaxed);
         if (differing && !rewritten) {
             std::printf("GPU: early readback copy of window %llx differs from the usual copy in %llu of %zu ranges\n",
                         static_cast<unsigned long long>(job.window), static_cast<unsigned long long>(differing),
@@ -942,7 +943,7 @@ void BufferCache::FinishReadback(const Readback& job) {
             pos += done;
         }
         if (!same && !rewritten) {
-            BbStats::readback_paths[6].fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[6].fetch_add(1, std::memory_order_relaxed);
             std::printf("GPU: a direct read of video memory differs from the copy made by the GPU: direct reads are "
                         "switched off\n");
             direct_readback.store(false, std::memory_order_relaxed);
@@ -952,7 +953,7 @@ void BufferCache::FinishReadback(const Readback& job) {
     // The write-back runs ahead of the verdict: other downloads of the window wait while this one
     // is pending, and a vetoed window stays GPU modified.
     if (use_direct) {
-        BbStats::readback_paths[5].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[5].fetch_add(1, std::memory_order_relaxed);
         for (const auto& span : job.spans) {
             memory->TryWriteBacking(std::bit_cast<u8*>(span.dst), span.src, span.size);
         }
@@ -1025,7 +1026,7 @@ void BufferCache::RecordEarlyReadbacks() {
     for (const VAddr window : early_pending) {
         if (std::ranges::find(unrecorded_windows, window) != unrecorded_windows.end()) {
             keep_pending.push_back(window); // the draw that writes it is not recorded yet: copy at a later submission
-            BbStats::readback_paths[10].fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[10].fetch_add(1, std::memory_order_relaxed);
             continue;
         }
         DropEarlyReadback(window);
@@ -1054,7 +1055,7 @@ void BufferCache::RecordEarlyReadbacks() {
         early.write_seq = memory_tracker->GpuWriteSeq(window, READBACK_WINDOW_SIZE);
         early.tick = tick;
         early_readbacks.push_back(std::move(early));
-        BbStats::readback_paths[8].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::readback_paths[8].fetch_add(1, std::memory_order_relaxed);
         scheduler.RequestHostReadBarrier();
     }
     early_pending = std::move(keep_pending);
@@ -1112,7 +1113,7 @@ u64 RegionKey(VAddr address) {
 }
 bool BufferStatsEnabled() {
     static const bool enabled = [] {
-        const char* value = std::getenv("BB_BUFFER_STATS");
+        const char* value = BB_DIAGNOSTIC_ENV("BB_BUFFER_STATS");
         return value && value[0] == '1';
     }();
     return enabled;
@@ -1160,15 +1161,15 @@ bool BufferCache::CanQueueUntrackedStore(VAddr addr, u32 size) {
     const VAddr lo = Common::AlignDown(addr, 4);
     const VAddr hi = Common::AlignUp(addr + size, 4);
     if (!memory_tracker->IsRegionGpuModified(lo, hi - lo)) {
-        BbStats::store_why[4].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[4].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (gpu_byte_map.Any(lo, hi - lo)) {
-        BbStats::store_why[5].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[5].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if ((lo >> block_shift) != ((hi - 1) >> block_shift)) {
-        BbStats::store_why[7].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[7].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -1199,15 +1200,15 @@ bool BufferCache::QueueUntrackedStore(VAddr addr, const void* data, u32 size) {
     const VAddr lo = Common::AlignDown(addr, 4);
     const VAddr hi = Common::AlignUp(addr + size, 4);
     if (!memory_tracker->IsRegionGpuModified(lo, hi - lo)) {
-        BbStats::store_why[4].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[4].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (gpu_byte_map.Any(lo, hi - lo)) {
-        BbStats::store_why[5].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[5].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if ((lo >> block_shift) != ((hi - 1) >> block_shift) || !runtime_memory_write_backing(addr, data, size)) {
-        BbStats::store_why[7].fetch_add(1, std::memory_order_relaxed);
+        if constexpr (BB_DIAGNOSTICS) BbStats::store_why[7].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     std::scoped_lock lk{queued_store_mutex};
@@ -1649,7 +1650,7 @@ const Buffer* BufferCache::UploadCopies(const Buffer* arena, std::span<vk::Buffe
     if (copies.empty()) {
         return nullptr;
     }
-    BbStats::buffer_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);
+    if constexpr (BB_DIAGNOSTICS) BbStats::buffer_upload_bytes.fetch_add(total_size_bytes, std::memory_order_relaxed);
     const auto staging = staging_pool.Request(total_size_bytes, MemoryType::HostUncached);
     // bbport: the guest memory is copied into staging on the copy threads, started now in
     // groups of about 1 MiB; submission and guest-visible fences wait for them

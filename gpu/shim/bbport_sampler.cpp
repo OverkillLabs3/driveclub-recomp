@@ -1,3 +1,4 @@
+#include "bbport_diagnostics.h"
 // Performance aid: with BB_PROFILE=1 the busiest threads are sampled about every millisecond and the
 // most frequent code locations are written to the log every 10 seconds, as module + offset (the
 // offsets of DriveClubGame.exe can be looked up with a symbolizer on an unstripped build).
@@ -259,7 +260,7 @@ extern "C" void BbStartSampler() {
         return;
     }
     started = true;
-    const char* env = std::getenv("BB_PROFILE");
+    const char* env = BB_DIAGNOSTIC_ENV("BB_PROFILE");
     if (env && env[0] == '1') {
         std::thread(Run).detach();
     }

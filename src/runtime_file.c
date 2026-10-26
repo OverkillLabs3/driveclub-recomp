@@ -1,3 +1,4 @@
+#include "../gpu/shim/bbport_diagnostics.h"
 /* Guest file system: PS4 mount points mapped onto host directories.
  *   /app0, /hostapp  -> game package root (read-only by convention)
  *   /temp0, /download0, /data, and mounts added by SaveData -> user directory
@@ -366,7 +367,7 @@ static File *get(int fd) {
     return &files[fd];
 }
 /* BB_AUDIO_TRACE=1: sound file opens and failed reads (missing game sounds). */
-static int audio_trace(void) { static int v=-1; if (v<0) { const char *e=getenv("BB_AUDIO_TRACE"); v=e && e[0]=='1'; } return v; }
+static int audio_trace(void) { static int v=-1; if (v<0) { const char *e=BB_DIAGNOSTIC_ENV("BB_AUDIO_TRACE"); v=e && e[0]=='1'; } return v; }
 /* Game mounts (including linked mod overlays) are read-only. Saves use other mounts. */
 static int game_path(const char *p) {
     if (!p || !*p) return 0;
@@ -427,7 +428,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
     pthread_mutex_unlock(&lock);
     if (opens<=300) printf("Runtime: open(%s) -> fd %d\n",guest,fd);
     if (audio_trace() && strstr(guest,"sound/")) printf("Audio trace: open(%s) -> fd %d, %lld bytes\n",guest,fd,(long long)s.st_size);
-    const char *mod_trace=getenv("BB_MOD_TRACE"), *mod_root=getenv("BB_MODS_DIR");
+    const char *mod_trace=BB_DIAGNOSTIC_ENV("BB_MOD_TRACE"), *mod_root=mod_trace ? getenv("BB_MODS_DIR") : NULL;
     if (mod_trace && mod_trace[0]=='1' && mod_root) {
         char actual[PATH_MAX],root[PATH_MAX];
         static unsigned traced;

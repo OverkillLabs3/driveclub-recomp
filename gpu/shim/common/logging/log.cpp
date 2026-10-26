@@ -1,3 +1,4 @@
+#include "../../bbport_diagnostics.h"
 // bbport: see log.h.
 #include <cstdio>
 #include <cstdlib>
@@ -8,7 +9,7 @@
 namespace Common::Log {
 static Level threshold() {
     static const Level level = [] {
-        const char* v = std::getenv("BB_GPU_LOG");
+        const char* v = BB_DIAGNOSTIC_ENV("BB_GPU_LOG");
         if (!v) return Level::warn;
         static const char* names[] = {"trace", "debug", "info", "warning", "error", "critical"};
         for (int i = 0; i < 6; ++i)

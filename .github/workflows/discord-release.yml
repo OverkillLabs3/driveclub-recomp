@@ -1,0 +1,36 @@
+name: Announce release on Discord
+
+on:
+  # "released" fires when a release is published, or a pre-release is promoted. Pre-releases are skipped.
+  release:
+    types: [released]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to announce, e.g. v0.3.3
+        required: true
+      dry_run:
+        description: Check the formatting without posting
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Post to #releases
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          RELEASE_PING_ROLE: "1563578191669502022" # @Release Pings
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node .github/scripts/discord-release.mjs

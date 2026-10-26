@@ -1,3 +1,4 @@
+#include "bbport_diagnostics.h"
 // The last draws and dispatches that were recorded, kept in a small ring so that a crash, a freeze or a lost
 // device can say what the GPU was working on. One atomic increment and a few stores per call.
 #pragma once
@@ -8,6 +9,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+
+namespace BbQuarantine {
+inline bool Enabled();
+}
 
 namespace BbRecent {
 
@@ -30,11 +35,18 @@ inline std::uint64_t Now() {
             .count());
 }
 
+// Normal builds retain the functional history when quarantine is explicitly enabled.
+inline bool Enabled() {
+    return BB_DIAGNOSTICS || BbQuarantine::Enabled();
+}
+
 inline void Draw(std::uint64_t vs, std::uint64_t ps, std::uint32_t indices, std::uint32_t instances) {
+    if (!Enabled()) return;
     entries[next.fetch_add(1, std::memory_order_relaxed) & (Size - 1)] = {vs, ps, 0, indices, instances, 0, 'D'};
 }
 
 inline void Dispatch(std::uint64_t cs, std::uint32_t x, std::uint32_t y, std::uint32_t z) {
+    if (!Enabled()) return;
     entries[next.fetch_add(1, std::memory_order_relaxed) & (Size - 1)] = {cs, 0, 0, x, y, z, 'C'};
 }
 
@@ -73,8 +85,12 @@ inline std::string Sibling(const char* name) {
 }
 
 inline bool Enabled() {
-    const char* on = std::getenv("BB_QUARANTINE");
-    return on && on[0] == '1';
+    // A startup option: never query the process environment on every draw/dispatch.
+    static const bool enabled = [] {
+        const char* on = std::getenv("BB_QUARANTINE");
+        return on && on[0] == '1';
+    }();
+    return enabled;
 }
 
 inline void Add(std::uint32_t hash) {
@@ -153,6 +169,11 @@ inline bool Contains(std::uint64_t hash) {
 
 // The device was lost: remember the dispatches that ended the recorded work (up to 8 in a row).
 inline void NoteDeviceLost() {
+    if (!BbRecent::Enabled()) {
+        std::printf("GPU: device lost; recent command tracking disabled (use a diagnostic build or BB_QUARANTINE=1)\n");
+        std::fflush(stdout);
+        return;
+    }
     if (state.load() != 2) {
         Load();
     }

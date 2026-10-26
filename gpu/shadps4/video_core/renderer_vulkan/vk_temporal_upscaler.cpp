@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
@@ -57,7 +58,7 @@ FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 h
 /// <dir>/fNNN_<name>_<w>x<h>_<format>.raw, for checking temporal stability offline.
 /// Returns the frame number to dump, or -1.
 int DumpFrame() {
-    static const char* trigger = std::getenv("BB_DUMP_TRIGGER");
+    static const char* trigger = BB_DIAGNOSTIC_ENV("BB_DUMP_TRIGGER");
     static int remaining = 0, index = 0, polls = 0;
     if (!trigger) {
         return -1;
@@ -66,7 +67,7 @@ int DumpFrame() {
         if (++polls % 30 != 0 || std::remove(trigger) != 0) {
             return -1;
         }
-        const char* frames = std::getenv("BB_DUMP_FRAMES");
+        const char* frames = BB_DIAGNOSTIC_ENV("BB_DUMP_FRAMES");
         remaining = frames ? std::max(1, std::atoi(frames)) : 8;
         index = 0;
     }
@@ -87,7 +88,7 @@ struct DumpImage {
 void DumpImages(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
                 int frame, std::initializer_list<DumpImage> images) {
     static const std::string dir = [] {
-        const char* env = std::getenv("BB_DUMP_DIR");
+        const char* env = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
         return std::string{env && env[0] ? env : "out/dump"};
     }();
     const vk::MemoryBarrier2 before{
@@ -1901,9 +1902,9 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
     display = {vk::Image(it->second.image), it->second.format, it->second.width, it->second.height};
     // Diagnostic capture of the actual completed display buffer, including native UI.
     // BB_PRESENT_DUMP_COUNT=N: the trigger dumps N consecutive frames (temporal stability).
-    static const char* dump = std::getenv("BB_PRESENT_DUMP_TRIGGER");
+    static const char* dump = BB_DIAGNOSTIC_ENV("BB_PRESENT_DUMP_TRIGGER");
     static const int dump_count = [] {
-        const char* env = std::getenv("BB_PRESENT_DUMP_COUNT");
+        const char* env = BB_DIAGNOSTIC_ENV("BB_PRESENT_DUMP_COUNT");
         return env ? std::max(1, std::atoi(env)) : 1;
     }();
     static int dump_index = 0;
@@ -2005,7 +2006,6 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
     if (ok) {
         // The jitter and motion vectors FSR 3 gets: render pixels, current to previous.
         const float sign = BbToggle::Disabled(1u << 26) ? -1.0f : 1.0f;
-        const auto& settings = BbSettings::Get();
         ok = dlss->Evaluate(cmdbuf, {
             .color = color,
             .depth = depth,
@@ -2017,7 +2017,9 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
             .jitter_y = sign * jitter[1],
             .reset = reset,
             .frame_ms = frame_ms,
-            .sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f,
+            // The configured sharpness is applied once, after DLSS, by ExtraSharpen.
+            // NGX sharpening here as well compounds edge enhancement and creates halos.
+            .sharpness = 0.0f,
         });
     }
     if (!ok) {

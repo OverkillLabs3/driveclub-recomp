@@ -1,3 +1,4 @@
+#include "../gpu/shim/bbport_diagnostics.h"
 /* Force feedback: the game drives forces only for a Logitech wheel, through the bundled logiWheel.prx. Its exports
  * are replaced here (by NID; the names are not public) so that the game sees a Logitech wheel whenever a wheel is
  * connected, and the forces it plays go to that wheel through SDL's haptic API (DirectInput force feedback).
@@ -465,7 +466,7 @@ static bool ffb_settings_reload(void) {
 }
 
 /* BB_FFB_LOG=1: the effects as the game sets them, and ten lines a second of the forces while driving (for tuning). */
-static bool ffb_log(void) { static int on=-1; if (on<0) { const char *e=getenv("BB_FFB_LOG"); on=e && *e && *e!='0'; } return on; }
+static bool ffb_log(void) { static int on=-1; if (on<0) { const char *e=BB_DIAGNOSTIC_ENV("BB_FFB_LOG"); on=e && *e && *e!='0'; } return on; }
 static void ffb_log_params(const char *what, int id, const LogiEffectParams *p) {
     static unsigned n;
     if (ffb_log() && n++<400) printf("Runtime: FFB %s %d: type %u a %d b %d c %d d %d e %d f %d\n",what,id,p->type,p->a,p->b,p->c,p->d,p->e,p->f);

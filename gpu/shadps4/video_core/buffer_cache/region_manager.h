@@ -1,3 +1,4 @@
+#include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -264,7 +265,7 @@ private:
             if (writeable.Get(page)) {
                 continue; // not protected: no fault
             }
-            BbStats::tracker_faults.fetch_add(1, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::tracker_faults.fetch_add(1, std::memory_order_relaxed);
             if (!hot_enabled) {
                 continue;
             }
@@ -278,7 +279,7 @@ private:
                 }
                 hot.Set(page);
                 ++num_hot;
-                BbStats::hot_pages.fetch_add(1, std::memory_order_relaxed);
+                if constexpr (BB_DIAGNOSTICS) BbStats::hot_pages.fetch_add(1, std::memory_order_relaxed);
             }
         }
     }
@@ -290,7 +291,7 @@ private:
         if (!HotPagesEnabled() ||
             std::chrono::steady_clock::now() - hot_since > HotPeriod) {
             // Re-protect them (on this upload) and start counting again.
-            BbStats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
+            if constexpr (BB_DIAGNOSTICS) BbStats::hot_pages.fetch_sub(num_hot, std::memory_order_relaxed);
             hot.Clear();
             write_faults.fill(0);
             num_hot = 0;
