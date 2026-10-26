@@ -35,6 +35,16 @@ public:
                 u32 width, u32 height, u32 src_width, u32 src_height, bool normalized,
                 vk::ImageView object_view = {}, vk::ImageView color_view = {});
 
+    /// VR with alternate frames: the motion goes back two frames, to the same eye's last frame (the previous one is
+    /// the other eye's): the game's moves of this frame and the last are chained.
+    void SetTwoBack(bool value) noexcept {
+        two_back = value;
+    }
+    /// The chained move is known (two frames of the game's constants).
+    [[nodiscard]] bool TwoBackReady() const noexcept {
+        return have_previous;
+    }
+
     /// Row-vector clip space matrices for the frame generator.
     void ClipTransforms(std::array<float, 16>& view_to_clip,
                         std::array<float, 16>& clip_to_prev_clip,
@@ -45,6 +55,9 @@ public:
 private:
     bool ClipToPrevious(std::array<float, 16>& out) const;
     std::array<float, 16> relative{}, projection{};
+    // The last frame's move and the projections of the last two frames (two_back).
+    std::array<float, 16> previous_relative{}, previous_projection{}, projection_two_back{};
+    bool have_previous = false, two_back = false;
     bool got_slot0 = false, got_slot1 = false;
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pipeline_layout;

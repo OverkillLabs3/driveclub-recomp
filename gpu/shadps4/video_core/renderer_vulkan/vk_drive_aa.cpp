@@ -590,13 +590,14 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const Dlss::FeatureDesc dlss_desc{w, h, ow, oh, upscale ? Dlss::QualityForScale(factor) : 0, true, true,
                                       u32(BbSettings::Get().dlss_model.load())};
     // VR with alternate frames: each eye its own DLSS feature (its own history) and motion back to its own last frame.
-    // The eye from this frame's own camera (the scene constants' position matched with the head hook's calls).
-    int vr_eye = -1;
+    // The eye of this frame (its G-buffer camera matched with the head hook's calls), checked against its own camera
+    // where the scene constants are read.
+    int vr_eye = dlss ? BbVr::DrawnEye() : -1;
     if (dlss && camera_motion.Ready()) {
         float a[3], b[3], da = 0.0f, db = 0.0f;
         camera_motion.CameraPositions(a, b);
         const int ea = BbVr::EyeAt(a, da), eb = BbVr::EyeAt(b, db);
-        vr_eye = ea >= 0 ? ea : eb;
+        vr_eye = ea >= 0 ? ea : eb >= 0 ? eb : vr_eye;
         static int told = 0;
         if (told < 6 && (ea >= 0 || eb >= 0 || BbVr::DrawnEye() >= 0)) {
             ++told;
@@ -611,6 +612,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     }
     const u32 slot = per_eye ? u32(vr_eye) : 0;
     camera_motion.SetEye(per_eye ? vr_eye : -1);
+    motion.SetTwoBack(per_eye);
     if (per_eye != last_per_eye) {
         last_per_eye = per_eye;
         slot_reset[0] = slot_reset[1] = true; // into or out of the cockpit: the histories start again
@@ -619,7 +621,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     if (reset) {
         slot_reset[0] = slot_reset[1] = true;
     }
-    if (per_eye && !camera_motion.EyeHistoryValid()) {
+    if (per_eye && (camera_motion.Ready() ? !camera_motion.EyeHistoryValid() : !motion.TwoBackReady())) {
         slot_reset[slot] = true; // no last frame of this eye yet
     }
     const bool new_feature = dlss && !dlss->HasFeature(dlss_desc);

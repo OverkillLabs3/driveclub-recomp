@@ -3,6 +3,7 @@
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "video_core/host_shaders/drive_motion_comp.h"
@@ -140,14 +141,37 @@ void DriveMotion::OnTaaConstants(u32 slot, const float* data, u32 dwords) {
     // Slot 0, dwords 16..31: the relative camera move current view -> previous view followed by
     // the projection (the anti-aliasing pass reprojects with it). Slot 1, dwords 48..63: the
     // projection itself (row vectors, reversed Z, infinite far plane).
+    // A new frame's values push the last ones back (two_back); repeats of the same values within a frame do not.
     if (slot == 0 && dwords >= 32) {
+        if (std::memcmp(relative.data(), data + 16, sizeof(relative)) != 0) {
+            previous_relative = relative;
+            have_previous = got_slot0 || have_previous;
+        }
         std::memcpy(relative.data(), data + 16, sizeof(relative));
         got_slot0 = true;
     } else if (slot == 1 && dwords >= 64) {
+        if (std::memcmp(projection.data(), data + 48, sizeof(projection)) != 0) {
+            projection_two_back = previous_projection;
+            previous_projection = projection;
+        }
         std::memcpy(projection.data(), data + 48, sizeof(projection));
         got_slot1 = true;
     }
 }
+
+namespace {
+// How far a row-vector 4x4 is from a rigid move (orthonormal 3x3, last column 0 0 0 1).
+float RigidError(const Mat& m) {
+    float e = std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1.0f);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            float d = 0.0f;
+            for (int k = 0; k < 3; ++k) d += m[i * 4 + k] * m[j * 4 + k];
+            e += std::abs(d - (i == j ? 1.0f : 0.0f));
+        }
+    return e;
+}
+} // namespace
 
 bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
     Mat inverse{};
@@ -156,6 +180,29 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
         return false;
     }
     out = Multiply(inverse, relative);
+    if (!two_back || !have_previous) {
+        return true;
+    }
+    // The move is view -> previous view, followed by a projection: the previous frame's or this one's (they differ
+    // in VR, each eye its own). The one that leaves a rigid move is it. Then clip -> clip two frames back:
+    // P^-1 * M(this frame) * M(last frame) * P(two frames back).
+    Mat inv_prev{}, inv_prev2{};
+    if (!Invert(previous_projection, inv_prev) || !Invert(projection_two_back, inv_prev2)) {
+        return true;
+    }
+    const Mat move_a = Multiply(relative, inv_prev), move_b = Multiply(relative, inverse);
+    const bool a = RigidError(move_a) <= RigidError(move_b);
+    const Mat move = a ? move_a : move_b;
+    const Mat last_move = Multiply(previous_relative, a ? inv_prev2 : inv_prev);
+    const Mat back_projection = a ? projection_two_back : previous_projection;
+    out = Multiply(Multiply(Multiply(inverse, move), last_move), back_projection);
+    static int told = 0;
+    if (told++ < 3) {
+        std::printf("Camera motion: two frames back (VR), the move's projection is %s (rigid error %.4f against "
+                    "%.4f)\n",
+                    a ? "the previous frame's" : "this frame's", a ? RigidError(move_a) : RigidError(move_b),
+                    a ? RigidError(move_b) : RigidError(move_a));
+    }
     return true;
 }
 
