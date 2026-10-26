@@ -57,6 +57,7 @@
 #define XR_USE_GRAPHICS_API_VULKAN
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "bbport_vr.h"
+#include "bbport_settings.h"
 #include "video_core/host_shaders/vr_copy_comp.h"
 #include "video_core/host_shaders/vr_hud_comp.h"
 #include "video_core/host_shaders/vr_reproject_comp.h"
@@ -138,7 +139,8 @@ struct Settings {
     float screen_distance = 2.0f;
     int reproject = 0;
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
-    int keys[9] = {'0', '2', '1', '5', '6', '4', '3', '9', '8'}; // and the turn compensation, the reprojection
+    // and the turn compensation, the reprojection, the DLSS model
+    int keys[10] = {'0', '2', '1', '5', '6', '4', '3', '9', '8', '7'};
 } settings;
 
 struct State {
@@ -244,15 +246,21 @@ void ReadSettings() {
     while (std::fgets(line, sizeof line, f)) {
         char key[64] = "", name[32] = "";
         if (std::sscanf(line, " key_%63[a-z_] = %31s", key, name) == 2) {
-            static const char* const actions[9] = {"recentre", "up",   "down", "left",     "right",
-                                                   "forward",  "back", "turn", "reproject"};
-            for (int a = 0; a < 9; ++a) {
+            static const char* const actions[10] = {"recentre", "up",   "down", "left",      "right",
+                                                    "forward",  "back", "turn", "reproject", "dlss_model"};
+            for (int a = 0; a < 10; ++a) {
                 if (std::string(key) == actions[a]) {
                     const int code = KeyCode(name);
                     if (code) settings.keys[a] = code;
                     else std::printf("VR: vr.ini: unknown key '%s'\n", name);
                 }
             }
+            continue;
+        }
+        // dlss_model = auto, k, l or m: DLSS's model (preset) in VR (the launcher rewrites driveclub.ini)
+        if (std::sscanf(line, " dlss_model = %31s", name) == 1) {
+            const char c = char(std::tolower(static_cast<unsigned char>(name[0])));
+            BbSettings::Get().dlss_model = c == 'k' ? 11 : c == 'l' ? 12 : c == 'm' ? 13 : 0;
             continue;
         }
         float value = 0;
@@ -1331,9 +1339,10 @@ void ReadKeys() {
 #ifdef _WIN32
     // Recentre, and the seat up/down, left/right and forward/back by 2 cm (Ctrl: 10 cm): the keys of vr.ini (the
     // number row 0, 2/1, 5/6, 4/3 by default) or the keypad (5, 8/2, 4/6, 9/3).
-    static bool was[9];
-    static const int keypad[9] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6, VK_NUMPAD9, VK_NUMPAD3, 0, 0};
-    for (int k = 0; k < 9; ++k) {
+    static bool was[10];
+    static const int keypad[10] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6,
+                                   VK_NUMPAD9, VK_NUMPAD3, 0,          0,          0};
+    for (int k = 0; k < 10; ++k) {
         const bool down = (GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0 || (GetAsyncKeyState(keypad[k]) & 0x8000) != 0;
         if (down && !was[k]) {
             std::scoped_lock lock{head_mutex};
@@ -1345,6 +1354,12 @@ void ReadKeys() {
                 std::printf("VR: eyes from depth: %s\n", mode == 0   ? "off (alternate frames)"
                                                        : mode == 1 ? "1 (the other eye from each frame)"
                                                                    : "2 (both eyes from the middle)");
+            } else if (k == 9) {
+                // DLSS's model: auto, K, L, M, auto... (a new feature of each eye, its history starts again)
+                std::atomic<int>& model = BbSettings::Get().dlss_model;
+                const int next = model.load() == 0 ? 11 : model.load() >= 13 ? 0 : model.load() + 1;
+                model = next;
+                std::printf("VR: DLSS model %s\n", next == 0 ? "auto" : next == 11 ? "K" : next == 12 ? "L" : "M");
             } else if (k == 7) {
                 st.turn_on = !st.turn_on;
                 std::printf("VR: car turn compensation %s (%.2f)\n", st.turn_on ? "on" : "off",
