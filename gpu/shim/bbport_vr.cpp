@@ -1335,6 +1335,19 @@ struct FrameCamera {
 std::mutex camera_mutex;
 FrameCamera camera_now; // the frame being drawn
 
+// DLSS capture: the picture the headset gets (CapturePicture asks for the next frame's; written a few frames later,
+// once the GPU has copied it).
+std::mutex capture_mutex;
+std::string capture_path;
+struct PictureDump {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize size = 0;
+    std::string path;
+    int wait = 0;
+};
+std::vector<PictureDump> picture_dumps;
+
 void ReadKeys() {
 #ifdef _WIN32
     // Recentre, and the seat up/down, left/right and forward/back by 2 cm (Ctrl: 10 cm): the keys of vr.ini (the
@@ -1566,6 +1579,11 @@ bool SceneOverlay(uint64_t vs_hash) {
     return vs_hash == 0x44606ffd || vs_hash == 0xdc8e480a;
 }
 
+void CapturePicture(const char* path) {
+    std::scoped_lock lock{capture_mutex};
+    capture_path = path ? path : "";
+}
+
 int DrawnEye() {
     if (!Active() || !settings.afr || reproject_mode.load() == 2) {
         return -1;
@@ -1729,6 +1747,71 @@ bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, G
     return true;
 }
 
+// DLSS capture: the files of earlier dumps whose copies are done; a copy of this picture (in TRANSFER_SRC) if asked.
+void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, uint32_t height, int eye) {
+    for (auto it = picture_dumps.begin(); it != picture_dumps.end();) {
+        if (--it->wait > 0) {
+            ++it;
+            continue;
+        }
+        void* data = nullptr;
+        if (VKF.vkMapMemory(gpu.device, it->memory, 0, it->size, 0, &data) == VK_SUCCESS) {
+            if (FILE* f = std::fopen(it->path.c_str(), "wb")) {
+                std::fwrite(data, 1, size_t(it->size), f);
+                std::fclose(f);
+            }
+            VKF.vkUnmapMemory(gpu.device, it->memory);
+        }
+        VKF.vkDestroyBuffer(gpu.device, it->buffer, nullptr);
+        VKF.vkFreeMemory(gpu.device, it->memory, nullptr);
+        it = picture_dumps.erase(it);
+    }
+    std::string path;
+    {
+        std::scoped_lock lock{capture_mutex};
+        path = std::exchange(capture_path, {});
+    }
+    if (path.empty() || !cmd || !picture.image) {
+        return;
+    }
+    PictureDump dump;
+    dump.size = VkDeviceSize(width) * height * 4;
+    char suffix[64];
+    std::snprintf(suffix, sizeof suffix, "_eye%d_%ux%u_rgba8.raw", eye, width, height);
+    dump.path = path + suffix;
+    dump.wait = 8;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = dump.size;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (VKF.vkCreateBuffer(gpu.device, &bi, nullptr, &dump.buffer) != VK_SUCCESS) {
+        return;
+    }
+    VkMemoryRequirements req;
+    VKF.vkGetBufferMemoryRequirements(gpu.device, dump.buffer, &req);
+    VkPhysicalDeviceMemoryProperties props;
+    VKF.vkGetPhysicalDeviceMemoryProperties(gpu.physical, &props);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uint32_t type = UINT32_MAX;
+    for (uint32_t i = 0; i < props.memoryTypeCount && type == UINT32_MAX; ++i) {
+        if ((req.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & want) == want) {
+            type = i;
+        }
+    }
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = type;
+    if (type == UINT32_MAX || VKF.vkAllocateMemory(gpu.device, &ai, nullptr, &dump.memory) != VK_SUCCESS) {
+        VKF.vkDestroyBuffer(gpu.device, dump.buffer, nullptr);
+        return;
+    }
+    VKF.vkBindBufferMemory(gpu.device, dump.buffer, dump.memory, 0);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {width, height, 1};
+    VKF.vkCmdCopyImageToBuffer(cmd, picture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dump.buffer, 1, &region);
+    picture_dumps.push_back(std::move(dump));
+}
+
 VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkImageView alpha_view,
                       VkFormat display_format, uint32_t display_width, uint32_t display_height) {
     if (!Active()) {
@@ -1816,6 +1899,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             std::memcpy(entry->car, camera.car, sizeof camera.car);
             entry->split = true;
             entry->valid = true;
+            DumpPictures(cmd, entry->picture, display_width, display_height, camera.found ? camera.eye : -1);
             const int mode = reproject_mode.load();
             if (mode == 1 && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index]) {
                 const int other = 1 - camera.eye;
@@ -1856,6 +1940,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     entry->head = camera.head;
     std::memcpy(entry->car, camera.car, sizeof camera.car);
     entry->valid = true;
+    DumpPictures(cmd, entry->picture, display_width, display_height, camera.found ? camera.eye : -1);
     return VK_NULL_HANDLE;
 }
 

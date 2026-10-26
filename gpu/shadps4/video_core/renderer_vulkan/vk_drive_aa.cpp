@@ -721,6 +721,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             object_map_dumped = true;
         }
         DumpDlssCapture(instance, scheduler, cmdbuf, capture_directory, capture_frame, images);
+        if (BbVr::Active()) {
+            char headset[1024];
+            std::snprintf(headset, sizeof(headset), "%s/f%02d_headset", capture_directory.c_str(), capture_frame);
+            BbVr::CapturePicture(headset); // what the headset gets of this frame
+        }
         std::ofstream frame_log(std::filesystem::path(capture_directory) /
                                 ("f" + std::to_string(capture_frame) + "_meta.txt"));
         frame_log << "capture_frame=" << capture_frame << "\nrender=" << w << 'x' << h << "\noutput=" << ow
