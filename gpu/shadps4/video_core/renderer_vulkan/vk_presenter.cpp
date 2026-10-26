@@ -209,11 +209,11 @@ Presenter::~Presenter() {
     rasterizer->GetUpscaler().SetFrameGenerator(nullptr);
 
     // Frame generation reads the frames and their generated images: drain it before them.
-    frame_generator.reset();
     draw_scheduler.Finish();
     present_scheduler.Finish();
     flip_scheduler.Finish();
     Check(instance.GetDevice().waitIdle());
+    frame_generator.reset();
     BbOverlay::Shutdown();
     Check(draw_scheduler.CommandBuffer().reset());
     Check(present_scheduler.CommandBuffer().reset());
