@@ -652,6 +652,12 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
         }
     }
+    const bool model_motion = stage.sw_stage == Shader::SwStage::Vertex &&
+        !stage.buffers.empty() && !stage.buffers[0].IsSpecial() &&
+        (prepared_stage ? prepared_stage->buffer_sharps[0]
+                        : stage.buffers[0].GetSharp(stage)).GetStride() == 144 &&
+        (BbSettings::Get().aa_mode != BbSettings::AaOff ||
+         BbSettings::Get().frame_gen != BbSettings::FrameGenOff || BbNeural::Snapshot().enabled);
     const u64 alignment = std::max<u64>(instance.StorageMinAlignment(),
                                         instance.UniformMinAlignment());
     const auto copy = [&](u32 index, const void* source, VAddr address, u64 size) {
@@ -661,13 +667,17 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         }
         u8* dst = constant_ring->Data(*offset);
         const bool motion_blur = MotionBlurConstants(stage, index, size);
+        const bool motion_data = model_motion && !stage.buffers[index].IsSpecial() &&
+            (index == 0 || ((size == 16 || size == 512) &&
+                (prepared_stage ? prepared_stage->buffer_sharps[index]
+                                : stage.buffers[index].GetSharp(stage)).GetStride() == 16));
         // bbport: the bindings the CPU reads again (the anti-aliasing camera check's 416/512-byte slots 0 and 1, the
         // 864-byte camera motion constants, the cube prefilter's LOD, the motion-blur correction) are written to the
         // ring's cached copy first when the ring is VRAM: reading write-combined memory back over PCIe cost ~1.5 ms a
         // frame on the draw recording thread with DLAA/DLSS/FSR or frame generation on (the camera check runs then).
         const bool host_read =
             constant_ring->HasHostCopy() &&
-            (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+            (motion_blur || motion_data || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
              (index == 2 && IsNativeTaa(stage.pgm_hash)) ||
              (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
         u8* write = host_read ? constant_ring->HostCopy(*offset) : dst;
@@ -2596,15 +2606,19 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
             const auto buffer = sharp(slot);
             const VAddr address = buffer.base_address + offset;
             if (vs.buffers[slot].is_written || !buffer.base_address ||
-                offset + bytes > buffer.GetSize() || !memory->IsValidGpuMapping(address, 0) ||
-                memory->ClampRangeSize(address, bytes) != bytes ||
-                buffer_cache.IsRegionGpuModified(address, bytes) ||
-                PendingWriteOverlaps(address, bytes)) {
+                offset + bytes > buffer.GetSize()) {
                 return nullptr;
             }
             if (const auto* ring = num_ring_stages ? FindRingBinding(vs, slot) : nullptr) {
                 return ring->address == buffer.base_address && offset + bytes <= ring->size
-                           ? constant_ring->Data(ring->offset + offset) : nullptr;
+                           ? (ring->host_copy ? constant_ring->HostCopy(ring->offset + offset)
+                                              : constant_ring->Data(ring->offset + offset))
+                           : nullptr;
+            }
+            if (!memory->IsValidGpuMapping(address, 0) ||
+                memory->ClampRangeSize(address, bytes) != bytes ||
+                buffer_cache.IsRegionGpuModified(address, bytes)) {
+                return nullptr;
             }
             return reinterpret_cast<const u8*>(address);
         };
