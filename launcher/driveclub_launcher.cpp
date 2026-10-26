@@ -1340,7 +1340,10 @@ void BuildModel() {
   for (int k = 0; k < 2; ++k) {
     g_ffb_gain_row[k] = int(g_c.size());
     Ctl c{k ? L"FFB gain \x2212" : L"FFB gain +",
-          L"A button that makes the force of the car you are driving 5% stronger (or weaker) during a race. Each car keeps its own. Click, then press a button on the wheel, a button box or any controller, or a key (a Stream Deck's keys too).",
+          L"A button that makes the force of the car you're driving 5% stronger (or weaker) during a race.\n"
+          L"\x2022 Each car keeps its own strength.\n"
+          L"\x2022 Click here, then press a button on the wheel, a button box or any controller, or a key (a Stream Deck's keys too).\n"
+          L"In game: the new strength shows on screen.",
           Kind::Button, {L""}, {k ? "@ffbgaindown" : "@ffbgainup"}, 0, 0};
     c.physics_only = true;
     g_c.push_back(std::move(c));
