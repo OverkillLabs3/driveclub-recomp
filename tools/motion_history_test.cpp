@@ -1,6 +1,7 @@
 #include "../gpu/shadps4/video_core/renderer_vulkan/motion_history.h"
 #include <cassert>
 #include <cstdio>
+#include <vector>
 
 int main() {
   using namespace Vulkan::Motion;
@@ -50,5 +51,27 @@ int main() {
   small.NextFrame();
   assert(small.PrepareInstance(batch, 101).load);
   assert(!small.PrepareInstance(batch, 102).load);
+
+  History grown(4096);
+  std::vector<History::Allocation> allocations(1024);
+  grown.NextFrame();
+  for (unsigned i = 0; i < allocations.size(); ++i) {
+    allocations[i] = grown.PrepareInstance(batch, i);
+    assert(allocations[i].store && !allocations[i].load);
+  }
+  const auto duplicate_first = grown.PrepareInstance(batch, 0);
+  const auto duplicate_second = grown.PrepareInstance(batch, 0);
+  assert(duplicate_first.store && duplicate_second.store);
+  assert(duplicate_first.store != duplicate_second.store);
+
+  grown.NextFrame();
+  for (unsigned i = allocations.size(); i != 0; --i) {
+    assert(grown.PrepareInstance(batch, i - 1).load == allocations[i - 1].store);
+  }
+  assert(grown.PrepareInstance(batch, 0).load == duplicate_first.store);
+  assert(grown.PrepareInstance(batch, 0).load == duplicate_second.store);
+  grown.NextFrame();
+  grown.NextFrame();
+  assert(!grown.PrepareInstance(batch, 0).load);
   std::puts("PASS: instance reorder, insertion, removal, base instance, topology, range, shader and capacity isolation");
 }
