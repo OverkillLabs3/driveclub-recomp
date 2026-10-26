@@ -753,10 +753,11 @@ void OpenWheelSetup() {
 }
 
 // ------------------------------------------------------------------------------------------
-// FFB gain + / - (force feedback card): two wheel buttons that make the force of the car being driven 5% stronger or
-// weaker during a race (default.ini: wheel_button = <n>, ffb_gain_up / ffb_gain_down; the game keeps each car's
-// percentage). A click waits for a button of the wheel the game reads (wheel_device). SDL3 is loaded at run time from
-// runtime\, as the game has it.
+// FFB gain + / - (force feedback card): a button or a key each that makes the force of the car being driven 5% stronger
+// or weaker during a race (the game keeps each car's percentage). A click waits for a button of any controller (the
+// wheel, a button box) or a key (a Stream Deck sends keys); default.ini gets the lines WheelSetup writes:
+//   wheel_button = <n>, ffb_gain_up[, <another controller>]      ffb_gain_up = <keys>   # WheelSetup key
+// SDL3 is loaded at run time from runtime\, as the game has it.
 // ------------------------------------------------------------------------------------------
 void LauncherLog(const std::string& text);
 struct SdlJoyApi {
@@ -767,6 +768,8 @@ struct SdlJoyApi {
   void* (*OpenJoystick)(uint32_t) = nullptr;
   void (*CloseJoystick)(void*) = nullptr;
   const char* (*GetJoystickName)(void*) = nullptr;
+  const char* (*GetJoystickPath)(void*) = nullptr;
+  int (*GetJoystickType)(void*) = nullptr;
   int (*GetNumJoystickButtons)(void*) = nullptr;
   bool (*GetJoystickButton)(void*, int) = nullptr;
   void (*UpdateJoysticks)() = nullptr;
@@ -788,13 +791,15 @@ bool LoadSdlJoysticks() {
   g_joy.OpenJoystick = reinterpret_cast<void* (*)(uint32_t)>(get("SDL_OpenJoystick"));
   g_joy.CloseJoystick = reinterpret_cast<void (*)(void*)>(get("SDL_CloseJoystick"));
   g_joy.GetJoystickName = reinterpret_cast<const char* (*)(void*)>(get("SDL_GetJoystickName"));
+  g_joy.GetJoystickPath = reinterpret_cast<const char* (*)(void*)>(get("SDL_GetJoystickPath"));
+  g_joy.GetJoystickType = reinterpret_cast<int (*)(void*)>(get("SDL_GetJoystickType"));
   g_joy.GetNumJoystickButtons = reinterpret_cast<int (*)(void*)>(get("SDL_GetNumJoystickButtons"));
   g_joy.GetJoystickButton = reinterpret_cast<bool (*)(void*, int)>(get("SDL_GetJoystickButton"));
   g_joy.UpdateJoysticks = reinterpret_cast<void (*)()>(get("SDL_UpdateJoysticks"));
   g_joy.Free = reinterpret_cast<void (*)(void*)>(get("SDL_free"));
   if (!g_joy.InitSubSystem || !g_joy.WasInit || !g_joy.GetJoysticks || !g_joy.OpenJoystick || !g_joy.CloseJoystick ||
-      !g_joy.GetJoystickName || !g_joy.GetNumJoystickButtons || !g_joy.GetJoystickButton || !g_joy.UpdateJoysticks ||
-      !g_joy.Free) {
+      !g_joy.GetJoystickName || !g_joy.GetJoystickPath || !g_joy.GetJoystickType || !g_joy.GetNumJoystickButtons ||
+      !g_joy.GetJoystickButton || !g_joy.UpdateJoysticks || !g_joy.Free) {
     FreeLibrary(lib);
     g_joy = SdlJoyApi{};
     return false;
@@ -803,47 +808,100 @@ bool LoadSdlJoysticks() {
   return true;
 }
 const char* const kFfbGainAction[2] = {"ffb_gain_up", "ffb_gain_down"};
+constexpr const char* kKeyTag = "# WheelSetup key";   // a key line WheelSetup and this launcher write and find again
+struct FfbGainInput {
+  int button = -1;    // -1: none
+  std::string dev;    // the button's controller as wheel_button names it; "": the wheel
+  std::string keys;   // keys instead ("lctrl, f13"); "": none
+};
+FfbGainInput g_ffb_gain[2];
 int g_ffb_gain_row[2] = {-1, -1};
-int g_ffb_gain_button[2] = {-1, -1};   // the wheel button of each, -1: none
-int g_ffb_capture = -1;                // the one waiting for a wheel button (0 +, 1 -), -1: none
-std::vector<void*> g_ffb_capture_joys;
-std::vector<std::vector<char>> g_ffb_capture_held;   // buttons held: a press counts once they are let go
+int g_ffb_capture = -1;   // the one waiting for a button or key (0 +, 1 -), -1: none
+struct FfbCaptureJoy {
+  void* j;
+  std::string setting;      // how wheel_button names it; "": the wheel
+  std::vector<char> held;   // buttons held when the wait began: a press counts once they are let go
+};
+std::vector<FfbCaptureJoy> g_ffb_capture_joys;
 constexpr UINT_PTR kFfbCaptureTimer = 23;
 constexpr uint32_t kSdlInitJoystick = 0x00000200;
 
+std::string FfbTrim(std::string s) {
+  s.erase(0, s.find_first_not_of(" \t\r\n"));
+  while (!s.empty() && strchr(" \t\r\n", s.back())) s.pop_back();
+  return s;
+}
+std::wstring FfbGainText(int k) {
+  const FfbGainInput& g = g_ffb_gain[k];
+  if (!g.keys.empty()) {
+    std::string up = g.keys;
+    for (char& ch : up) ch = char(toupper((unsigned char)ch));
+    return L"key " + Widen(up);
+  }
+  if (g.button < 0) return L"";
+  if (g.dev.empty()) return L"wheel button " + std::to_wstring(g.button);
+  return L"button " + std::to_wstring(g.button) + L" of " + Widen(g.dev);
+}
 void NameFfbGainRows() {
   for (int k = 0; k < 2; ++k) {
     if (g_ffb_gain_row[k] < 0) continue;
     const std::wstring name = k ? L"FFB gain \x2212" : L"FFB gain +";
+    const std::wstring now = FfbGainText(k);
     g_c[size_t(g_ffb_gain_row[k])].items[0] =
-        g_ffb_capture == k            ? L"Press the wheel button for " + name + L"   (Esc: cancel, Delete: none)"
-        : g_ffb_gain_button[k] >= 0 ? name + L":  wheel button " + std::to_wstring(g_ffb_gain_button[k])
-                                    : name + L":  not set (click, then press a wheel button)";
+        g_ffb_capture == k ? L"Press a button or a key for " + name + L"   (Esc: cancel, Delete: none)"
+        : !now.empty()     ? name + L":  " + now
+                           : name + L":  not set (click, then press a button or a key)";
   }
 }
-// wheel_button = <n>, ffb_gain_up / ffb_gain_down
-bool FfbGainLine(const std::string& line, int* button, int* which) {
+// wheel_button = <n>, ffb_gain_up / ffb_gain_down[, <another controller>]
+bool FfbGainLine(const std::string& line, int* which, FfbGainInput* in) {
+  const std::string l = line.substr(0, line.find('#'));
   int n = -1;
-  char what[32] = "";
-  if (sscanf(line.c_str(), " wheel_button = %d , %31s", &n, what) != 2 || n < 0) return false;
+  char what[32] = "", dev[128] = "";
+  if (sscanf(l.c_str(), " wheel_button = %d , %31[^,] , %127[^\r\n]", &n, what, dev) < 2 || n < 0) return false;
+  const std::string action = FfbTrim(what), on = FfbTrim(dev);
   for (int k = 0; k < 2; ++k) {
-    if (_stricmp(what, kFfbGainAction[k]) == 0) {
-      *button = n;
+    if (_stricmp(action.c_str(), kFfbGainAction[k]) == 0) {
       *which = k;
+      in->button = n;
+      in->dev = _stricmp(on.c_str(), "wheel") == 0 ? std::string() : on;
+      return true;
+    }
+  }
+  return false;
+}
+// ffb_gain_up / ffb_gain_down = <keys>   # WheelSetup key
+bool FfbGainKeyLine(const std::string& line, int* which, std::string* keys) {
+  if (line.find(kKeyTag) == std::string::npos) return false;
+  const std::string l = line.substr(0, line.find('#'));
+  const size_t eq = l.find('=');
+  if (eq == std::string::npos) return false;
+  const std::string lhs = FfbTrim(l.substr(0, eq)), rhs = FfbTrim(l.substr(eq + 1));
+  for (int k = 0; k < 2; ++k) {
+    if (_stricmp(lhs.c_str(), kFfbGainAction[k]) == 0 && !rhs.empty()) {
+      *which = k;
+      *keys = rhs;
       return true;
     }
   }
   return false;
 }
 void LoadFfbGainButtons() {
-  g_ffb_gain_button[0] = g_ffb_gain_button[1] = -1;
+  g_ffb_gain[0] = g_ffb_gain[1] = FfbGainInput{};
   for (const auto& l : ReadLines(WheelIniPath())) {
-    int n, k;
-    if (FfbGainLine(l, &n, &k)) g_ffb_gain_button[k] = n;
+    int k;
+    FfbGainInput in;
+    std::string keys;
+    if (FfbGainLine(l, &k, &in)) {
+      g_ffb_gain[k].button = in.button;
+      g_ffb_gain[k].dev = in.dev;
+    } else if (FfbGainKeyLine(l, &k, &keys)) {
+      g_ffb_gain[k].keys = keys;
+    }
   }
   NameFfbGainRows();
 }
-// The two lines in default.ini after its other wheel_button lines, as WheelSetup writes them.
+// The lines in default.ini after its other wheel_button lines, as WheelSetup writes them.
 bool SaveFfbGainButtons() {
   std::ifstream in(WheelIniPath().c_str(), std::ios::binary);
   if (!in) return false;
@@ -854,13 +912,18 @@ bool SaveFfbGainButtons() {
   int last_button = -1;
   for (const auto& l : ReadLines(WheelIniPath())) {
     int n, k;
-    if (FfbGainLine(l, &n, &k)) continue;
+    FfbGainInput ignored;
+    std::string keys;
+    if (FfbGainLine(l, &k, &ignored) || FfbGainKeyLine(l, &k, &keys)) continue;
     lines.push_back(l);
     if (sscanf(l.c_str(), " wheel_button = %d", &n) == 1) last_button = int(lines.size()) - 1;
   }
   std::vector<std::string> add;
   for (int k = 0; k < 2; ++k) {
-    if (g_ffb_gain_button[k] >= 0) add.push_back("wheel_button = " + std::to_string(g_ffb_gain_button[k]) + ", " + kFfbGainAction[k]);
+    const FfbGainInput& g = g_ffb_gain[k];
+    if (g.button >= 0)
+      add.push_back("wheel_button = " + std::to_string(g.button) + ", " + kFfbGainAction[k] + (g.dev.empty() ? "" : ", " + g.dev));
+    if (!g.keys.empty()) add.push_back(std::string(kFfbGainAction[k]) + " = " + g.keys + "   " + kKeyTag);
   }
   lines.insert(last_button >= 0 ? lines.begin() + last_button + 1 : lines.end(), add.begin(), add.end());
   CopyFileW(WheelIniPath().c_str(), (WheelIniPath() + L".launcher-backup").c_str(), FALSE);
@@ -869,8 +932,9 @@ bool SaveFfbGainButtons() {
   for (const auto& l : lines) out << l << nl;
   return bool(out);
 }
-// The wheel the game reads: wheel_device from default.ini without its " @..." part, lower case; empty for auto.
-std::string FfbWheelName() {
+// The wheel the game reads: wheel_device from default.ini in lower case, its name part and its " @<which>" (a HID
+// collection such as col01, or a number: the n-th of that name); the name is empty for auto.
+void FfbWheelDevice(std::string* want, std::string* which) {
   std::string name;
   for (std::string l : ReadLines(WheelIniPath())) {
     const size_t hash = l.find('#');
@@ -879,18 +943,30 @@ std::string FfbWheelName() {
     if (s == std::string::npos || eq == std::string::npos || l.compare(s, 12, "wheel_device") != 0) continue;
     name = l.substr(eq + 1);
   }
-  const size_t at = name.find(" @");
-  if (at != std::string::npos) name.resize(at);
-  name.erase(0, name.find_first_not_of(" \t"));
-  while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
   for (char& ch : name) ch = char(tolower((unsigned char)ch));
-  return name == "auto" ? std::string() : name;
+  which->clear();
+  const size_t at = name.rfind(" @");
+  if (at != std::string::npos) {
+    *which = FfbTrim(name.substr(at + 2));
+    name.resize(at);
+  }
+  name = FfbTrim(name);
+  *want = name == "auto" ? std::string() : name;
+}
+// A controller the game would take for the wheel with wheel_device = auto (as runtime_wheel.inc decides).
+bool FfbLooksLikeWheel(int type, const std::string& lname) {
+  if (type == 2) return true;   // SDL_JOYSTICK_TYPE_WHEEL
+  if (lname.find("pedal") != std::string::npos) return false;
+  static const char* const words[] = {"wheel", "moza", "racing", "fanatec", "thrustmaster", "simagic", "simucube", "cammus",
+                                      "logitech g2", "logitech g9", "g29", "g920", "g923", "t300", "t248", "t150", "t500", "tx racing"};
+  for (const char* w : words)
+    if (lname.find(w) != std::string::npos) return true;
+  return false;
 }
 void StopFfbCapture(HWND h) {
   KillTimer(h, kFfbCaptureTimer);
-  for (void* j : g_ffb_capture_joys) g_joy.CloseJoystick(j);
+  for (const auto& c : g_ffb_capture_joys) g_joy.CloseJoystick(c.j);
   g_ffb_capture_joys.clear();
-  g_ffb_capture_held.clear();
   g_ffb_capture = -1;
   NameFfbGainRows();
 }
@@ -904,71 +980,155 @@ void StartFfbCapture(HWND h, int k) {
     g_status_color = kWarn;
     return;
   }
-  if (!LoadSdlJoysticks()) {
-    g_status = L"SDL3.dll was not found in the runtime folder, so the launcher cannot read the wheel.";
-    g_status_color = kBad;
-    return;
-  }
-  if (!(g_joy.WasInit(kSdlInitJoystick) & kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
-  const std::string want = FfbWheelName();
-  int count = 0;
-  uint32_t* ids = g_joy.GetJoysticks(&count);
-  for (int i = 0; i < count; ++i) {
-    void* j = g_joy.OpenJoystick(ids[i]);
-    if (!j) continue;
-    std::string name = g_joy.GetJoystickName(j) ? g_joy.GetJoystickName(j) : "";
-    for (char& ch : name) ch = char(tolower((unsigned char)ch));
-    if (!want.empty() && name.find(want) == std::string::npos) {
-      g_joy.CloseJoystick(j);  // the game reads the buttons of the wheel only
-      continue;
+  // Every controller: the wheel's buttons are written as they are, another controller's with its name, as the game
+  // finds it (" @col02" or " @2" when another has the same name; the wheel is not counted). Without SDL3: keys only.
+  if (LoadSdlJoysticks()) {
+    if (!(g_joy.WasInit(kSdlInitJoystick) & kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
+    std::string want, which;
+    FfbWheelDevice(&want, &which);
+    struct Found { void* j; std::string name, lname, lpath, col; int type; };
+    std::vector<Found> found;
+    int count = 0;
+    uint32_t* ids = g_joy.GetJoysticks(&count);
+    for (int i = 0; i < count; ++i) {
+      void* j = g_joy.OpenJoystick(ids[i]);
+      if (!j) continue;
+      Found f{j, g_joy.GetJoystickName(j) ? g_joy.GetJoystickName(j) : "?", "", g_joy.GetJoystickPath(j) ? g_joy.GetJoystickPath(j) : "", "",
+              g_joy.GetJoystickType(j)};
+      f.lname = f.name;
+      for (char& ch : f.lname) ch = char(tolower((unsigned char)ch));
+      for (char& ch : f.lpath) ch = char(tolower((unsigned char)ch));
+      const size_t col = f.lpath.find("&col");
+      if (col != std::string::npos && col + 6 <= f.lpath.size()) f.col = "col" + f.lpath.substr(col + 4, 2);
+      found.push_back(std::move(f));
     }
-    g_ffb_capture_joys.push_back(j);
-  }
-  if (ids) g_joy.Free(ids);
-  if (g_ffb_capture_joys.empty()) {
-    g_status = L"The wheel was not found: connect it, or choose it in Wheel Setup.";
-    g_status_color = kWarn;
-    return;
-  }
-  g_joy.UpdateJoysticks();
-  for (void* j : g_ffb_capture_joys) {
-    std::vector<char> held(size_t((std::max)(0, g_joy.GetNumJoystickButtons(j))));
-    for (size_t b = 0; b < held.size(); ++b) held[b] = g_joy.GetJoystickButton(j, int(b)) ? 1 : 0;
-    g_ffb_capture_held.push_back(std::move(held));
+    if (ids) g_joy.Free(ids);
+    int wheel = -1, matched = 0;
+    for (size_t i = 0; i < found.size() && wheel < 0; ++i) {
+      const Found& f = found[i];
+      if (want.empty()) {
+        if (FfbLooksLikeWheel(f.type, f.lname)) wheel = int(i);
+        continue;
+      }
+      if (f.lname.find(want) == std::string::npos) continue;
+      if (which.empty() || (atoi(which.c_str()) > 0 ? ++matched == atoi(which.c_str()) : f.lpath.find(which) != std::string::npos))
+        wheel = int(i);
+    }
+    for (size_t i = 0; i < found.size(); ++i) {
+      FfbCaptureJoy c{found[i].j, "", {}};
+      if (int(i) != wheel) {
+        int same = 0, rank = 0;
+        for (size_t o = 0; o < found.size(); ++o) {
+          if (int(o) == wheel || found[o].lname.find(found[i].lname) == std::string::npos) continue;
+          ++same;
+          if (o == i) rank = same;
+        }
+        const bool wheel_named = wheel >= 0 && found[size_t(wheel)].lname.find(found[i].lname) != std::string::npos;
+        c.setting = found[i].name;
+        if ((same > 1 || wheel_named) && !found[i].col.empty()) c.setting += " @" + found[i].col;
+        else if (same > 1) c.setting += " @" + std::to_string(rank);
+      }
+      g_ffb_capture_joys.push_back(std::move(c));
+    }
+    g_joy.UpdateJoysticks();
+    for (auto& c : g_ffb_capture_joys) {
+      c.held.resize(size_t((std::max)(0, g_joy.GetNumJoystickButtons(c.j))));
+      for (size_t b = 0; b < c.held.size(); ++b) c.held[b] = g_joy.GetJoystickButton(c.j, int(b)) ? 1 : 0;
+    }
   }
   g_ffb_capture = k;
   g_status.clear();
   NameFfbGainRows();
   SetTimer(h, kFfbCaptureTimer, 30, nullptr);
-  LauncherLog("FFB gain button: waiting on " + std::to_string(g_ffb_capture_joys.size()) + " controller(s) of the wheel");
+  LauncherLog("FFB gain button: waiting on " + std::to_string(g_ffb_capture_joys.size()) + " controller(s) and the keyboard");
 }
-void SetFfbGainButton(HWND h, int k, int button) {
-  g_ffb_gain_button[k] = button;
-  if (button >= 0 && g_ffb_gain_button[1 - k] == button) g_ffb_gain_button[1 - k] = -1;  // one action a button
+void SetFfbGainInput(HWND h, int k, const FfbGainInput& in) {
+  g_ffb_gain[k] = in;
+  FfbGainInput& other = g_ffb_gain[1 - k];   // one action a button or key
+  if (in.button >= 0 && other.button == in.button && other.dev == in.dev) {
+    other.button = -1;
+    other.dev.clear();
+  }
+  if (!in.keys.empty() && other.keys == in.keys) other.keys.clear();
   const bool saved = SaveFfbGainButtons();
   StopFfbCapture(h);
-  const std::wstring name = k ? L"FFB gain \x2212" : L"FFB gain +";
-  g_status = !saved      ? L"Could not save the wheel buttons to default.ini."
-             : button >= 0 ? name + L" is wheel button " + std::to_wstring(button) + L" (from the next start of the game)."
-                           : name + L" has no button now.";
+  const std::wstring name = k ? L"FFB gain \x2212" : L"FFB gain +", now = FfbGainText(k);
+  g_status = !saved        ? L"Could not save the buttons to default.ini."
+             : !now.empty() ? name + L" is " + now + L" (from the next start of the game)."
+                            : name + L" has no button or key now.";
   g_status_color = saved ? kOk : kBad;
   g_status_sticky = true;
 }
 void PollFfbCapture(HWND h) {
   if (g_ffb_capture < 0) return;
+  if (g_ffb_capture_joys.empty()) return;
   g_joy.UpdateJoysticks();
-  for (size_t a = 0; a < g_ffb_capture_joys.size(); ++a) {
-    auto& held = g_ffb_capture_held[a];
-    for (size_t b = 0; b < held.size(); ++b) {
-      const bool down = g_joy.GetJoystickButton(g_ffb_capture_joys[a], int(b));
-      if (down && !held[b]) {
-        SetFfbGainButton(h, g_ffb_capture, int(b));
+  for (auto& c : g_ffb_capture_joys) {
+    for (size_t b = 0; b < c.held.size(); ++b) {
+      const bool down = g_joy.GetJoystickButton(c.j, int(b));
+      if (down && !c.held[b]) {
+        FfbGainInput in;
+        in.button = int(b);
+        in.dev = c.setting;
+        SetFfbGainInput(h, g_ffb_capture, in);
         InvalidateRect(h, nullptr, FALSE);
         return;
       }
-      if (!down) held[b] = 0;
+      if (!down) c.held[b] = 0;
     }
   }
+}
+// A key while FFB gain + / - waits (WM_KEYDOWN, WM_SYSKEYDOWN): Esc cancels, Delete and Backspace clear, Ctrl, Shift and
+// Alt wait for the key they are held with (at most two: the game's bindings take three keys), any other key is taken.
+// The names are the game's keyboard binding names (runtime_input.inc). True: the key was the capture's.
+bool FfbCaptureKey(HWND h, WPARAM w, LPARAM l) {
+  if (g_ffb_capture < 0) return false;
+  if (w == VK_ESCAPE) {
+    StopFfbCapture(h);
+    g_status = L"Button unchanged.";
+    g_status_color = kMuted;
+    g_status_sticky = true;
+  } else if (w == VK_DELETE || w == VK_BACK) {
+    SetFfbGainInput(h, g_ffb_capture, FfbGainInput{});
+  } else if (w == VK_SHIFT || w == VK_CONTROL || w == VK_MENU) {
+    return true;
+  } else {
+    static const struct { int vk; const char* name; } named[] = {
+        {VK_SPACE, "space"}, {VK_TAB, "tab"}, {VK_INSERT, "insert"}, {VK_HOME, "home"}, {VK_END, "end"},
+        {VK_PRIOR, "pageup"}, {VK_NEXT, "pagedown"}, {VK_UP, "up"}, {VK_DOWN, "down"}, {VK_LEFT, "left"},
+        {VK_RIGHT, "right"}, {VK_CAPITAL, "capslock"}, {VK_ADD, "kpplus"}, {VK_SUBTRACT, "kpminus"},
+        {VK_MULTIPLY, "kpmultiply"}, {VK_DIVIDE, "kpdivide"}, {VK_DECIMAL, "kpperiod"}, {VK_OEM_COMMA, "comma"},
+        {VK_OEM_PERIOD, "period"}, {VK_OEM_MINUS, "minus"}, {VK_OEM_PLUS, "equals"}, {VK_OEM_1, "semicolon"},
+        {VK_OEM_7, "apostrophe"}, {VK_OEM_2, "slash"}, {VK_OEM_5, "backslash"}, {VK_OEM_4, "leftbracket"},
+        {VK_OEM_6, "rightbracket"}, {VK_OEM_3, "grave"}};
+    std::string key;
+    if ((w >= 'A' && w <= 'Z') || (w >= '0' && w <= '9')) key = std::string(1, char(tolower(int(w))));
+    else if (w >= VK_F1 && w <= VK_F24) key = "f" + std::to_string(w - VK_F1 + 1);
+    else if (w >= VK_NUMPAD0 && w <= VK_NUMPAD9) key = "kp" + std::to_string(w - VK_NUMPAD0);
+    else if (w == VK_RETURN) key = (l >> 24) & 1 ? "kpenter" : "enter";
+    for (const auto& n : named)
+      if (key.empty() && WPARAM(n.vk) == w) key = n.name;
+    if (key.empty()) {
+      g_status = L"That key cannot be used. Try another (F13 to F24 suit a Stream Deck).";
+      g_status_color = kWarn;
+      g_status_sticky = true;
+    } else {
+      static const struct { int vk; const char* name; } mods[] = {{VK_LCONTROL, "lctrl"}, {VK_RCONTROL, "rctrl"}, {VK_LSHIFT, "lshift"},
+                                                                  {VK_RSHIFT, "rshift"}, {VK_LMENU, "lalt"}, {VK_RMENU, "ralt"}};
+      std::string keys;
+      int held = 0;
+      for (const auto& m : mods)
+        if (held < 2 && (GetKeyState(m.vk) & 0x8000)) {
+          keys += std::string(m.name) + ", ";
+          ++held;
+        }
+      FfbGainInput in;
+      in.keys = keys + key;
+      SetFfbGainInput(h, g_ffb_capture, in);
+    }
+  }
+  InvalidateRect(h, nullptr, FALSE);
+  return true;
 }
 
 void BuildModel() {
@@ -1314,7 +1474,7 @@ void BuildModel() {
   for (int k = 0; k < 2; ++k) {
     g_ffb_gain_row[k] = int(g_c.size());
     Ctl c{k ? L"FFB gain \x2212" : L"FFB gain +",
-          L"A button on your wheel that makes the force of the car you are driving 5% stronger (or weaker) during a race. Each car keeps its own. Click, then press the button on the wheel.",
+          L"A button that makes the force of the car you are driving 5% stronger (or weaker) during a race. Each car keeps its own. Click, then press a button on the wheel, a button box or any controller, or a key (a Stream Deck's keys too).",
           Kind::Button, {L""}, {k ? "@ffbgaindown" : "@ffbgainup"}, 0, 0};
     c.physics_only = true;
     g_c.push_back(std::move(c));
@@ -3587,19 +3747,11 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       }
       break;
     }
+    case WM_SYSKEYDOWN:  // Alt held, or F10: a key for FFB gain + / -
+      if (FfbCaptureKey(h, w, l)) return 0;
+      break;
     case WM_KEYDOWN: {
-      if (g_ffb_capture >= 0 && (w == VK_ESCAPE || w == VK_DELETE || w == VK_BACK)) {  // FFB gain + / - waits
-        if (w == VK_ESCAPE) {
-          StopFfbCapture(h);
-          g_status = L"Wheel button unchanged.";
-          g_status_color = kMuted;
-          g_status_sticky = true;
-        } else {
-          SetFfbGainButton(h, g_ffb_capture, -1);
-        }
-        InvalidateRect(h, nullptr, FALSE);
-        return 0;
-      }
+      if (FfbCaptureKey(h, w, l)) return 0;  // FFB gain + / - waits
       if (w == VK_ESCAPE && g_info_open >= 0) {
         g_info_open = -1;
         InvalidateRect(h, nullptr, FALSE);
