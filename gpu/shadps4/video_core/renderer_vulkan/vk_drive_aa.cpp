@@ -727,7 +727,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                   << "\nobject_map_valid=" << object_map_valid
                   << "\nobject_map_in_this_file=" << dump_object
                   << "\nobject_motion_setting=" << bool(BbSettings::Get().object_motion)
-                  << "\nupscale=" << upscale << "\n";
+                  << "\nupscale=" << upscale << "\nvr_eye=" << vr_eye << "\nper_eye=" << per_eye
+                  << "\nslot=" << slot << "\nreset=" << (reset || slot_reset[slot]) << "\n";
         std::printf("DLSS capture: frame %d saved (motion=%s, object-map=%s)\n", capture_frame,
                     dlss && camera_ready ? "scene/object" : "game-camera+object-fusion",
                     dump_object ? "yes" : "no");
@@ -788,6 +789,12 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         }
         dispatched = true;
         slot_reset[slot] = false;
+        if (capture_frame >= 0) {
+            // DLSS's own result (before the sharpening), for comparing with its input
+            const vk::Image out_image = sharpen_after ? vk::Image(raw_image) : vk::Image(result_image);
+            DumpDlssCapture(instance, scheduler, cmdbuf, capture_directory, capture_frame,
+                            {{out_image, ow, oh, 8, "output", "rgba16f"}});
+        }
     } else {
         FfxVkPortableUpscaleDispatchInfo info{};
         info.structSize = sizeof(info);
