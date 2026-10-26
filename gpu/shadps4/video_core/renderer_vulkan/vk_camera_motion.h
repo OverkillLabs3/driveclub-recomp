@@ -47,6 +47,16 @@ public:
         eye = value;
     }
     /// The eye's last camera is known (RecordMotion used it).
+    /// The current camera's world position, read two ways from the scene constants (the view-to-world matrix's
+    /// translation, and back through the world-to-view one): the frame's eye is found from it.
+    void CameraPositions(float (&a)[3], float (&b)[3]) const noexcept {
+        const auto& m = current.inv_view;
+        a[0] = m[3], a[1] = m[7], a[2] = m[11];
+        const auto& v = current.view; // rows: v = R w + t, so w = -R^T t
+        for (int i = 0; i < 3; ++i) {
+            b[i] = -(v[i] * v[3] + v[4 + i] * v[7] + v[8 + i] * v[11]);
+        }
+    }
     [[nodiscard]] bool EyeHistoryValid() const noexcept {
         return eye >= 0 && eye < 2 && eye_camera[eye].valid;
     }

@@ -1559,6 +1559,27 @@ int DrawnEye() {
     return camera_now.found ? camera_now.eye : -1;
 }
 
+int EyeAt(const float* position, float& distance) {
+    distance = 1e9f;
+    if (!Active() || !settings.afr || reproject_mode.load() == 2) {
+        return -1;
+    }
+    std::scoped_lock lock{head_mutex};
+    int eye = -1;
+    for (const HookCall& c : head_history) {
+        if (!c.time_us) {
+            continue;
+        }
+        const float dx = position[0] - c.position[0], dy = position[1] - c.position[1], dz = position[2] - c.position[2];
+        const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (d < distance) {
+            distance = d;
+            eye = c.eye;
+        }
+    }
+    return distance < 0.01f ? eye : -1;
+}
+
 bool SceneDrawn() {
     return scene_drawn.load(std::memory_order_relaxed);
 }

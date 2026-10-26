@@ -590,7 +590,21 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const Dlss::FeatureDesc dlss_desc{w, h, ow, oh, upscale ? Dlss::QualityForScale(factor) : 0, true, true,
                                       u32(BbSettings::Get().dlss_model.load())};
     // VR with alternate frames: each eye its own DLSS feature (its own history) and motion back to its own last frame.
-    const int vr_eye = dlss ? BbVr::DrawnEye() : -1;
+    // The eye from this frame's own camera (the scene constants' position matched with the head hook's calls).
+    int vr_eye = -1;
+    if (dlss && camera_motion.Ready()) {
+        float a[3], b[3], da = 0.0f, db = 0.0f;
+        camera_motion.CameraPositions(a, b);
+        const int ea = BbVr::EyeAt(a, da), eb = BbVr::EyeAt(b, db);
+        vr_eye = ea >= 0 ? ea : eb;
+        static int told = 0;
+        if (told < 6 && (ea >= 0 || eb >= 0 || BbVr::DrawnEye() >= 0)) {
+            ++told;
+            std::printf("Anti-aliasing: VR eye %d (camera at %.3f %.3f %.3f: %.4f m from a head call, or %.3f %.3f "
+                        "%.3f: %.4f m; the G-buffer's eye %d)\n",
+                        vr_eye, a[0], a[1], a[2], da, b[0], b[1], b[2], db, BbVr::DrawnEye());
+        }
+    }
     const bool per_eye = vr_eye >= 0 && dlss->SelectFeature(u32(vr_eye));
     if (dlss && !per_eye) {
         dlss->SelectFeature(0);

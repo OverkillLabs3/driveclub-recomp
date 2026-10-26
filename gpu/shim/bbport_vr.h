@@ -45,6 +45,9 @@ bool HudLayer();
 /// The eye the frame being drawn is for (alternate frames, its camera found in the G-buffer pass), or -1: for DLSS
 /// per eye.
 int DrawnEye();
+/// The eye of the head hook's call that put the camera at `position` (world, within 1 cm), or -1; `distance` gets the
+/// nearest call's distance. For DLSS per eye: the camera of the very frame being upscaled.
+int EyeAt(const float* position, float& distance);
 bool SceneOverlay(uint64_t vs_hash);
 bool SceneDrawn();
 /// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.
