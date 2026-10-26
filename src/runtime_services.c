@@ -281,29 +281,7 @@ static ABI int32_t ime_result(uint32_t *result) {
 }
 static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
 
-/* ---- Trophies: accepted locally, recorded in the log ---- */
-static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
-    (void)user; (void)label; (void)options;
-    if (!ctx) return TROPHY_INVALID;
-    *ctx=new_id(); return 0;
-}
-static ABI int32_t trophy_handle(int32_t *handle) { if (!handle) return TROPHY_INVALID; *handle=new_id(); return 0; }
-static ABI int32_t trophy_register(int32_t ctx,int32_t handle,uint64_t options) { (void)ctx; (void)handle; (void)options; return 0; }
-static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *platinum) {
-    (void)ctx; (void)handle;
-    printf("Runtime: trophy %d unlocked\n",id);
-    if (platinum) *platinum=-1;
-    return 0;
-}
-static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
-    (void)ctx; (void)handle;
-    if (details) { uint64_t size; memcpy(&size,details,8); memset((char *)details+8,0,size>8 && size<4096 ? size-8 : 0); }
-    if (data) { uint64_t size; memcpy(&size,data,8); memset((char *)data+8,0,size>8 && size<4096 ? size-8 : 0); }
-    return 0;
-}
-static ABI int32_t trophy_info(int32_t ctx,int32_t handle,int32_t id,void *details,void *data) {
-    (void)id; return trophy_game_info(ctx,handle,details,data);
-}
+#include "runtime_trophy.inc"
 
 /* ---- PlayGo: fully installed package ---- */
 static int playgo_handle, playgo_chunks=-1;
@@ -536,6 +514,8 @@ static const RuntimeExport exports[]={
     {"sceNpTrophyCreateContext",trophy_context}, {"sceNpTrophyCreateHandle",trophy_handle},
     {"sceNpTrophyRegisterContext",trophy_register}, {"sceNpTrophyUnlockTrophy",trophy_unlock},
     {"sceNpTrophyGetGameInfo",trophy_game_info}, {"sceNpTrophyGetTrophyInfo",trophy_info},
+    {"sceNpTrophyDestroyContext",trophy_destroy_context}, {"sceNpTrophyDestroyHandle",trophy_destroy_handle},
+    {"sceNpTrophyGetTrophyUnlockState",trophy_unlock_state},
     {"scePlayGoInitialize",playgo_init}, {"scePlayGoOpen",playgo_open}, {"scePlayGoGetChunkId",playgo_chunk_ids},
     {"scePlayGoGetLocus",playgo_locus}, {"scePlayGoSetInstallSpeed",playgo_speed}, {"scePlayGoGetInstallSpeed",playgo_get_speed}, {"scePlayGoPrefetch",playgo_prefetch},
     {"scePlayGoClose",playgo_close}, {"scePlayGoTerminate",playgo_terminate},

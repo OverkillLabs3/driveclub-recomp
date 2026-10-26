@@ -104,6 +104,7 @@ void runtime_savedata_configure(const char *title) {
     if (title && *title) snprintf(title_id,sizeof(title_id),"%s",title);
     bloodborne_sound_hack();
 }
+const char *runtime_savedata_title(void) { return title_id; }
 
 static int make_dirs(const char *path) {
     char buffer[700];
