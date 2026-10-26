@@ -909,6 +909,12 @@ void BuildModel() {
   g_folder[0].hint = L"The DriveClub v1.28 update dump: the folder that contains eboot.bin. If your dump is already 1.28, leave this empty and choose it below.";
   g_folder[1].label = L"Base game folder";
   g_folder[1].hint = L"The DriveClub base game dump: the folder that contains game000.dat.";
+  // A row's hint is what its (i) shows (TextPanel), a line per paragraph:
+  //   the first line: what it does, in one short sentence;
+  //   "\x2022 " lines: the choices or effects, one short line each (drawn as bullets);
+  //   "Tip: "  a recommendation (green);  "Note: " a warning: cost, a restart, a card it fails on (amber);
+  //   "In game: " its keys while playing.
+  // Plain text without these still shows as before.
   auto seg = [](const wchar_t* label, const wchar_t* hint, std::vector<std::wstring> items,
                 std::vector<std::string> patches, int def) {
     Ctl c{label, hint, Kind::Segmented, std::move(items), std::move(patches), def, def};
@@ -921,21 +927,24 @@ void BuildModel() {
     return int(g_c.size()) - 1;
   };
   g_preset = seg(L"Performance preset",
-                 L"Picks the render and output sizes for your PC. Lower the preset if the game is slow; "
-                 L"you can still change each size below.",
+                 L"Sets the render and output sizes for your PC in one click.\n"
+                 L"\x2022 Lower it if the game runs slowly.\n"
+                 L"\x2022 You can still change each size below afterwards.",
                  {L"Custom", L"Handheld", L"Low", L"Medium", L"High", L"Ultra"}, {"@preset", "", "", "", "", ""}, 0);
   const int fps = (g_fps = int(g_c.size()), seg(L"Frame rate",
-                      L"60 FPS (deltatime) scales the game by elapsed time, so speed stays right if the frame rate dips. "
-                      L"Unlocked (VRR) uses the same timing up to your display's refresh rate: the game runs as fast as your PC allows, the speed stays right, "
-                      L"and variable refresh (G-Sync, FreeSync) is on, so the display shows every frame as it comes (no stutter). "
-                      L"Fixed tick uses the engine's own 60 Hz mode (works with every feature, speed follows the frame rate).",
+                      L"How fast the game runs.\n"
+                      L"\x2022 30 FPS: as on PS4.\n"
+                      L"\x2022 60 FPS: smooth; the game speed stays right if the frame rate dips.\n"
+                      L"\x2022 60 FPS (fixed tick): the engine's own 60 Hz mode. Works with every feature, but the game slows down when the frame rate dips.\n"
+                      L"\x2022 Unlocked (VRR): as fast as your PC allows, up to your display's refresh rate, with the speed kept right.\n"
+                      L"Tip: 60 FPS suits most PCs. Unlocked (VRR) is for G-Sync or FreeSync displays: they show every frame as it comes, with no stutter.",
                       {L"30 FPS", L"60 FPS", L"60 FPS (fixed tick)", L"Unlocked (VRR)"},
                       {"", "60 FPS with deltatime", "60 FPS with fixed tickrate", "@unlocked"}, 1));
   {
     const int top = DisplayHz() ? DisplayHz() - 3 : 117;
-    Ctl c{L"Frame cap", L"The highest frame rate with Unlocked (VRR). The right end is your display's refresh rate less 3. "
-          L"A little below what your PC can hold (for example 90 when it runs about 95-100) gives the steadiest, smoothest motion: "
-          L"the graphics card keeps some room, so every frame takes the same time.",
+    Ctl c{L"Frame cap", L"The highest frame rate with Unlocked (VRR).\n"
+                        L"\x2022 The right end is your display's refresh rate minus 3.\n"
+                        L"Tip: set it a little below what your PC can hold (for example 90 when it runs at 95 to 100). The graphics card keeps some room, so every frame takes the same time and motion is smoothest.",
           Kind::Slider, {}, {"@fpscap"}, top, top};
     c.min = 30;
     c.max = top;
@@ -943,21 +952,27 @@ void BuildModel() {
     g_fps_cap = int(g_c.size());
     g_c.push_back(std::move(c));
   }
-  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture (with the menus and HUD). It is then scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
+  const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture, menus and HUD included.\n"
+                                                                            L"\x2022 It is scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
                          {"", "720p [1280x720] Output resolution", "1440p [2560x1440] Output resolution",
                           "1800p [3200x1800] Output resolution", "4K [3840x2160] Output resolution",
                           "5K [5120x2880] Output resolution", "8K [7680x4320] Output resolution"},
                          0));
   const int inres = (g_inres = int(g_c.size()), seg(L"Render resolution",
-                        L"The size the game draws the 3D scene at, before it is scaled to the output resolution: lower is faster, higher is sharper. The game's dynamic resolution can lower it further under load. Sizes above 1080p use more memory; the needed memory patch is added for you.",
+                        L"The size the game draws the 3D scene at, before it is scaled to the output resolution.\n"
+                        L"\x2022 Lower: faster. Higher: sharper.\n"
+                        L"\x2022 The game's dynamic resolution can lower it further under load.\n"
+                        L"Note: sizes above 1080p use more memory. The memory patch they need is added for you.",
                         {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"8K"},
                         {"", "720p [1280x720] Internal resolution", "1440p [2560x1440] Internal resolution [DEPTH BUG]",
                          "1800p [3200x1800] Internal resolution [DEPTH BUG]", "4K [3840x2160] Internal resolution [DEPTH BUG]",
                          "8K [7680x4320] Internal resolution [DEPTH BUG]"},
                         00));
   const int wide = (g_wide = int(g_c.size()), seg(L"Widescreen (render and output)",
-                       L"Ultrawide sizes. These change both the render and the output size. The needed memory patch is added for you.",
+                       L"Ultrawide sizes. They set both the render and the output size.\n"
+                       L"\x2022 The memory patch they need is added for you.\n"
+                       L"Note: leave Output resolution and Render resolution on Default with a widescreen size; other sizes there crop the picture. Choosing a widescreen size puts them back on Default for you.",
                        {L"Off", L"2560x1080", L"3440x1080", L"3840x1080", L"3440x1440",
                         L"5120x1440", L"5120x2160"},
                        {"", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
@@ -967,38 +982,59 @@ void BuildModel() {
                         "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
                         "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
                        00));
-  const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
+  const int fov = toggle(L"Widescreen field-of-view fix", L"Corrects the field of view for wide screens.\n"
+                                                          L"Note: only for wide and ultrawide resolutions.",
                          "FOV fix for wide resolutions", false);
   const int camera_patch = toggle(L"High-FPS camera workaround (experimental)",
-      L"Reduces camera, replay HUD and driver shake above 30 FPS. Behavior is still incorrect in some situations and does not match the 30 FPS reference. Enabled by default; restart the game after changing it.",
+      L"Reduces camera, replay HUD and driver shake above 30 FPS.\n"
+      L"\x2022 On by default.\n"
+      L"Note: experimental. It is still wrong in some situations and does not match the game at 30 FPS. Restart the game after changing it.",
       "@camera_patch", true);
   const int blur = g_blur_patch = toggle(L"Disable motion blur and depth of field",
-                          L"They share one shader, so both are turned off together. Cannot be changed while FSR or DLSS anti-aliasing is on: they need the game's blur pass.",
+                          L"Turns off the game's motion blur and depth of field.\n"
+                          L"\x2022 Both go together: they share one shader.\n"
+                          L"Note: not available while FSR or DLSS anti-aliasing is on; they need the game's blur pass.",
                           "Disable motion blur and depth of field", false);
-  const int reset = toggle(L"No reset-to-track timer", L"Disables the reset to track timer.", "Reset Disable", false);
-  const int barrier = toggle(L"Disable track barriers", L"Removes the invisible barriers at the track edges.",
+  const int reset = toggle(L"No reset-to-track timer", L"Turns off the reset-to-track timer.", "Reset Disable", false);
+  const int barrier = toggle(L"Disable track barriers", L"Removes the invisible barriers at the edges of the track.",
                              "Barrier Disable", false);
   const int pcol = toggle(L"Photo mode: free camera through cars",
-                          L"Disables car collision with the free camera, so you can look inside any car.",
+                          L"Photo mode's free camera passes through cars, so you can look inside any car.",
                           "Disable Photomode Free Camera Collision", false);
-  const int pproc = toggle(L"Photo mode: skip processing", L"Disables photo mode processing.",
+  const int pproc = toggle(L"Photo mode: skip processing", L"Turns off photo mode's processing step.",
                            "Disable Photomode Processing", false);
   g_lang = seg(L"Language",
-               L"The language of the game's menus and text. Click to switch to the next one: all 21 languages of the game are available. Japanese, Korean and Chinese may show missing characters.",
+               L"The language of the game's menus and text.\n"
+               L"\x2022 Click to switch to the next one; all 21 of the game's languages are there.\n"
+               L"Note: Japanese, Korean and Chinese may show missing characters.",
                {L"English (US)"}, {"@lang"}, 0);
-  const int pname = seg(L"Player name", L"The name the game shows for you. Click it to type a new one.", {g_name}, {"@name"}, 0);
+  const int pname = seg(L"Player name", L"The name the game shows for you.\n"
+                                        L"\x2022 Click it to type a new one.", {g_name}, {"@name"}, 0);
   g_mirror = seg(L"Mirror and reflection updates",
-                 L"The game draws a second small scene (the mirrors, rain and reflections) every frame, about a quarter of all draw calls. "
-                 L"Static draws it once and keeps that picture: much faster and steady, but reflections and rain on the glass stop updating.",
+                 L"How often the mirrors, reflections and rain on the glass are redrawn.\n"
+                 L"\x2022 Live: every frame, as on PS4. This second, smaller scene is about a quarter of all the game's drawing.\n"
+                 L"\x2022 Static (faster): drawn once and kept. Much faster and steadier, but reflections and rain on the glass stop updating.",
                  {L"Live", L"Static (faster)"}, {"@mirror", ""}, 0);
   g_aa = seg(L"Anti-aliasing",
-             L"Replaces the game's own anti-aliasing with NVIDIA DLSS (GeForce RTX cards) or AMD FSR 3.1 (any graphics card) for a sharper, steadier picture, and makes the Upscaling choice below possible. The game's own is the default. Motion blur must stay enabled with FSR or DLSS; its exposure preset can still be changed.",
+             L"Smooths jagged edges.\n"
+             L"\x2022 Game: the game's own (the default).\n"
+             L"\x2022 FSR 3.1: AMD's, on any graphics card.\n"
+             L"\x2022 DLSS (RTX): NVIDIA's, on GeForce RTX cards.\n"
+             L"\x2022 FSR and DLSS give a sharper, steadier picture and make Upscaling possible.\n"
+             L"Note: with FSR or DLSS, motion blur stays on (its exposure can still be changed).",
              {L"Game", L"FSR 3.1", L"DLSS (RTX)"}, {"@aa", "", ""}, 0);
   g_up = seg(L"Upscaling",
-             L"More FPS for nearly the same picture: the game is drawn at a lower resolution and DLSS (or FSR) rebuilds it at your screen's resolution. DLAA (Native with FSR) draws every pixel: the best picture, the lowest FPS. Quality is the best balance; Balanced, Performance and Ultra Perf. give more FPS each. Needs DLSS or FSR 3.1 above.",
+             L"More FPS for nearly the same picture: the game draws at a lower resolution and DLSS or FSR rebuilds it at your screen's resolution.\n"
+             L"\x2022 DLAA (Native with FSR): draws every pixel. Best picture, lowest FPS.\n"
+             L"\x2022 Quality: the best balance.\n"
+             L"\x2022 Balanced, Performance, Ultra Perf.: more FPS each.\n"
+             L"Note: needs DLSS or FSR 3.1 under Anti-aliasing.",
              {L"DLAA", L"Quality", L"Balanced", L"Performance", L"Ultra Perf."}, {"@up", "", "", "", ""}, 0);
   {
-    Ctl c{L"Sharpness", L"How crisp the picture looks with DLSS or FSR. 0 adds no sharpening; 80 is recommended; very high values can make edges look rough.",
+    Ctl c{L"Sharpness", L"How crisp the picture looks with DLSS or FSR.\n"
+                        L"\x2022 0: no sharpening.\n"
+                        L"\x2022 Very high values can make edges look rough.\n"
+                        L"Tip: 80 is recommended.",
           Kind::Slider, {}, {"@sharpness"}, 80, 80};
     c.min = 0;
     c.max = 100;
@@ -1006,35 +1042,49 @@ void BuildModel() {
     g_c.push_back(std::move(c));
   }
   g_aniso = seg(L"Anisotropic filtering",
-                L"Keeps textures on roads and terrain sharp at a shallow angle. Automatic is 16x (4x on integrated graphics). Off uses only what the game asks for. It costs little on any graphics card.",
+                L"Keeps road and ground textures sharp when seen at a shallow angle.\n"
+                L"\x2022 Automatic: 16x (4x on integrated graphics).\n"
+                L"\x2022 Off: only what the game asks for.\n"
+                L"Tip: it costs very little on any graphics card.",
                 {L"Automatic", L"Off", L"2x", L"4x", L"8x", L"16x"}, {"@aniso", "", "", "", "", ""}, 0);
   g_fgen = seg(L"Frame generation (experimental)",
-               L"Adds a made-up frame between each two real ones (FSR 3.1 works on any graphics card; DLSS needs a GeForce RTX 40 series for 2x, RTX 50 series for 3x and 4x), so the picture looks two to four times as smooth. It adds a little delay and can smear fast motion. Best when the game already runs at 45 FPS or more; turn on the Unlocked frame rate as well.",
+               L"Adds a generated frame between each two real ones, so motion looks 2 to 4 times as smooth.\n"
+               L"\x2022 FSR 3.1 (2x): any graphics card.\n"
+               L"\x2022 DLSS (2x): GeForce RTX 40 series or newer. DLSS (3x) and (4x): RTX 50 series.\n"
+               L"Note: it adds a little delay and can smear fast motion.\n"
+               L"Tip: best when the game already runs at 45 FPS or more; use the Unlocked frame rate with it.",
                {L"Off", L"FSR 3.1 (2x)", L"DLSS (2x)", L"DLSS (3x)", L"DLSS (4x)"}, {"@fgen", "", "", "", ""}, 0);
   g_fgen = -1;  // frame generation is not offered in this release
   const int skipgpu = toggle(L"Skip the hardware check",
-                             L"The launcher checks that your processor and graphics card can run the game (Vulkan 1.3). If it refuses hardware that does work, turn this on to start anyway.",
+                             L"Starts the game even when the launcher thinks your PC can't run it.\n"
+                             L"\x2022 The launcher checks your processor and graphics card (Vulkan 1.3).\n"
+                             L"Tip: only turn this on if it refuses hardware that does work.",
                              "@skipgpu", false);
   const int autoplay = toggle(L"Start the game without this window",
-                              L"Double-clicking DriveClub.exe goes straight to the game. When it cannot start, "
-                              L"this window opens anyway with the reason.", "@autoplay", false);
+                              L"Double-clicking DriveClub.exe goes straight to the game.\n"
+                              L"\x2022 If the game cannot start, this window opens anyway and shows why.", "@autoplay", false);
   const int updatecheck = toggle(L"Check for new versions",
-                                 L"When the launcher starts it asks the Releases page once whether a newer version exists "
-                                 L"and offers to install it. Your saves, settings and game folders stay as they are.",
+                                 L"When the launcher starts, it checks once for a newer version and offers to install it.\n"
+                                 L"\x2022 Your saves, settings and game folders stay as they are.",
                                  "@updatecheck", true);
   const int overlays = toggle(L"Let overlay programs into the game",
-                              L"Steam, Epic, Discord, OBS and tuning tools add themselves to the game's graphics. "
-                              L"A part of the crashes players report comes from those additions, so the launcher keeps them "
-                              L"out. Turn this on if you want the in-game overlay while playing.", "@overlays", false);
+                              L"Lets Steam, Epic, Discord, OBS and tuning tools add their overlays to the game.\n"
+                              L"\x2022 Off by default: some of the crashes players report come from these overlays.\n"
+                              L"Tip: turn it on only if you want an overlay while playing.", "@overlays", false);
   const int twothread = toggle(L"Two-thread rendering",
-                               L"Records each frame's draw commands on a second thread, so the thread that runs the game's "
-                               L"graphics commands waits less. Faster on most PCs, but it lost the graphics device in races on AMD cards and ran slower there, so it starts off on AMD cards and under Wine or Proton. Turn it off if you see flicker, broken graphics or a crash.",
+                               L"Prepares each frame's drawing on a second thread, so the game waits less.\n"
+                               L"\x2022 Faster on most PCs.\n"
+                               L"Note: starts off on AMD cards and under Wine or Proton. It lost the graphics device in races there and ran slower.\n"
+                               L"Tip: turn it off if you see flicker, broken graphics or a crash.",
                                "@twothread", !PrimaryGpuIsAmd());
   g_hdr = toggle(L"HDR",
-                 L"For HDR monitors and TVs: brighter highlights (the sun, lights, reflections) and deeper contrast. Turn on \"Use HDR\" in Windows' display settings first.",
+                 L"For HDR monitors and TVs: brighter highlights (the sun, lights, reflections) and deeper contrast.\n"
+                 L"Note: turn on \"Use HDR\" in Windows' display settings first.",
                  "@hdr", false);
   {
-    Ctl c{L"HDR brightness", L"How bright white is: the HUD, menus and the scene overall. Raise it if the picture looks dull or dark, lower it if it is tiring. While playing: Page Up brighter, Page Down darker.",
+    Ctl c{L"HDR brightness", L"How bright white is: the HUD, the menus and the scene overall.\n"
+                             L"\x2022 Raise it if the picture looks dull or dark; lower it if it's tiring.\n"
+                             L"In game: Page Up brighter, Page Down darker.",
           Kind::Slider, {}, {"@hdr_paper"}, 350, 350};
     c.min = 100;
     c.max = 600;
@@ -1043,7 +1093,8 @@ void BuildModel() {
     g_c.push_back(std::move(c));
   }
   {
-    Ctl c{L"HDR peak brightness", L"The brightest your screen can show; the sun and lights reach it. Set it to your screen's HDR peak (for example 600 or 1000 nits).",
+    Ctl c{L"HDR peak brightness", L"The brightest your screen can show; the sun and lights reach it.\n"
+                                  L"Tip: set it to your screen's HDR peak, for example 600 or 1000 nits.",
           Kind::Slider, {}, {"@hdr_peak"}, 1000, 1000};
     c.min = 400;
     c.max = 2000;
@@ -1051,50 +1102,68 @@ void BuildModel() {
     g_hdr_peak = int(g_c.size());
     g_c.push_back(std::move(c));
   }
-  const int showfps = toggle(L"Show FPS counter", L"Draws the frame rate in the top right corner while playing.", "@fps", false);
+  const int showfps = toggle(L"Show FPS counter", L"Shows the frame rate in the top right corner while playing.\n"
+                                                  L"In game: F12 shows or hides it.", "@fps", false);
   const int showpedals = toggle(L"Show pedal inputs",
-                                L"Draws how far the clutch, brake and throttle are pressed, in the bottom left corner while "
-                                L"playing, so you can see a pedal reach 100%. F2 turns it on and off in the game.",
+                                L"Shows how far the clutch, brake and throttle are pressed, in the bottom left corner while playing.\n"
+                                L"\x2022 A pedal at full travel lights up, so you can see it reach 100%.\n"
+                                L"In game: F2 turns it on and off.",
                                 "@pedals", false);
-  const int full = toggle(L"Fullscreen", L"Plays borderless fullscreen. Turn off for a window.", "@full", true);
+  const int full = toggle(L"Fullscreen", L"Plays in borderless fullscreen.\n"
+                                         L"\x2022 Off: plays in a window.", "@full", true);
   const int unlock = toggle(L"Unlock DLC content",
-                            L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
+                            L"Unlocks the add-on content: cars, bikes, tours and livery decals.\n"
+                            L"\x2022 Cars you earn by playing still unlock as you progress.\n"
+                            L"\x2022 Built from your own game files; your game folders are not changed.",
                             "@unlock", false);
   // Graphics detail the PS4 version keeps low and the game's camera effects, from the game's own quality file
   // (graphics.cpp).
   g_gfx[kGfxCar] = toggle(L"Your car: full detail",
-                          L"Draws your own car with its most detailed model during races; the PS4 version uses the next one down.",
+                          L"Draws your own car with its most detailed model in races.\n"
+                          L"\x2022 The PS4 version uses the next model down.",
                           "@gfx", false);
   g_gfx[kGfxOpp] = toggle(L"Other cars: full detail",
-                          L"The other cars also get their most detailed models up close, and every car keeps its detailed parts a little further away.",
+                          L"Draws the other cars with their most detailed models up close.\n"
+                          L"\x2022 Every car also keeps its detailed parts a little further away.",
                           "@gfx", false);
   g_gfx[kGfxScenery] = seg(L"Scenery detail (less pop-in)",
-                           L"Trees, rocks and roadside objects switch to their detailed models further away and small objects stay visible longer, so less pops in while you drive. "
-                           L"High uses the developers' own pre-race camera values, Ultra photo mode's.",
+                           L"Shows detailed trees, rocks and roadside objects further away, so less pops in while you drive.\n"
+                           L"\x2022 Small objects also stay visible longer.\n"
+                           L"\x2022 High: the developers' own pre-race camera values.\n"
+                           L"\x2022 Ultra: photo mode's values.",
                            {L"Game", L"High", L"Ultra"}, {"@gfx", "", ""}, 0);
   g_gfx[kGfxSsr] = toggle(L"High-quality reflections",
-                          L"Uses photo mode's finer reflections on the road and the cars in races; the difference is hard to see.",
+                          L"Uses photo mode's finer reflections on the road and the cars in races.\n"
+                          L"\x2022 The difference is hard to see.",
                           "@gfx", false);
   g_gfx[kGfxShadows] = seg(L"Shadow edges",
-                           L"The game smooths the edges of shadows near the car with 32 samples and of every shadow further than 4 m with 8. "
-                           L"High uses 16 samples, Ultra 32.",
+                           L"How smooth the edges of shadows are.\n"
+                           L"\x2022 Game: 32 samples near the car, 8 for shadows further than 4 m.\n"
+                           L"\x2022 High: 16 samples for those further shadows. Ultra: 32.",
                            {L"Game", L"High", L"Ultra"}, {"@gfx", "", ""}, 0);
   g_gfx[kGfxParticles] = toggle(L"More particles",
-                                L"Keeps the distant spray, smoke and dust that races drop (replays keep them), and allows 1.5 times as many particles.",
+                                L"Keeps the distant spray, smoke and dust that races normally drop (replays keep them).\n"
+                                L"\x2022 Also allows 1.5 times as many particles.",
                                 "@gfx", false);
   g_gfx[kGfxDynres] = toggle(L"Dynamic resolution",
-                             L"On (as on PS4), the game draws at a lower resolution for a moment when a frame takes too long.",
+                             L"Lowers the resolution for a moment when a frame takes too long, as on PS4.\n"
+                             L"\x2022 Off: always the full resolution.",
                              "@gfx", true);
-  g_gfx[kGfxBlur] = toggle(L"Motion blur", L"The game's motion blur on the road and the scenery while you drive. Cannot be changed while FSR or DLSS anti-aliasing is on: they need the same shader.",
+  g_gfx[kGfxBlur] = toggle(L"Motion blur", L"The game's motion blur on the road and the scenery while you drive.\n"
+                                           L"Note: can't be changed while FSR or DLSS anti-aliasing is on; they need the same shader.",
                            "@gfx", true);
   g_motion_blur = seg(L"Motion blur exposure",
-      L"Slow: original 30 FPS exposure, best for a cinematic look. Fast: shorter 60 FPS exposure.",
+      L"How long the motion blur's streaks are.\n"
+      L"\x2022 Slow: the original 30 FPS exposure, the most cinematic.\n"
+      L"\x2022 Fast: a shorter 60 FPS exposure.\n"
+      L"In game: F3 switches between them.",
       {L"Slow", L"Fast"}, {"@motion_blur", ""}, 0);
   g_gfx[kGfxDust] = toggle(L"Lens dust", L"Dirt on the camera lens when you face the sun.", "@gfx", true);
   g_gfx[kGfxHaze] = toggle(L"Heat haze", L"The shimmer over hot roads in the distance.", "@gfx", true);
   g_gfx[kGfxFxaa] = toggle(L"FXAA pass",
-                           L"With the game's anti-aliasing, an FXAA pass softens the picture after it (photo mode turns it off). "
-                           L"Off is a little sharper.",
+                           L"An extra FXAA pass after the game's own anti-aliasing. It softens the picture.\n"
+                           L"\x2022 Off is a little sharper.\n"
+                           L"\x2022 Photo mode turns it off.",
                            "@gfx", true);
   auto picker = [](const wchar_t* label, const wchar_t* hint, const char* tag) {
     Ctl c{label, hint, Kind::Picker, {L""}, {tag}, 0, 0};
@@ -1104,34 +1173,60 @@ void BuildModel() {
   g_btrack = picker(L"Track", L"Where the benchmark drives. Click to choose a circuit.", "@bench_track");
   g_bcar = picker(L"Car", L"The car the game's AI drives. Click to choose a car.", "@bench_car");
   g_bmode = seg(L"Cars on track",
-                L"Alone is a time trial and gives the steadiest numbers. Race adds seven AI cars, which loads the processor more.",
+                L"Who is on the track.\n"
+                L"\x2022 Alone: a time trial. Gives the steadiest numbers.\n"
+                L"\x2022 Race (8 cars): adds seven AI cars, which loads the processor more.",
                 {L"Alone", L"Race (8 cars)"}, {"@bench_mode", ""}, 0);
-  g_btod = seg(L"Time of day", L"Morning 8:00, noon 12:00, evening 18:00, night 22:00.",
+  g_btod = seg(L"Time of day", L"When the race happens.\n"
+                               L"\x2022 Morning 8:00, Noon 12:00, Evening 18:00, Night 22:00.",
                {L"Morning", L"Noon", L"Evening", L"Night"}, {"@bench_tod", "", "", ""}, 1);
   g_bweather = seg(L"Weather", L"The sky and the clouds.", {L"Clear", L"Cloudy", L"Overcast", L"Stormy"},
                    {"@bench_weather", "", "", ""}, 0);
-  g_brain = seg(L"Rain", L"Rain and wet roads make the scene heavier to draw. Wet road is a wet track without rain.",
+  g_brain = seg(L"Rain", L"Rain and wet roads make the scene heavier to draw.\n"
+                         L"\x2022 Wet road: a wet track without rain.",
                 {L"Dry", L"Light", L"Heavy", L"Wet road"}, {"@bench_rain", "", "", ""}, 0);
-  g_blen = seg(L"Length", L"How long the frame times are measured, after 5 seconds of warm-up. Loading takes about half a minute more.",
+  g_blen = seg(L"Length", L"How long the frame times are measured.\n"
+                          L"\x2022 Measuring starts after 5 seconds of warm-up.\n"
+                          L"\x2022 Loading takes about half a minute more.",
                {L"30 s", L"1 min", L"2 min", L"5 min"}, {"@bench_length", "", "", ""}, 1);
   g_brun = int(g_c.size());
   g_c.push_back(Ctl{L"Last result",
-                    L"Starts the event with all the settings on this page. The game's AI drives and the game closes by itself when it is done. "
-                    L"The 1% and 0.1% lows are the average frame rate of the slowest 1% and 0.1% of frames.",
+                    L"Starts the benchmark with all the settings on this page.\n"
+                    L"\x2022 The game's AI drives, and the game closes by itself when it's done.\n"
+                    L"\x2022 1% and 0.1% lows: the average frame rate of the slowest 1% and 0.1% of frames.",
                     Kind::Action, {}, {"@bench_run"}, 0, 0});
   g_drive_preset = seg(L"Driving preset",
-                       L"Sets the four rows below in one click. Sim: manual gears, no assists, hardcore handling. Assisted: automatic gears and help with braking and steering. Game Defaults: the game's own Options menu decides.",
+                       L"Sets the four rows below in one click.\n"
+                       L"\x2022 Sim: manual gears, no assists, hardcore handling. For wheel players who want the real thing.\n"
+                       L"\x2022 Assisted: automatic gears and help with braking and steering. The easiest way to start.\n"
+                       L"\x2022 Game Defaults: the game's own Options menu decides (each row shows In-game).\n"
+                       L"\x2022 You can change any row afterwards.",
                        {L"Sim", L"Assisted", L"Game Defaults"}, {"@drive_preset", "", ""}, 2);
-  g_drive[0].row = seg(L"Gearbox", L"In-game: whatever is set in the game's own Options menu. Automatic changes gear for you; Manual is for paddles or a shifter.",
+  g_drive[0].row = seg(L"Gearbox", L"Who changes gear.\n"
+                                   L"\x2022 In-game: the game's own Options menu decides.\n"
+                                   L"\x2022 Automatic: the car changes gear for you.\n"
+                                   L"\x2022 Manual: you change gear with paddles or a shifter.\n"
+                                   L"Note: an H-pattern shifter only works with Manual.",
                        {L"In-game", L"Automatic", L"Manual"}, {"@drive_gearbox", "", ""}, 0);
-  g_drive[1].row = seg(L"Brake assist", L"In-game: whatever is set in the game's own Options menu. The assist brakes for you before corners; Off leaves the braking to you.",
+  g_drive[1].row = seg(L"Brake assist", L"Brakes for you before corners.\n"
+                                        L"\x2022 In-game: the game's own Options menu decides.\n"
+                                        L"\x2022 Off: the braking is all yours.\n"
+                                        L"Tip: good for learning the tracks. Experienced players and wheel users usually turn it off.",
                        {L"In-game", L"Off", L"Low", L"Medium", L"High"}, {"@drive_brake", "", "", "", ""}, 0);
-  g_drive[2].row = seg(L"Hardcore handling", L"In-game: whatever is set in the game's own Options menu. On makes the cars handle more like real ones, with fewer hidden helpers. Recommended with a wheel.",
+  g_drive[2].row = seg(L"Hardcore handling", L"The game's sim-like handling: the cars react more honestly to throttle, brakes and weight, with fewer hidden helpers.\n"
+                                             L"\x2022 In-game: the game's own Options menu decides.\n"
+                                             L"Tip: recommended with a wheel and Reworked Physics force feedback.",
                        {L"In-game", L"Off", L"On"}, {"@drive_hardcore", "", ""}, 0);
-  g_drive[3].row = seg(L"Wheel assist", L"In-game: whatever is set in the game's own Options menu. The game's steering help for wheels. Off is recommended with the Reworked Physics force feedback.",
+  g_drive[3].row = seg(L"Wheel assist", L"The game's steering help for wheels, made for controller-style steering.\n"
+                                        L"\x2022 In-game: the game's own Options menu decides.\n"
+                                        L"Tip: Off feels most natural with a proper wheel and Reworked Physics force feedback.",
                        {L"In-game", L"Off", L"On"}, {"@drive_wheel_assist", "", ""}, 0);
   {
-    Ctl c{L"Field of view (F5 / F6 while driving)", L"How much of the road you see. 100% is the game's own view; higher shows more to the sides, lower zooms in. While playing: F5 narrower, F6 wider.",
+    Ctl c{L"Field of view (F5 / F6 while driving)", L"How much of the road you see.\n"
+                                                    L"\x2022 100%: the game's own view. Higher shows more to the sides; lower zooms in.\n"
+                                                    L"\x2022 It changes every camera. Any value but 100% replaces the widescreen field-of-view fix.\n"
+                                                    L"Tip: 110 to 130% helps in the cockpit view, especially on a big or wide screen. A narrower view makes the car feel faster.\n"
+                                                    L"In game: F5 narrower, F6 wider, in steps of 5%, kept for next time.",
           Kind::Slider, {}, {"@drive_fov"}, 100, 100};
     c.min = 50;
     c.max = 150;
@@ -1140,12 +1235,18 @@ void BuildModel() {
   }
   // Steering wheel: Wheel Setup, then the force feedback.
   g_wheel_setup = int(g_c.size());
-  g_c.push_back(Ctl{L"Controls", L"Set up your wheel, pedals, handbrake and shifter. Click Map next to a control, then move it.",
+  g_c.push_back(Ctl{L"Controls", L"Set up your wheel, pedals, handbrake and shifter.\n"
+                                 L"\x2022 Click Map next to a control, then move it.",
                     Kind::Button, {L"Wheel Setup..."}, {"@wheelsetup"}, 0, 0});
   g_ffb_model = seg(L"Force feedback",
-                    L"How the wheel's force is made. Reworked Physics comes from the car's tyres, like a racing sim, and is the one for wheels. Original Physics is the PS4 game's own feel, not recommended for wheels.",
+                    L"How the wheel's force is made.\n"
+                    L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides. It learns each car as you drive.\n"
+                    L"\x2022 Original: the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip.\n"
+                    L"Tip: use Reworked Physics with every wheel.",
                     {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 1);
-  g_ffb_preset = seg(L"Preset", L"Ready-made settings for your type of wheel. You can fine-tune the sliders below afterwards.",
+  g_ffb_preset = seg(L"Preset", L"Ready-made settings for your type of wheel. It only moves the sliders below; fine-tune them afterwards.\n"
+                                L"\x2022 Direct drive: the motor is on the steering shaft (Fanatec DD, Moza, Simagic, Simucube...).\n"
+                                L"\x2022 Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels.",
                      {L"Direct drive", L"Gear or belt"}, {"@wheelpreset", ""}, -1);
   g_c[g_ffb_preset].physics_only = true;
   auto slider = [](const wchar_t* label, const wchar_t* hint, const char* key, int lo, int hi, int def) {
@@ -1156,31 +1257,49 @@ void BuildModel() {
     g_c.push_back(std::move(c));
     return int(g_c.size()) - 1;
   };
-  g_ffb_slider[0] = slider(L"Gain", L"How strong the steering force is overall.",
+  g_ffb_slider[0] = slider(L"Gain", L"How strong the steering force is overall.\n"
+                                    L"\x2022 Too weak: the car feels vague.\n"
+                                    L"\x2022 Too strong: the wheel hits its limit in fast corners, where it feels flat and loses detail.\n"
+                                    L"Tip: start at 100 on a strong wheel; weaker wheels may want 150 to 200.",
                            "wheel_ffb_physics_gain", 0, 300, 100);
-  g_ffb_slider[1] = slider(L"Filter", L"Smooths the force. Higher feels softer, lower feels more detailed.",
+  g_ffb_slider[1] = slider(L"Filter", L"Smooths the force. Higher feels softer; lower feels more detailed.\n"
+                                      L"Tip: leave it at 0. If the wheel feels grainy or rattles, try 10 to 20.",
                            "wheel_ffb_physics_filter", 0, 100, 0);
-  g_ffb_slider[2] = slider(L"Minimum force", L"Helps weaker wheels feel small forces around the centre.",
+  g_ffb_slider[2] = slider(L"Minimum force", L"Helps weaker wheels show small forces around the centre.\n"
+                                             L"\x2022 Gear and belt wheels often feel dead around the centre because they can't make very small forces.\n"
+                                             L"Tip: try 5 to 10 if yours does. Keep it at 0 on a direct drive wheel.",
                            "wheel_ffb_physics_min_force", 0, 30, 0);
-  g_ffb_slider[3] = slider(L"Kerb effects", L"How much you feel kerbs and rumble strips.",
+  g_ffb_slider[3] = slider(L"Kerb effects", L"How much you feel kerbs and rumble strips. Also used for wheelspin.\n"
+                                            L"Tip: 50 is a good start; turn it down if kerbs shake the wheel too much.",
                            "wheel_ffb_physics_kerbs", 0, 200, 50);
-  g_ffb_slider[4] = slider(L"Road effects", L"How much you feel bumps and the road surface.",
+  g_ffb_slider[4] = slider(L"Road effects", L"How much you feel bumps, dips and the road surface.\n"
+                                            L"Tip: turn it down for a calmer wheel.",
                            "wheel_ffb_physics_road", 0, 200, 50);
-  g_ffb_slider[5] = slider(L"Slip effects", L"A light vibration when the tyres slide, spin or lock up.",
+  g_ffb_slider[5] = slider(L"Slip effects", L"A light vibration when the tyres slide, spin or lock up: a warning that you're past the grip limit.\n"
+                                            L"Tip: many players keep it low or off, because the wheel already goes light when the tyres slide.",
                            "wheel_ffb_physics_slip", 0, 200, 30);
-  g_ffb_slider[6] = slider(L"Damper", L"Makes the wheel a little heavier to turn so it stays calm and does not wobble.",
+  g_ffb_slider[6] = slider(L"Damper", L"Makes the wheel a little heavier to turn, so it stays calm and doesn't wobble. Like real steering, it's heaviest when the car stands still.\n"
+                                      L"Tip: 10 to 30 on a direct drive wheel stops it wobbling when you let go. Gear and belt wheels usually want 0.",
                            "wheel_ffb_physics_damper", 0, 100, 10);
-  g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you cannot turn it further than the car can.",
+  g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you can't turn it further than the car can.\n"
+                                     L"\x2022 Game: the right angle for each car.\n"
+                                     L"Tip: set your wheel's own software to 900 degrees as well.",
                        {L"Game", L"Off", L"540\x00b0", L"720\x00b0", L"900\x00b0", L"1080\x00b0"},
                        {"@ffb:wheel_ffb_soft_lock", "", "", "", "", ""}, 0);
-  g_ffb_wave = seg(L"Vibration wave", L"The feel of vibrations: Sine is smooth, Square is sharper.",
+  g_ffb_wave = seg(L"Vibration wave", L"The feel of the vibrations.\n"
+                                      L"\x2022 Sine: smooth. Suits direct drive wheels.\n"
+                                      L"\x2022 Square: sharper. Feels stronger on gear and belt wheels.",
                    {L"Sine", L"Square"}, {"@ffb:wheel_ffb_vibration_wave", ""}, 1);
-  const int ffb_invert = toggle(L"Invert forces", L"Turn on only if the wheel pulls away from the centre instead of towards it.", "@ffb:wheel_ffb_invert", false);
+  const int ffb_invert = toggle(L"Invert forces", L"Reverses the steering force.\n"
+                                                  L"Note: only needed on a few wheels. Turn it on only if the wheel pushes away from the centre when you drive straight.", "@ffb:wheel_ffb_invert", false);
   // FFB gain + / -: two wheel buttons (NameFfbGainRows writes their text)
   for (int k = 0; k < 2; ++k) {
     g_ffb_gain_row[k] = int(g_c.size());
     Ctl c{k ? L"FFB gain \x2212" : L"FFB gain +",
-          L"A button on your wheel that makes the force of the car you are driving 5% stronger (or weaker) during a race. Each car keeps its own. Click, then press the button on the wheel.",
+          L"A button on your wheel that makes the force of the car you're driving 5% stronger (or weaker) during a race.\n"
+          L"\x2022 Each car keeps its own strength.\n"
+          L"\x2022 Click here, then press the button on the wheel.\n"
+          L"In game: the new strength shows on screen.",
           Kind::Button, {L""}, {k ? "@ffbgaindown" : "@ffbgainup"}, 0, 0};
     c.physics_only = true;
     g_c.push_back(std::move(c));
@@ -1198,46 +1317,29 @@ void BuildModel() {
                      L"The game's own camera effects, each on as on PS4."});
   g_cards.push_back({L"GAMEPLAY", {pname, g_lang, g_mirror, full, unlock, showfps, showpedals, overlays, autoplay, updatecheck}, 0, kTabGameplay});
   g_cards.push_back({L"VIEW AND KEYS", {g_fov}, 0, kTabDriving,
-                     L"Keys while playing:  F2  pedal inputs.   F5 / F6  narrower / wider view.   F7  mouse look on or off.   F9  the new anti-aliasing on or off (not while upscaling).   F10  FSR or DLSS.   F12  FPS counter.   Page Up / Page Down  HDR brightness."});
+                     L"Keys while playing:\n"
+                     L"F2   pedal inputs\n"
+                     L"F5 / F6   narrower / wider view\n"
+                     L"F7   mouse look on or off\n"
+                     L"F9   the new anti-aliasing on or off (not while upscaling)\n"
+                     L"F10   FSR or DLSS\n"
+                     L"F12   FPS counter\n"
+                     L"Page Up / Page Down   HDR brightness"});
   g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"ASSISTS", {g_drive_preset, g_drive[0].row, g_drive[1].row, g_drive[2].row, g_drive[3].row}, 0, kTabDriving,
-                     L"In-game: the launcher leaves that setting alone and the game's own Options menu decides. Any other choice is set by the launcher every time the game starts."});
+                     L"In-game: the game's own Options menu decides.\n"
+                     L"Any other choice is set by the launcher every time the game starts."});
   g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"PATCHES", {camera_patch, blur, reset, barrier, pcol, pproc, skipgpu}, 0, kTabGameplay,
                      L"Community patches for DriveClub version 1.28."});
   g_cards.push_back({L"BENCHMARK", {g_btrack, g_bcar, g_bmode, g_btod, g_bweather, g_brain, g_blen}, 0, kTabBench});
   g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
-  // The details each (i) opens, after the row's hint.
-  const struct { const wchar_t* label; const wchar_t* more; } kMore[] = {
-      {L"Widescreen (render and output)", L"Leave Output resolution and Render resolution on Default when you use a widescreen size: the widescreen size sets both, and other sizes there crop the picture. Choosing a widescreen size puts them back on Default for you."},
-      {L"Force feedback", L"Reworked Physics is recommended for every wheel. The wheel gets heavier in fast corners, goes light when the front tyres lose grip (the car runs wide), and turns itself the right way when the back of the car slides, like in Assetto Corsa. It learns each car as you drive. Original Physics gives the forces the PS4 game made for Logitech wheels in 2014: a spring that follows the car, without the tyres' grip. It is not recommended for wheels."},
-      {L"Preset", L"Direct drive: wheels with the motor on the steering shaft (for example Fanatec DD, Moza, Simagic, Simucube). Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels. A preset only moves the sliders below."},
-      {L"Gain", L"Too weak and the car feels vague; too strong and the wheel hits its limit in fast corners, where it feels flat and you lose the detail. Start at 100 on a strong wheel; weaker wheels may want 150 to 200."},
-      {L"Filter", L"Leave it at 0. If the wheel feels grainy or rattles, try 10 to 20."},
-      {L"Minimum force", L"Gear and belt wheels often feel dead around the centre because they cannot make very small forces. If yours does, try 5 to 10. Keep it at 0 on a direct drive wheel."},
-      {L"Kerb effects", L"Also used for wheelspin. 50 is a good start; turn it down if kerbs shake the wheel too much."},
-      {L"Road effects", L"You feel dips, bumps and rough road through the wheel. Turn it down for a calmer wheel."},
-      {L"Slip effects", L"A warning that you are past the grip limit. Many players keep it low or off, because the wheel already goes light when the tyres slide."},
-      {L"Damper", L"Like real steering, it is heaviest when the car stands still. On a direct drive wheel, 10 to 30 stops the wheel wobbling when you let go. Gear and belt wheels usually want 0."},
-      {L"Soft lock", L"Game uses the right angle for each car. Also set your wheel's own software to 900 degrees."},
-      {L"Vibration wave", L"Sine suits direct drive wheels. Square feels stronger on gear and belt wheels."},
-      {L"Invert forces", L"Only needed on a few wheels. If the wheel pushes away from the centre when you drive straight, turn this on."},
-      {L"Field of view (F5 / F6 while driving)", L"A wider view (110 to 130%) helps in the cockpit view, especially on a big or wide screen; a narrower one makes the car feel faster. It changes every camera. Other than 100%, it replaces the widescreen field-of-view fix. In the game, F5 and F6 change it in steps of 5% and it is kept for next time."},
-      {L"Driving preset", L"Sim is for wheel players who want the real thing: you change gear yourself and nothing helps you brake or steer. Assisted is the easiest way to start: the car changes gear, helps you brake before corners and helps the steering. Game Defaults uses whatever you set in the game's own Options menu (each row then shows In-game). You can change any row afterwards."},
-      {L"Gearbox", L"Pick Manual if you change gear yourself with paddles or an H-pattern shifter; the shifter only works with Manual."},
-      {L"Brake assist", L"Good for learning the tracks. Experienced players and wheel users usually turn it Off."},
-      {L"Hardcore handling", L"The game's sim-like handling: the cars react more honestly to throttle, brakes and weight. Recommended with a wheel and the Reworked Physics force feedback."},
-      {L"Wheel assist", L"Helps controller-style steering on a wheel. With a proper wheel and Reworked Physics force feedback, Off feels most natural."},
-  };  for (auto& c : g_c) {
-    for (const auto& m : kMore) {
-      if (wcscmp(c.label, m.label) == 0) c.more = m.more;
-    }
-  }
   // Wheel: Wheel Setup for the controls, then the force feedback.
   // Three cards, so the page fits beside the game files card without scrolling: the controls, the steering force, the
   // effects (gain, filter, minimum force, damper are sliders 0, 1, 2 and 6; kerbs, road, slip 3, 4 and 5).
   g_cards.push_back({L"CONTROLS", {g_wheel_setup, ffb_invert}, 0, kTabDriving,
-                     L"Wheel Setup shows every controller plugged in. Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
+                     L"Wheel Setup shows every controller plugged in.\n"
+                     L"Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
   g_cards.back().sub = kSubWheel;
   g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[6], g_ffb_softlock,
                                          g_ffb_gain_row[0], g_ffb_gain_row[1]}, 0, kTabDriving});
@@ -1625,9 +1727,17 @@ void LayoutPass(float bottom_extra) {
     h += kPad * 0.6f;
     hf += kPad * 0.6f;
     if (g_cards[k].note) {
-      // The note wraps to as many lines as the column width needs (about 6.3 units per character of the hint font).
+      // Each line of the note wraps to as many lines as the column width needs (about 6.3 units per character of the
+      // hint font).
       const float per_line = (std::max)(1.f, std::floor((colw - 2 * kPad) / 6.3f));
-      const float lines = (std::max)(1.f, std::ceil(float(wcslen(g_cards[k].note)) / per_line));
+      float lines = 0;
+      for (const wchar_t* p = g_cards[k].note; *p;) {
+        const wchar_t* e = wcschr(p, L'\n');
+        const size_t n = e ? size_t(e - p) : wcslen(p);
+        lines += (std::max)(1.f, std::ceil(float(n) / per_line));
+        p += n + (e ? 1 : 0);
+      }
+      lines = (std::max)(1.f, lines);
       g_cards[k].note_h = lines * 17.f + 4.f;
       h += g_cards[k].note_h + 10.f;
       hf += g_cards[k].note_h + 10.f;
@@ -1816,16 +1926,58 @@ void RowLabel(Graphics& g, Ctl& c, int i, const Font& f, const RectF& r) {
   Text(g, L"i", fi, RectF(c.info.X, c.info.Y + 0.5f * S, c.info.Width, c.info.Height), hot ? kWhite : kMuted, StringAlignmentCenter);
 }
 
+// The body of a panel, a paragraph per line: "• " lines are bullets with a hanging indent, "Tip:" lines green,
+// "Note:" lines amber, "In game:" lines white, "Click anywhere to close." muted; an empty line is a small gap.
+struct PanelLine {
+  std::wstring text;
+  Color color;
+  bool bullet;
+  float gap;  // space above it
+  float height;
+};
+std::vector<PanelLine> PanelLines(Graphics& g, const std::wstring& body, const Font& f, float width) {
+  const float S = g_scale, indent = 14 * S;
+  std::vector<PanelLine> lines;
+  float gap = 0;
+  size_t start = 0;
+  while (start <= body.size()) {
+    size_t end = body.find(L'\n', start);
+    if (end == std::wstring::npos) end = body.size();
+    std::wstring t = body.substr(start, end - start);
+    start = end + 1;
+    if (t.empty()) {
+      gap += 6 * S;
+      continue;
+    }
+    PanelLine l{t, kText, false, lines.empty() ? 0.f : gap + 3 * S, 0};
+    if (t.rfind(L"\x2022 ", 0) == 0) l.bullet = true, l.text = t.substr(2);
+    else if (t.rfind(L"Tip:", 0) == 0) l.color = kOk, l.gap += 3 * S;
+    else if (t.rfind(L"Note:", 0) == 0) l.color = kWarn, l.gap += 3 * S;
+    else if (t.rfind(L"In game:", 0) == 0) l.color = kWhite, l.gap += 3 * S;
+    else if (t == L"Click anywhere to close.") l.color = kMuted;
+    StringFormat mf;
+    RectF box{};
+    g.MeasureString(l.text.c_str(), -1, &f, RectF(0, 0, width - (l.bullet ? indent : 0), 0), &mf, &box);
+    l.height = box.Height;
+    lines.push_back(std::move(l));
+    gap = 0;
+    if (end == body.size()) break;
+  }
+  return lines;
+}
+
 // A rounded panel of wrapped text at (x, y) at most `width` wide, kept inside the window; returns its rectangle.
 RectF TextPanel(Graphics& g, const std::wstring& title, const std::wstring& body, float x, float y, float width, int w, int h, bool above) {
-  const float S = g_scale, pad = 14 * S;
+  const float S = g_scale, pad = 14 * S, indent = 14 * S;
   const FontFamily& fam = *UiFamily();
   Font ft(&fam, 14 * S, FontStyleBold, UnitPixel), fb(&fam, 13 * S, FontStyleRegular, UnitPixel);
   StringFormat mf;
-  RectF tb{}, bb{};
+  RectF tb{};
   if (!title.empty()) g.MeasureString(title.c_str(), -1, &ft, RectF(0, 0, width - 2 * pad, 0), &mf, &tb);
-  g.MeasureString(body.c_str(), -1, &fb, RectF(0, 0, width - 2 * pad, 0), &mf, &bb);
-  const float ph = pad * 2 + (title.empty() ? 0 : tb.Height + 6 * S) + bb.Height;
+  const std::vector<PanelLine> lines = PanelLines(g, body, fb, width - 2 * pad);
+  float body_h = 0;
+  for (const auto& l : lines) body_h += l.gap + l.height;
+  const float ph = pad * 2 + (title.empty() ? 0 : tb.Height + 6 * S) + body_h;
   if (above) y -= ph;
   x = (std::max)(8 * S, (std::min)(x, float(w) - width - 8 * S));
   y = (std::max)(8 * S, (std::min)(y, float(h) - ph - 8 * S));
@@ -1838,7 +1990,13 @@ RectF TextPanel(Graphics& g, const std::wstring& title, const std::wstring& body
     Text(g, title, ft, RectF(panel.X + pad, ty, width - 2 * pad, tb.Height), kWhite, StringAlignmentNear, StringAlignmentNear, true, false);
     ty += tb.Height + 6 * S;
   }
-  Text(g, body, fb, RectF(panel.X + pad, ty, width - 2 * pad, bb.Height + 2 * S), kText, StringAlignmentNear, StringAlignmentNear, true, false);
+  for (const auto& l : lines) {
+    ty += l.gap;
+    const float lx = panel.X + pad + (l.bullet ? indent : 0);
+    if (l.bullet) Text(g, L"\x2022", fb, RectF(panel.X + pad + 2 * S, ty, indent, l.height), kMuted, StringAlignmentNear, StringAlignmentNear, false, false);
+    Text(g, l.text, fb, RectF(lx, ty, panel.X + width - pad - lx, l.height + 2 * S), l.color, StringAlignmentNear, StringAlignmentNear, true, false);
+    ty += l.height;
+  }
   return panel;
 }
 
