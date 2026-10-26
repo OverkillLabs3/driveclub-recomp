@@ -194,8 +194,8 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
     const bool a = RigidError(move_a) <= RigidError(move_b);
     const Mat move = a ? move_a : move_b;
     const Mat last_move = Multiply(previous_relative, a ? inv_prev2 : inv_prev);
-    const Mat back_projection = a ? projection_two_back : previous_projection;
-    out = Multiply(Multiply(Multiply(inverse, move), last_move), back_projection);
+    // into the clip space of the frame two back: the same eye's, with its own projection (each eye's differs)
+    out = Multiply(Multiply(Multiply(inverse, move), last_move), projection_two_back);
     static int told = 0;
     if (told++ < 3) {
         std::printf("Camera motion: two frames back (VR), the move's projection is %s (rigid error %.4f against "
