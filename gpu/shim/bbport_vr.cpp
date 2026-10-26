@@ -60,6 +60,7 @@
 #include "bbport_settings.h"
 #include "video_core/host_shaders/vr_copy_comp.h"
 #include "video_core/host_shaders/vr_hud_comp.h"
+#include "video_core/host_shaders/vr_window_comp.h"
 #include "video_core/host_shaders/vr_reproject_comp.h"
 
 #include <algorithm>
@@ -134,6 +135,10 @@ struct Settings {
     float hud_distance = 1.1f, hud_width = 1.4f, hud_y = 0.0f;
     float turn_comp = 0.0f;
     bool screen_quad = true;
+    // The window (for watching and recording): 1 one eye's frames (window_eye: 0 left, 1 right) at 16:9, the scene's
+    // middle band with the HUD and the menus stretched back to 16:9; 0 every frame as the headset gets it.
+    bool window = true;
+    int window_eye = 0;
     bool runtime_fov = true;
     bool ipd_set = false; // ipd given in vr.ini
     float screen_distance = 2.0f;
@@ -291,6 +296,8 @@ void ReadSettings() {
         else if (k == "turn_comp" && value >= 0.0f && value <= 1.0f) settings.turn_comp = value;
         else if (k == "reproject" && value >= 0 && value <= 2) settings.reproject = int(value);
         else if (k == "screen_quad") settings.screen_quad = value != 0;
+        else if (k == "window") settings.window = value != 0;
+        else if (k == "window_eye" && (value == 0 || value == 1)) settings.window_eye = int(value);
         else if (k == "screen_distance" && value > 0.3f) settings.screen_distance = value;
     }
     std::fclose(f);
@@ -1035,6 +1042,11 @@ struct Gpu {
     VkDescriptorSetLayout hud_set = VK_NULL_HANDLE;
     VkPipelineLayout hud_layout = VK_NULL_HANDLE;
     VkPipeline hud_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSetLayout window_set = VK_NULL_HANDLE;
+    VkPipelineLayout window_layout = VK_NULL_HANDLE;
+    VkPipeline window_pipeline = VK_NULL_HANDLE;
+    GpuImage window;           // the window's picture (settings.window), SHADER_READ_ONLY_OPTIMAL once made
+    bool window_valid = false;
     VkDescriptorSetLayout reproject_set = VK_NULL_HANDLE;
     VkPipelineLayout reproject_layout = VK_NULL_HANDLE;
     VkPipeline reproject_pipeline = VK_NULL_HANDLE;
@@ -1088,6 +1100,15 @@ struct CopyPush {
     float encode;
 };
 
+struct WindowPush {
+    float size[2];
+    float source[2];
+    float band_y;
+    float encode;
+    float mode;
+    float pad;
+};
+
 // A compute pipeline with push descriptors: `sampled` sampled images, then `storage` storage images, and CopyPush.
 template <size_t N>
 void MakeCompute(const uint32_t (&code)[N], uint32_t sampled, uint32_t storage, VkDescriptorSetLayout& set,
@@ -1133,6 +1154,7 @@ void GpuInit(VkPhysicalDevice physical, VkDevice device) {
     gpu.physical = physical;
     MakeCompute(VR_COPY_COMP, 1, 1, gpu.copy_set, gpu.copy_layout, gpu.copy_pipeline);
     MakeCompute(VR_HUD_COMP, 2, 3, gpu.hud_set, gpu.hud_layout, gpu.hud_pipeline);
+    MakeCompute(VR_WINDOW_COMP, 2, 1, gpu.window_set, gpu.window_layout, gpu.window_pipeline, sizeof(WindowPush));
     MakeCompute(VR_REPROJECT_COMP, 1, 4, gpu.reproject_set, gpu.reproject_layout, gpu.reproject_pipeline,
                 sizeof(ReprojectPush));
     gpu.ready = gpu.copy_pipeline != VK_NULL_HANDLE;
@@ -1812,8 +1834,67 @@ void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, 
     picture_dumps.push_back(std::move(dump));
 }
 
+// The window's picture (settings.window): 16:9 from one eye's frames, the other eye's showing the last one again
+// (vr_window.comp; `mode` its mode). Null when the game's canvas has the frame's own shape (nothing to stretch back).
+VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView scene, int mode, bool encode,
+                          uint32_t width, uint32_t height, const FrameCamera& camera, uint32_t* window_width,
+                          uint32_t* window_height) {
+    const float game = GameAspect(), render = RenderAspect();
+    if (!settings.window || !gpu.window_pipeline || !canvas || !scene || !game || !render || game < render * 1.05f) {
+        return VK_NULL_HANDLE;
+    }
+    const uint32_t band = std::min(height, uint32_t(float(width) / game + 0.5f)) & ~1u;
+    const VkImage before = gpu.window.image;
+    if (!band || !MakeImage(gpu.window, width, band, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                            VK_FORMAT_R8G8B8A8_UNORM, true)) {
+        return VK_NULL_HANDLE;
+    }
+    if (gpu.window.image != before) {
+        gpu.window_valid = false;
+    }
+    const VkImageView window_view =
+        SampleView(gpu.window, encode ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+    if (!window_view) {
+        return VK_NULL_HANDLE;
+    }
+    if (!gpu.window_valid || !camera.found || camera.eye < 0 || camera.eye == settings.window_eye) {
+        Barrier(cmd, gpu.window.image, gpu.window_valid ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+        VkDescriptorImageInfo infos[3] = {{VK_NULL_HANDLE, canvas, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                          {VK_NULL_HANDLE, scene, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                          {VK_NULL_HANDLE, gpu.window.view, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet writes[3]{};
+        for (uint32_t i = 0; i < 3; ++i) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstBinding = i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = i == 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            writes[i].pImageInfo = &infos[i];
+        }
+        const WindowPush push{{float(width), float(band)}, {float(width), float(height)}, float((height - band) / 2),
+                              encode ? 1.0f : 0.0f, float(mode), 0.0f};
+        VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.window_pipeline);
+        VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.window_layout, 0, 3, writes);
+        VKF.vkCmdPushConstants(cmd, gpu.window_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+        VKF.vkCmdDispatch(cmd, (width + 7) / 8, (band + 7) / 8, 1);
+        Barrier(cmd, gpu.window.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        gpu.window_valid = true;
+        static bool told = false;
+        if (!told) {
+            told = true;
+            std::printf("VR: the window shows the %s eye at %ux%u (vr.ini window = 0: every frame)\n",
+                        settings.window_eye == 0 ? "left" : "right", width, band);
+        }
+    }
+    if (window_width) *window_width = width;
+    if (window_height) *window_height = band;
+    return window_view;
+}
+
 VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkImageView alpha_view,
-                      VkFormat display_format, uint32_t display_width, uint32_t display_height) {
+                      VkFormat display_format, uint32_t display_width, uint32_t display_height,
+                      uint32_t* window_width, uint32_t* window_height) {
     if (!Active()) {
         return VK_NULL_HANDLE;
     }
@@ -1912,6 +1993,10 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                               Reproject(cmd, *entry, gpu.depths[scene_index], entry->right, 0.5f * settings.ipd,
                                         nullptr);
             }
+            if (const VkImageView window = WindowPicture(cmd, alpha_view, scene_view, 0, encode, display_width,
+                                                         display_height, camera, window_width, window_height)) {
+                return window;
+            }
             return whole_view; // the window shows both together
         }
     }
@@ -1941,7 +2026,9 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     std::memcpy(entry->car, camera.car, sizeof camera.car);
     entry->valid = true;
     DumpPictures(cmd, entry->picture, display_width, display_height, camera.found ? camera.eye : -1);
-    return VK_NULL_HANDLE;
+    // the window: the menus' canvas stretched back to 16:9, or a frame of the driver's view drawn whole (its band)
+    return WindowPicture(cmd, display_view, display_view, camera.found ? 2 : 1, encode, display_width, display_height,
+                         camera, window_width, window_height);
 }
 
 void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height) {

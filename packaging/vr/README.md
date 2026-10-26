@@ -82,6 +82,9 @@ reproject = 0      # experimental, smoother turns: 1 the other eye made each fra
                    # between them (no flicker, softer edges, glass at a wrong depth). key_reproject = 8 cycles it
 turn_comp = 0      # 1: the older eye's picture turned by the car's turn since it was drawn (steadier world in
                    # turns, the cockpit moves in that eye instead); 0.5 half. key_turn = 9 switches it while driving
+window = 1         # the window (for watching and recording): one eye's frames at 16:9, the middle band of the
+                   # eye's picture with the HUD and the menus stretched back to 16:9; 0: every frame as the headset
+                   # gets it (both eyes in turn). window_eye = 0 the left eye, 1 the right
 key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
 ```
 

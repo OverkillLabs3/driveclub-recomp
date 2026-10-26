@@ -130,6 +130,7 @@ add_host_shader(drive_aa_copy.comp drive_aa_copy_comp)
 # VR (bbport_vr.cpp): the game's picture for the headset.
 add_host_shader(vr_copy.comp vr_copy_comp)
 add_host_shader(vr_hud.comp vr_hud_comp)
+add_host_shader(vr_window.comp vr_window_comp)
 add_host_shader(vr_reproject.comp vr_reproject_comp)
 add_host_shader(taa_sharpen.comp drive_aa_sharpen_comp HALF_INPUT=1)
 add_host_shader(upscale_merge.comp upscale_merge_comp)

@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR: the window's picture, 16:9 (for watching and recording). The eye's frame is taller than 16:9: the scene is the
+// band across its middle, and the game's 2D canvas (the HUD, the menus: 16:9 squeezed into the frame) is stretched
+// back to 16:9 over it. RGBA8 holding sRGB values, as vr_hud.comp's.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2D canvas_tex; // mode 0: the HUD over transparent black; 1: the whole frame
+layout(binding = 1) uniform texture2D scene_tex;  // modes 0 and 2: the scene
+layout(binding = 2, rgba8) uniform writeonly image2D window_img;
+
+layout(push_constant) uniform Constants {
+    vec2 size;    // the window picture
+    vec2 source;  // the frame
+    float band_y; // the scene band's first row in the frame
+    float encode; // 1: the views decode sRGB: store it encoded again
+    float mode;   // 0: the scene band and the HUD over it; 1: the canvas alone (menus); 2: the scene band alone
+};
+
+vec3 Encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return encode > 0.5 ? mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)) : c;
+}
+
+// The canvas at the window's pixel: its rows squeezed by source.y / size.y, two taps across them.
+vec4 Canvas(ivec2 pixel) {
+    const float rows = source.y / size.y;
+    const float y = float(pixel.y) * rows;
+    const int a = min(int(y + rows * 0.25), int(source.y) - 1);
+    const int b = min(int(y + rows * 0.75), int(source.y) - 1);
+    const int x = min(pixel.x, int(source.x) - 1);
+    return 0.5 * (clamp(texelFetch(canvas_tex, ivec2(x, a), 0), 0.0, 1.0) +
+                  clamp(texelFetch(canvas_tex, ivec2(x, b), 0), 0.0, 1.0));
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    vec3 c;
+    if (mode > 0.5 && mode < 1.5) {
+        c = Canvas(pixel).rgb;
+    } else {
+        const ivec2 at = ivec2(min(pixel.x, int(source.x) - 1), min(pixel.y + int(band_y), int(source.y) - 1));
+        const vec3 scene = texelFetch(scene_tex, at, 0).rgb;
+        if (mode < 0.5) {
+            const vec4 hud = Canvas(pixel);
+            c = hud.rgb + (1.0 - hud.a) * scene;
+        } else {
+            c = scene;
+        }
+    }
+    imageStore(window_img, pixel, vec4(Encode(c), 1.0));
+}

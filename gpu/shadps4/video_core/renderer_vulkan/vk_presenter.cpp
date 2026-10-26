@@ -657,12 +657,14 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
     // bbport: VR: the headset takes the display buffer at its own size (the output resolution).
     // With the HUD drawn apart the window shows the scene and the HUD put together again.
+    vk::Extent2D window_size = image_size; // VR: the window's picture may be another size (one eye at 16:9)
     if (const VkImageView whole = BbVr::NoteFrame(cmdbuf, frame->image, frame->is_hdr ? vk::ImageView{} : image_view,
                                                   alpha_view, VkFormat(view_info.format), image_size.width,
-                                                  image_size.height)) {
+                                                  image_size.height, &window_size.width, &window_size.height)) {
         image_view = vk::ImageView(whole);
     }
     BbFrame::NoteOutput(image_size.width, image_size.height);
+    image_size = window_size;
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
