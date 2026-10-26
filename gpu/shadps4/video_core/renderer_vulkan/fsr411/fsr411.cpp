@@ -695,7 +695,11 @@ struct Upscaler::Impl {
                 };
                 const std::string& n = b.name;
                 if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    continue; // immutable
+                    // Immutable samplers must still be pushed before the shader uses them.
+                    images.push_back({linear_clamp, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED});
+                    w.pImageInfo = &images.back();
+                    writes.push_back(w);
+                    continue;
                 } else if (n == "r_input_color") image(f.color.view);
                 else if (n == "r_velocity") image(f.motion.view);
                 else if (n == "r_depth") image(f.depth.view);
@@ -710,13 +714,18 @@ struct Upscaler::Impl {
                 else if (n == "r_rcas_input") image(mlsr_output.view);
                 else if (n == "rw_rcas_output") image(final_output->view);
                 else if (n == "ScratchBuffer") buffer(scratch.buffer, 0, VK_WHOLE_SIZE);
-                else if (n == "InitializerBuffer") buffer(initializer.buffer, 0, VK_WHOLE_SIZE);
+                // dxil-spirv leaves one of the two InitializerBuffer declarations without a
+                // name; the binding is fixed in AMD's prepass.
+                else if (n == "InitializerBuffer" || (n.empty() && b.binding == 18))
+                    buffer(initializer.buffer, 0, VK_WHOLE_SIZE);
                 else if (n == "MLSR_Optimized_Constants") buffer(ubo.buffer, slot, sizeof(Mlsr));
                 else if (n == "AutoExposureSPDConstants") buffer(ubo.buffer, slot + ubo_align, sizeof(Spd));
                 else if (n == "cbRCAS") buffer(ubo.buffer, slot + 2 * ubo_align, sizeof(Rcas));
                 else if (n == "CsTensorSizes") buffer(tensor_ubo.buffer, 0, 272);
                 else {
-                    error = name + ": unknown resource " + n;
+                    error = name + ": unknown resource '" + n + "' (binding " +
+                            std::to_string(b.binding) + ", type " +
+                            std::to_string(int(b.type)) + ")";
                     return false;
                 }
                 writes.push_back(w);

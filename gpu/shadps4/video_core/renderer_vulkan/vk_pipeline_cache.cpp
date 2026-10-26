@@ -27,6 +27,7 @@
 #include "video_core/renderer_vulkan/motion_history.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -382,6 +383,14 @@ PipelineCache::~PipelineCache() = default;
 std::atomic<u64> g_bb_compile_ns;
 std::atomic<u32> g_bb_compiles;
 namespace {
+bool MotionViewportMatches(const AmdGpu::Regs& regs) {
+    const u64 render_size = Shader::MotionVectors::render_size.load(std::memory_order_relaxed);
+    const auto& viewport = regs.viewports[0];
+    return render_size &&
+           std::abs(viewport.xscale * 2.0f) == float(u32(render_size)) &&
+           std::abs(viewport.yscale * 2.0f) == float(u32(render_size >> 32));
+}
+
 struct CompileTimer {
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     ~CompileTimer() {
@@ -411,6 +420,9 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     // everything read from guest memory for the specialization) must match as well. This is
     // the per-stage work GetProgram does on the regular path.
     const auto& regs = liverpool->regs;
+    if (prepared.key.motion_vectors && !MotionViewportMatches(regs)) {
+        return nullptr;
+    }
     for (u32 i = 0; i < prepared.num_stages; ++i) {
         const auto& stage = prepared.stages[i];
         const auto* pgm = regs.ProgramForStage(static_cast<u32>(stage.hw_stage));
@@ -551,10 +563,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
             bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
         }
-        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 5 &&
+        // Mirrors and reflection probes do not share the main scene's motion history.
+        motion_possible = Shader::MotionVectors::positions_address != 0 &&
+                          MotionViewportMatches(regs) && bound >= 3 &&
                           !regs.color_buffers[Shader::MotionVectors::Output] &&
                           regs.depth_buffer.DepthValid() &&
                           regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
+                          instance.MaxVertexOutputComponents() >= 128 &&
+                          instance.MaxFragmentInputComponents() >= 128 &&
+                          regs.primitive_type != AmdGpu::PrimitiveType::RectList &&
+                          regs.primitive_type != AmdGpu::PrimitiveType::QuadList &&
                           regs.stage_enable.raw == AmdGpu::ShaderStageEnable::VgtStages::Vs;
     }
     sel.motion = false;
@@ -589,8 +607,13 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         return false;
     }
     if (motion_possible) {
+        sel.motion = ObjectMotion::IsCarDraw(regs);
         const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
-        if (vs) {
+        if (vs && !sel.motion) {
+            // The rasterizer qualifies model records and scene constants before loading history.
+            const bool model_records = !vs->buffers.empty() && !vs->buffers[0].IsSpecial() &&
+                vs->buffers[0].GetSharp(*vs).GetStride() == 144 &&
+                vs->buffers[0].GetSharp(*vs).GetSize() % 144 == 0;
             // Shaders with a bone palette (motion_history.h). Small skeletons (weapons,
             // props) also include static world pieces: the rasterizer gives those
             // history only while their constants change.
@@ -598,7 +621,8 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                 if (resource.IsSpecial()) continue;
                 const auto buffer = resource.GetSharp(*vs);
                 if (buffer.Valid() && buffer.GetStride() == 16 &&
-                    Motion::ClassifyBuffer(buffer.GetSize()) != Motion::BufferRole::Other) {
+                    (Motion::ClassifyBuffer(buffer.GetSize()) != Motion::BufferRole::Other ||
+                     model_records && buffer.GetSize() == 512)) {
                     sel.motion = true;
                     break;
                 }
@@ -633,6 +657,28 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
         }();
         if (all_motion) {
             sel.motion = true;
+        }
+        sel.motion = sel.motion && vs && sel.infos[u32(SwStage::Fragment)];
+        if (sel.motion) {
+            using Shader::IR::Attribute;
+            const bool shifted_outputs = profile.needs_clip_distance_emulation &&
+                                         vs->stores.GetAny(Attribute::ClipDistance);
+            // Reserve the motion slots and the remaining high locations for built-ins.
+            for (u32 i = 0; i < 32; ++i) {
+                if (vs->stores.GetAny(Attribute::Param0 + i) &&
+                    i + shifted_outputs >= Shader::MotionVectors::CurrentLocation) {
+                    sel.motion = false;
+                }
+            }
+            const auto& fs = sel.runtime_infos[u32(SwStage::Fragment)].hw.fs;
+            for (u32 i = 0; i < regs.num_interp; ++i) {
+                const auto& input = fs.inputs[i];
+                if (!input.IsDefault() &&
+                    input.param_index + fs.clip_distance_emulation >=
+                        Shader::MotionVectors::CurrentLocation) {
+                    sel.motion = false;
+                }
+            }
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {
             return false;
@@ -732,7 +778,10 @@ bool PipelineCache::RefreshGraphicsStages(PipelineSelection& sel) {
     sel.infos.fill(nullptr);
     sel.modules.fill(nullptr);
 
-    bind_stage(HwStage::Fragment, SwStage::Fragment);
+    if (!bind_stage(HwStage::Fragment, SwStage::Fragment)) {
+        BuildRuntimeInfo(sel, HwStage::Fragment, SwStage::Fragment);
+        sel.runtime_infos[u32(SwStage::Fragment)].hw.fs.num_inputs = 0;
+    }
 
     const auto* fs_info = sel.infos[static_cast<u32>(SwStage::Fragment)];
     key.mrt_mask = fs_info ? fs_info->mrt_mask : 0u;

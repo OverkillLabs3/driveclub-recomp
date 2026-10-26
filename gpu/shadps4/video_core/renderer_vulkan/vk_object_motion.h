@@ -15,6 +15,10 @@
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/texture_cache/image.h"
 
+namespace AmdGpu {
+union Regs;
+}
+
 namespace Vulkan {
 
 class Instance;
@@ -26,12 +30,14 @@ public:
     ObjectMotion(const Instance& instance, Scheduler& scheduler);
     ~ObjectMotion();
 
+    static bool IsCarDraw(const AmdGpu::Regs& regs);
+
     [[nodiscard]] bool Enabled() const noexcept {
         return enabled;
     }
 
     using DrawInfo = Motion::Draw;
-    u32 PrepareDraw(const DrawInfo& draw);
+    u32 PrepareDraw(const DrawInfo& draw, std::span<const u64> instances = {});
     /// Small skeletons: whether the bone palette changed (Motion::History::Moving).
     bool Moving(const Motion::History::GateKey& key, u64 palette) {
         return history.Moving(key, palette);
@@ -49,6 +55,8 @@ public:
     /// Start the next scene frame after the current vector image has been consumed.
     void OnFrameStart();
     void InvalidateHistory() { history.NextFrame(); history.NextFrame(); }
+    void CaptureHistory();
+    [[nodiscard]] u64 CaptureFrame() const noexcept { return diagnostic_frames ? frame : 0; }
 
     /// The motion image for the compose pass (layout General after this call) and whether it
     /// holds this frame's vectors at `width` x `height`.
@@ -89,7 +97,7 @@ private:
     // Parameter ring (host visible): FrameSlots frames of ParamsPerFrame entries (two u32x4),
     // element 0 all zero (motion off).
     static constexpr u32 FrameSlots = 4;
-    static constexpr u32 ParamsPerFrame = 8192;
+    static constexpr u32 ParamsPerFrame = 32768;
     static constexpr size_t MotionImageCacheSize = 8;
     // Positions (device local): two halves (current/previous frame) of vec4; element 0 is reserved.
     static constexpr u32 PositionsPerFrame = 4u << 20;
@@ -103,6 +111,7 @@ private:
     VmaAllocation positions_allocation{};
 
     u64 frame = 0;
+    u32 diagnostic_frames = 0;
     u64 image_use_serial = 0;
     u32 params_used = 0;
     u32 active_image = ~u32{0};

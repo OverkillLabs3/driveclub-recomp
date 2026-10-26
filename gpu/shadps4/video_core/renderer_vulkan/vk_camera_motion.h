@@ -30,8 +30,6 @@ public:
                  VideoCore::TextureCache& texture_cache, Runtime& runtime);
     ~CameraMotion();
     void InvalidateHistory() { current.valid = previous.valid = false; }
-    /// Advance object history after the current frame's motion image has been consumed.
-    void AdvanceObjectMotionFrame();
     void SetObjectMotion(ObjectMotion* motion) noexcept {
         object_motion = motion;
     }

@@ -719,6 +719,16 @@ public:
         this->on_submit = std::move(on_submit);
     }
 
+    void SetLatencyFrameId(u64 id) {
+        latency_frame_id = id;
+    }
+    u64 LatencyFrameId() const {
+        return latency_frame_id;
+    }
+    void SetLatencyPresentation() {
+        latency_presentation = true;
+    }
+
     /// Returns the current render state.
     const RenderState& GetRenderState() const {
         return render_state;
@@ -891,9 +901,12 @@ public:
         priority_pending_ops_cv.notify_one();
     }
 
+    std::mutex& SubmitMutex() const;
+    static vk::Result WaitDeviceIdle(const Instance& instance);
     static std::mutex submit_mutex;
 
 private:
+    static std::mutex present_mutex;
     void AllocateWorkerCommandBuffers();
 
     std::unique_ptr<RecordChunk> AcquireChunk();
@@ -930,6 +943,8 @@ private:
     CommandPool command_pool;
     DynamicState dynamic_state;
     SubmitFunc on_submit{};
+    u64 latency_frame_id{};
+    bool latency_presentation{};
     vk::CommandBuffer current_cmdbuf;
     std::condition_variable_any event_cv;
     struct PendingOp {

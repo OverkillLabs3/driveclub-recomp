@@ -289,6 +289,13 @@ void PollHotkeys() {
     }
     f9_down = f9;
     f10_down = f10;
+    static bool f11_down = false;
+    const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+    if (f11 && !f11_down && s.aa_mode == BbSettings::AaDlss) {
+        const int preset = s.dlss_model.load();
+        s.dlss_model = preset < 10 ? 10 : preset < 13 ? preset + 1 : 0;
+    }
+    f11_down = f11;
     // F4: the picture (PicturePanel): brightness, contrast, gamma in turn, then closed. SDR only.
     static bool f4_down = false;
     if (edge(VK_F4, f4_down) && SDL_GetKeyboardFocus() && !(GetAsyncKeyState(VK_MENU) & 0x8000)) {
@@ -731,10 +738,16 @@ void FpsCounter() {
             const char* keys = up ? (s.dlss_supported ? "F10 FSR/DLSS" : "")
                                   : (s.dlss_supported ? "F9 off, F10 FSR/DLSS" : "F9 off");
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
-                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : "FSR 3.1",
+                        s.aa_effective == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA")
+                            : s.aa_effective == BbSettings::AaFsr411 ? "FSR 4.1.1" : "FSR 3.1.5",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
                         s.aa_running ? " on" : s.aa_failed ? " failed (see the log)" : " waiting", *keys ? "  (" : "",
                         keys, *keys ? ")" : "");
+            if (s.aa_mode == BbSettings::AaDlss) {
+                const int preset = s.dlss_model.load();
+                const char* name = preset == 10 ? "J" : preset == 11 ? "K" : preset == 12 ? "L" : preset == 13 ? "M" : "Auto";
+                ImGui::Text("DLSS SR preset: %s  (F11)", name);
+            }
         } else if (g_aa_used) {
             ImGui::Text("AA: game  (F9 on)");
         }

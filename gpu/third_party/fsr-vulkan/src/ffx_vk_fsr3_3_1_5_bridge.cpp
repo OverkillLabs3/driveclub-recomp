@@ -30,6 +30,10 @@ struct BridgeResource {
     VkImage image = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
+    /* The Vulkan format of an imported image.  The SDK's description reports a color surface
+     * format (depth is R32_FLOAT, for example), but a view of a D32 image must use the depth
+     * format and the depth aspect. */
+    VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     /* Exact allocation size returned by Vulkan.  This makes the SDK's memory
      * query describe the bridge's actual independent allocations instead of
      * estimating texel footprints. */
@@ -128,7 +132,37 @@ static VkFormat to_vk_format(uint32_t format)
     case FFX_API_SURFACE_FORMAT_R8G8B8A8_TYPELESS:
     case FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM:
     case FFX_API_SURFACE_FORMAT_R8G8B8A8_SRGB: return VK_FORMAT_R8G8B8A8_UNORM;
+    case FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT: return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+/* The SDK treats an imported depth image as a single-channel float surface.  The Vulkan view
+ * itself keeps the depth format (and the depth aspect) so the image stays valid. */
+static bool is_depth_format(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static VkImageAspectFlags barrier_aspects(VkFormat format)
+{
+    switch (format) {
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+    default:
+        return is_depth_format(format) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     }
 }
 
@@ -155,6 +189,17 @@ static FfxApiSurfaceFormat from_vk_format(VkFormat format)
     case VK_FORMAT_R32_SFLOAT: return FFX_API_SURFACE_FORMAT_R32_FLOAT;
     case VK_FORMAT_R32_UINT: return FFX_API_SURFACE_FORMAT_R32_UINT;
     case VK_FORMAT_R8G8B8A8_UNORM: return FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return FFX_API_SURFACE_FORMAT_R11G11B10_FLOAT;
+    /* Depth images are imported through the same path; the SDK's depth input is an R32/R16
+     * single-channel surface. */
+    case VK_FORMAT_D16_UNORM:
+    case VK_FORMAT_D16_UNORM_S8_UINT:
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D24_UNORM_S8_UINT:
+        return FFX_API_SURFACE_FORMAT_R16_UNORM;
+    case VK_FORMAT_D32_SFLOAT:
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return FFX_API_SURFACE_FORMAT_R32_FLOAT;
     default: return FFX_API_SURFACE_FORMAT_UNKNOWN;
     }
 }
@@ -216,8 +261,14 @@ static bool create_image_views(FfxVkFsr3_3_1_5Bridge* bridge, BridgeResource* re
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = resource->image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = to_vk_format(resource->description.format);
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    /* Imported depth images keep their Vulkan format for the view (a D32 image cannot be
+     * viewed as R32 on every implementation) while the SDK description says R32_FLOAT. */
+    const VkFormat viewFormat = resource->imageFormat != VK_FORMAT_UNDEFINED
+                                    ? resource->imageFormat
+                                    : to_vk_format(resource->description.format);
+    viewInfo.format = viewFormat;
+    viewInfo.subresourceRange.aspectMask =
+        is_depth_format(viewFormat) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = resource->description.mipCount;
     viewInfo.subresourceRange.layerCount = resource->description.depth ? resource->description.depth : 1u;
     if (viewInfo.format == VK_FORMAT_UNDEFINED ||
@@ -327,7 +378,7 @@ static void transition_image(VkCommandBuffer commandBuffer, BridgeResource* reso
     barrier.srcAccessMask = sourceAccess;
     barrier.dstAccessMask = destinationAccess;
     barrier.image = resource->image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.aspectMask = barrier_aspects(resource->imageFormat);
     barrier.subresourceRange.levelCount = resource->description.mipCount;
     barrier.subresourceRange.layerCount = resource->description.depth ? resource->description.depth : 1u;
     vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0u,
@@ -646,11 +697,14 @@ extern "C" FfxVkFsr3_3_1_5Resource ffxVkFsr3_3_1_5BridgeImportImage(
     resource->description.height = description->height;
     resource->description.depth = description->arrayLayers;
     resource->description.mipCount = description->mipCount;
-    resource->description.flags = FFX_API_RESOURCE_FLAGS_NONE;
+    resource->description.flags = description->undefinedContents
+                                      ? FFX_API_RESOURCE_FLAGS_UNDEFINED
+                                      : FFX_API_RESOURCE_FLAGS_NONE;
     resource->description.usage =
         (description->usage & VK_IMAGE_USAGE_STORAGE_BIT) ? FFX_API_RESOURCE_USAGE_UAV :
                                                             FFX_API_RESOURCE_USAGE_READ_ONLY;
     resource->image = description->image;
+    resource->imageFormat = description->format;
     resource->imageLayout = description->layout;
     resource->restoreLayout = description->layout;
     resource->currentState = static_cast<FfxApiResourceState>(description->state);
@@ -1316,7 +1370,7 @@ extern "C" FfxErrorCode ffxVkFsr3_3_1_5BridgeExecuteGpuJobs(
                     memoryBarrier.oldLayout = resource->imageLayout;
                     memoryBarrier.newLayout = resource->imageLayout;
                     memoryBarrier.image = resource->image;
-                    memoryBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    memoryBarrier.subresourceRange.aspectMask = barrier_aspects(resource->imageFormat);
                     memoryBarrier.subresourceRange.levelCount =
                         resource->description.mipCount;
                     memoryBarrier.subresourceRange.layerCount =

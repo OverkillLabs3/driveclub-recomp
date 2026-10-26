@@ -3,6 +3,9 @@
 
 #include "bbport_settings.h"
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdlib>
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -10,7 +13,9 @@
 #include "imgui/renderer/imgui_core.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
+#include "bbport_diagnostics.h"
 
 namespace Vulkan {
 
@@ -52,7 +57,11 @@ void Swapchain::Create(u32 width_, u32 height_) {
     const vk::SharingMode sharing_mode =
         exclusive ? vk::SharingMode::eExclusive : vk::SharingMode::eConcurrent;
     const auto format = needs_hdr ? SURFACE_FORMAT_HDR : surface_format;
-    const vk::SwapchainCreateInfoKHR swapchain_info = {
+    // A swapchain can only use Reflex's low-latency mode when it is created for it.
+    VkSwapchainLatencyCreateInfoNV latency{};
+    latency.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV;
+    latency.latencyModeEnable = VK_TRUE;
+    vk::SwapchainCreateInfoKHR swapchain_info = {
         .surface = surface,
         .minImageCount = image_count,
         .imageFormat = format.format,
@@ -70,11 +79,18 @@ void Swapchain::Create(u32 width_, u32 height_) {
         .clipped = true,
         .oldSwapchain = nullptr,
     };
+    if (instance.HasLowLatency2()) {
+        swapchain_info.pNext = &latency;
+    }
 
     auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
     ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
                vk::to_string(swapchain_result));
-    swapchain = chain;
+    {
+        std::scoped_lock lock{latency_mutex};
+        swapchain = chain;
+    }
+    SetReflex(BbSettings::Get().reflex);
     {
         static int reported = 0;
         if (reported++ < 4) {
@@ -98,7 +114,7 @@ void Swapchain::SetHDR(bool hdr) {
         return;
     }
 
-    auto result = instance.GetDevice().waitIdle();
+    auto result = Scheduler::WaitDeviceIdle(instance);
     if (result != vk::Result::eSuccess) {
         LOG_WARNING(ImGui, "Failed to wait for Vulkan device idle on mode change: {}",
                     vk::to_string(result));
@@ -110,7 +126,164 @@ void Swapchain::SetHDR(bool hdr) {
                                                  : surface_format.format);
 }
 
-bool Swapchain::AcquireNextImage() {
+void Swapchain::SetReflex(int setting) {
+    std::scoped_lock lock{latency_mutex};
+    const int requested = std::clamp(setting, 0, BbSettings::ReflexCount - 1);
+    if (requested == reflex_mode) {
+        return;
+    }
+    const auto set_mode = instance.SetLatencySleepModeFn();
+    if (!instance.HasLowLatency2() || !set_mode) {
+        if (requested != BbSettings::ReflexOff && reflex_mode != requested) {
+            std::puts("Reflex: VK_NV_low_latency2 is not available on this system");
+        }
+        reflex_mode = requested;
+        return;
+    }
+    if (!swapchain) {
+        return;
+    }
+    if (!latency_semaphore) {
+        const vk::SemaphoreTypeCreateInfo type{
+            .semaphoreType = vk::SemaphoreType::eTimeline,
+        };
+        auto [result, semaphore] = instance.GetDevice().createSemaphoreUnique({.pNext = &type});
+        ASSERT_MSG(result == vk::Result::eSuccess, "Failed creating Reflex sleep semaphore");
+        latency_semaphore = std::move(semaphore);
+    }
+    VkLatencySleepModeInfoNV mode{};
+    mode.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_MODE_INFO_NV;
+    mode.lowLatencyMode = requested != BbSettings::ReflexOff;
+    mode.lowLatencyBoost = requested == BbSettings::ReflexBoost;
+    mode.minimumIntervalUs = 0;
+    const VkResult result =
+        set_mode(VkDevice(instance.GetDevice()), VkSwapchainKHR(swapchain), &mode);
+    ASSERT_MSG(result == VK_SUCCESS, "Failed setting Reflex mode: {}", int(result));
+    reflex_mode = requested;
+    std::printf("Reflex: %s (VK_NV_low_latency2, lowLatencyMode=%u lowLatencyBoost=%u)\n",
+                requested == BbSettings::ReflexBoost ? "on + boost"
+                : requested == BbSettings::ReflexOn ? "on" : "off",
+                mode.lowLatencyMode, mode.lowLatencyBoost);
+}
+
+void Swapchain::MarkLatencyLocked(u64 id, VkLatencyMarkerNV marker) {
+    if (!instance.HasLowLatency2() || !swapchain || !id) {
+        return;
+    }
+    const VkSetLatencyMarkerInfoNV info{
+        .sType = VK_STRUCTURE_TYPE_SET_LATENCY_MARKER_INFO_NV,
+        .presentID = id,
+        .marker = marker,
+    };
+    instance.SetLatencyMarkerFn()(VkDevice(instance.GetDevice()), VkSwapchainKHR(swapchain), &info);
+}
+
+void Swapchain::MarkLatency(u64 id, VkLatencyMarkerNV marker) {
+    if (!id) {
+        return;
+    }
+    std::scoped_lock lock{latency_mutex};
+    MarkLatencyLocked(id, marker);
+}
+
+void Swapchain::BeforeInput() {
+    std::scoped_lock input_lock{input_mutex};
+    SetReflex(BbSettings::Get().reflex);
+    const auto sleep_start = std::chrono::steady_clock::now();
+    vk::Semaphore semaphore;
+    u64 tick;
+    u64 generation;
+    {
+        std::scoped_lock lock{latency_mutex};
+        if (!instance.HasLowLatency2() || !swapchain || latency_input_id) {
+            return;
+        }
+        semaphore = *latency_semaphore;
+        tick = ++latency_tick;
+        generation = latency_generation;
+        const VkLatencySleepInfoNV sleep{
+            .sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV,
+            .signalSemaphore = VkSemaphore(semaphore),
+            .value = tick,
+        };
+        const auto result = instance.LatencySleepFn()(VkDevice(instance.GetDevice()),
+                                                     VkSwapchainKHR(swapchain), &sleep);
+        ASSERT_MSG(result == VK_SUCCESS, "Reflex sleep failed: {}", int(result));
+    }
+    // Presentation and swapchain recreation must be able to progress during the wait.
+    const vk::SemaphoreWaitInfo wait{
+        .semaphoreCount = 1,
+        .pSemaphores = &semaphore,
+        .pValues = &tick,
+    };
+    const auto result = instance.GetDevice().waitSemaphores(wait, std::numeric_limits<u64>::max());
+    ASSERT_MSG(result == vk::Result::eSuccess, "Reflex sleep wait failed: {}", vk::to_string(result));
+    if (tick % 60 == 0 && BB_DIAGNOSTIC_ENV("BB_FPS_LOG")) {
+        std::printf("Reflex: sleep frame %llu %.3f ms\n", tick,
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - sleep_start).count());
+    }
+    std::scoped_lock lock{latency_mutex};
+    if (swapchain && generation == latency_generation) {
+        MarkLatencyLocked(tick, VK_LATENCY_MARKER_SIMULATION_START_NV);
+        MarkLatencyLocked(tick, VK_LATENCY_MARKER_INPUT_SAMPLE_NV);
+        latency_input_id = tick;
+    }
+}
+
+u64 Swapchain::BeginLatencyRender() {
+    std::scoped_lock input_lock{input_mutex};
+    std::scoped_lock lock{latency_mutex};
+    if (!instance.HasLowLatency2() || !swapchain) {
+        return 0;
+    }
+    // Polling can repeat within one guest submission epoch. Only its first poll sleeps.
+    const u64 id = latency_input_id ? latency_input_id : ++latency_tick;
+    if (!latency_input_id) {
+        MarkLatencyLocked(id, VK_LATENCY_MARKER_SIMULATION_START_NV);
+    }
+    latency_input_id = 0;
+    MarkLatencyLocked(id, VK_LATENCY_MARKER_SIMULATION_END_NV);
+    return id;
+}
+
+void Swapchain::EndLatencyPresent(u64 id) {
+    if (!id) {
+        return;
+    }
+    std::scoped_lock lock{latency_mutex};
+    MarkLatencyLocked(id, VK_LATENCY_MARKER_PRESENT_END_NV);
+    if (!instance.HasLowLatency2() || !swapchain || ++latency_presented % 60 ||
+        !BB_DIAGNOSTIC_ENV("BB_FPS_LOG")) {
+        return;
+    }
+    std::array<VkLatencyTimingsFrameReportNV, 64> reports{};
+    for (auto& report : reports) {
+        report.sType = VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV;
+    }
+    VkGetLatencyMarkerInfoNV info{
+        .sType = VK_STRUCTURE_TYPE_GET_LATENCY_MARKER_INFO_NV,
+        .timingCount = u32(reports.size()),
+        .pTimings = reports.data(),
+    };
+    instance.GetLatencyTimingsFn()(VkDevice(instance.GetDevice()), VkSwapchainKHR(swapchain), &info);
+    for (u32 i = 0; i < info.timingCount; ++i) {
+        const auto& report = reports[i];
+        if (report.presentID > latency_reported && report.inputSampleTimeUs &&
+            report.gpuRenderEndTimeUs && report.presentEndTimeUs) {
+            std::printf("Reflex: frame %llu input %llu simulation %llu-%llu render %llu-%llu "
+                        "GPU %llu-%llu present %llu-%llu us\n", report.presentID,
+                        report.inputSampleTimeUs, report.simStartTimeUs, report.simEndTimeUs,
+                        report.renderSubmitStartTimeUs, report.renderSubmitEndTimeUs,
+                        report.gpuRenderStartTimeUs, report.gpuRenderEndTimeUs,
+                        report.presentStartTimeUs, report.presentEndTimeUs);
+            latency_reported = report.presentID;
+        }
+    }
+}
+
+bool Swapchain::AcquireNextImage(Scheduler& scheduler) {
+    scheduler.Wait(image_acquired_ticks[frame_index]);
     vk::Device device = instance.GetDevice();
     vk::Result result =
         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
@@ -135,16 +308,19 @@ bool Swapchain::AcquireNextImage() {
     return !needs_recreation;
 }
 
-bool Swapchain::Present() {
-    const vk::PresentInfoKHR present_info = {
+bool Swapchain::Present(u64 latency_id) {
+    vk::PresentInfoKHR present_info = {
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &present_ready[image_index],
         .swapchainCount = 1,
         .pSwapchains = &swapchain,
         .pImageIndices = &image_index,
     };
-
+    // Reflex marker IDs identify game frames, including their generated presents. They are
+    // independent of VkPresentIdKHR's per-presentation IDs.
+    MarkLatency(latency_id, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV);
     auto result = instance.GetPresentQueue().presentKHR(present_info);
+    MarkLatency(latency_id, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV);
     if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR) {
         needs_recreation = true;
     } else {
@@ -265,7 +441,7 @@ void Swapchain::SetSurfaceProperties() {
 
 void Swapchain::Destroy() {
     vk::Device device = instance.GetDevice();
-    const auto wait_result = device.waitIdle();
+    const auto wait_result = Scheduler::WaitDeviceIdle(instance);
     if (wait_result != vk::Result::eSuccess) {
         LOG_WARNING(Render_Vulkan, "Failed to wait for device to become idle: {}",
                     vk::to_string(wait_result));
@@ -277,7 +453,12 @@ void Swapchain::Destroy() {
     images_view.clear();
 
     if (swapchain) {
+        std::scoped_lock lock{latency_mutex};
         device.destroySwapchainKHR(swapchain);
+        swapchain = nullptr;
+        reflex_mode = -1;
+        ++latency_generation;
+        latency_input_id = 0;
     }
 
     for (const auto& sem : image_acquired) {
@@ -294,6 +475,8 @@ void Swapchain::Destroy() {
 void Swapchain::RefreshSemaphores() {
     const vk::Device device = instance.GetDevice();
     image_acquired.resize(image_count);
+    image_acquired_ticks.assign(image_count, 0);
+    frame_index = 0;
     present_ready.resize(image_count);
 
     for (vk::Semaphore& semaphore : image_acquired) {

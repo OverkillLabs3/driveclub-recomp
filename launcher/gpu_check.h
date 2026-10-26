@@ -10,6 +10,17 @@
 // skip_gpu_check.txt next to the launcher does the same.
 std::wstring CheckGpu();
 
+struct GpuCapabilities {
+  bool checked = false;
+  std::wstring name;
+  bool dlss = false, neural = false, reflex = false, fsr411 = false;
+  bool dlss_runtime = false, neural_runtime = false;
+  int frame_multiplier_max = 0;
+};
+
+const GpuCapabilities& GraphicsCapabilities();
+GpuCapabilities CapabilitiesForGpu(const std::wstring& name);
+
 // "" when the processor has what the game's code needs (AVX, BMI1, LZCNT, MOVBE, POPCNT: Intel Haswell from 2013,
 // AMD Excavator or Ryzen, or newer), otherwise a sentence naming what is missing.
 std::wstring CheckCpu();

@@ -21,8 +21,10 @@ enum Preset : int { NativeAA = 0, Quality, Balanced, Performance, UltraPerforman
 enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugViewCount };
 /// Frame generation (vk_frame_generation.h): frames generated between two of the game's.
 enum FrameGen : int { FrameGenOff = 0, FrameGenFsr3 = 1, FrameGenDlss = 2, FrameGenCount };
-/// Anti-aliasing at the render resolution: the game's own, FSR 3.1, or DLSS (DLAA).
-enum Aa : int { AaOff = 0, AaFsr3 = 1, AaDlss = 2, AaCount };
+enum Reflex : int { ReflexOff = 0, ReflexOn, ReflexBoost, ReflexCount };
+/// Anti-aliasing at the render resolution: the game's own, FSR 3.1.5, DLSS (DLAA), or the
+/// FSR 4.1.1 Vulkan replay (portable INT8 assets built from the player's own DLL).
+enum Aa : int { AaOff = 0, AaFsr3 = 1, AaDlss = 2, AaFsr411 = 3, AaCount };
 /// Upscaling with the anti-aliasing: render size to output size (Native, Quality 1.5x, Balanced 1.7x,
 /// Performance 2x, Ultra Performance 3x). The runtime sets the game's render size (src/probe.c).
 enum AaScale : int { AaScaleNative = 0, AaScaleQuality = 1, AaScaleBalanced = 2, AaScalePerformance = 3,
@@ -130,15 +132,21 @@ struct Values {
     std::atomic<const char*> dlss_problem{nullptr};
 
     /// Startup settings for the explicit BB_RENDER_RES compatibility patch only.
-    /// Frame generation and the frames per game frame (2x with FSR 3.1, up to 4x with DLSS on
+    /// Frame generation and the frames per game frame (2x with FSR 3.1, up to 6x with DLSS on
     /// RTX 50). dlssg_max_multiplier: 1 without DLSS Frame Generation.
     std::atomic<int> frame_gen{FrameGenOff};
+    /// NVIDIA Reflex low-latency mode (VK_NV_low_latency2), independent of the AA/FG choice.
+    std::atomic<int> reflex{ReflexOff};
+    std::atomic<int> frame_gen_preset{3};
     std::atomic<int> aa_mode{AaOff};
+    /// The provider that actually ran (DLSS falls back to FSR 3.1 when it cannot start); the
+    /// overlay reports this, while aa_mode keeps the player's choice.
+    std::atomic<int> aa_effective{AaOff};
     /// F8: frame generation stays set up but stops capturing and generating (nothing is freed).
     std::atomic<bool> frame_gen_paused{false};
     std::atomic<int> aa_scale{AaScaleNative};
     /// The DLSS Super Resolution model (NVIDIA's render preset): 0 NVIDIA's choice for the quality
-    /// mode, 11 K (DLSS 4), 12 L, 13 M (DLSS 4.5); BB_DLSS_MODEL = k, l or m for tests.
+    /// mode, 10 J, 11 K (DLSS 4), 12 L, 13 M (DLSS 4.5); BB_DLSS_MODEL = j, k, l or m for tests.
     std::atomic<int> dlss_model{0};
     /// The anti-aliasing replaced the game's result in the last frame (for the overlay).
     std::atomic<bool> aa_running{false};

@@ -154,6 +154,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
       swapchain{instance, window}, runtime{instance, draw_scheduler},
       rasterizer{std::make_unique<Rasterizer>(instance, draw_scheduler, runtime, liverpool)},
       texture_cache{rasterizer->GetTextureCache()} {
+    rasterizer->SetLatencySwapchain(&swapchain);
+    present_scheduler.SetLatencyPresentation();
+    flip_scheduler.SetLatencyPresentation();
     const u32 num_images = swapchain.GetImageCount();
     const vk::Device device = instance.GetDevice();
 
@@ -503,6 +506,9 @@ static vk::Format GetFrameViewFormat(const Libraries::VideoOut::PixelFormat form
 static void DumpRaw(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
                     vk::Image image, vk::ImageLayout layout, u32 w, u32 h, const char* name,
                     int index) {
+    const auto capture_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool real_frame = std::strcmp(name, "output") == 0;
     const VkBufferCreateInfo buffer_ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
                                        .size = VkDeviceSize(w) * h * 4,
                                        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
@@ -519,16 +525,29 @@ static void DumpRaw(const Instance& instance, Scheduler& scheduler, vk::CommandB
     cmdbuf.copyImageToBuffer(image, layout, buffer,
                              vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
                                                  .imageExtent = {w, h, 1}});
+    const vk::MemoryBarrier2 host_read{.srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead};
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &host_read});
     const char* dir = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
     char path[512];
     std::snprintf(path, sizeof(path), "%s/%s_%03d_%ux%u.raw", dir && *dir ? dir : "out/dump", name,
                   index, w, h);
     scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info,
-                                      size = buffer_ci.size, file = std::string{path}] {
+                                      size = buffer_ci.size, file = std::string{path},
+                                      capture_ns, real_frame, index] {
         vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
         if (FILE* f = std::fopen(file.c_str(), "wb")) {
             std::fwrite(info.pMappedData, 1, size, f);
             std::fclose(f);
+        }
+        if (real_frame) {
+            const auto timestamps = file.substr(0, file.find_last_of('/')) + "/frames.csv";
+            if (FILE* f = std::fopen(timestamps.c_str(), "ab")) {
+                std::fprintf(f, "%d,%lld\n", index, static_cast<long long>(capture_ns));
+                std::fclose(f);
+            }
         }
         vmaDestroyBuffer(allocator, buffer, allocation);
     });
@@ -565,7 +584,27 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // as raw 32-bit pixels (menus and movies included; the upscaler dumps scene frames only).
     static const char* frame_dump_trigger = BB_DIAGNOSTIC_ENV("BB_FRAME_DUMP_TRIGGER");
     static int frame_dump_index = 0;
-    const bool frame_dump = frame_dump_trigger && std::remove(frame_dump_trigger) == 0;
+    static const int frame_dump_count = [] {
+        const char* env = BB_DIAGNOSTIC_ENV("BB_FRAME_DUMP_COUNT");
+        return env ? std::max(1, std::atoi(env)) : 1;
+    }();
+    static int frame_dump_remaining = 0;
+    static const auto frame_dump_interval = [] {
+        const char* env = BB_DIAGNOSTIC_ENV("BB_FRAME_DUMP_HZ");
+        const int hz = env ? std::atoi(env) : 0;
+        return std::chrono::nanoseconds(hz > 0 ? 1000000000LL / hz : 0);
+    }();
+    static std::chrono::steady_clock::time_point frame_dump_next{};
+    if (frame_dump_trigger && !frame_dump_remaining && std::remove(frame_dump_trigger) == 0) {
+        frame_dump_remaining = frame_dump_count;
+        frame_dump_next = std::chrono::steady_clock::now();
+    }
+    bool frame_dump = false;
+    if (frame_dump_remaining > 0 && std::chrono::steady_clock::now() >= frame_dump_next) {
+        frame_dump = true;
+        --frame_dump_remaining;
+        frame_dump_next += frame_dump_interval;
+    }
     // bbport: scaled upscaler presets: the output-size display buffer drawn by the port.
     TemporalUpscaler::Display display{};
     const bool upscaled = rasterizer->GetUpscaler().DisplayOverride(cpu_address, display);
@@ -577,6 +616,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     }
 
     Frame* frame = GetRenderFrame();
+    frame->latency_id = draw_scheduler.LatencyFrameId();
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -677,7 +717,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         neural->Record(cmdbuf, BbNeural::Present,
                        {frame->image, frame->image_view, FrameGenerator::ColorFormat, frame->width,
                         frame->height, false, false},
-                       {}, false);
+                       rasterizer->NeuralGuides(), false);
     }
 
     // bbport: HDR output: the overlay over the SDR frame, then the frame and the game's picture
@@ -828,6 +868,8 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     SubmitInfo info{};
     draw_scheduler.Flush(info);
 
+    swapchain.MarkLatency(frame->latency_id, VK_LATENCY_MARKER_RENDERSUBMIT_END_NV);
+
     if (frame_dump) {
         ++frame_dump_index;
     }
@@ -854,6 +896,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             }
         }
     }
+    rasterizer->EndFrame();
     if (BbTrace::enabled) {
         BbTrace::prep_ns.store(u64(BbTrace::NowNs() - trace_start), std::memory_order_relaxed);
         BbTrace::ahead_wait_ns.store(u64(ahead_end - ahead_start), std::memory_order_relaxed);
@@ -865,6 +908,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Request a free presentation frame.
     Frame* frame = GetRenderFrame();
     frame->generated_count = 0;
+    frame->latency_id = 0;
     frame->hdr_ready = false; // black: the frame itself is presented
 
     auto& scheduler = present_thread ? present_scheduler : draw_scheduler;
@@ -967,6 +1011,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // bbport: frame generation: the generated frames first, then the game's own, evenly
     // spaced over the interval between the game's frames (the generated ones belong to the
     // time before this frame). A frame shown again has none.
+    const u64 latency_id = !is_reusing_frame && is_game_frame ? frame->latency_id : 0;
     u32 generated = is_reusing_frame ? 0 : frame->generated_count;
     auto start = std::chrono::steady_clock::now();
     if (!is_reusing_frame && is_game_frame) {
@@ -1017,13 +1062,13 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
             }
             wait_until(start + step * shown);
         }
-        PresentImage(frame, frame->generated[shown].image, false);
+        PresentImage(frame, frame->generated[shown].image, false, latency_id);
     }
     if (shown && !behind()) {
         wait_until(start + step * shown);
     }
     const auto presented_generated = std::chrono::steady_clock::now();
-    if (!PresentImage(frame, frame->image, true, is_game_frame && !is_reusing_frame)) {
+    if (!PresentImage(frame, frame->image, true, latency_id, is_game_frame && !is_reusing_frame)) {
         if (shown) {
             // The frame's fence was not reset and so does not cover the generated frames'
             // blits: they must be done before the frame is drawn again.
@@ -1182,14 +1227,21 @@ void Presenter::UpdateFrameGenLimit(bool wanted, double present_ms) {
     if (!settings.frame_gen_fit_display || fifo) {
         // The multiplier as chosen, past the display's refresh rate with an uncapped game (the
         // display shows the newest image at each refresh); with FIFO the game is capped below
-        // instead. The pause below still applies.
+        // instead. Mailbox drops late intermediates without pausing the selected multiplier.
         limit = FrameGenerator::MaxGenerated;
     }
     // The share of the game's frame interval spent presenting its images: paced, about
     // count / (count + 1). Near one the presentation holds the game back (FIFO on a display
     // slower than measured, a GPU too slow for generation): off for a while, longer each time.
-    present_busy += (present_ms / interval - present_busy) * 0.1;
-    if (before && present_busy > 0.97) {
+    // `game_frame_ms` is tiny while the game loads (frames back to back); measuring the share
+    // against that made frame generation pause for 5 s right after every start.
+    if (interval > 4.0) {
+        present_busy += (present_ms / interval - present_busy) * 0.1;
+    } else {
+        present_busy = 0.0;
+    }
+    if ((fifo || settings.frame_gen_fit_display) && before && present_busy > 0.97 &&
+        interval > 4.0) {
         frame_gen_hold_seconds =
             now - frame_gen_hold_until > std::chrono::seconds(60)
                 ? 5
@@ -1226,10 +1278,10 @@ void Presenter::UpdateFrameGenLimit(bool wanted, double present_ms) {
     settings.frame_gen_display_hz = int(hz);
 }
 
-bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool notify_launcher) {
-    if (!swapchain.AcquireNextImage()) {
+bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, u64 latency_id, bool notify_launcher) {
+    if (!swapchain.AcquireNextImage(present_scheduler)) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
-        if (!swapchain.AcquireNextImage()) {
+        if (!swapchain.AcquireNextImage(present_scheduler)) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");
             return false;
@@ -1385,18 +1437,20 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
         // Also covers the generated frames' submissions before it on this queue.
         info.AddSignal(frame->present_done);
     }
+    swapchain.MarkAcquireSubmitted(scheduler.CurrentTick());
     scheduler.Flush(info);
 
     // Present to swapchain.
+    bool presented;
     {
-        std::scoped_lock submit_lock{Scheduler::submit_mutex};
-        const bool presented = swapchain.Present();
+        std::scoped_lock submit_lock{present_scheduler.SubmitMutex()};
+        presented = swapchain.Present(latency_id);
         if (presented && notify_launcher) {
             BbLauncherReady::GameFramePresented(true, false);
         }
-        if (!presented && window.GetWidth() != 0 && window.GetHeight() != 0) {
-            swapchain.Recreate(window.GetWidth(), window.GetHeight());
-        }
+    }
+    if (!presented && window.GetWidth() != 0 && window.GetHeight() != 0) {
+        swapchain.Recreate(window.GetWidth(), window.GetHeight());
     }
     g_last_shown = std::chrono::steady_clock::now();
     return true;

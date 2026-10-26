@@ -43,6 +43,8 @@ void bbgpu_mouse_stick_capture(int capture);
 void bbgpu_overlay_note(const char *text_utf8);
 /* A trophy banner (grade 0 platinum, 1 gold, 2 silver, 3 bronze) with its name and description. */
 void bbgpu_overlay_trophy(int id, int grade, const char *title_utf8, const char *description_utf8);
+/* Reflex pacing and input marker before the primary controller is sampled. */
+void bbgpu_reflex_input_sample(void);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 /* Frames presented so far (a freeze watchdog reads it). */

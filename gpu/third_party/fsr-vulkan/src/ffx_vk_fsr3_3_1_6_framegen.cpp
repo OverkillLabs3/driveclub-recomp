@@ -463,6 +463,7 @@ ffxVkFsr3_3_1_6FrameGenerationContextRecordPrepare(
         !valid_image(info->depth, VK_FORMAT_R32_SFLOAT, info->renderWidth, info->renderHeight, false) ||
         !valid_motion_image(info->motionVectors, info->renderWidth, info->renderHeight))
         return FFX_VK_FSR3_3_1_6_FRAMEGEN_ERROR_INVALID_ARGUMENT;
+    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId);
     if (!context->initialized) {
         const OwnedSharedImage shared[] = {
             context->opticalFlowVector, context->opticalFlowScd, context->dilatedDepth,
@@ -656,6 +657,7 @@ ffxVkFsr3_3_1_6FrameGenerationContextRetireFrame(
 {
     if (!context)
         return FFX_VK_FSR3_3_1_6_FRAMEGEN_ERROR_INVALID_ARGUMENT;
+    ffxVkFsr3_3_1_5BridgeRetireFrame(context->bridge, completedFrameId);
     if (context->prepared && context->frameId <= completedFrameId) {
         for (const FfxVkFsr3_3_1_5Resource resource : context->pendingImports)
             ffxVkFsr3_3_1_5BridgeReleaseImportedImage(context->bridge, resource);

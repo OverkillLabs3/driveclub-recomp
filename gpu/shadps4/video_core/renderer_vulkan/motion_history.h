@@ -291,6 +291,13 @@ public:
         return result;
     }
 
+    Allocation PrepareInstance(Draw draw, uint64_t geometry) {
+        draw.geometry = geometry;
+        draw.instances = 1;
+        draw.first_instance = 0;
+        return Prepare(draw);
+    }
+
     uint32_t Used() const { return used; }
 
 private:

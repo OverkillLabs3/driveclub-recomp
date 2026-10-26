@@ -259,7 +259,8 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR,
         vk::PhysicalDeviceImage2DViewOf3DFeaturesEXT, vk::PhysicalDeviceShaderClockFeaturesKHR,
         vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR,
-        vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
+        vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE,
+        vk::PhysicalDevicePresentIdFeaturesKHR>();
     features = feature_chain.get().features;
 
     const vk::StructureChain properties_chain = physical_device.getProperties2<
@@ -427,6 +428,26 @@ bool Instance::CreateDevice() {
         feature_chain.get<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>()
             .shaderMixedFloatDotProductFloat16AccFloat32 &&
         add_extension(VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
+    // bbport: NVIDIA Reflex low-latency mode; present IDs attribute the presented frames.
+    // VkPresentIdKHR is only valid when the presentId feature is enabled on the device.
+    if (const auto present_id_features =
+            feature_chain.get<vk::PhysicalDevicePresentIdFeaturesKHR>();
+        present_id_features.presentId) {
+        present_id = add_extension(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+    }
+    if (present_id) {
+        low_latency2 = add_extension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+    }
+    if (low_latency2) {
+        const auto [result, extensions] = physical_device.enumerateDeviceExtensionProperties();
+        const auto extension = std::ranges::find(extensions, VK_NV_LOW_LATENCY_2_EXTENSION_NAME,
+                                                [](const auto& e) { return std::string_view(e.extensionName); });
+        low_latency2 = result == vk::Result::eSuccess && extension != extensions.end() &&
+                       extension->specVersion >= 3;
+        if (!low_latency2) {
+            std::puts("GPU: Reflex needs VK_NV_low_latency2 revision 3 for frame attribution");
+        }
+    }
     if (compute_shader_derivatives) {
         compute_shader_derivatives_features =
             feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
@@ -460,10 +481,12 @@ bool Instance::CreateDevice() {
         return false;
     }
 
-    static constexpr std::array queue_priorities = {1.0f};
+    static constexpr std::array queue_priorities = {1.0f, 1.0f};
+    const u32 queue_count = low_latency2 && family_properties[queue_family_index].queueCount > 1
+                                ? 2u : 1u;
     const vk::DeviceQueueCreateInfo queue_info = {
         .queueFamilyIndex = queue_family_index,
-        .queueCount = static_cast<u32>(queue_priorities.size()),
+        .queueCount = queue_count,
         .pQueuePriorities = queue_priorities.data(),
     };
 
@@ -666,6 +689,9 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE{
             .shaderMixedFloatDotProductFloat16AccFloat32 = true,
         },
+        vk::PhysicalDevicePresentIdFeaturesKHR{
+            .presentId = present_id,
+        },
     };
 
     if (!custom_border_color) {
@@ -726,6 +752,9 @@ bool Instance::CreateDevice() {
     if (!mixed_float_dot_product) {
         device_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
     }
+    if (!present_id) {
+        device_chain.unlink<vk::PhysicalDevicePresentIdFeaturesKHR>();
+    }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
     if (device_result != vk::Result::eSuccess) {
@@ -736,12 +765,39 @@ bool Instance::CreateDevice() {
     device = std::move(dev);
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
+    if (low_latency2) {
+        set_latency_sleep_mode = reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(*device, "vkSetLatencySleepModeNV"));
+        set_latency_marker = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(*device, "vkSetLatencyMarkerNV"));
+        latency_sleep = reinterpret_cast<PFN_vkLatencySleepNV>(
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(*device, "vkLatencySleepNV"));
+        get_latency_timings = reinterpret_cast<PFN_vkGetLatencyTimingsNV>(
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(*device, "vkGetLatencyTimingsNV"));
+        queue_notify_out_of_band = reinterpret_cast<PFN_vkQueueNotifyOutOfBandNV>(
+            VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(*device, "vkQueueNotifyOutOfBandNV"));
+        if (!set_latency_sleep_mode || !set_latency_marker || !latency_sleep ||
+            !get_latency_timings || !queue_notify_out_of_band) {
+            low_latency2 = false;
+            std::puts("GPU: VK_NV_low_latency2 enabled but its commands are missing");
+        } else {
+            std::puts("GPU: Reflex low-latency mode available (VK_NV_low_latency2)");
+        }
+    }
     if (Dlss* dlss = Dlss::Get()) {
         dlss->Initialize(*instance, physical_device, *device);
     }
 
     graphics_queue = device->getQueue(queue_family_index, 0);
-    present_queue = device->getQueue(queue_family_index, 0);
+    present_queue = device->getQueue(queue_family_index, queue_count - 1);
+    if (low_latency2 && present_queue != graphics_queue) {
+        const VkOutOfBandQueueTypeInfoNV type{
+            .sType = VK_STRUCTURE_TYPE_OUT_OF_BAND_QUEUE_TYPE_INFO_NV,
+            .queueType = VK_OUT_OF_BAND_QUEUE_TYPE_PRESENT_NV,
+        };
+        queue_notify_out_of_band(VkQueue(present_queue), &type);
+        std::puts("Reflex: separate presentation queue");
+    }
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =

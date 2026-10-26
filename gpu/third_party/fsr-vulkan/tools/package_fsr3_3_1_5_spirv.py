@@ -28,6 +28,8 @@ MODULES = (
     "fsr3_3_1_5_autogen_reactive.spv",
 )
 
+MODULES += tuple(name.replace(".spv", "_inverted.spv") for name in MODULES)
+
 
 def identifier(filename: str) -> str:
     return filename.removesuffix(".spv").upper()
@@ -80,7 +82,7 @@ def main() -> int:
         lines.append(f'    {{"{filename}", {symbol}, sizeof({symbol}) / sizeof({symbol}[0])}},')
     lines.extend((
         "};",
-        "#define FFX_VK_FSR3_3_1_5_EMBEDDED_SPIRV_COUNT 11u",
+        f"#define FFX_VK_FSR3_3_1_5_EMBEDDED_SPIRV_COUNT {len(MODULES)}u",
         "#endif",
         "",
     ))

@@ -101,6 +101,7 @@ extern "C" short __stdcall GetAsyncKeyState(int key);
 
 bool DumpWindow() {
     static const char* env = BB_DIAGNOSTIC_ENV("BB_FG_DUMP");
+    static const char* trigger = BB_DIAGNOSTIC_ENV("BB_FG_DUMP_TRIGGER");
     static u32 left = 0;
     static bool down = false;
     if (!env) {
@@ -111,7 +112,7 @@ bool DumpWindow() {
 #else
     const bool now = false; // BB_FG_DUMP's F11 trigger is Windows-only
 #endif
-    if (now && !down) {
+    if ((now && !down) || (trigger && std::remove(trigger) == 0)) {
         left = 3;
     }
     down = now;
@@ -211,7 +212,7 @@ void FgProfiler::Print() {
     window = now;
     std::printf("FG GPU profile, %s: %llu frames\n", name,
                 static_cast<unsigned long long>(frames));
-    for (u64 key = 1; key <= 7; ++key) {
+    for (u64 key = 1; key <= FgProfileNeural; ++key) {
         if (const auto it = totals.find(key); it != totals.end()) {
             std::printf("  %7.3f ms/frame %6.1f/frame  %s\n", it->second.ms / frames,
                         double(it->second.segments) / frames, labels[key].c_str());
@@ -1181,8 +1182,12 @@ u32 FrameGenerator::GenerateFsr3(vk::CommandBuffer cmdbuf, vk::Image color,
         .frameId = id,
         .reset = reset ? VK_TRUE : VK_FALSE,
     };
-    if (ffxVkFsr3_3_1_6FrameGenerationContextRecordPrepare(fsr3, &prepare) !=
-        FFX_VK_FSR3_3_1_6_FRAMEGEN_OK) {
+    const auto prepare_result = ffxVkFsr3_3_1_6FrameGenerationContextRecordPrepare(fsr3, &prepare);
+    if (prepare_result != FFX_VK_FSR3_3_1_6_FRAMEGEN_OK) {
+        std::printf("Frame generation: FSR prepare result %d, frame %llu, pending %zu, "
+                    "near %.6f far %.6f fov %.6f jitter %.6f %.6f\n", int(prepare_result), id,
+                    fsr3_pending.size(), prepare.cameraNear, prepare.cameraFar,
+                    prepare.cameraVerticalFovRadians, prepare.jitterOffsetX, prepare.jitterOffsetY);
         fsr3_pending.push_back({id, scheduler.CurrentTick()});
         Fail(BbSettings::FrameGenFsr3, "FSR 3.1 frame generation (prepare) failed");
         return 0;
@@ -1225,7 +1230,8 @@ u32 FrameGenerator::GenerateDlss(vk::CommandBuffer cmdbuf, vk::Image color,
         Fail(BbSettings::FrameGenDlss, "DLSS Frame Generation is unavailable");
         return 0;
     }
-    const Dlss::FrameGenDesc desc{width, height, ColorFormat, active->input_width, active->input_height};
+    const Dlss::FrameGenDesc desc{width, height, ColorFormat, active->input_width, active->input_height,
+                                 u32(BbSettings::Get().frame_gen_preset.load())};
     if (!dlss->HasFrameGen(desc)) {
         // The previous feature may still be used by submitted work; `cmdbuf` stays open.
         scheduler.WaitSubmitted();
