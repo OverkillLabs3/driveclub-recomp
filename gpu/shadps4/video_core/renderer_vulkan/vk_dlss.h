@@ -69,6 +69,9 @@ public:
     bool CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc);
     bool Evaluate(vk::CommandBuffer command, const Frame& frame);
     void ReleaseFeature();
+    /// The feature (0 or 1) the calls above act on: VR keeps one per eye, each with its own history. False when the
+    /// bridge has only one (ABI below 3): slot 0 then.
+    bool SelectFeature(u32 slot);
 
     // DLSS Frame Generation (nvngx_dlssg.dll, GeForce RTX 40 and newer).
 

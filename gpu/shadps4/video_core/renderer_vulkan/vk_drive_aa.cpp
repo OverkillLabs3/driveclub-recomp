@@ -18,6 +18,7 @@
 #include "video_core/host_shaders/drive_aa_copy_comp.h"
 #include "video_core/host_shaders/drive_aa_sharpen_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "bbport_vr.h"
 #include "bbport_neural_settings.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -588,6 +589,25 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     // (WriteInvalid) when leaving a race, where the sizes change.
     const Dlss::FeatureDesc dlss_desc{w, h, ow, oh, upscale ? Dlss::QualityForScale(factor) : 0, true, true,
                                       u32(BbSettings::Get().dlss_model.load())};
+    // VR with alternate frames: each eye its own DLSS feature (its own history) and motion back to its own last frame.
+    const int vr_eye = dlss ? BbVr::DrawnEye() : -1;
+    const bool per_eye = vr_eye >= 0 && dlss->SelectFeature(u32(vr_eye));
+    if (dlss && !per_eye) {
+        dlss->SelectFeature(0);
+    }
+    const u32 slot = per_eye ? u32(vr_eye) : 0;
+    camera_motion.SetEye(per_eye ? vr_eye : -1);
+    if (per_eye != last_per_eye) {
+        last_per_eye = per_eye;
+        slot_reset[0] = slot_reset[1] = true; // into or out of the cockpit: the histories start again
+        std::printf("Anti-aliasing: %s\n", per_eye ? "DLSS per eye (VR)" : "DLSS for one picture");
+    }
+    if (reset) {
+        slot_reset[0] = slot_reset[1] = true;
+    }
+    if (per_eye && !camera_motion.EyeHistoryValid()) {
+        slot_reset[slot] = true; // no last frame of this eye yet
+    }
     const bool new_feature = dlss && !dlss->HasFeature(dlss_desc);
     if (new_feature) {
         scheduler.Finish();
@@ -735,7 +755,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                             vk::ImageAspectFlagBits::eColor, ow, oh},
                  .jitter_x = frame_jitter[0],
                  .jitter_y = frame_jitter[1],
-                 .reset = reset,
+                 .reset = reset || slot_reset[slot],
                  .frame_ms = frame_ms,
                  .sharpness = sharpness});
         }
@@ -746,6 +766,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             return;
         }
         dispatched = true;
+        slot_reset[slot] = false;
     } else {
         FfxVkPortableUpscaleDispatchInfo info{};
         info.structSize = sizeof(info);

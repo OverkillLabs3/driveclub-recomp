@@ -29,7 +29,7 @@ public:
     CameraMotion(const Instance& instance, Scheduler& scheduler,
                  VideoCore::TextureCache& texture_cache, Runtime& runtime);
     ~CameraMotion();
-    void InvalidateHistory() { current.valid = previous.valid = false; }
+    void InvalidateHistory() { current.valid = previous.valid = eye_camera[0].valid = eye_camera[1].valid = false; }
     /// Advance object history after the current frame's motion image has been consumed.
     void AdvanceObjectMotionFrame();
     void SetObjectMotion(ObjectMotion* motion) noexcept {
@@ -41,6 +41,15 @@ public:
     vk::ImageView PrepareObjectMotion(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                       bool& valid);
 
+    /// VR with alternate frames: the eye this frame is drawn for (-1: none). Its motion then goes back to the same
+    /// eye's last frame, two frames ago, not to the other eye's.
+    void SetEye(int value) noexcept {
+        eye = value;
+    }
+    /// The eye's last camera is known (RecordMotion used it).
+    [[nodiscard]] bool EyeHistoryValid() const noexcept {
+        return eye >= 0 && eye < 2 && eye_camera[eye].valid;
+    }
     void SetJitter(std::array<float, 2> value) noexcept {
         previous_jitter = jitter;
         jitter = value;
@@ -105,6 +114,10 @@ private:
 
     ObjectMotion* object_motion = nullptr;
     Camera current, previous;
+    /// VR with alternate frames (SetEye): each eye's last camera and jitter, the previous camera of its next frame.
+    int eye = -1;
+    Camera eye_camera[2];
+    std::array<float, 2> eye_jitter[2]{};
     bool frame_has_camera = false;
     std::array<float, 2> jitter{}, previous_jitter{};
     std::array<u32, 2> render_size{};

@@ -61,6 +61,9 @@ public:
 
     /// The display pass: the next frame's jitter.
     void NextFrame();
+    // VR: DLSS per eye (each its own feature and history) last frame, and a history to start again per slot.
+    bool last_per_eye = false;
+    bool slot_reset[2]{true, true};
 
     /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
     /// scene depth and `output` the image it wrote.

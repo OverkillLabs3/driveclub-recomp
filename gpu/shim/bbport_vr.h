@@ -42,6 +42,9 @@ void NoteCameraConstants(const float* data);
 /// TRANSFER_SRC_OPTIMAL: it is copied out and cleared to transparent black, and stays in TRANSFER_SRC_OPTIMAL. The
 /// pipeline cache makes the alpha of blended draws into the display buffer their coverage while HudLayer().
 bool HudLayer();
+/// The eye the frame being drawn is for (alternate frames, its camera found in the G-buffer pass), or -1: for DLSS
+/// per eye.
+int DrawnEye();
 bool SceneOverlay(uint64_t vs_hash);
 bool SceneDrawn();
 /// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.

@@ -1551,6 +1551,14 @@ bool SceneOverlay(uint64_t vs_hash) {
     return vs_hash == 0x44606ffd || vs_hash == 0xdc8e480a;
 }
 
+int DrawnEye() {
+    if (!Active() || !settings.afr || reproject_mode.load() == 2) {
+        return -1;
+    }
+    std::scoped_lock lock{camera_mutex};
+    return camera_now.found ? camera_now.eye : -1;
+}
+
 bool SceneDrawn() {
     return scene_drawn.load(std::memory_order_relaxed);
 }
