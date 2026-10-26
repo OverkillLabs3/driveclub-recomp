@@ -135,6 +135,7 @@ private:
     int applied_mode = -1;
     u32 frame_id = 0;
     u32 jitter_index = 0;
+    u32 vr_frames = 0; ///< VR with alternate frames: counts the frames, two in a row share a jitter
     std::array<float, 2> jitter{};
     std::chrono::steady_clock::time_point last_frame{};
 

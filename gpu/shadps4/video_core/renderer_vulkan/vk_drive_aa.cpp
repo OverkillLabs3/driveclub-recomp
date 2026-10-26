@@ -227,7 +227,13 @@ void DriveAA::NextFrame() {
     // The upscaled picture stands in for the game's during the one draw that scales it to the
     // output (OnComposite runs after this, for that draw).
     redirect_valid = false;
-    jitter_index = jitter_index % phases + 1;
+    // VR with alternate frames: each eye draws every other frame, and every other Halton point stays in one half of
+    // the pixel (base 2: the odd ones all from 0.5 on), so each eye's DLSS saw half a pixel across and blurred the
+    // rest. Two frames in a row share a point: each eye goes through the whole sequence.
+    const bool vr_pairs = BbVr::DrawnEye() >= 0;
+    if (!vr_pairs || (vr_frames++ & 1) == 0) {
+        jitter_index = jitter_index % phases + 1;
+    }
     jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
     // The game's lighting and shadows rebuild positions from depth with the unshifted camera (it
     // does not jitter its own), so a shift of the geometry moves every lookup by as much: shadows
