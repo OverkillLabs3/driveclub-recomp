@@ -679,6 +679,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         motion.Record(cmdbuf, depth_view, depth_view, *motion_view, w, h, w, h, false,
                       object_view, object_view ? color_view : vk::ImageView{});
     }
+    motion.EndFrame(); // this frame's move and projection are the next one's history
     barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
             vk::AccessFlagBits2::eShaderRead);

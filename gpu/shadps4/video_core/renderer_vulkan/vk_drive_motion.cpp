@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -141,22 +142,24 @@ void DriveMotion::OnTaaConstants(u32 slot, const float* data, u32 dwords) {
     // Slot 0, dwords 16..31: the relative camera move current view -> previous view followed by
     // the projection (the anti-aliasing pass reprojects with it). Slot 1, dwords 48..63: the
     // projection itself (row vectors, reversed Z, infinite far plane).
-    // A new frame's values push the last ones back (two_back); repeats of the same values within a frame do not.
     if (slot == 0 && dwords >= 32) {
-        if (std::memcmp(relative.data(), data + 16, sizeof(relative)) != 0) {
-            previous_relative = relative;
-            have_previous = got_slot0 || have_previous;
-        }
         std::memcpy(relative.data(), data + 16, sizeof(relative));
         got_slot0 = true;
     } else if (slot == 1 && dwords >= 64) {
-        if (std::memcmp(projection.data(), data + 48, sizeof(projection)) != 0) {
-            projection_two_back = previous_projection;
-            previous_projection = projection;
-        }
         std::memcpy(projection.data(), data + 48, sizeof(projection));
         got_slot1 = true;
     }
+}
+
+void DriveMotion::EndFrame() noexcept {
+    // the same values again (no new frame of the game's): nothing moves back
+    if (frames_kept > 0 && relative == previous_relative && projection == previous_projection) {
+        return;
+    }
+    projection_two_back = previous_projection;
+    previous_projection = projection;
+    previous_relative = relative;
+    frames_kept = std::min(frames_kept + 1, 3);
 }
 
 namespace {
@@ -173,14 +176,15 @@ float RigidError(const Mat& m) {
 }
 } // namespace
 
-bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
+bool DriveMotion::ClipToPrevious(std::array<float, 16>& out, bool chain) const {
     Mat inverse{};
     if (!Invert(projection, inverse)) {
         out = Identity;
         return false;
     }
     out = Multiply(inverse, relative);
-    if (!two_back || !have_previous) {
+    // the last frame and the one before (EndFrame of this frame not run yet)
+    if (!chain || frames_kept < 2) {
         return true;
     }
     // The move is view -> previous view, followed by a projection: the previous frame's or this one's (they differ
@@ -211,7 +215,7 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          u32 src_height, bool normalized, vk::ImageView object_view,
                          vk::ImageView color_view) {
     Push push{};
-    ClipToPrevious(push.clip_to_prev_clip);
+    ClipToPrevious(push.clip_to_prev_clip, two_back);
     push.size = {float(width), float(height)};
     push.src_size = {float(src_width), float(src_height)};
     // DLSS Frame Generation takes screen fractions (its scale is 1); FSR takes pixels.
@@ -264,7 +268,7 @@ void DriveMotion::ClipTransforms(std::array<float, 16>& view_to_clip,
                                  std::array<float, 16>& clip_to_prev_clip,
                                  std::array<float, 16>& prev_clip_to_clip) const {
     view_to_clip = projection;
-    ClipToPrevious(clip_to_prev_clip);
+    ClipToPrevious(clip_to_prev_clip, false); // the frame generator: one frame back
     Mat inverse{};
     prev_clip_to_clip = Invert(clip_to_prev_clip, inverse) ? inverse : Identity;
 }

@@ -42,8 +42,11 @@ public:
     }
     /// The chained move is known (two frames of the game's constants).
     [[nodiscard]] bool TwoBackReady() const noexcept {
-        return have_previous;
+        return frames_kept >= 2;
     }
+    /// The frame's motion is recorded: its move and projection become the last frame's (two_back). Once per frame:
+    /// other passes write projections to slot 1 as well, only the last one before the anti-aliasing is the frame's.
+    void EndFrame() noexcept;
 
     /// Row-vector clip space matrices for the frame generator.
     void ClipTransforms(std::array<float, 16>& view_to_clip,
@@ -53,11 +56,13 @@ public:
     [[nodiscard]] float VerticalFov() const noexcept;
 
 private:
-    bool ClipToPrevious(std::array<float, 16>& out) const;
+    /// chain: two frames back (two_back), the motion pass of DriveAA only.
+    bool ClipToPrevious(std::array<float, 16>& out, bool chain) const;
     std::array<float, 16> relative{}, projection{};
     // The last frame's move and the projections of the last two frames (two_back).
     std::array<float, 16> previous_relative{}, previous_projection{}, projection_two_back{};
-    bool have_previous = false, two_back = false;
+    int frames_kept = 0;
+    bool two_back = false;
     bool got_slot0 = false, got_slot1 = false;
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pipeline_layout;
