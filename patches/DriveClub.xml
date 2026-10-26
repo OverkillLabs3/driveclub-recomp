@@ -423,6 +423,48 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
+              Name="VR eye 1856x1984, full HUD [1856x1984] Internal + Output resolution"
+              Note="1856x1984 internal render and output resolution for VR (the Quest 2 panel, light), with the game's 16:9 aspect kept: the HUD and the menus whole"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b54c1b" Value="40070000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="c0070000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="40070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="c0070000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR eye 3200x3440, full HUD [3200x3440] Internal + Output resolution"
+              Note="3200x3440 internal render and output resolution for VR (Quest 3, Pimax and other sharp headsets), with the game's 16:9 aspect kept: the HUD and the menus whole"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b54c1b" Value="800c0000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="700d0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="800c0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="700d0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="VR eye 3584x3840, full HUD [3584x3840] Internal + Output resolution"
+              Note="3584x3840 internal render and output resolution for VR (Pimax and other very sharp headsets), with the game's 16:9 aspect kept: the HUD and the menus whole"
+              Author="After Kravickas' widescreen patches"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b54c1b" Value="000e0000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="000f0000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="000e0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="000f0000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
               Name="2160p 32:9 [7680x2160] Internal + Output resolution [DEPTH BUG]"
               Note="7680x2160 internal render and output resolution - 16 588 800 pixels (8.00x 1080p) - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
               Author="Kravickas"

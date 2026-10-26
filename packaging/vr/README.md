@@ -15,11 +15,11 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
    or MSYS2's `mingw-w64-clang-x86_64-openxr-sdk` (`libopenxr_loader.dll`, renamed).
 2. **Launcher:**
    - *Graphics* → *VR headset (experimental)*: **VR headset** on;
-   - *Graphics* → *VR headset* → *Headset picture* → **Ultra** (2688x2880) or **High** (2496x2688): the picture in
-     the shape of a headset eye (Virtual Desktop's Ultra and High sizes). **Ultra + HUD** / **High + HUD** (the
-     ones to use): the same sizes with the game's 16:9 aspect kept, so the menus and the HUD are whole. Plain Ultra
-     and High cut the sides of the menus and the HUD. Leave *Output*, *Render resolution* and *Widescreen* on
-     Default and Off;
+   - *Graphics* → *VR headset* → *Headset picture (pixels per eye)*: the size the game draws each eye at, in the shape
+     of a headset eye (the menus and the HUD keep their 16:9 shape). 1856x1984: the Quest 2 panel, light;
+     **2496x2688** and 2688x2880: Virtual Desktop's High and Ultra on a Quest 2; 3200x3440 and 3584x3840: Quest 3,
+     Pimax and other sharp headsets. Pick about what your streaming app sends: more only costs frames. Leave
+     *Output*, *Render resolution* and *Widescreen* on Default and Off;
    - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate;
    - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
      launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the
@@ -36,7 +36,7 @@ What the test PC (RTX 4070 Ti Super) plays with:
 - *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap **72** to start with (the headset's refresh rate: 72 Hz in
   Virtual Desktop; go up to 80 or 90 with the headset when the game holds it). Output and Render resolution
   **Default**, Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game**, anisotropic filtering
-  Automatic, HDR off. *VR headset*: on, Headset picture **High + HUD** (Ultra + HUD for a faster PC).
+  Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
 - *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on. **Motion blur off**:
   the alternate frames come from eyes 6.3 cm apart, which the game's blur takes for motion.
 - *Gameplay*: Mirror and reflection updates **Static (faster)**; Patches: **Disable motion blur and depth of field**

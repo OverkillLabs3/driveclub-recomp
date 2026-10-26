@@ -1034,15 +1034,18 @@ void BuildModel() {
                         L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
                         L"head, in stereo. Needs openxr_loader.dll next to the game; see packaging/vr/README.md.",
                         "@vr", false);
-  g_vrsize = seg(L"Headset picture",
-                 L"The size the game draws at, in the shape of a headset eye (Quest 2 at Virtual Desktop's Ultra or "
-                 L"High). \"+ HUD\": the game keeps its 16:9 shape for the menus and the HUD, so they are whole. "
-                 L"It sets the render and output size itself: leave those and Widescreen on Default and Off.",
-                 {L"Off", L"Ultra", L"High", L"Ultra + HUD", L"High + HUD"},
-                 {"", "VR eye Ultra [2688x2880] Internal + Output resolution",
-                  "VR eye High [2496x2688] Internal + Output resolution",
+  g_vrsize = seg(L"Headset picture (pixels per eye)",
+                 L"The size the game draws each eye at, in the shape of a headset eye; the menus and the HUD keep "
+                 L"their 16:9 shape. 1856x1984: the Quest 2 panel, light. 2496x2688 and 2688x2880: Virtual Desktop's "
+                 L"High and Ultra on a Quest 2. 3200x3440 and 3584x3840: Quest 3, Pimax and other sharp headsets, for a "
+                 L"strong graphics card. Pick about what your streaming app sends: more only costs frames. It sets the "
+                 L"render and output size itself: leave those and Widescreen on Default and Off.",
+                 {L"Off", L"1856x1984", L"2496x2688", L"2688x2880", L"3200x3440", L"3584x3840"},
+                 {"", "VR eye 1856x1984, full HUD [1856x1984] Internal + Output resolution",
+                  "VR eye High, full HUD [2496x2688] Internal + Output resolution",
                   "VR eye Ultra, full HUD [2688x2880] Internal + Output resolution",
-                  "VR eye High, full HUD [2496x2688] Internal + Output resolution"},
+                  "VR eye 3200x3440, full HUD [3200x3440] Internal + Output resolution",
+                  "VR eye 3584x3840, full HUD [3584x3840] Internal + Output resolution"},
                  0);
   const int twothread = toggle(L"Two-thread rendering",
                                L"Records each frame's draw commands on a second thread, so the thread that runs the game's "
@@ -1484,7 +1487,8 @@ int RenderMemoryTier() {
   const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
   if (w == 6) return 3;  // 5120x2160 is 11 megapixels
-  if (w > 0 || r >= 3 || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0)) return 2;  // the headset sizes: 6.7-7.7 megapixels
+  if (g_vrsize >= 0 && g_c[g_vrsize].sel >= 4) return 3;  // the big headset sizes: 11 and 13.8 megapixels
+  if (w > 0 || r >= 3 || (g_vrsize >= 0 && g_c[g_vrsize].sel > 0)) return 2;  // the headset sizes: 3.7-7.7 megapixels
   return r == 2 ? 1 : 0;
 }
 
