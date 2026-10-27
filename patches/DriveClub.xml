@@ -548,17 +548,15 @@
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
-              Name="Disable collision slowdown penalties"
-              Note="Skips the extra wall-impact slowdown and car-contact penalty timer. Physical collisions and corner-cut penalties remain."
-              Author="Local PC patch" PatchVer="1.0"
+              Name="One-second collision penalties"
+              Note="Native collision slowing and signals, limited to one second after the latest trigger. Corner-cut penalties and contact friction remain native."
+              Author="Local PC patch" PatchVer="2.0"
               AppVer="01.28" AppElf="eboot.bin">
         <PatchList>
-            <!-- Guest +0x644a20: wall-impact slowdown request. Guard the complete setter. -->
-            <Line Type="bytes" Address="0x00A44A20"
-                  OriginalHash="bc4c7982c1f519df" Value="c3470c01c5fa114710c3" />
-            <!-- Guest +0x644a70: car-contact penalty, separate from corner cuts at +0x644a30. -->
-            <Line Type="bytes" Address="0x00A44A70"
-                  OriginalHash="a2f58dd76552a529" Value="c3e057dbc5f82e5f2c722ac5ea5915c9b5c900c5f82ed1731cc5f82e05bfb5c9007612c747240000803fc7472800004040c6473f01c3" />
+            <Line Type="bytes" Address="0x00A44A20" OriginalHash="bc4c7982c1f519df" Value="c6470c01c5fa114710c3" />
+            <Line Type="bytes" Address="0x00A44A30" OriginalHash="c0452ed60f0a80fc" Value="c5e057dbc5f82e5f2c722ac5ea591501b6c900c5f82ed1731cc5f82e05f7b5c9007612c7471c0000803fc747200000803fc6473d01c3" />
+            <Line Type="bytes" Address="0x00A44A70" OriginalHash="a2f58dd76552a529" Value="c5e057dbc5f82e5f2c722ac5ea5915c9b5c900c5f82ed1731cc5f82e05bfb5c9007612c747240000803fc747280000803fc6473f01c3" />
+            <Line Type="bytes" Address="0x00A446A6" OriginalHash="6de6a36112c805de" Value="c743180000803f90909090909090909090909090" />
         </PatchList>
     </Metadata>
 </Patch>

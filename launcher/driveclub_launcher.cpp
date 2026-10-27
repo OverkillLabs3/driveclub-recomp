@@ -996,9 +996,9 @@ void BuildModel() {
   const int reset = toggle(L"No reset-to-track timer", L"Disables the reset to track timer.", "Reset Disable", false);
   const int barrier = toggle(L"Disable track barriers", L"Removes the invisible barriers at the track edges.",
                              "Barrier Disable", false);
-  const int collision_penalty = toggle(L"Disable collision slowdown penalties",
-      L"Optional relaxed driving: removes the extra slowdown after wall impacts and car contacts. Physical impacts, scoring and corner-cut penalties remain. Off by default. Restart the game after changing this option.",
-      "Disable collision slowdown penalties", false);
+  const int collision_penalty = toggle(L"One-second collision penalties",
+      L"Shortens native collision slowing to one second after the latest trigger. Collision signals and corner-cut penalties remain. Off by default. Restart the game after changing this option.",
+      "One-second collision penalties", false);
   const int pcol = toggle(L"Photo mode: free camera through cars",
                           L"Disables car collision with the free camera, so you can look inside any car.",
                           "Disable Photomode Free Camera Collision", false);

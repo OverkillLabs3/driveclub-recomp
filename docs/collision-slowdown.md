@@ -1,47 +1,44 @@
-# Optional collision slowdown removal
+# Optional one-second collision penalties
 
-The Gameplay → Patches option **Disable collision slowdown penalties** is off by default. It skips the additional wall-impact slowdown request and the car-contact penalty timer in DriveClub 1.28. The existing corner-cut penalty path and the physical collision engine are left in place. No game dump files are changed.
+The Windows launcher option **One-second collision penalties** under Gameplay → Patches is **off by default**. Enabling it keeps the native collision response while shortening the additional speed/acceleration penalty to one second after the latest trigger. Repeated contacts can restart that second. This is a duration change, not a one-second input delay.
 
-## Player choice and reverting
+Close the game, enable the option and launch again. To restore the original policy, close the game, uncheck it and relaunch. The former **Disable collision slowdown penalties** selection no longer applies: enable the renamed option explicitly if upgrading from that proposal.
 
-This is an optional preference for players who enjoy more relaxed driving and find the additional contact slowdown frustrating. It does not change the intended default balance: leaving the checkbox unchecked keeps the original behavior.
-
-1. Close the running game and open the Windows launcher (`DriveClub.exe`).
-2. Open **Gameplay → Patches** and check **Disable collision slowdown penalties**.
-3. Press **Play** to apply it to the next game process.
-
-To restore the original behavior, close the game, uncheck the same option, and launch again. This is a launcher option, not a new switch in the PS4 game's own settings menu. It does not take effect midway through an existing race.
-
-Cars still physically hit walls, trackside objects and other cars, and can lose speed from the impact itself. This option removes the extra gameplay slowdown, not collision physics. Fame deductions, scoring rules and some collision notifications may still occur. Corner-cut penalties remain enabled. It is not a blanket removal of every penalty.
+Physical impacts, native initial wall-impact slowing, collision event dispatch, scoring paths and contact friction remain. Corner-cut penalties are unchanged. Preserving the event producer does not guarantee a message or points deduction on every contact: the native game decides those outcomes.
 
 ## Patch boundaries
 
-The launcher uses the existing community-patch compiler. Each line contains the full original setter's FNV-1a hash; a mismatch at either site rejects the whole option. Addresses in the XML include the patch format's `0x400000` base.
+The existing community-patch compiler checks all four OriginalHash guards against the player's original DriveClub 1.28 ELF. If any guard differs, the entire option is rejected. No game archive is modified. XML addresses include the format's 0x400000 base.
 
-| Guest offset | Purpose | Guarded span |
+| Guest offset | Guarded span | Enabled behavior |
 | --- | --- | --- |
-| `+0x644a20` | Arms the extra wall-impact slowdown flag at component `+0x0c` and stores its input at `+0x10` | 10 bytes |
-| `+0x644a70` | Starts the car-contact penalty at component `+0x24/+0x28`, with a three-second timer and `+0x3f` notification flag | 54 bytes |
+| +0x644a20 | 10 bytes | Original wall-request setter, including its event/physical request, retained |
+| +0x644a30 | 54 bytes | World-contact setter retained; timer at component +0x20 becomes 1 s |
+| +0x644a70 | 54 bytes | Car-contact setter retained; timer at component +0x28 becomes 1 s |
+| +0x6446a6 | 20 bytes | Wall tail at component +0x18 becomes 1 s after the native initial impact calculation |
 
-Both patch values preserve every original byte except the function-entry byte, which becomes `ret`. This is a void setter in each case. The independent corner-cut setter at `+0x644a30` is not patched, nor is the wall/contact event dispatch or the Havok collision response. Existing scoring rules and penalties for cutting corners are outside this option's scope.
+The wall setter write is intentionally identical to the original instructions: it explicitly restores and guards the native entry used in the validated variant. Neither setter returns early. The world/car writes change only their timer immediate. The wall-tail assignment replaces the native variable duration, which can reach several seconds, without changing the preceding impact calculation or subsequent update logic.
 
-The wall setter is reached through `+0x640ba0` from the contact-event handler at `+0x4c17a0`. The car-contact setter is reached through `+0x640c00` from both car branches in `+0x4c19f0`. The corner-cut setter is reached through `+0x640bd0` from the off-road processing at `+0xc4b687`.
+Correction to the earlier proposal's documentation: +0x644a30 is the world-contact setter, not CornerCut. The separate CornerCut setter is +0x644ad0 and its timers at +0x30/+0x34 are unchanged.
 
 ## Verification
 
-Build the isolated test with MSYS2 CLANG64 from the repository root:
+Using MSYS2 CLANG64 from the repository root:
 
 ```sh
+mkdir -p out
 clang++ -O2 -std=c++20 -static -o out/collision_penalty_test.exe tools/collision_penalty_test.cpp
-out/collision_penalty_test.exe '/path/to/your/1.28/eboot.elf' patches/DriveClub.xml
+clang -O2 -std=c11 -static -o out/collision_response_test.exe tools/collision_response_test.c
+out/collision_penalty_test.exe '/path/to/your/1.28/eboot.elf' patches/DriveClub.xml out/collision-only.bin
+out/collision_response_test.exe '/path/to/your/1.28/eboot.elf' out/collision-only.bin
 ```
 
-The test reads the original instructions from the player's own extracted ELF; no game image is included. It uses the actual XML parser and patch compiler, verifies off/on behavior and atomic rejection of a mismatch at either site, and executes only the three small isolated setters against private test memory. It checks the original wall request, the original three-second contact timer, the absence of both requests after patching, preservation of the corner-cut timer, and that only two image bytes differ. It never initializes SDL or any force-feedback device.
+The first test uses the actual launcher XML parser/compiler: four enabled writes, zero disabled writes and atomic rejection of a mismatch at each site. An optional pair of arguments, selection-file and validated-patches.bin, compares the complete compilation against a locally validated production patch. These private files are not distributed.
 
-Also build the launcher using the command in `packaging/package.sh`. In a game smoke test, use `BB_FFB_DRY=1` for unattended runs and confirm the option is present in the settings log and the two guarded writes are included in `data/prep/patches.bin`. A player should still confirm the driving feel after wall contact; the isolated test verifies the setters and patch boundaries, not every track or race mode.
+The second test executes the native setters, updater and collision event producer from the player's own ELF in private memory. It verifies initial wall/world/car slowing, expiration of speed scaling and acceleration restriction after one second, retained car/world events, and a CornerCut penalty continuing beyond one second. The updater/event producer signatures are checked before execution. Native physics wake/velocity backends are mocked, powf is bridged to the host, and the event consumer records output instead of executing the score or HUD backend. It starts no game, SDL or force-feedback device. It does not measure actual Fame totals or HUD rendering.
 
-## Separation from the FFB correction
+The launcher was compiled and the same four writes were compared byte-for-byte against the local player-validated variant. The hardware owner accepted the driving feel in a manual test. This is not exhaustive validation across tracks, cars or race modes.
 
-This change has no SDL or force-feedback code. It can be proposed independently of the T300 infinite-duration dependency fix. On the local PR210 installation, the corrected SDL DLL is retained while this option is enabled.
+## Scope
 
-Development and diagnosis used Codex AI assistance. The hardware owner performed manual driving tests. This is a preference proposal for maintainer review, not a claim that the original game balance is a bug.
+No SDL, FFB, intro pacing or friction changes are included. This remains independent of the T300 fixes in PR #235. Development used Codex AI assistance and hands-on driving tests by the hardware owner. No commercial ELF, save or diagnostic memory dump is distributed.
