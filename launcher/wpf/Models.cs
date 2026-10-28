@@ -20,6 +20,7 @@ public sealed class Setting : INotifyPropertyChanged
     public bool Hidden { get; set; }
     public bool Enabled { get; set; } = true;
     public List<string> Options { get; set; } = [];
+    public List<string> OptionReasons { get; set; } = [];
     private int selected;
     public int Selected { get => selected; set { if (selected == value) return; selected = value; Notify(); Notify(nameof(IsOn)); } }
     private string text = "";
@@ -45,6 +46,7 @@ public sealed class LauncherState
     public int ResetSubpage { get; set; } = -1;
     public List<Setting> Controls { get; set; } = [];
     public List<CardModel> Cards { get; set; } = [];
+    public JsonElement? Graphics { get; set; }
     public string UpdatePath { get; set; } = "";
     public string BasePath { get; set; } = "";
     public bool FoldersOk { get; set; }

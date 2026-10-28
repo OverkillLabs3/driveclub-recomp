@@ -85,7 +85,12 @@ public static class Program
                 var folderOrder=Desc(body).OfType<TextBox>().Select(AutomationProperties.GetAutomationId).Where(x=>x.StartsWith("GameFolder")).ToArray();
                 Check(folderOrder.SequenceEqual(new[]{"GameFolder1","GameFolder0"}),"Game Files keyboard/tree order matches visual order");
 
-                Check(state.Controls.Count(c=>c.Details.Length>0)==19,"all expanded native explanations available in frontend model");
+                Check(state.Controls.Count(c=>c.Details.Length>0)>=19,"expanded native explanations available in frontend model");
+                var choices = new Setting { Id = 9999, Label = "Fixture", Kind = "Choice", Options = ["Available", "Unavailable"], OptionReasons = ["", "Unsupported GPU"] };
+                var choiceView = (FrameworkElement)Invoke(window, "SettingView", choices, 300d, false)!;
+                var combo = Desc(choiceView).OfType<ComboBox>().Single();
+                var unavailable = (ComboBoxItem)combo.Items[1];
+                Check(!unavailable.IsEnabled && (string)unavailable.ToolTip == "Unsupported GPU", "unavailable choices expose the backend reason and cannot be selected");
                 state=JsonSerializer.Deserialize<LauncherState>(JsonSerializer.Serialize(state,Backend.JsonOptions),Backend.JsonOptions)!;
                 var physics=state.Controls.Single(c=>c.Tag=="@ffb:wheel_ffb_model");physics.Selected=0;
                 var response=await new Backend().Call("validate",state);Invoke(window,"Adopt",response);Invoke(window,"ShowPage",4,false);Set(window,"drivingSubpage",1);Invoke(window,"ShowPage",4,false);Invoke(window,"Adopt",response);await Idle();

@@ -573,7 +573,14 @@ public partial class MainWindow : Window
             }
             else
             {
-                var combo = new ComboBox { ItemsSource = setting.Options };
+                var combo = new ComboBox();
+                for (int i = 0; i < setting.Options.Count; i++)
+                {
+                    string reason = i < setting.OptionReasons.Count ? setting.OptionReasons[i] : "";
+                    var item = new ComboBoxItem { Content = setting.Options[i], IsEnabled = reason.Length == 0, ToolTip = reason.Length == 0 ? null : reason };
+                    ToolTipService.SetShowOnDisabled(item, true);
+                    combo.Items.Add(item);
+                }
                 combo.SetBinding(Selector.SelectedIndexProperty, new Binding(nameof(Setting.Selected)) { Source = setting, Mode = BindingMode.TwoWay }); field = combo;
             }
             Place(row, field, 0, fieldTop, width, 38);
