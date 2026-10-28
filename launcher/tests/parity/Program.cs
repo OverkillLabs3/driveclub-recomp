@@ -86,6 +86,22 @@ public static class Program
                 Check(folderOrder.SequenceEqual(new[]{"GameFolder1","GameFolder0"}),"Game Files keyboard/tree order matches visual order");
 
                 Check(state.Controls.Count(c=>c.Details.Length>0)==19,"all expanded native explanations available in frontend model");
+                var collision=state.Controls.Single(c=>c.Tag=="One-second collision penalties");
+                var collisionCard=state.Cards.Single(c=>c.Controls.Contains(collision.Id));
+                Check(collisionCard.Title=="GAMEPLAY PATCHES"&&collisionCard.Page==5,"collision option belongs to native Gameplay patches card");
+                Invoke(window,"ShowPage",5,false);await Idle();
+                Check(Desc(body).OfType<TextBlock>().Any(t=>t.Text==collision.Label&&t.IsVisible),"collision label renders on WPF Patches page");
+                CheckBox CollisionBox()=>Desc(body).OfType<CheckBox>().Single(c=>c.ToolTip?.ToString()==collision.Hint);
+                var box=CollisionBox();bool initialCollision=box.IsChecked==true;
+                box.IsChecked=!initialCollision;
+                for(int i=0;i<100&&ReferenceEquals(Field<LauncherState>(window,"state"),state);i++)await Task.Delay(50);
+                await Idle();
+                var changedCollision=Field<LauncherState>(window,"state");
+                Check(changedCollision.Controls.Single(c=>c.Tag==collision.Tag).IsOn==!initialCollision&&CollisionBox().IsChecked==!initialCollision,"WPF collision checkbox round-trips through native validation");
+                CollisionBox().IsChecked=initialCollision;
+                for(int i=0;i<100&&ReferenceEquals(Field<LauncherState>(window,"state"),changedCollision);i++)await Task.Delay(50);
+                await Idle();state=Field<LauncherState>(window,"state");
+                Check(state.Controls.Single(c=>c.Tag==collision.Tag).IsOn==initialCollision,"WPF checkbox can restore previous collision preference");
                 state=JsonSerializer.Deserialize<LauncherState>(JsonSerializer.Serialize(state,Backend.JsonOptions),Backend.JsonOptions)!;
                 var physics=state.Controls.Single(c=>c.Tag=="@ffb:wheel_ffb_model");physics.Selected=0;
                 var response=await new Backend().Call("validate",state);Invoke(window,"Adopt",response);Invoke(window,"ShowPage",4,false);Set(window,"drivingSubpage",1);Invoke(window,"ShowPage",4,false);Invoke(window,"Adopt",response);await Idle();
