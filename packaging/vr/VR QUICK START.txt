@@ -13,7 +13,9 @@ LAUNCHER (the test PC's settings)
               (2496x2688 for weaker PCs, 3200x3440 and up for Quest 3 / Pimax)
             Anti-aliasing: Game or DLSS (RTX). NEVER FSR in VR (it mixes the eyes)
   Detail    everything off / Game, Dynamic resolution OFF, Motion blur OFF
-  Gameplay  Mirror and reflection updates: Static (faster)
+  Gameplay  Mirror and reflection updates: Live
+              (Static only if the FPS is too low: ~10% faster, but frozen reflections and rain
+              on the glass, a bluish dashboard reflection on the windscreen)
             Patches: Disable motion blur and depth of field ON,
                      High-FPS camera workaround off
   Driving   Field of view: MUST BE 100% (VR sets the view itself)

@@ -43,8 +43,10 @@ What the test PC (RTX 4070 Ti Super) plays with:
   in a race. FSR does not work per eye (it mixes the eyes): do not use it with VR.
 - *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on. **Motion blur off**:
   the alternate frames come from eyes 6.3 cm apart, which the game's blur takes for motion.
-- *Gameplay*: Mirror and reflection updates **Static (faster)**; Patches: **Disable motion blur and depth of field**
-  on.
+- *Gameplay*: Mirror and reflection updates **Live**; Patches: **Disable motion blur and depth of field** on.
+  *Static (faster)* is only for when the FPS is too low: about 11% more FPS in a CPU-limited benchmark (125.7 → 139.3
+  on the test PC), but the reflections and the rain on the glass freeze, and the windscreen gets a frozen bluish
+  reflection of the dashboard that is very visible from the cockpit.
 
 ## Keys
 The number row, on every keyboard (the keypad works too, for those who have one):
