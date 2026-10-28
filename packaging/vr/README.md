@@ -33,10 +33,14 @@ shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) 
 ## Recommended settings
 What the test PC (RTX 4070 Ti Super) plays with:
 
-- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap **72** to start with (the headset's refresh rate: 72 Hz in
-  Virtual Desktop; go up to 80 or 90 with the headset when the game holds it). Output and Render resolution
-  **Default**, Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game**, anisotropic filtering
+- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap at the headset's refresh rate (72 to 120; the test PC holds
+  about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz). Output and Render resolution **Default**,
+  Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
   Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
+- *DLSS (experimental in VR)*: Anti-aliasing **DLSS (RTX)** with an *Upscaling* level works per eye (each eye its
+  own history and motion). It is smoother and cleaner than no anti-aliasing, but softer, with some ghosting (most of
+  all the windscreen's HUD reflection), and gives no frames where the CPU is the limit. Key 7 tries DLSS's models
+  in a race. FSR does not work per eye (it mixes the eyes): do not use it with VR.
 - *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on. **Motion blur off**:
   the alternate frames come from eyes 6.3 cm apart, which the game's blur takes for motion.
 - *Gameplay*: Mirror and reflection updates **Static (faster)**; Patches: **Disable motion blur and depth of field**
@@ -53,8 +57,11 @@ The number row, on every keyboard (the keypad works too, for those who have one)
 | 4 / 3 | 9 / 3 | Seat forward / back |
 | 8 | | Experimental: eyes from depth, off → 1 → 2 → off (see below) |
 | 9 | | Experimental: car turn compensation on / off (see below) |
+| 7 | | With DLSS: its model, auto → K → L → M → auto (see the log, `VR: DLSS model ...`) |
 
-The seat keys print the values to the log (`VR: seat_x = ...`); copy them into `vr.ini` to keep them. Other keys can
+The seat starts at the game's own eye point for each car. The seat keys keep what you set by themselves, in
+`data\user\vr_seat.ini` (with your saves, so it moves to a new install with `data\user`): set it once. Delete that
+file to go back to the game's seat. Other keys can
 be set in `vr.ini`: `key_recentre`, `key_up`, `key_down`, `key_left`, `key_right`, `key_forward`, `key_back`, each one
 character (a letter, a digit, `[`, `;` ...), `F1` to `F12`, or `pageup`, `pagedown`, `home`, `end`, `insert`,
 `delete`, `space`, `tab`.
@@ -68,9 +75,9 @@ afr = 1            # stereo by alternate frames; 0: one picture for both eyes (f
 ipd = 0.063        # metres between the eyes
 rigid = 1          # the camera fixed to the car body; 0: the game's head on springs (it sways in VR)
 seat_x = 0         # the eyes relative to the driver's eyes the game sets for each car, metres:
-                   # x left, y up, z forward
-seat_y = 0.07
-seat_z = 0
+                   # x left, y up, z forward (seat_y, seat_z); data\user\vr_seat.ini (the seat keys) wins
+runtime_fov = 1    # each eye drawn with the field of view and eye distance the runtime gives it; 0: cockpit_vfov
+dlss_model = auto  # with DLSS: auto, k, l or m (key 7 cycles it in a race)
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
@@ -107,7 +114,9 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
 ## Known limits
 - Alternate frames: each eye gets half the game's frame rate (about 40 in a race on the test PC), so the picture can
   shake a little, most of all near objects while turning.
-- The picture can look grainy: the eye-sized render has no anti-aliasing that works with alternate frames. The
-  game's own temporal AA mixes the two eyes; its FXAA pass (Detail tab) is the only one that helps.
-- No DLSS or FSR (they would have to run per eye), no frame generation.
+- Without DLSS the picture can look grainy: the game's own temporal AA mixes the two eyes, so its FXAA pass
+  (Detail tab) is the only other anti-aliasing that helps. DLSS per eye is experimental: softer, some ghosting, and
+  no FPS gain where the CPU is the limit (the test PC). No FSR, no frame generation.
+- The game's camera motion blur is off while VR is on (the eyes 6.3 cm apart look like motion to it).
+- A few HUD and picture glitches remain (the minimap moves with the head, some screens before and after a race).
 - Tested with one headset, runtime and graphics card.

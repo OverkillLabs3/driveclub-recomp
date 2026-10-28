@@ -24,8 +24,8 @@
 //   ipd = 0.063          the distance between the eyes, metres
 //   rigid = 1            the camera is fixed to the car body; 0: the game's simulated head (on springs) plus the headset
 //   seat_x, seat_y, seat_z  where the eyes sit relative to the game's head point, metres along the car's axes (x left,
-//                        y up, z forward); the seat keys move it 2 cm (with Ctrl 10 cm) while driving and the log
-//                        prints the values to keep here
+//                        y up, z forward; 0: the game's own); the seat keys move it 2 cm (with Ctrl 10 cm) while
+//                        driving and keep it in the user folder's vr_seat.ini, which wins over these
 //   key_recentre = 0, key_up = 2, key_down = 1, key_left = 5, key_right = 6, key_forward = 4, key_back = 3
 //                        the keys (one character, F1..F12, pageup, home, ...); the keypad works too (5, 8/2, 4/6,
 //                        9/3)
@@ -128,7 +128,7 @@ struct Settings {
     bool auto_recentre = true; // recentre on getting into the car (after 3 s or more out of the cockpit view)
     bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
-    float seat[3] = {0.0f, 0.07f, 0.0f}; // above the game's own head point (each car its own), which sits low
+    float seat[3] = {0.0f, 0.0f, 0.0f}; // from the game's own head point (each car its own); vr_seat.ini keeps the keys
     float smooth_hz = 0.5f, smooth_turn = 0.05f, smooth_move = 0.1f;
     float cockpit_vfov = 90.0f, screen_vfov = 40.0f, latency_ms = 33.0f;
     bool hud_layer = true;
@@ -219,7 +219,51 @@ std::wstring ExeDir() {
     std::wstring dir(exe, n);
     return dir.substr(0, dir.find_last_of(L"\\/") + 1);
 }
+
+// The seat the keys set: vr_seat.ini in the user folder (data\user, with the saves: it moves to a new install with
+// them), next to the game when there is none.
+std::wstring SeatPath() {
+    const wchar_t* user = _wgetenv(L"BB_GPU_USER_DIR");
+    return (user && *user ? std::wstring(user) + L"\\" : ExeDir()) + L"vr_seat.ini";
+}
 #endif
+
+void ReadSeat() {
+#ifdef _WIN32
+    FILE* f = _wfopen(SeatPath().c_str(), L"rb");
+    if (!f) {
+        return;
+    }
+    char line[128];
+    float value = 0;
+    while (std::fgets(line, sizeof line, f)) {
+        if (std::sscanf(line, " seat_x = %f", &value) == 1) settings.seat[0] = value;
+        else if (std::sscanf(line, " seat_y = %f", &value) == 1) settings.seat[1] = value;
+        else if (std::sscanf(line, " seat_z = %f", &value) == 1) settings.seat[2] = value;
+    }
+    std::fclose(f);
+    std::printf("VR: the seat from vr_seat.ini: x %.2f, y %.2f, z %.2f m\n", settings.seat[0], settings.seat[1],
+                settings.seat[2]);
+#endif
+}
+
+bool SaveSeat() {
+#ifdef _WIN32
+    FILE* f = _wfopen(SeatPath().c_str(), L"wb");
+    if (!f) {
+        return false;
+    }
+    std::fprintf(f,
+                 "# VR: where the eyes sit relative to the game's own head point, metres (x left, y up, z forward).\n"
+                 "# The seat keys write it; delete this file for the game's own seat.\n"
+                 "seat_x = %.2f\nseat_y = %.2f\nseat_z = %.2f\n",
+                 settings.seat[0], settings.seat[1], settings.seat[2]);
+    std::fclose(f);
+    return true;
+#else
+    return false;
+#endif
+}
 
 // A key name of vr.ini: one character (a letter, a digit, [ ] ; and so on), F1..F12 or a few names. 0: unknown.
 int KeyCode(const char* name) {
@@ -1415,8 +1459,9 @@ void ReadKeys() {
                 const int axis = k <= 2 ? 1 : k <= 4 ? 0 : 2;
                 const float size = (GetAsyncKeyState(VK_CONTROL) & 0x8000) ? 0.10f : 0.02f;
                 settings.seat[axis] += (k % 2 == 1) ? size : -size;
-                std::printf("VR: seat_x = %.2f, seat_y = %.2f, seat_z = %.2f (copy into vr.ini to keep)\n",
-                            settings.seat[0], settings.seat[1], settings.seat[2]);
+                std::printf("VR: seat_x = %.2f, seat_y = %.2f, seat_z = %.2f (%s)\n", settings.seat[0],
+                            settings.seat[1], settings.seat[2],
+                            SaveSeat() ? "kept in vr_seat.ini" : "vr_seat.ini could not be written");
             }
         }
         was[k] = down;
@@ -1452,6 +1497,7 @@ void AppendInstanceExtensions(std::vector<const char*>& extensions) {
         return;
     }
     ReadSettings();
+    ReadSeat();
     st.turn_on = settings.turn_comp > 0.0f;
     reproject_mode = settings.reproject;
     if (!Start() || !xr.GetVulkanInstanceExtensionsKHR) {
