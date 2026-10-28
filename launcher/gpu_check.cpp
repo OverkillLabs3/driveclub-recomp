@@ -263,6 +263,7 @@ std::wstring CheckAncientIgpuDriver();
 std::wstring CheckGpu() {
   capabilities = {};
   if (FileExists(ExeDir() + L"\\skip_gpu_check.txt") || GetEnvironmentVariableW(L"DRIVECLUB_SKIP_GPU_CHECK", nullptr, 0) > 0) {
+    capabilities = DisplayGraphicsCapabilities();
     return L"";
   }
   wchar_t temp[MAX_PATH];
@@ -333,6 +334,24 @@ std::wstring CheckGpu() {
 }
 
 const GpuCapabilities& GraphicsCapabilities() { return capabilities; }
+
+GpuCapabilities DisplayGraphicsCapabilities() {
+  // An explicit Vulkan device index cannot safely be mapped to a Windows display index.
+  if (GetEnvironmentVariableW(L"BB_GPU_ID", nullptr, 0) > 0) return {};
+  std::wstring name;
+  for (DWORD index = 0;; ++index) {
+    DISPLAY_DEVICEW display{};
+    display.cb = sizeof(display);
+    if (!EnumDisplayDevicesW(nullptr, index, &display, 0)) break;
+    if (!(display.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) continue;
+    if (!name.empty() && _wcsicmp(name.c_str(), display.DeviceString) != 0) return {};
+    name = display.DeviceString;
+  }
+  if (name.empty()) return {};
+  Candidate card;
+  card.name = name;
+  return FeatureSupport(card);
+}
 
 GpuCapabilities CapabilitiesForGpu(const std::wstring& name) {
   GpuCapabilities support;

@@ -4198,8 +4198,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_skip_gpu_check) {
     g_gpu_problem = CheckCpu();
     if (g_gpu_problem.empty()) g_gpu_problem = CheckGpu();
-  }
-  g_graphics = GraphicsCapabilities();
+    g_graphics = GraphicsCapabilities();
+  } else g_graphics = DisplayGraphicsCapabilities();
   NormalizeGraphics();
   LauncherLog(g_skip_gpu_check ? std::string("hardware check: skipped by the player") : g_gpu_problem.empty() ? std::string("hardware check: passed") : "hardware check: " + Narrow(g_gpu_problem));
   if (GpuBlocked()) {

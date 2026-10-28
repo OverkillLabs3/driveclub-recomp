@@ -131,7 +131,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
   try{
     if(command==L"--ui-state"){
       if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
-      g_graphics=GraphicsCapabilities();NormalizeGraphics();NameNativeUpscale();
+      g_graphics=g_skip_gpu_check?DisplayGraphicsCapabilities():GraphicsCapabilities();NormalizeGraphics();NameNativeUpscale();
     }else if(argc>=4){
       std::ifstream in(argv[2],std::ios::binary);const Json request=Json::parse(in);ImportUiState(request);
       if(command==L"--ui-reset-page"){
@@ -229,9 +229,9 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-apply"||command==L"--ui-run"||command==L"--ui-benchmark"){
         if(command!=L"--ui-apply") {
           if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
-          g_graphics=GraphicsCapabilities();NormalizeGraphics();
+          g_graphics=g_skip_gpu_check?DisplayGraphicsCapabilities():GraphicsCapabilities();NormalizeGraphics();
         }
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
+        NormalizeGraphics();NameNativeUpscale();DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(!SaveSettings()) throw std::runtime_error(Narrow(g_settings_error));
         if(command!=L"--ui-apply"){
           if(!FoldersOk()){WriteJsonFile(output,UiState(L"Choose valid game folders on Play."));return 1;}
@@ -248,6 +248,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         }
       }else throw std::runtime_error("Unknown UI command");
     }else throw std::runtime_error("Missing UI request");
+    if(NormalizeGraphics()){NameNativeUpscale();DerivePreset();}
     WriteJsonFile(output,UiState());return 0;
   }catch(const std::exception& ex){
     try{WriteJsonFile(output,{{"Error",ex.what()}});}catch(...){}

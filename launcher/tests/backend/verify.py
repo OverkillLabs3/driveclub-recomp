@@ -2,7 +2,7 @@
 Usage: python verify.py BACKEND_EXE OUTPUT_DIRECTORY
 """
 from pathlib import Path
-import copy,json,shutil,subprocess,sys,uuid
+import copy,json,os,shutil,subprocess,sys,uuid
 backend=Path(sys.argv[1]).resolve();root=Path(sys.argv[2]).resolve()/('backend-'+uuid.uuid4().hex[:10]);root.mkdir(parents=True)
 exe=root/'DriveClub.Backend.exe';shutil.copy2(backend,exe)
 (root/'launcher.ini').write_text('skip_gpu_check=1\nname=LauncherTest\ncheck_updates=0\n',encoding='utf-8')
@@ -43,8 +43,32 @@ roundtrip=root/'graphics-roundtrip';roundtrip.mkdir();roundtrip_exe=roundtrip/'D
 request=roundtrip/'apply.json';request.write_text(json.dumps(graphics),encoding='utf-8');response=roundtrip/'apply-response.json'
 result=subprocess.run([str(roundtrip_exe),'--ui-apply',str(request),str(response)],cwd=roundtrip,timeout=45,creationflags=0x08000000,capture_output=True)
 check(result.returncode==0 and not json.loads(response.read_text())['Error'],'graphics selections save through the WPF backend')
-response=roundtrip/'state-response.json';result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,timeout=45,creationflags=0x08000000,capture_output=True)
+response=roundtrip/'state-response.json';roundtrip_env=dict(os.environ,BB_GPU_ID='0');result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,env=roundtrip_env,timeout=45,creationflags=0x08000000,capture_output=True)
 reloaded=json.loads(response.read_text());check(result.returncode==0 and all(tag(reloaded,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]),'graphics selections survive a fresh backend process')
+check(not reloaded['Graphics']['checked'],'explicit Vulkan device index is not guessed from Windows display ordering')
+runtime=roundtrip/'runtime';runtime.mkdir();
+for name in ('bbport_dlss.dll','nvngx_dlss.dll','nvngx_dlssg.dll','bbport_nr_nvngx.dll','nvngx_dlssnr.dll'):(runtime/name).touch()
+skip_env=os.environ.copy();skip_env.pop('BB_GPU_ID',None);skip_env['DRIVECLUB_FAKE_GPU_PROBLEM']='1'
+for mode in ('setting','file','environment'):
+ (roundtrip/'skip_gpu_check.txt').unlink(missing_ok=True)
+ if mode=='file':(roundtrip/'skip_gpu_check.txt').touch()
+ if mode=='environment':skip_env['DRIVECLUB_SKIP_GPU_CHECK']='1'
+ else:skip_env.pop('DRIVECLUB_SKIP_GPU_CHECK',None)
+ ini=(roundtrip/'launcher.ini').read_text();ini=ini.replace('skip_gpu_check=1','skip_gpu_check='+('1' if mode=='setting' else '0'));(roundtrip/'launcher.ini').write_text(ini)
+ result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,env=skip_env,timeout=45,creationflags=0x08000000,capture_output=True)
+ skipped=json.loads(response.read_text());check(result.returncode==0 and not skipped['HardwareProblem'],f'{mode} skip bypasses the simulated Vulkan compatibility error')
+ if skipped['Graphics']['checked'] and 'RTX 5080' in skipped['Graphics']['name']:
+  check(skipped['Graphics']['dlss'] and skipped['Graphics']['frame_multiplier_max']==6 and not tag(skipped,'@aa')['OptionReasons'][2],f'{mode} skip retains actual RTX 5080 graphics choices without Vulkan probing')
+  if mode=='setting':
+   requested=copy.deepcopy(skipped)
+   for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]:select(requested,t,v)
+   request.write_text(json.dumps(requested));result=subprocess.run([str(roundtrip_exe),'--ui-run',str(request),str(response)],cwd=roundtrip,env=skip_env,timeout=45,creationflags=0x08000000,capture_output=True)
+   stopped=json.loads(response.read_text());check(result.returncode!=0 and 'folders' in stopped['Error'].lower() and all(tag(stopped,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]),'skip-mode launch retains supported settings before the missing-folders stop')
+fsr_assets=root/'fsr4_411'/'t1080_m0';fsr_assets.mkdir(parents=True);(fsr_assets/'initializer.bin').write_bytes(bytes(131072))
+for name in ['spd','prepass','pass0_post','postpass','rcas']+[part for n in range(1,13) for part in (f'pass{n}',f'pass{n}_post')]:(fsr_assets/(name+'.spv')).touch()
+fsr=copy.deepcopy(graphics);select(fsr,'@aa',3);select(fsr,'@up',1);fsr=validate(fsr);check(tag(fsr,'@aa')['Selected']==3,'FSR 4 stays enabled with a complete 1080p asset fixture')
+fsr['Controls'][fsr['PresetId']]['Selected']=4;fsr=call('preset',fsr)
+check(tag(fsr,'@aa')['Selected']==0,'4K preset immediately normalizes FSR 4 when the 2160p asset set is missing')
 graphics['Graphics'].update({'dlss':False,'dlss_runtime':False,'neural':False,'neural_runtime':False,'reflex':False,'frame_multiplier_max':0})
 graphics=validate(graphics)
 check(all(tag(graphics,t)['Selected']==0 for t in ['@aa','@fgen_method','@nr','@reflex']),'unsupported selections are normalized on validation')
