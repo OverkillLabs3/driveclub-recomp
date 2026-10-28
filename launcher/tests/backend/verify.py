@@ -40,14 +40,14 @@ check(all(tag(graphics,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2
 check(tag(graphics,'@sr_preset')['Enabled'] and tag(graphics,'@fg_preset')['Enabled'] and tag(graphics,'@nr_preset')['Enabled'],'SR, FG and NR preset controls become available independently')
 roundtrip=root/'graphics-roundtrip';roundtrip.mkdir();roundtrip_exe=roundtrip/'DriveClub.Backend.exe';shutil.copy2(exe,roundtrip_exe)
 (roundtrip/'launcher.ini').write_text('skip_gpu_check=1\ncheck_updates=0\nname=LauncherTest\n',encoding='utf-8')
+runtime=roundtrip/'runtime';runtime.mkdir();
+for name in ('bbport_dlss.dll','nvngx_dlss.dll','nvngx_dlssg.dll','bbport_nr_nvngx.dll','nvngx_dlssnr.dll'):(runtime/name).touch()
 request=roundtrip/'apply.json';request.write_text(json.dumps(graphics),encoding='utf-8');response=roundtrip/'apply-response.json'
 result=subprocess.run([str(roundtrip_exe),'--ui-apply',str(request),str(response)],cwd=roundtrip,timeout=45,creationflags=0x08000000,capture_output=True)
 check(result.returncode==0 and not json.loads(response.read_text())['Error'],'graphics selections save through the WPF backend')
 response=roundtrip/'state-response.json';roundtrip_env=dict(os.environ,BB_GPU_ID='0');result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,env=roundtrip_env,timeout=45,creationflags=0x08000000,capture_output=True)
 reloaded=json.loads(response.read_text());check(result.returncode==0 and all(tag(reloaded,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]),'graphics selections survive a fresh backend process')
 check(not reloaded['Graphics']['checked'],'explicit Vulkan device index is not guessed from Windows display ordering')
-runtime=roundtrip/'runtime';runtime.mkdir();
-for name in ('bbport_dlss.dll','nvngx_dlss.dll','nvngx_dlssg.dll','bbport_nr_nvngx.dll','nvngx_dlssnr.dll'):(runtime/name).touch()
 skip_env=os.environ.copy();skip_env.pop('BB_GPU_ID',None);skip_env['DRIVECLUB_FAKE_GPU_PROBLEM']='1'
 for mode in ('setting','file','environment'):
  (roundtrip/'skip_gpu_check.txt').unlink(missing_ok=True)
@@ -70,6 +70,9 @@ unknown=json.loads(response.read_text());check(result.returncode==0 and not unkn
 for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]:select(unknown,t,v)
 request.write_text(json.dumps(unknown));result=subprocess.run([str(roundtrip_exe),'--ui-validate',str(request),str(response)],cwd=roundtrip,env=unknown_env,timeout=45,creationflags=0x08000000,capture_output=True)
 unknown=json.loads(response.read_text());check(result.returncode==0 and all(tag(unknown,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]) and not tag(unknown,'@fgen_x')['OptionReasons'][4],'unverified explicit-device choices stay selectable and are not silently reset')
+for name in ('nvngx_dlss.dll','nvngx_dlssg.dll','nvngx_dlssnr.dll'):(runtime/name).unlink()
+result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,env=unknown_env,timeout=45,creationflags=0x08000000,capture_output=True)
+missing=json.loads(response.read_text());check(result.returncode==0 and not missing['Graphics']['checked'] and all(tag(missing,t)['Selected']==0 for t in ['@aa','@fgen_method','@nr']) and tag(missing,'@reflex')['Selected']==2,'unknown GPU still normalizes missing runtimes while preserving unverified Reflex')
 fsr_assets=root/'fsr4_411'/'t1080_m0';fsr_assets.mkdir(parents=True);(fsr_assets/'initializer.bin').write_bytes(bytes(131072))
 for name in ['spd','prepass','pass0_post','postpass','rcas']+[part for n in range(1,13) for part in (f'pass{n}',f'pass{n}_post')]:(fsr_assets/(name+'.spv')).touch()
 fsr=copy.deepcopy(graphics);select(fsr,'@aa',3);select(fsr,'@up',1);fsr=validate(fsr);check(tag(fsr,'@aa')['Selected']==3,'FSR 4 stays enabled with a complete 1080p asset fixture')

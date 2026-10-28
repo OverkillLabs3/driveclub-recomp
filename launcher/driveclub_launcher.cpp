@@ -1857,7 +1857,7 @@ std::wstring ControlReason(int row, int choice) {
 }
 
 bool NormalizeGraphics() {
-  if (!g_graphics.checked) return false;
+  if (!g_graphics.checked && !(g_skip_gpu_check || GpuCompatibilityCheckBypassed())) return false;
   bool changed = false;
   for (int row : {g_aa, g_fgen, g_reflex_row, g_neural_row}) {
     if (row < 0 || ControlReason(row, g_c[row].sel).empty()) continue;
@@ -1865,7 +1865,7 @@ bool NormalizeGraphics() {
     changed = true;
   }
   const int method = g_c[g_fgen].sel;
-  const int multiplier = method == 1 ? 0 : method == 2
+  const int multiplier = method == 1 ? 0 : method == 2 && g_graphics.checked
       ? std::clamp(g_c[g_fgen_x].sel, 0, (std::max)(0, g_graphics.frame_multiplier_max - 2))
       : g_c[g_fgen_x].sel;
   if (multiplier != g_c[g_fgen_x].sel) {

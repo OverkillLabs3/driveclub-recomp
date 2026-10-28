@@ -139,7 +139,7 @@ struct Values {
     std::atomic<int> reflex{ReflexOff};
     std::atomic<int> frame_gen_preset{3};
     std::atomic<int> aa_mode{AaOff};
-    /// The provider that actually ran (DLSS falls back to FSR 3.1 when it cannot start); the
+    /// The provider selected for this session (unsupported FSR 4 and unavailable DLSS fall back to FSR 3.1); the
     /// overlay reports this, while aa_mode keeps the player's choice.
     std::atomic<int> aa_effective{AaOff};
     /// F8: frame generation stays set up but stops capturing and generating (nothing is freed).

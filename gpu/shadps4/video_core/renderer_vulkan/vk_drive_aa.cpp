@@ -164,6 +164,9 @@ DriveAA::~DriveAA() = default;
 
 int DriveAA::EffectiveMode() const {
     const int requested = BbSettings::Get().aa_mode;
+    if (requested == BbSettings::AaFsr411 && !instance.IsFsr411PortableSupported()) {
+        return BbSettings::AaFsr3;
+    }
     if (requested != BbSettings::AaDlss) {
         return requested;
     }
@@ -194,6 +197,9 @@ void DriveAA::NextFrame() {
     const int mode = EffectiveMode();
     BbSettings::Get().aa_effective = mode;
     if (mode != applied_mode) {
+        if (BbSettings::Get().aa_mode == BbSettings::AaFsr411 && mode == BbSettings::AaFsr3) {
+            std::puts("Anti-aliasing: FSR 4.1.1 is unsupported on this GPU; using FSR 3.1.5");
+        }
         applied_mode = mode;
         reset = true;
         failed = false;
