@@ -183,6 +183,9 @@ struct State {
     long long tagged_us = 0;       // the last frame drawn from the driver's head camera (tagged)
     bool cockpit_now = false;      // this frame's layer is the cockpit's (RecordFrame, for AfterSubmit)
     long long untracked_us = 0;    // since when the head's position has not been tracked (the centre waits for it)
+    XrVector3f last_head{};        // the head's last place in the room (a jump: the runtime's room moved)
+    long long last_head_us = 0;
+    bool room_moved = false;       // the runtime said its room (LOCAL) moves
     // the recentred head
     bool have_centre = false;
     float centre_yaw = 0.0f;
@@ -457,6 +460,12 @@ void PollEvents() {
                 st.running = false;
             } else if (change.state == XR_SESSION_STATE_EXITING || change.state == XR_SESSION_STATE_LOSS_PENDING) {
                 st.running = false;
+            }
+        } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+            const auto& change = reinterpret_cast<const XrEventDataReferenceSpaceChangePending&>(event);
+            if (change.referenceSpaceType == XR_REFERENCE_SPACE_TYPE_LOCAL) {
+                st.room_moved = true; // the centre is taken again with the next head (under the head's lock)
+                std::printf("VR: the runtime moved its room (recentring)\n");
             }
         } else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
             st.running = false;
@@ -2072,6 +2081,24 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             st.untracked_us = 0;
         } else if (!st.untracked_us) {
             st.untracked_us = NowUs();
+        }
+        // Virtual Desktop starts with a stand-in head (0, -1, 0) it calls tracked, then the real one: a head does not
+        // move 25 cm from one tracked frame to the next, so such a jump is the room moving: the centre is taken again.
+        if (st.room_moved) {
+            st.room_moved = false;
+            st.have_centre = false;
+        }
+        const XrVector3f& at = location.pose.position;
+        const float dx = at.x - st.last_head.x, dy = at.y - st.last_head.y, dz = at.z - st.last_head.z;
+        if (st.have_centre && position_tracked && st.last_head_us && NowUs() - st.last_head_us < 1000000 &&
+            dx * dx + dy * dy + dz * dz > 0.25f * 0.25f) {
+            st.have_centre = false;
+            std::printf("VR: the head jumped %.2f m (the runtime's room moved: recentring)\n",
+                        std::sqrt(dx * dx + dy * dy + dz * dz));
+        }
+        if (position_tracked) {
+            st.last_head = at;
+            st.last_head_us = NowUs();
         }
         if (!st.have_centre && (position_tracked || NowUs() - st.untracked_us > 3000000)) {
             st.centre_yaw = Yaw(location.pose.orientation);
