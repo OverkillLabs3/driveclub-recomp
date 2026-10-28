@@ -1318,7 +1318,8 @@ std::vector<std::pair<int, int>> Ps4Profile() {
   for(size_t i=0;i<g_c.size();++i) {
     const auto& tag=g_c[i].patches[0];
     if(tag=="FOV fix for wide resolutions" || tag=="Disable motion blur and depth of field" ||
-       tag=="Reset Disable" || tag=="Barrier Disable" || tag=="Disable Photomode Free Camera Collision" ||
+       tag=="Reset Disable" || tag=="Barrier Disable" || tag=="One-second collision penalties" ||
+       tag=="Disable Photomode Free Camera Collision" ||
        tag=="Disable Photomode Processing") values.emplace_back(int(i),0);
   }
   return values;
