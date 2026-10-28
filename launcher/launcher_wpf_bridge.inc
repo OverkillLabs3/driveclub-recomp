@@ -67,8 +67,12 @@ Json UiState(const std::wstring& error=L"") {
     Json optionReasons=Json::array();
     for(size_t choice=0;choice<options.size();++choice)optionReasons.push_back(Narrow(ControlReason(int(i),int(choice))));
     const auto reason=ControlReason(int(i),c.kind==Kind::Toggle ? !c.sel : -1);
+    std::wstring hint=!reason.empty() ? reason : int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint;
+    if(!g_graphics.checked && (g_skip_gpu_check || GpuCompatibilityCheckBypassed()) &&
+       (int(i)==g_aa || int(i)==g_fgen || int(i)==g_fgen_x || int(i)==g_reflex_row || int(i)==g_neural_row))
+      hint += L" GPU compatibility is unverified because the hardware check is skipped.";
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
-    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(!reason.empty() ? reason : int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint)},{"Kind",kind},{"Tag",c.patches[0]},
+    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(hint)},{"Kind",kind},{"Tag",c.patches[0]},
       {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",reason.empty() && !BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
       {"Options",options},{"OptionReasons",optionReasons},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
       {"Details",c.more?Narrow(c.more):""}});
@@ -163,6 +167,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
+          if(g_skip_gpu_check && !g_graphics.checked)g_graphics=DisplayGraphicsCapabilities();
           if(!g_skip_gpu_check && g_gpu_problem.empty()) {g_gpu_problem=CheckGpu();g_graphics=GraphicsCapabilities();NormalizeGraphics();NameNativeUpscale();}
         }
       }

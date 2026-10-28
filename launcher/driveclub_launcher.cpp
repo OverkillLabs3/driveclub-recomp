@@ -1793,18 +1793,19 @@ std::wstring ControlReason(int row, int choice) {
   const bool frame_gen = g_fgen >= 0 && g_c[g_fgen].sel > 0;
   const bool neural = g_neural_row >= 0 && g_c[g_neural_row].sel;
   const auto pending = L"The GPU model could not be identified. Check your driver and restart the launcher.";
+  const bool unverified = !g_graphics.checked && (g_skip_gpu_check || GpuCompatibilityCheckBypassed());
   if (row == g_sr_preset_row && g_c[g_aa].sel != 2)
     return L"Choose DLSS anti-aliasing to select its Super Resolution model preset.";
   if (row == g_aa && choice > 0 && blur) return L"Turn off the motion blur/depth-of-field patch first; reconstruction needs that scene pass.";
   if (row == g_aa && choice == 2) {
-    if (!g_graphics.checked) return pending;
+    if (!g_graphics.checked && !unverified) return pending;
     if (!g_graphics.dlss_runtime) return L"DLSS runtime files are missing from the runtime folder.";
-    if (!g_graphics.dlss) return L"DLSS Super Resolution is unavailable on this GPU or driver.";
+    if (g_graphics.checked && !g_graphics.dlss) return L"DLSS Super Resolution is unavailable on this GPU or driver.";
   }
   if ((row == g_aa && choice == 3) || (g_aa >= 0 && g_c[g_aa].sel == 3 &&
       (row == g_outres || row == g_inres || row == g_wide || row == g_up))) {
-    if (!g_graphics.checked) return pending;
-    if (!g_graphics.fsr411) return L"FSR 4.1.1 needs GPU support for 8-bit/16-bit shaders and integer dot products.";
+    if (!g_graphics.checked && !unverified) return pending;
+    if (g_graphics.checked && !g_graphics.fsr411) return L"FSR 4.1.1 needs GPU support for 8-bit/16-bit shaders and integer dot products.";
     int width, height;
     const int wide = row == g_wide && choice >= 0 ? choice : g_c[g_wide].sel;
     const int quality = row == g_up && choice >= 0 ? choice : g_c[g_up].sel;
@@ -1822,28 +1823,30 @@ std::wstring ControlReason(int row, int choice) {
   if (row == g_fgen && choice > 0) {
     if (blur) return L"Turn off the motion blur/depth-of-field patch first; frame generation needs its scene history.";
     if (choice == 2) {
-      if (!g_graphics.checked) return pending;
-      if (g_graphics.frame_multiplier_max < 2) return L"DLSS Frame Generation needs an RTX 40 or RTX 50 GPU and its runtime files.";
+      if (!g_graphics.checked && !unverified) return pending;
+      if ((g_graphics.checked && g_graphics.frame_multiplier_max < 2) ||
+          (unverified && (!g_graphics.dlss_runtime || !Exists(g_runtime + L"\\nvngx_dlssg.dll"))))
+        return L"DLSS Frame Generation needs an RTX 40 or RTX 50 GPU and its runtime files.";
     }
   }
   if (row == g_fgen_x) {
     const int method = g_c[g_fgen].sel;
     if (method == 0) return L"Choose a frame generation technology to enable the multiplier.";
     if (method == 1 && choice != 0) return L"FSR 3.1 frame generation uses a fixed 2x multiplier.";
-    if (method == 2 && choice >= 0 && choice + 2 > g_graphics.frame_multiplier_max)
+    if (method == 2 && g_graphics.checked && choice >= 0 && choice + 2 > g_graphics.frame_multiplier_max)
       return L"This GPU supports DLSS frame generation up to " + std::to_wstring(g_graphics.frame_multiplier_max) + L"x.";
   }
   if (row == g_fgen_preset_row && g_c[g_fgen].sel != 2)
     return L"Choose DLSS Frame Generation to select its model preset.";
   if (row == g_reflex_row && choice > 0) {
-    if (!g_graphics.checked) return pending;
-    if (!g_graphics.reflex) return L"Reflex needs NVIDIA Vulkan low-latency support and a current driver.";
+    if (!g_graphics.checked && !unverified) return pending;
+    if (g_graphics.checked && !g_graphics.reflex) return L"Reflex needs NVIDIA Vulkan low-latency support and a current driver.";
   }
   if (row == g_neural_row && choice > 0) {
     if (blur) return L"Turn off the motion blur/depth-of-field patch first; Neural Rendering needs its scene guides.";
-    if (!g_graphics.checked) return pending;
+    if (!g_graphics.checked && !unverified) return pending;
     if (!g_graphics.neural_runtime) return L"The DLSS 5 Neural Rendering runtime is missing.";
-    if (!g_graphics.neural) return L"DLSS 5 Neural Rendering is unavailable on this GPU or driver.";
+    if (g_graphics.checked && !g_graphics.neural) return L"DLSS 5 Neural Rendering is unavailable on this GPU or driver.";
   }
   if (control.patches[0].rfind("@nr_", 0) == 0 && !neural) return L"Enable DLSS 5 Neural Rendering to adjust this setting.";
   if (row == g_up && !external_aa) return L"Choose FSR or DLSS anti-aliasing to enable super resolution.";
@@ -4071,6 +4074,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           ctl.sel = !ctl.sel;
           if (ctl.patches[0] == "@skipgpu") {
             g_skip_gpu_check = ctl.sel != 0;
+            if (g_skip_gpu_check && !g_graphics.checked) g_graphics = DisplayGraphicsCapabilities();
             if (!GpuBlocked() && g_status == g_gpu_problem) g_status.clear();
             else if (GpuBlocked()) { g_status = g_gpu_problem; g_status_color = kBad; }
           }

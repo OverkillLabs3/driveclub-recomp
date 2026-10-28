@@ -239,6 +239,10 @@ std::wstring ExeDir() {
 
 }  // namespace
 
+bool GpuCompatibilityCheckBypassed() {
+  return FileExists(ExeDir() + L"\\skip_gpu_check.txt") || GetEnvironmentVariableW(L"DRIVECLUB_SKIP_GPU_CHECK", nullptr, 0) > 0;
+}
+
 int GpuCheckChildMain(const wchar_t* result_path) {
   const Outcome outcome = Query();
   const auto& c = outcome.capabilities;
@@ -262,7 +266,7 @@ std::wstring CheckAncientIgpuDriver();
 
 std::wstring CheckGpu() {
   capabilities = {};
-  if (FileExists(ExeDir() + L"\\skip_gpu_check.txt") || GetEnvironmentVariableW(L"DRIVECLUB_SKIP_GPU_CHECK", nullptr, 0) > 0) {
+  if (GpuCompatibilityCheckBypassed()) {
     capabilities = DisplayGraphicsCapabilities();
     return L"";
   }
@@ -337,17 +341,18 @@ const GpuCapabilities& GraphicsCapabilities() { return capabilities; }
 
 GpuCapabilities DisplayGraphicsCapabilities() {
   // An explicit Vulkan device index cannot safely be mapped to a Windows display index.
-  if (GetEnvironmentVariableW(L"BB_GPU_ID", nullptr, 0) > 0) return {};
+  if (GetEnvironmentVariableW(L"BB_GPU_ID", nullptr, 0) > 0) return FeatureSupport(Candidate{});
   std::wstring name;
   for (DWORD index = 0;; ++index) {
     DISPLAY_DEVICEW display{};
     display.cb = sizeof(display);
     if (!EnumDisplayDevicesW(nullptr, index, &display, 0)) break;
-    if (!(display.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP)) continue;
-    if (!name.empty() && _wcsicmp(name.c_str(), display.DeviceString) != 0) return {};
+    // A detached adapter can still be the renderer's preferred discrete GPU.
+    if (display.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) continue;
+    if (!name.empty() && _wcsicmp(name.c_str(), display.DeviceString) != 0) return FeatureSupport(Candidate{});
     name = display.DeviceString;
   }
-  if (name.empty()) return {};
+  if (name.empty()) return FeatureSupport(Candidate{});
   Candidate card;
   card.name = name;
   return FeatureSupport(card);

@@ -21,6 +21,7 @@ struct GpuCapabilities {
 const GpuCapabilities& GraphicsCapabilities();
 GpuCapabilities CapabilitiesForGpu(const std::wstring& name);
 GpuCapabilities DisplayGraphicsCapabilities();
+bool GpuCompatibilityCheckBypassed();
 
 // "" when the processor has what the game's code needs (AVX, BMI1, LZCNT, MOVBE, POPCNT: Intel Haswell from 2013,
 // AMD Excavator or Ryzen, or newer), otherwise a sentence naming what is missing.
