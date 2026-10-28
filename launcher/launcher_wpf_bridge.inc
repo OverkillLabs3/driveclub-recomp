@@ -163,13 +163,13 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         const int changed=request.value("ChangedId",-1);
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_wide && g_c[g_wide].sel>0)g_c[g_outres].sel=g_c[g_inres].sel=0;
-        NormalizeGraphics();NameNativeUpscale();
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
           if(g_skip_gpu_check && !g_graphics.checked)g_graphics=DisplayGraphicsCapabilities();
-          if(!g_skip_gpu_check && g_gpu_problem.empty()) {g_gpu_problem=CheckGpu();g_graphics=GraphicsCapabilities();NormalizeGraphics();NameNativeUpscale();}
+          if(!g_skip_gpu_check && g_gpu_problem.empty()) {g_gpu_problem=CheckGpu();g_graphics=GraphicsCapabilities();}
         }
+        NormalizeGraphics();NameNativeUpscale();
+        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
       }
       else if(command==L"--ui-preset")ApplyPreset(g_c[g_preset].sel);
       else if(command==L"--ui-drive-preset"){if(g_c[g_drive_preset].sel>=0)ApplyDrivePreset(g_c[g_drive_preset].sel);}
