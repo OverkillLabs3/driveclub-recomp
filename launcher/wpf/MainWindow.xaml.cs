@@ -35,7 +35,8 @@ public partial class MainWindow : Window
     private bool foldersAnimating;
     private Action? arrangeHome;
     private readonly string root = AppContext.BaseDirectory;
-    private int currentPage, revision;
+    private int currentPage, revision, pageGeneration;
+    private (ScrollViewer Viewer, double Offset, int Generation)? pendingScroll;
     private int navigationSelection = -1;
     private bool suppress, busy, allowClose;
     private Window? launchSplash;
@@ -231,6 +232,11 @@ public partial class MainWindow : Window
     private void Adopt(LauncherState incoming)
     {
         bool initial = state.Controls.Count == 0;
+        var currentScroll = PageHolder.Children.OfType<ScrollViewer>().LastOrDefault();
+        double? offset = currentScroll?.VerticalOffset;
+        if (offset == 0 && pendingScroll is { } pending && pending.Generation == pageGeneration && ReferenceEquals(pending.Viewer, currentScroll))
+            offset = pending.Offset;
+        pendingScroll = null;
         if (initial || !incoming.FoldersOk || (!state.FoldersOk && incoming.FoldersOk))
             foldersExpanded = !incoming.FoldersOk;
         suppress = true;
@@ -240,6 +246,29 @@ public partial class MainWindow : Window
         MinWidth = Math.Ceiling(228 + 2 + 72 + 2 * MeasureGameStatus(double.PositiveInfinity).Width + 24 + 10);
         foreach (var c in state.Controls) c.PropertyChanged += SettingChanged;
         pages.Clear(); ShowPage(currentPage, initial); suppress = false;
+        if (offset > 0 && PageHolder.Children.OfType<ScrollViewer>().LastOrDefault() is { } scroll)
+        {
+            int generation = pageGeneration;
+            double desiredOffset = offset.Value;
+            pendingScroll = (scroll, desiredOffset, generation);
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (generation == pageGeneration && ReferenceEquals(PageHolder.Children.OfType<FrameworkElement>().LastOrDefault(), scroll) && scroll.VerticalOffset == 0)
+                {
+                    ScrollChangedEventHandler? changed = null;
+                    void ClearPending()
+                    {
+                        scroll.ScrollChanged -= changed;
+                        if (pendingScroll is { } queued && ReferenceEquals(queued.Viewer, scroll)) pendingScroll = null;
+                    }
+                    changed = (_, e) => { if (e.VerticalChange != 0) ClearPending(); };
+                    scroll.ScrollChanged += changed;
+                    scroll.ScrollToVerticalOffset(desiredOffset);
+                    Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ClearPending));
+                }
+                else if (pendingScroll is { } queued && ReferenceEquals(queued.Viewer, scroll)) pendingScroll = null;
+            }));
+        }
         FooterPlay.IsEnabled = preview || (state.FoldersOk && string.IsNullOrEmpty(state.HardwareProblem));
         FooterPlay.ToolTip = string.IsNullOrEmpty(state.HardwareProblem) ? "Save and start the game." : state.HardwareProblem;
     }
@@ -288,6 +317,7 @@ public partial class MainWindow : Window
     private void ShowPage(int index, bool animate = true)
     {
         if (state.Controls.Count == 0 || (currentPage == index && PageHolder.Children.Count != 0 && animate)) return;
+        ++pageGeneration;
         currentPage = index;
         for (int i = 0; i < navButtons.Count; ++i)
         {
