@@ -23,6 +23,20 @@ public static class Program
     static async Task Idle(){await Application.Current.Dispatcher.InvokeAsync(()=>{},DispatcherPriority.ApplicationIdle);await Task.Delay(100);}
     static IEnumerable<DependencyObject> Desc(DependencyObject o){yield return o;for(int i=0;i<VisualTreeHelper.GetChildrenCount(o);i++)foreach(var x in Desc(VisualTreeHelper.GetChild(o,i)))yield return x;}
     static T Id<T>(MainWindow w,string id) where T:DependencyObject=>Desc((FrameworkElement)w.FindName("Root")).OfType<T>().Single(x=>AutomationProperties.GetAutomationId(x)==id);
+    static void HeaderToggle(MainWindow window, Setting setting, string title)
+    {
+        var root=(FrameworkElement)window.FindName("Root");
+        var check=Id<CheckBox>(window,"Setting"+setting.Id);
+        var canvas=(Canvas)VisualTreeHelper.GetParent(check);
+        var heading=canvas.Children.OfType<Border>().Single(b=>b.Child is TextBlock t && t.Text==title);
+        Check(AutomationProperties.GetName(check)==setting.Label && Math.Abs(Canvas.GetTop(check)-Canvas.GetTop(heading)-7)<.1, title+" has one accessible checkbox in its header");
+        Check(Canvas.GetLeft(heading)+heading.Width<=Canvas.GetLeft(check), title+" header text does not overlap its checkbox");
+        Check(!Desc(root).OfType<TextBlock>().Any(t=>AutomationProperties.GetAutomationId(t)=="SettingLabel"+setting.Id), title+" has no duplicate setting row");
+        Check(Equals(heading.ToolTip,check.ToolTip), title+" header exposes the checkbox hint or unavailable reason");
+        heading.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice,0){RoutedEvent=Mouse.MouseEnterEvent});
+        Check(((TextBlock)window.FindName("Status")).Text==(string?)check.ToolTip, title+" header hover displays the checkbox hint");
+        heading.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice,0){RoutedEvent=Mouse.MouseLeaveEvent});
+    }
     static async Task Modal(MainWindow w,string title,Action<Window> check,Action open)
     {
         Exception? failure=null;
@@ -86,6 +100,22 @@ public static class Program
                 Check(folderOrder.SequenceEqual(new[]{"GameFolder1","GameFolder0"}),"Game Files keyboard/tree order matches visual order");
 
                 Check(state.Controls.Count(c=>c.Details.Length>0)>=19,"expanded native explanations available in frontend model");
+                Invoke(window,"ShowPage",1,false);await Idle();
+                HeaderToggle(window,state.Controls.Single(c=>c.Tag=="@nr"),"DLSS 5 NEURAL RENDERING");
+                HeaderToggle(window,state.Controls.Single(c=>c.Tag=="@hdr"),"HDR");
+                window.Width=window.MinWidth;await Idle();
+                HeaderToggle(window,state.Controls.Single(c=>c.Tag=="@nr"),"DLSS 5 NEURAL RENDERING");
+                HeaderToggle(window,state.Controls.Single(c=>c.Tag=="@hdr"),"HDR");
+                var hdr=state.Controls.Single(c=>c.Tag=="@hdr");int hdrBefore=hdr.Selected;
+                Id<CheckBox>(window,"Setting"+hdr.Id).IsChecked=hdrBefore==0;
+                for(int i=0;i<100&&ReferenceEquals(state,Field<LauncherState>(window,"state"));++i)await Task.Delay(50);
+                state=Field<LauncherState>(window,"state");
+                Check(state.Controls.Single(c=>c.Tag=="@hdr").Selected!=hdrBefore && state.Controls.Single(c=>c.Tag=="@hdr_paper").Hidden==(hdrBefore!=0),"HDR header checkbox validates and updates dependent controls through IPC");
+                hdr=state.Controls.Single(c=>c.Tag=="@hdr");var toggledState=state;
+                Id<CheckBox>(window,"Setting"+hdr.Id).IsChecked=hdrBefore!=0;
+                for(int i=0;i<100&&ReferenceEquals(toggledState,Field<LauncherState>(window,"state"));++i)await Task.Delay(50);
+                state=Field<LauncherState>(window,"state");
+                Check(state.Controls.Single(c=>c.Tag=="@hdr").Selected==hdrBefore,"HDR header checkbox can restore its original state");
                 var choices = new Setting { Id = 9999, Label = "Fixture", Kind = "Choice", Options = ["Available", "Unavailable"], OptionReasons = ["", "Unsupported GPU"] };
                 var choiceView = (FrameworkElement)Invoke(window, "SettingView", choices, 300d, false)!;
                 var combo = Desc(choiceView).OfType<ComboBox>().Single();

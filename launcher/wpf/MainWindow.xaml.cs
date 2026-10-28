@@ -435,10 +435,23 @@ public partial class MainWindow : Window
         double target = Root.ActualWidth / 2 - 228 - groupWidth / 2;
         return Math.Clamp(target, 36, Math.Max(36, pageWidth - 36 - groupWidth));
     }
-    private void RulePanel(Canvas canvas, double x, double y, double width, double height, string title)
+    private Border RulePanel(Canvas canvas, double x, double y, double width, double height, string title, bool hasToggle = false)
     {
         Place(canvas, new Border { Background = Brush("#ED2B38") }, x, y, 3, SectionHeaderHeight);
-        Caption(canvas, title, x + 20, y, width - 40, SectionHeaderHeight, 15, true, "#D7D7D9");
+        return Caption(canvas, title, x + 20, y, width - (hasToggle ? 84 : 40), SectionHeaderHeight, 15, true, "#D7D7D9");
+    }
+    private static string ToggleReason(Setting setting)
+    {
+        int nextOption = setting.IsOn ? 0 : 1;
+        return setting.Tag == "@nr" && setting.OptionReasons.Count > nextOption ? setting.OptionReasons[nextOption] : "";
+    }
+    private CheckBox ToggleField(Setting setting, string reason)
+    {
+        var check = new CheckBox { ToolTip = reason.Length == 0 ? setting.Hint : reason, MinHeight = 0, Padding = new(0), IsEnabled = setting.Enabled && reason.Length == 0 };
+        if (setting.Tag == "@nr") ToolTipService.SetShowOnDisabled(check, true);
+        check.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(Setting.IsOn)) { Source = setting, Mode = BindingMode.TwoWay });
+        AutomationProperties.SetName(check, setting.Label); AutomationProperties.SetAutomationId(check, "Setting" + setting.Id);
+        return check;
     }
     private double SliderValueWidth(Setting setting)
     {
@@ -499,9 +512,21 @@ public partial class MainWindow : Window
         {
             int col = Array.IndexOf(cy, cy.Min()); double x = groupLeft + col * (cardWidth + 18);
             var settings = card.Controls.Select(id => state.Controls.Single(c => c.Id == id)).Where(c => !c.Hidden).ToArray();
+            var headerToggle = settings.FirstOrDefault(s => s.Tag is "@nr" or "@hdr");
+            if (headerToggle != null) settings = settings.Where(s => s != headerToggle).ToArray();
             double noteHeight = string.IsNullOrEmpty(card.Note) ? 0 : new FormattedText(card.Note, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, new Typeface((FontFamily)Application.Current.FindResource("BodyFont"), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 12, Brushes.White, VisualTreeHelper.GetDpi(this).PixelsPerDip) { MaxTextWidth = cardWidth - 44 }.Height + 12;
             double height = SectionHeaderHeight + 12 + 17 + settings.Sum(s => RowHeight(s, cardWidth - 44)) + noteHeight;
-            RulePanel(canvas, x, cy[col], cardWidth, height, card.Title);
+            var heading = RulePanel(canvas, x, cy[col], cardWidth, height, card.Title, headerToggle != null);
+            if (headerToggle != null)
+            {
+                string reason = ToggleReason(headerToggle);
+                var check = ToggleField(headerToggle, reason);
+                string hint = reason.Length == 0 ? headerToggle.Hint : reason;
+                heading.ToolTip = hint;
+                heading.MouseEnter += (_, _) => ShowStatusHint(hint); heading.MouseLeave += (_, _) => RestoreStatus();
+                check.MouseEnter += (_, _) => ShowStatusHint(hint); check.MouseLeave += (_, _) => RestoreStatus();
+                Place(canvas, check, x + cardWidth - 53, cy[col] + (SectionHeaderHeight - 24) / 2, 24, 24);
+            }
             double ry = cy[col] + SectionHeaderHeight + 12;
             foreach (var setting in settings) { double rh = RowHeight(setting, cardWidth - 44); Place(canvas, SettingView(setting, cardWidth - 44), x + 22, ry, cardWidth - 44, rh); ry += rh; }
             if (noteHeight > 0) Caption(canvas, card.Note, x + 22, cy[col] + height - noteHeight - 4, cardWidth - 44, noteHeight, 12, false, "#8B93A1", true);
@@ -523,15 +548,12 @@ public partial class MainWindow : Window
             if (setting.Details.Length > 0) Place(row, SettingHelp(setting), labelSize.Width + 4, top + Math.Max(0, (boxHeight - 20) / 2), 20, 20);
         }
         FrameworkElement field;
-        int nextOption = setting.IsOn ? 0 : 1;
-        string toggleReason = setting.Tag == "@nr" && setting.OptionReasons.Count > nextOption ? setting.OptionReasons[nextOption] : "";
+        string toggleReason = ToggleReason(setting);
         if (setting.Kind == "Toggle" || setting.Tag == "@nr")
         {
             Label((height - 4 - labelSize.Height) / 2, labelSize.Height);
-            var check = new CheckBox { ToolTip = toggleReason.Length == 0 ? setting.Hint : toggleReason, MinHeight = 0, Padding = new(0) };
-            if (setting.Tag == "@nr") ToolTipService.SetShowOnDisabled(check, true);
-            check.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(Setting.IsOn)) { Source = setting, Mode = BindingMode.TwoWay }); field = check;
-            Place(row, check, width - 31, (height - 4 - 24) / 2, 24, 24);
+            field = ToggleField(setting, toggleReason);
+            Place(row, field, width - 31, (height - 4 - 24) / 2, 24, 24);
         }
         else if (setting.Kind == "Action")
         {
