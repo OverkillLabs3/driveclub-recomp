@@ -452,7 +452,8 @@ public partial class MainWindow : Window
     }
     private (double Width, double Height) SettingLabelSize(Setting setting, double width, bool quick)
     {
-        double labelWidth = width - (setting.Kind == "Toggle" ? 42 : setting.Kind == "Slider" ? SliderValueWidth(setting) + 12 : 0) - (setting.Details.Length == 0 ? 0 : 26);
+        bool neuralAmount = setting.Tag is "@nr_intensity" or "@nr_tone" or "@nr_structure";
+        double labelWidth = width - (setting.Kind == "Toggle" ? 42 : setting.Kind == "Slider" || neuralAmount ? SliderValueWidth(setting) + 12 : 0) - (setting.Details.Length == 0 ? 0 : 26);
         var label = Text(setting.Label, quick ? 14 : 15);
         label.Measure(new Size(Math.Max(1, labelWidth), double.PositiveInfinity));
         return (labelWidth, Math.Max(quick ? 24 : 20, Math.Ceiling(label.DesiredSize.Height)));
@@ -550,15 +551,17 @@ public partial class MainWindow : Window
             ConfigureNativeButton(button, setting);
             field = button; Place(row, field, 0, fieldTop, width, 38);
         }
-        else if (setting.Kind == "Slider")
+        else if (setting.Kind == "Slider" || setting.Tag is "@nr_intensity" or "@nr_tone" or "@nr_structure")
         {
             Label(quick ? 0 : 6, labelSize.Height);
+            bool neuralAmount = setting.Kind != "Slider";
             double valueWidth = SliderValueWidth(setting);
-            var value = Text(setting.Selected + setting.Unit, 14); value.TextAlignment = TextAlignment.Right; value.TextWrapping = TextWrapping.NoWrap;
+            var value = Text(neuralAmount ? setting.Options[setting.Selected] : setting.Selected + setting.Unit, 14); value.TextAlignment = TextAlignment.Right; value.TextWrapping = TextWrapping.NoWrap;
             AutomationProperties.SetAutomationId(value, "SettingValue" + setting.Id);
             Place(row, value, width - valueWidth, quick ? 0 : 6, valueWidth, 20);
-            var slider = new Slider { Minimum = setting.Minimum, Maximum = setting.Maximum, TickFrequency = 1, IsSnapToTickEnabled = true, Value = setting.Selected, Style = (Style)FindResource("SettingSlider") };
-            slider.ValueChanged += (_, _) => { suppress = true; setting.Selected = (int)Math.Round(slider.Value); suppress = false; value.Text = setting.Selected + setting.Unit; ++revision; SetStatus("Unsaved changes"); };
+            var slider = new Slider { Minimum = setting.Minimum, Maximum = neuralAmount ? 100 : setting.Maximum, TickFrequency = neuralAmount ? 25 : 1, IsSnapToTickEnabled = true, Value = neuralAmount ? setting.Selected * 25 : setting.Selected, Style = (Style)FindResource("SettingSlider") };
+            if (neuralAmount) slider.SmallChange = slider.LargeChange = 25;
+            slider.ValueChanged += (_, _) => { suppress = true; setting.Selected = (int)Math.Round(neuralAmount ? slider.Value / 25 : slider.Value); suppress = false; value.Text = neuralAmount ? setting.Options[setting.Selected] : setting.Selected + setting.Unit; ++revision; SetStatus("Unsaved changes"); };
             slider.LostMouseCapture += (_, _) => { if (!slider.IsMouseCaptureWithin && state.Controls.Contains(setting)) SettingChanged(setting, new(nameof(Setting.Selected))); };
             slider.KeyUp += (_, _) => { if (state.Controls.Contains(setting)) SettingChanged(setting, new(nameof(Setting.Selected))); };
             field = slider; Place(row, field, 0, fieldTop, width, 38);

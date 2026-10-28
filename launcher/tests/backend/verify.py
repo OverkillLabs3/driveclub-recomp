@@ -35,6 +35,7 @@ graphics['Graphics']={'checked':True,'name':'GeForce RTX 5080','dlss':True,'neur
 graphics=validate(graphics)
 check(tag(graphics,'@aa')['OptionReasons'][2]=='' and tag(graphics,'@fgen_method')['OptionReasons'][2]=='','available DLSS choices retain GPU capabilities across IPC')
 select(graphics,'@aa',2); select(graphics,'@fgen_method',2); select(graphics,'@fgen_x',4); select(graphics,'@nr',1); select(graphics,'@reflex',2)
+for name,value in [('@nr_intensity',3),('@nr_tone',1),('@nr_structure',4)]:select(graphics,name,value)
 graphics=validate(graphics)
 check(all(tag(graphics,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]),'DLSS, FG multiplier, NR and Reflex selections survive validation')
 check(tag(graphics,'@sr_preset')['Enabled'] and tag(graphics,'@fg_preset')['Enabled'] and tag(graphics,'@nr_preset')['Enabled'],'SR, FG and NR preset controls become available independently')
@@ -47,6 +48,7 @@ result=subprocess.run([str(roundtrip_exe),'--ui-apply',str(request),str(response
 check(result.returncode==0 and not json.loads(response.read_text())['Error'],'graphics selections save through the WPF backend')
 response=roundtrip/'state-response.json';roundtrip_env=dict(os.environ,BB_GPU_ID='0');result=subprocess.run([str(roundtrip_exe),'--ui-state',str(response)],cwd=roundtrip,env=roundtrip_env,timeout=45,creationflags=0x08000000,capture_output=True)
 reloaded=json.loads(response.read_text());check(result.returncode==0 and all(tag(reloaded,t)['Selected']==v for t,v in [('@aa',2),('@fgen_method',2),('@fgen_x',4),('@nr',1),('@reflex',2)]),'graphics selections survive a fresh backend process')
+check(all(tag(reloaded,t)['Selected']==v for t,v in [('@nr_intensity',3),('@nr_tone',1),('@nr_structure',4)]),'neural percentage slider choices persist with their existing index encoding')
 check(not reloaded['Graphics']['checked'],'explicit Vulkan device index is not guessed from Windows display ordering')
 skip_env=os.environ.copy();skip_env.pop('BB_GPU_ID',None);skip_env['DRIVECLUB_FAKE_GPU_PROBLEM']='1'
 for mode in ('setting','file','environment'):

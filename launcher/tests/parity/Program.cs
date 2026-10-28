@@ -91,6 +91,19 @@ public static class Program
                 var combo = Desc(choiceView).OfType<ComboBox>().Single();
                 var unavailable = (ComboBoxItem)combo.Items[1];
                 Check(!unavailable.IsEnabled && (string)unavailable.ToolTip == "Unsupported GPU", "unavailable choices expose the backend reason and cannot be selected");
+                foreach (string tag in new[] { "@nr_intensity", "@nr_tone", "@nr_structure" })
+                {
+                    var amount = new Setting { Id = 9998, Label = "Amount", Kind = "Choice", Tag = tag, Selected = 2, Options = ["0%", "25%", "50%", "75%", "100%"] };
+                    var amountView = (FrameworkElement)Invoke(window, "SettingView", amount, 300d, false)!;
+                    var slider = Desc(amountView).OfType<Slider>().Single();
+                    var displayed = Desc(amountView).OfType<TextBlock>().Single(x => AutomationProperties.GetAutomationId(x) == "SettingValue9998");
+                    Check(slider.Minimum == 0 && slider.Maximum == 100 && slider.TickFrequency == 25 && slider.SmallChange == 25 && slider.IsSnapToTickEnabled && slider.Value == 50 && displayed.Text == "50%", tag + " displays a percentage slider with 25-point steps");
+                    foreach (int percent in new[] { 0, 25, 50, 75, 100 })
+                    {
+                        slider.Value = percent;
+                        Check(amount.Selected == percent / 25 && displayed.Text == percent + "%", tag + " preserves the existing index at " + percent + "%");
+                    }
+                }
                 state=JsonSerializer.Deserialize<LauncherState>(JsonSerializer.Serialize(state,Backend.JsonOptions),Backend.JsonOptions)!;
                 var physics=state.Controls.Single(c=>c.Tag=="@ffb:wheel_ffb_model");physics.Selected=0;
                 var response=await new Backend().Call("validate",state);Invoke(window,"Adopt",response);Invoke(window,"ShowPage",4,false);Set(window,"drivingSubpage",1);Invoke(window,"ShowPage",4,false);Invoke(window,"Adopt",response);await Idle();
