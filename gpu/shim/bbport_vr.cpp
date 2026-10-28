@@ -180,6 +180,9 @@ struct State {
     bool reproject_frame = false; // this frame's layer: both eyes at the frame's head
     bool cockpit_shown = false;
     long long cockpit_left_us = 0; // when the cockpit view was left last
+    long long tagged_us = 0;       // the last frame drawn from the driver's head camera (tagged)
+    bool cockpit_now = false;      // this frame's layer is the cockpit's (RecordFrame, for AfterSubmit)
+    long long untracked_us = 0;    // since when the head's position has not been tracked (the centre waits for it)
     // the recentred head
     bool have_centre = false;
     float centre_yaw = 0.0f;
@@ -2060,12 +2063,23 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
         ReadKeys();
         std::scoped_lock lock{head_mutex};
-        if (!st.have_centre) {
+        // The centre is taken where the head is tracked: the first frames after the start can hold a stand-in
+        // position (0, -1, 0: the menu below the seat). A runtime that never tracks it is centred after 3 s.
+        constexpr XrSpaceLocationFlags tracked =
+            XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+        const bool position_tracked = (location.locationFlags & tracked) == tracked;
+        if (position_tracked) {
+            st.untracked_us = 0;
+        } else if (!st.untracked_us) {
+            st.untracked_us = NowUs();
+        }
+        if (!st.have_centre && (position_tracked || NowUs() - st.untracked_us > 3000000)) {
             st.centre_yaw = Yaw(location.pose.orientation);
             st.centre_position = location.pose.position;
             st.have_centre = true;
-            std::printf("VR: recentred (the head at %.2f, %.2f, %.2f m in the room)\n", location.pose.position.x,
-                        location.pose.position.y, location.pose.position.z);
+            std::printf("VR: recentred (the head at %.2f, %.2f, %.2f m in the room%s)\n", location.pose.position.x,
+                        location.pose.position.y, location.pose.position.z,
+                        position_tracked ? "" : "; its position not tracked for 3 s");
         }
         head_now = location.pose;
         head_now_valid = true;
@@ -2126,7 +2140,14 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             }
         }
     }
-    const bool cockpit = Cockpit();
+    // The cockpit while the frames are the driver's head camera's (tagged): the hook also runs while another camera
+    // draws (the fly-by before a race, the car already on the track), whose frames go to the still screen.
+    const long long now_us = NowUs();
+    if (made && made->tagged) {
+        st.tagged_us = now_us;
+    }
+    const bool cockpit = Cockpit() && now_us - st.tagged_us <= 300000;
+    st.cockpit_now = cockpit;
     if (made && made->split && !cockpit) {
         // a still screen: the scene and the HUD together (the window has read it)
         source = made->whole.image;
@@ -2291,7 +2312,7 @@ void AfterSubmit() {
         st.image_acquired = false;
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         xr.ReleaseSwapchainImage(st.swapchain, &release);
-        const bool cockpit = Cockpit();
+        const bool cockpit = st.cockpit_now;
         if (cockpit != st.cockpit_shown) {
             st.cockpit_shown = cockpit;
             // Getting into the car (a race starts, a restart, another car): the player sits as they drive now, so the
@@ -2314,8 +2335,14 @@ void AfterSubmit() {
         float tan_x = tan_y * (game_aspect ? game_aspect : float(st.width) / float(st.height));
         if (cockpit) {
             // the scene's own field of view, from its projection (the picture's shape need not be the scene's)
-            tan_y = 1.0f / cockpit_y.load();
-            tan_x = cockpit_x.load() > 0.1f ? 1.0f / cockpit_x.load() : tan_y * float(st.width) / float(st.height);
+            // (with the runtime's eyes the cockpit's own projection is not seen: the scene hook's then; neither yet:
+            // the still screen's angles, not an endless field of view)
+            const float y_scale = cockpit_y.load() > 0.1f ? cockpit_y.load() : eye_y.load();
+            const float x_scale = cockpit_x.load() > 0.1f ? cockpit_x.load() : eye_x.load();
+            if (y_scale > 0.1f) {
+                tan_y = 1.0f / y_scale;
+                tan_x = x_scale > 0.1f ? 1.0f / x_scale : tan_y * float(st.width) / float(st.height);
+            }
             if (st.frame_tagged) {
                 pose = st.frame_pose; // the head this frame was drawn for
             } else if (!HeadAt(NowUs() - (long long)(settings.latency_ms * 1000.0f), pose)) {
