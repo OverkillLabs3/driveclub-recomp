@@ -453,7 +453,7 @@ public partial class MainWindow : Window
     private (double Width, double Height) SettingLabelSize(Setting setting, double width, bool quick)
     {
         bool neuralAmount = setting.Tag is "@nr_intensity" or "@nr_tone" or "@nr_structure";
-        double labelWidth = width - (setting.Kind == "Toggle" ? 42 : setting.Kind == "Slider" || neuralAmount ? SliderValueWidth(setting) + 12 : 0) - (setting.Details.Length == 0 ? 0 : 26);
+        double labelWidth = width - (setting.Kind == "Toggle" || setting.Tag == "@nr" ? 42 : setting.Kind == "Slider" || neuralAmount ? SliderValueWidth(setting) + 12 : 0) - (setting.Details.Length == 0 ? 0 : 26);
         var label = Text(setting.Label, quick ? 14 : 15);
         label.Measure(new Size(Math.Max(1, labelWidth), double.PositiveInfinity));
         return (labelWidth, Math.Max(quick ? 24 : 20, Math.Ceiling(label.DesiredSize.Height)));
@@ -462,7 +462,7 @@ public partial class MainWindow : Window
     {
         if (setting.Kind == "Action") return state.BenchmarkRanDetails.Count > 0 ? 288 : 242;
         double labelHeight = SettingLabelSize(setting, width, quick).Height;
-        if (setting.Kind == "Toggle") return Math.Max(52, labelHeight + 12);
+        if (setting.Kind == "Toggle" || setting.Tag == "@nr") return Math.Max(52, labelHeight + 12);
         return Math.Max(quick ? 76 : 82, labelHeight + (quick ? 52 : 62));
     }
     private void LayoutPage(Canvas canvas, int index, double availableWidth)
@@ -523,10 +523,13 @@ public partial class MainWindow : Window
             if (setting.Details.Length > 0) Place(row, SettingHelp(setting), labelSize.Width + 4, top + Math.Max(0, (boxHeight - 20) / 2), 20, 20);
         }
         FrameworkElement field;
-        if (setting.Kind == "Toggle")
+        int nextOption = setting.IsOn ? 0 : 1;
+        string toggleReason = setting.Tag == "@nr" && setting.OptionReasons.Count > nextOption ? setting.OptionReasons[nextOption] : "";
+        if (setting.Kind == "Toggle" || setting.Tag == "@nr")
         {
             Label((height - 4 - labelSize.Height) / 2, labelSize.Height);
-            var check = new CheckBox { ToolTip = setting.Hint, MinHeight = 0, Padding = new(0) };
+            var check = new CheckBox { ToolTip = toggleReason.Length == 0 ? setting.Hint : toggleReason, MinHeight = 0, Padding = new(0) };
+            if (setting.Tag == "@nr") ToolTipService.SetShowOnDisabled(check, true);
             check.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(Setting.IsOn)) { Source = setting, Mode = BindingMode.TwoWay }); field = check;
             Place(row, check, width - 31, (height - 4 - 24) / 2, 24, 24);
         }
@@ -589,9 +592,10 @@ public partial class MainWindow : Window
             Place(row, field, 0, fieldTop, width, 38);
         }
         if (!quick) Place(row, new Border { Background = Brush("#2E2E31") }, 0, height - 2, width, 1);
-        field.IsEnabled = setting.Enabled;
+        field.IsEnabled = setting.Enabled && toggleReason.Length == 0;
         AutomationProperties.SetName(field, setting.Label); AutomationProperties.SetAutomationId(field, (quick ? "Quick" : "Setting") + setting.Id);
-        row.ToolTip = setting.Hint; row.MouseEnter += (_, _) => ShowStatusHint(setting.Hint); row.MouseLeave += (_, _) => RestoreStatus();
+        string hint = toggleReason.Length == 0 ? setting.Hint : toggleReason;
+        row.ToolTip = hint; row.MouseEnter += (_, _) => ShowStatusHint(hint); row.MouseLeave += (_, _) => RestoreStatus();
         return row;
     }
     private (string[] Labels, string[] Values, double LabelWidth, double ValueOffset, double Width) MeasureGameStatus(double availableWidth)

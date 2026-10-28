@@ -91,6 +91,20 @@ public static class Program
                 var combo = Desc(choiceView).OfType<ComboBox>().Single();
                 var unavailable = (ComboBoxItem)combo.Items[1];
                 Check(!unavailable.IsEnabled && (string)unavailable.ToolTip == "Unsupported GPU", "unavailable choices expose the backend reason and cannot be selected");
+                var neural = new Setting { Id = 9997, Label = "Neural Rendering", Kind = "Choice", Tag = "@nr", Options = ["Off", "On"], OptionReasons = ["", ""] };
+                var neuralCheck = Desc((FrameworkElement)Invoke(window, "SettingView", neural, 300d, false)!).OfType<CheckBox>().Single();
+                Check(neuralCheck.IsEnabled && neuralCheck.IsChecked == false, "Neural Rendering off is an enabled unchecked checkbox");
+                neuralCheck.IsChecked = true;
+                Check(neural.Selected == 1, "checking Neural Rendering preserves on index");
+                neural.OptionReasons = ["", "Unsupported GPU"];
+                neuralCheck = Desc((FrameworkElement)Invoke(window, "SettingView", neural, 300d, false)!).OfType<CheckBox>().Single();
+                Check(neuralCheck.IsEnabled && neuralCheck.IsChecked == true, "Neural Rendering can be turned off when on becomes unsupported");
+                neuralCheck.IsChecked = false;
+                Check(neural.Selected == 0, "unchecking Neural Rendering preserves off index");
+                neuralCheck = Desc((FrameworkElement)Invoke(window, "SettingView", neural, 300d, false)!).OfType<CheckBox>().Single();
+                Check(!neuralCheck.IsEnabled && (string)neuralCheck.ToolTip == "Unsupported GPU" && ToolTipService.GetShowOnDisabled(neuralCheck), "unavailable Neural Rendering shows its reason and cannot be turned on");
+                var upstreamChoice = new Setting { Id = 9996, Label = "Other On/Off", Kind = "Choice", Tag = "@upstream", Options = ["Off", "On"] };
+                Check(Desc((FrameworkElement)Invoke(window, "SettingView", upstreamChoice, 300d, false)!).OfType<ComboBox>().Any(), "upstream On/Off choices remain unchanged");
                 foreach (string tag in new[] { "@nr_intensity", "@nr_tone", "@nr_structure" })
                 {
                     var amount = new Setting { Id = 9998, Label = "Amount", Kind = "Choice", Tag = tag, Selected = 2, Options = ["0%", "25%", "50%", "75%", "100%"] };
