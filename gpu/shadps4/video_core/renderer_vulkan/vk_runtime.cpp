@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -255,6 +256,7 @@ Runtime::TransferMark::~TransferMark() {
 
 void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
                           std::span<const vk::BufferImageCopy> upload_copies) {
+    upload_copies = Vr::Multiview::StereoUploads(*dst, upload_copies); // VR multiview: both eyes
     SetBackingSamples(dst, dst->info.num_samples, false);
     scheduler.EndRendering();
     const TransferMark mark{*this, "image upload", *dst};
@@ -406,6 +408,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         FlushBarriers();
     }
 
+    Vr::Multiview::StereoCopies(*src, *dst, regions); // VR multiview: the right eye's layer
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
                       regions](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
@@ -523,10 +526,12 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
         FlushBarriers();
     }
 
+    boost::container::small_vector<vk::ImageCopy, 2> copies{image_copy}; // VR multiview: the right eye's layer
+    Vr::Multiview::StereoCopies(*src, *dst, copies);
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
-                      image_copy](vk::CommandBuffer cmdbuf) {
+                      copies](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                         vk::ImageLayout::eTransferDstOptimal, image_copy);
+                         vk::ImageLayout::eTransferDstOptimal, copies);
     });
 
     dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
@@ -894,6 +899,11 @@ bool Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         blit_helper->ReinterpretColorAsMsDepth(
             dst->info.size.width, dst->info.size.height, dst->info.num_samples,
             src->info.pixel_format, dst->info.pixel_format, src->GetImage(), dst->GetImage());
+        if (Vr::Multiview::Stereo(*dst)) { // VR multiview: the right eye's layer (the source's, or its only one)
+            blit_helper->ReinterpretColorAsMsDepth(
+                dst->info.size.width, dst->info.size.height, dst->info.num_samples, src->info.pixel_format,
+                dst->info.pixel_format, src->GetImage(), dst->GetImage(), Vr::Multiview::Stereo(*src) ? 1 : 0, 1);
+        }
         return true;
     } else if (src->info.props.is_depth && src->info.num_samples > 1 && !dst->info.props.is_depth &&
                dst->info.num_samples == 1 && src->info.size.width == dst->info.size.width &&
@@ -965,10 +975,12 @@ void Runtime::CopyDepthStencil(VideoCore::Image* src, VideoCore::Image* dst, vk:
         .extent = {dst->info.size.width, dst->info.size.height, 1},
     };
 
+    boost::container::small_vector<vk::ImageCopy, 2> copies{region}; // VR multiview: the right eye's layer
+    Vr::Multiview::StereoCopies(*src, *dst, copies);
     scheduler.Record([src_image = src->GetImage(), dst_image = dst->GetImage(),
-                      region](vk::CommandBuffer cmdbuf) {
+                      copies](vk::CommandBuffer cmdbuf) {
         cmdbuf.copyImage(src_image, vk::ImageLayout::eTransferSrcOptimal, dst_image,
-                         vk::ImageLayout::eTransferDstOptimal, region);
+                         vk::ImageLayout::eTransferDstOptimal, copies);
     });
 
     dst->flags |= VideoCore::ImageFlagBits::GpuModified;
@@ -994,7 +1006,8 @@ void Runtime::ResolveImage(VideoCore::Image* src, VideoCore::Image* dst,
         FlushBarriers();
     }
 
-    const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, 1);
+    const auto [src_layers, dst_layers] = Vr::Multiview::ResolveLayers(
+        *src, *dst, SanitizeCopyLayers(src->info, dst->info, 1)); // VR multiview: both eyes
     if (!needs_resolve) {
         const vk::ImageCopy region = {
             .srcSubresource{
