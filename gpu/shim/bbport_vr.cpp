@@ -144,6 +144,9 @@ struct Settings {
     bool ipd_set = false; // ipd given in vr.ini
     float screen_distance = 2.0f;
     int reproject = 0;
+    // diagnostics, without a headset too: draw_trace = 1 (DrawTrace), hide_shader = <hex> ... (HiddenShader)
+    bool draw_trace = false;
+    uint64_t hidden[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     // and the turn compensation, the reprojection, the DLSS model
     int keys[10] = {'0', '2', '1', '5', '6', '4', '3', '9', '8', '7'};
@@ -197,6 +200,8 @@ std::atomic<bool> active{false};
 // The eyes made from depth (reproject, key_reproject): 0 off, 1 the other eye from each alternate frame, 2 both eyes
 // from a frame drawn between them.
 std::atomic<int> reproject_mode{0};
+// draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
+std::atomic<int> eye_shifts{0};
 std::string instance_extension_storage, device_extension_storage;
 std::deque<std::string> extension_names;
 
@@ -319,6 +324,20 @@ void ReadSettings() {
             BbSettings::Get().dlss_model = c == 'k' ? 11 : c == 'l' ? 12 : c == 'm' ? 13 : 0;
             continue;
         }
+        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 4, hex)
+        char list[200] = "";
+        if (std::sscanf(line, " hide_shader = %199[^\r\n#]", list) == 1) {
+            char* at = list;
+            for (uint64_t& hash : settings.hidden) {
+                while (*at == ' ' || *at == ',' || *at == '\t') ++at;
+                char* end = at;
+                hash = std::strtoull(at, &end, 16);
+                if (end == at) break;
+                std::printf("VR: draws with shader %llx are hidden (hide_shader)\n", (unsigned long long)hash);
+                at = end;
+            }
+            continue;
+        }
         float value = 0;
         if (std::sscanf(line, " %63[a-z_] = %f", key, &value) != 2) {
             continue;
@@ -329,6 +348,7 @@ void ReadSettings() {
         else if (k == "smoothing") settings.smoothing = value != 0;
         else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
+        else if (k == "draw_trace") settings.draw_trace = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
         else if (k == "seat_x") settings.seat[0] = value;
@@ -639,6 +659,7 @@ struct CameraState {
     float seat_point[3]{};
     long long seat_time_us = 0;
     int next_eye = 0;
+    int eye_shifts = 0; // the eye_shifts taken
     float diag_eye[3]{};
     long long diag_us = 0;
 };
@@ -767,6 +788,10 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     // the left eye is on its + side).
     int eye = -1;
     if (settings.afr && reproject_mode.load(std::memory_order_relaxed) != 2) {
+        if (state.eye_shifts != eye_shifts.load(std::memory_order_relaxed)) {
+            state.eye_shifts = eye_shifts.load(std::memory_order_relaxed);
+            state.next_eye ^= 1; // the same eye as the last call: the order moves by one frame
+        }
         eye = state.next_eye;
         state.next_eye ^= 1;
         const float side = eye == 0 ? settings.ipd * 0.5f : -settings.ipd * 0.5f;
@@ -1508,6 +1533,14 @@ void ReadKeys() {
         }
         was[k] = down;
     }
+    static bool was_shift = false;
+    const bool shift_down = settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+    if (shift_down && !was_shift) {
+        const int shifts = ++eye_shifts;
+        std::printf("VR trace: the eyes' order moved by one frame (%d): each eye now gets the frames the other got\n",
+                    shifts);
+    }
+    was_shift = shift_down;
 #endif
 }
 
@@ -1694,6 +1727,22 @@ void NoteCameraConstants(const float* data) {
 // ---- the HUD apart -----------------------------------------------------------------------------------------------------
 bool HudLayer() {
     return Active() && settings.hud_layer && gpu.ready && gpu.hud_pipeline;
+}
+
+bool DrawTrace() {
+    return Wanted() && settings.draw_trace;
+}
+
+bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
+    if (!settings.hidden[0]) {
+        return false;
+    }
+    for (const uint64_t hash : settings.hidden) {
+        if (hash && (hash == vs_hash || hash == ps_hash)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool SceneOverlay(uint64_t vs_hash) {

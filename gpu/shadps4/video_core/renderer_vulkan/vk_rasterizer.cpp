@@ -1282,6 +1282,205 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
     DrawRecord(pipeline, used_prepared, is_indexed, index_offset);
 }
 
+// VR diagnostics (vr.ini draw_trace = 1, without a headset too), on the recording thread. Every 10 s one frame's draws
+// into the display buffer, from the scene's composite on: where the HUD starts (the VR split) and what is drawn
+// before it. And over 600 frames the shaders drawn in only one of the two kinds of frames: in VR the eyes' frames,
+// otherwise even and odd frames (something the game draws every other frame lands in one eye only).
+class VrDrawTrace {
+public:
+    void Draw(const GraphicsPipeline* pipeline, u32 indices, bool display, bool frame_start, u32 display_draws,
+              u32 target_width, u32 target_height, bool color, const float* viewport) {
+        const u64 vs = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+        u64 ps = 0;
+        if (const Shader::Info* info = pipeline->GetStages()[u32(Shader::SwStage::Fragment)]) {
+            ps = info->pgm_hash;
+        }
+        if (frame_start) {
+            EndFrame();
+            if (logging) {
+                // the draws before the composite: what the scene's last passes draw (the minimap's track is one)
+                std::printf("VR trace: the last %u draws before the composite (oldest first):\n", recent_count);
+                for (u32 i = 0; i < recent_count; ++i) {
+                    const Recent& r = recent[(recent_next + 64 - recent_count + i) % 64];
+                    std::printf("VR trace:   vs %llx ps %llx, %u indices, into %ux%u\n", (unsigned long long)r.vs,
+                                (unsigned long long)r.ps, r.indices, r.width, r.height);
+                }
+            }
+            recent_count = 0;
+            if (logging) {
+                // colour draws into a part of a big target (a viewport): a corner picture such as the minimap's
+                std::printf("VR trace: colour draws into a part of their target, last frame (%zu):\n", parts_shown.size());
+                for (const Part& part : parts_shown) {
+                    std::printf("VR trace:   vs %llx ps %llx, %u draws (%u indices), viewport %d,%d %dx%d of %ux%u\n",
+                                (unsigned long long)part.vs, (unsigned long long)part.ps, part.draws, part.indices,
+                                part.x, part.y, part.w, part.h, part.target_width, part.target_height);
+                }
+            }
+        }
+        if (std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 3) {
+            scene = true; // a G-buffer pass: a 3D frame
+        }
+        if (!display) {
+            auto& use = frame[(vs << 32) ^ ps];
+            use.vs = vs, use.ps = ps;
+            ++use.draws;
+            use.indices += indices;
+            ++gap;
+            pending = false;
+            recent[recent_next] = {vs, ps, indices, target_width, target_height};
+            recent_next = (recent_next + 1) % 64;
+            recent_count = std::min(recent_count + 1, 64u);
+            const int w = int(2.0f * std::fabs(viewport[0])), h = int(2.0f * std::fabs(viewport[2]));
+            if (color && target_width >= 1000 && w > 0 && w < int(target_width) / 2) {
+                const int x = int(viewport[1] - std::fabs(viewport[0])), y = int(viewport[3] - std::fabs(viewport[2]));
+                Part* found = nullptr;
+                for (Part& part : parts) {
+                    if (part.vs == vs && part.ps == ps && part.x == x && part.y == y && part.w == w && part.h == h) {
+                        found = &part;
+                    }
+                }
+                if (!found && parts.size() < 24) {
+                    found = &parts.emplace_back(Part{vs, ps, 0, 0, x, y, w, h, target_width, target_height});
+                }
+                if (found) {
+                    ++found->draws;
+                    found->indices += indices;
+                }
+            }
+            return;
+        }
+        if (display_draws == 2) {
+            pending = true;
+        }
+        const bool split = pending && !BbVr::SceneOverlay(vs);
+        if (split) {
+            pending = false;
+        }
+        if (logging && logged < 48) {
+            ++logged;
+            std::printf("VR trace: display draw %u: vs %llx ps %llx, %u indices, %u other draws before it%s%s\n",
+                        logged, (unsigned long long)vs, (unsigned long long)ps, indices, gap,
+                        BbVr::SceneOverlay(vs) ? " (scene overlay)" : "", split ? " <- the HUD starts here" : "");
+        }
+        gap = 0;
+    }
+
+private:
+    struct Use {
+        u64 vs = 0, ps = 0;
+        u32 frames[2]{};
+        u64 draws[2]{}, indices[2]{};
+    };
+    struct Part {
+        u64 vs = 0, ps = 0;
+        u32 draws = 0, indices = 0;
+        int x = 0, y = 0, w = 0, h = 0;
+        u32 target_width = 0, target_height = 0;
+    };
+    struct Recent {
+        u64 vs = 0, ps = 0;
+        u32 indices = 0, width = 0, height = 0;
+    };
+    struct FrameUse {
+        u64 vs = 0, ps = 0;
+        u32 draws = 0;
+        u64 indices = 0;
+    };
+
+    void EndFrame() {
+        const auto now = std::chrono::steady_clock::now();
+        if (logging) {
+            logging = false;
+            std::printf("VR trace: end of the frame (%u display draws)\n", logged);
+        }
+        // the frame that ends here: its eye (its camera found in the G-buffer pass) or its parity
+        const int eye = BbVr::DrawnEye();
+        const int kind = eye >= 0 ? eye : int(frame_index++ & 1);
+        const bool vr = eye >= 0;
+        if (scene && (vr != vr_window || frames[0] + frames[1] == 0)) {
+            uses.clear();
+            frames[0] = frames[1] = 0;
+            vr_window = vr;
+        }
+        if (scene) {
+            ++frames[kind];
+            for (const auto& [key, f] : frame) {
+                auto& use = uses[key];
+                use.vs = f.vs, use.ps = f.ps;
+                ++use.frames[kind];
+                use.draws[kind] += f.draws;
+                use.indices[kind] += f.indices;
+            }
+            if (now - last_sequence > std::chrono::seconds(10)) {
+                last_sequence = now;
+                logging = true;
+                logged = 0;
+                std::printf("VR trace: a 3D frame's draws into the display buffer, from the composite on:\n");
+            }
+        }
+        frame.clear();
+        if (scene) {
+            parts_shown.swap(parts);
+        }
+        parts.clear();
+        scene = false;
+        gap = 0;
+        pending = false;
+        if (frames[0] + frames[1] >= 600) {
+            Report();
+            uses.clear();
+            frames[0] = frames[1] = 0;
+        }
+    }
+
+    void Report() {
+        const char* names[2] = {vr_window ? "left" : "even", vr_window ? "right" : "odd"};
+        struct Line {
+            float score;
+            const Use* use;
+        };
+        std::vector<Line> lines;
+        for (const auto& [key, use] : uses) {
+            const float a = float(use.draws[0]) / float(std::max(frames[0], 1u));
+            const float b = float(use.draws[1]) / float(std::max(frames[1], 1u));
+            const float high = std::max(a, b), low = std::min(a, b);
+            // or as many draws, but of other sizes (an object drawn with a shared shader in one eye only)
+            const float ia = float(use.indices[0]) / float(std::max(frames[0], 1u));
+            const float ib = float(use.indices[1]) / float(std::max(frames[1], 1u));
+            const float ihigh = std::max(ia, ib), ilow = std::min(ia, ib);
+            if ((high >= 0.5f && low < 0.6f * high) || (ihigh >= 100.0f && ilow < 0.8f * ihigh)) {
+                lines.push_back({ihigh > 0.0f ? 1.0f - ilow / ihigh : 0.0f, &use});
+            }
+        }
+        std::sort(lines.begin(), lines.end(), [](const Line& x, const Line& y) { return x.score > y.score; });
+        std::printf("VR trace: %u %s and %u %s frames, %zu shader pairs drawn much more in one kind%s\n", frames[0],
+                    names[0], frames[1], names[1], lines.size(), lines.empty() ? "" : ":");
+        for (size_t i = 0; i < lines.size() && i < 12; ++i) {
+            const Use& u = *lines[i].use;
+            std::printf("VR trace:   vs %llx ps %llx: %s %.2f draws (%.0f indices) a frame, in %.0f%% of them; "
+                        "%s %.2f (%.0f), in %.0f%%\n",
+                        (unsigned long long)u.vs, (unsigned long long)u.ps, names[0],
+                        float(u.draws[0]) / float(std::max(frames[0], 1u)),
+                        float(u.indices[0]) / float(std::max(frames[0], 1u)),
+                        100.0f * float(u.frames[0]) / float(std::max(frames[0], 1u)), names[1],
+                        float(u.draws[1]) / float(std::max(frames[1], 1u)),
+                        float(u.indices[1]) / float(std::max(frames[1], 1u)),
+                        100.0f * float(u.frames[1]) / float(std::max(frames[1], 1u)));
+        }
+    }
+
+    std::unordered_map<u64, FrameUse> frame;
+    std::unordered_map<u64, Use> uses;
+    u32 frames[2]{};
+    u64 frame_index = 0;
+    bool vr_window = false, scene = false, logging = false, pending = false;
+    u32 logged = 0, gap = 0;
+    Recent recent[64];
+    std::vector<Part> parts, parts_shown;
+    u32 recent_next = 0, recent_count = 0;
+    std::chrono::steady_clock::time_point last_sequence{};
+};
+
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
     buffer_cache.ApplyQueuedStores(); // bbport: guest stores emulated since the last recording
@@ -1345,6 +1544,22 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             static const char* scene_debug = BB_DIAGNOSTIC_ENV("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
+        }
+    }
+    if (BbVr::DrawTrace()) {
+        static VrDrawTrace trace;
+        const bool color = bool(regs.color_buffers[0]);
+        trace.Draw(pipeline, regs.num_indices, display_draw, frame_display, fg_display_draws,
+                   color ? regs.color_buffers[0].Pitch() : regs.depth_buffer.Pitch(),
+                   color ? regs.color_buffers[0].Height() : regs.depth_buffer.Height(), color,
+                   std::array<float, 4>{regs.viewports[0].xscale, regs.viewports[0].xoffset,
+                                        regs.viewports[0].yscale, regs.viewports[0].yoffset}.data());
+    }
+    {
+        const Shader::Info* fragment = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        if (BbVr::HiddenShader(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                               fragment ? fragment->pgm_hash : 0)) {
+            return; // VR diagnostics: hide_shader
         }
     }
     bind_prepared = used_prepared;

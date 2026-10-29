@@ -51,6 +51,11 @@ void CapturePicture(const char* path);
 /// nearest call's distance. For DLSS per eye: the camera of the very frame being upscaled.
 int EyeAt(const float* position, float& distance);
 bool SceneOverlay(uint64_t vs_hash);
+/// Diagnostics (vr.ini, without a headset too): draw_trace = 1 logs one frame's draws into the display buffer every
+/// 10 s and the shaders drawn in only one eye's frames (without VR: only every other frame).
+bool DrawTrace();
+/// vr.ini hide_shader = <hex> ...: draws with one of these vertex or pixel shaders are skipped.
+bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash);
 bool SceneDrawn();
 /// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.
 void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height, VkImage depth,
