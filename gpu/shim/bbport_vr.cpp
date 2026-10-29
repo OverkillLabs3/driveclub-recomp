@@ -35,8 +35,9 @@
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
 //   runtime_fov = 1      the driver's head camera draws each eye with the field of view the runtime gives that eye
-//                        (often lopsided: wider outwards) and the eyes as far apart as the runtime says (ipd, when
-//                        set here, wins); 0: one symmetric field of view (cockpit_vfov) for both eyes
+//                        (often lopsided: wider outwards; drawn symmetric, each side as wide as the wider one) and the
+//                        eyes as far apart as the runtime says (ipd, when set here, wins); 0: one symmetric field of
+//                        view (cockpit_vfov) for both eyes
 //   screen_quad = 1      the still screen is a panel in the room (an OpenXR quad layer, screen_distance = 2 m
 //                        ahead); 0: a picture stated at the recentred head (some runtimes keep it on the face)
 //   latency_ms = 33      only for a frame whose camera was not found: the head pose of that long ago is stated
@@ -840,11 +841,52 @@ std::atomic<uint32_t> camera_copy_next{0};
 // The runtime's eyes (xrLocateViews, runtime_fov): each eye of the driver's head camera is drawn with its own field
 // of view, and the layer states it.
 std::mutex runtime_eye_mutex;
-XrFovf runtime_eye_fov[2]{};
+XrFovf runtime_eye_fov[2]{};   // drawn with: SymmetricFov of the runtime's
+XrFovf runtime_eye_exact[2]{}; // the runtime's own
 std::atomic<bool> runtime_eye_known{false};
 std::atomic<float> game_vfov{90.0f};         // the head camera's vertical angle the game is asked for (the FOV float)
 std::atomic<long long> eye_fov_us{0};        // the scene hook last drew the head camera with the runtime's eyes
 std::atomic<float> eye_x{0}, eye_y{0}, eye_z22{0}, eye_z32{0}; // that projection's terms
+
+// An eye's field of view made symmetric, each side as wide as its wider one: the game's shaders take the projection's
+// centre for the picture's (an off-centre one lost the power lines in the left eye, and things rebuilt from depth were
+// a little off). The layer gives the runtime just its own part of the picture (EyeCrop).
+XrFovf SymmetricFov(const XrFovf& f) {
+    const float x = std::max(-f.angleLeft, f.angleRight), y = std::max(f.angleUp, -f.angleDown);
+    return {-x, x, y, -y};
+}
+
+// The part of a picture of `eye` (drawn with SymmetricFov) that is the runtime's own field of view for it, in pixels of
+// a `width` x `height` picture (x, y, width, height), and that part's exact angles. Meta's runtime shows a picture at
+// its own angles whatever the layer states (the symmetric picture squinted there), so the layer gives it just these.
+bool EyeCrop(int eye, uint32_t width, uint32_t height, int32_t rect[4], XrFovf& out) {
+    if (eye < 0 || !settings.runtime_fov || !runtime_eye_known.load()) {
+        return false;
+    }
+    XrFovf drawn, exact;
+    {
+        std::scoped_lock lock{runtime_eye_mutex};
+        drawn = runtime_eye_fov[eye & 1], exact = runtime_eye_exact[eye & 1];
+    }
+    const float tx = std::tan(drawn.angleRight), ty = std::tan(drawn.angleUp);
+    if (tx <= 0.0f || ty <= 0.0f) {
+        return false;
+    }
+    // tangents across the picture: x from -tx (left edge) to tx, y from ty (top row) to -ty
+    const auto column = [&](float t) { return int32_t(std::lround((t + tx) / (2.0f * tx) * float(width))); };
+    const auto row = [&](float t) { return int32_t(std::lround((ty - t) / (2.0f * ty) * float(height))); };
+    const int32_t x0 = std::clamp(column(std::tan(exact.angleLeft)), 0, int32_t(width) - 1);
+    const int32_t x1 = std::clamp(column(std::tan(exact.angleRight)), x0 + 1, int32_t(width));
+    const int32_t y0 = std::clamp(row(std::tan(exact.angleUp)), 0, int32_t(height) - 1);
+    const int32_t y1 = std::clamp(row(std::tan(exact.angleDown)), y0 + 1, int32_t(height));
+    rect[0] = x0, rect[1] = y0, rect[2] = x1 - x0, rect[3] = y1 - y0;
+    // the angles of the whole pixels kept
+    out.angleLeft = std::atan(-tx + 2.0f * tx * float(x0) / float(width));
+    out.angleRight = std::atan(-tx + 2.0f * tx * float(x1) / float(width));
+    out.angleUp = std::atan(ty - 2.0f * ty * float(y0) / float(height));
+    out.angleDown = std::atan(ty - 2.0f * ty * float(y1) / float(height));
+    return true;
+}
 
 // Both eyes' fields of view together (the middle camera of reproject = 2).
 XrFovf UnionFov(const XrFovf& a, const XrFovf& b) {
@@ -2172,7 +2214,8 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             st.eyes[0] = located[0], st.eyes[1] = located[1];
             {
                 std::scoped_lock lock{runtime_eye_mutex};
-                runtime_eye_fov[0] = located[0].fov, runtime_eye_fov[1] = located[1].fov;
+                runtime_eye_fov[0] = SymmetricFov(located[0].fov), runtime_eye_fov[1] = SymmetricFov(located[1].fov);
+                runtime_eye_exact[0] = located[0].fov, runtime_eye_exact[1] = located[1].fov;
             }
             runtime_eye_known = located[0].fov.angleRight > located[0].fov.angleLeft;
             const XrVector3f a = located[0].pose.position, b = located[1].pose.position;
@@ -2471,6 +2514,13 @@ void AfterSubmit() {
                 XrFovf own{};
                 if ((st.reproject_frame || st.afr_frame) && EyeFov(drawn, own)) {
                     v.fov = own;
+                    int32_t crop[4];
+                    if (EyeCrop(drawn, st.width, st.height, crop, own)) {
+                        v.fov = own; // just the runtime's own angles of the picture
+                        v.subImage.imageRect.offset.x += crop[0];
+                        v.subImage.imageRect.offset.y += crop[1];
+                        v.subImage.imageRect.extent = {crop[2], crop[3]};
+                    }
                 }
             }
             v.subImage.swapchain = st.swapchain;
