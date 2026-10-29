@@ -1808,9 +1808,11 @@ void NoteCameraConstants(const float* data) {
         bool ok = true;
         for (int k = 0; k < 3; ++k) b[2][k] = rows[2][k];
         ok = ok && unit(b[2]);
+        // x without z, then y without z and x (Gram-Schmidt)
         for (int i = 0; i < 2 && ok; ++i) {
             for (int k = 0; k < 3; ++k) b[i][k] = rows[i][k];
-            for (int j = 2; j > i; --j) {
+            for (const int j : {2, 0}) {
+                if (j == i || (i == 0 && j == 0)) continue;
                 const float d = dot3(b[i], b[j]);
                 for (int k = 0; k < 3; ++k) b[i][k] -= d * b[j][k];
             }
