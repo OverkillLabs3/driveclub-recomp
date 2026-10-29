@@ -76,6 +76,7 @@
 #include <initializer_list>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <openxr/openxr.h>
@@ -1545,6 +1546,15 @@ void ReadKeys() {
     const bool pose_down = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
     if (pose_down && !was_pose) {
         settings.frame_pose = settings.frame_pose == 1 ? 2 : settings.frame_pose == 2 ? 0 : 1;
+        // heard in the headset: 1 high beep on, 2 the opposite way, 3 low ones off
+        const int mode = settings.frame_pose;
+        std::thread([mode] {
+            const int beeps = mode == 1 ? 1 : mode == 2 ? 2 : 3;
+            for (int i = 0; i < beeps; ++i) {
+                Beep(mode == 0 ? 440 : 1000, 120);
+                Sleep(80);
+            }
+        }).detach();
         std::printf("VR: the frame's own turn in the stated pose %s (key =)\n", settings.frame_pose == 1 ? "on" : settings.frame_pose == 2 ? "on, the opposite way" : "off");
     }
     was_pose = pose_down;
