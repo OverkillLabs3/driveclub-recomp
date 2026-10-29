@@ -50,6 +50,8 @@ struct ImageSpecialization {
     bool is_storage = false;
     bool is_cube = false;
     bool is_srgb = false;
+    bool has_mip_chain = false;
+    bool is_bc5 = false;
     AmdGpu::CompMapping dst_select{};
     AmdGpu::NumberConversion num_conversion{};
     // FIXME any pipeline cache changes needed?
@@ -69,6 +71,10 @@ struct SamplerSpecialization {
     u8 force_unnormalized : 1;
     u8 force_degamma : 1;
     u8 disable_cube_wrap : 1;
+    u8 repeat_x : 1;
+    u8 repeat_y : 1;
+    u8 mirror_x : 1;
+    u8 mirror_y : 1;
 
     bool operator==(const SamplerSpecialization&) const = default;
 };
@@ -142,6 +148,8 @@ struct StageSpecialization {
                              spec.dst_select = sharp.DstSelect();
                          } else {
                              spec.is_srgb = sharp.GetNumberFmt() == AmdGpu::NumberFormat::Srgb;
+                             spec.has_mip_chain = sharp.NumLevels() > 1;
+                             spec.is_bc5 = sharp.GetDataFmt() == AmdGpu::DataFormat::FormatBc5;
                          }
                          spec.num_conversion = sharp.GetNumberConversion();
                          spec.num_bindings = desc.NumBindings(*info);
@@ -156,6 +164,10 @@ struct StageSpecialization {
                          spec.force_unnormalized = sharp.force_unnormalized;
                          spec.force_degamma = sharp.force_degamma;
                          spec.disable_cube_wrap = sharp.disable_cube_wrap;
+                         spec.repeat_x = sharp.clamp_x == AmdGpu::ClampMode::Wrap || sharp.clamp_x == AmdGpu::ClampMode::Mirror;
+                         spec.repeat_y = sharp.clamp_y == AmdGpu::ClampMode::Wrap || sharp.clamp_y == AmdGpu::ClampMode::Mirror;
+                         spec.mirror_x = sharp.clamp_x == AmdGpu::ClampMode::Mirror;
+                         spec.mirror_y = sharp.clamp_y == AmdGpu::ClampMode::Mirror;
                      });
 
         // Initialize runtime_info fields that rely on analysis in tessellation passes

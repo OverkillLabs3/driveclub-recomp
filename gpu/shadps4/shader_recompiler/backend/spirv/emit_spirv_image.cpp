@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <boost/container/static_vector.hpp>
+#include "bbport_settings.h"
+#include "world_repeat_policy.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/native_cube_coords.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
@@ -81,37 +83,170 @@ Id EmitImageSampleRaw(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address1,
     UNREACHABLE_MSG("Unreachable instruction");
 }
 
-Id EmitImageSampleImplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id bias,
-                              const IR::Value& offset) {
-    const auto& texture = ctx.images[handle & 0xFFFF];
-    const Id image = ctx.OpLoad(texture.image_type, texture.id);
-    const Id result_type = texture.data_types->Get(4);
-    const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
-    const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
-    ImageOperands operands;
-    operands.Add(spv::ImageOperandsMask::Bias, bias);
-    operands.AddOffset(ctx, offset);
-    const Id sample = ctx.OpImageSampleImplicitLod(result_type, sampled_image, coords,
-                                                   operands.mask, operands.operands);
-    return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : sample;
+// Startup-only setting: the shader cache separates the enabled and disabled
+// modes.
+static bool GlobalRepeatEnabled() { return BbSettings::Get().startup_texture_repetition; }
+
+void PrepareWorldRepeat(const IR::Program& program) {
+    WorldRepeat::selected.clear();
+    if (GlobalRepeatEnabled())
+        WorldRepeat::Prepare(program);
 }
 
-Id EmitImageSampleExplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id lod,
-                              const IR::Value& offset) {
-    const auto& texture = ctx.images[handle & 0xFFFF];
-    const Id image = ctx.OpLoad(texture.image_type, texture.id);
-    const Id result_type = texture.data_types->Get(4);
-    const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
-    const Id sampled_image = ctx.OpSampledImage(texture.sampled_type, image, sampler);
-    if (texture.native_cube) {
-        coords = NativeCubeCoordinates(ctx, coords);
+static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id shader_bias,
+                            const IR::Value& offset, Id original, Id provided_dx = {},
+                            Id provided_dy = {}) {
+    if (!GlobalRepeatEnabled() || !WorldRepeat::selected.contains(inst) ||
+        ctx.sw_stage != SwStage::Fragment || !offset.IsEmpty())
+        return original;
+    const auto& tex = ctx.images[handle & 0xffff];
+    if (tex.is_integer || tex.is_storage || tex.native_cube ||
+        (tex.view_type != AmdGpu::ImageType::Color2D &&
+         tex.view_type != AmdGpu::ImageType::Color2DArray))
+        return original;
+    const auto& ir_image = ctx.info.images[handle & 0xffff];
+    const auto sharp = ir_image.GetSharp(ctx.info);
+    const auto& ir_sampler = ctx.info.samplers[handle >> 16];
+    const auto samp = ir_sampler.GetSharp(ctx.info);
+    if (ir_sampler.is_depth || samp.force_unnormalized || sharp.NumLevels() <= 1)
+        return original;
+    const auto wraps = [](auto mode) {
+        return mode == AmdGpu::ClampMode::Wrap || mode == AmdGpu::ClampMode::Mirror;
+    };
+    const bool rx = wraps(samp.clamp_x), ry = wraps(samp.clamp_y);
+    if (!rx && !ry)
+        return original;
+    const auto F = ctx.F32[1], V = ctx.F32[2], C = ctx.F32[4], U = ctx.U32[1];
+    const auto f = [&](float x) { return ctx.ConstF32(x); };
+    const auto v = [&](Id x, Id y) { return ctx.OpCompositeConstruct(V, x, y); };
+    const auto splat = [&](Id x) { return ctx.OpCompositeConstruct(C, x, x, x, x); };
+    const Id uv = ctx.OpVectorShuffle(V, coords, coords, 0, 1);
+    Id dx = Sirit::ValidId(provided_dx) ? provided_dx : ctx.OpDPdx(V, uv);
+    Id dy = Sirit::ValidId(provided_dy) ? provided_dy : ctx.OpDPdy(V, uv);
+    const Id footprint = ctx.OpFMax(F, ctx.OpLength(F, dx), ctx.OpLength(F, dy));
+    Id amount = ctx.OpFClamp(
+        F,
+        ctx.OpFMul(F, ctx.OpFAdd(F, ctx.OpLog2(F, ctx.OpFMax(F, footprint, f(1e-12f))), f(9)),
+                   f(.25f)),
+        f(0), f(1));
+    amount = ctx.OpFMul(F, ctx.OpFMul(F, amount, amount),
+                        ctx.OpFSub(F, f(3), ctx.OpFMul(F, f(2), amount)));
+    // Bias supplied by the guest instruction belongs in the footprint too.
+    if (Sirit::ValidId(shader_bias)) {
+        const Id scale = ctx.OpExp2(F, shader_bias);
+        dx = ctx.OpVectorTimesScalar(V, dx, scale);
+        dy = ctx.OpVectorTimesScalar(V, dy, scale);
     }
-    ImageOperands operands;
-    operands.Add(spv::ImageOperandsMask::Lod, lod);
-    operands.AddOffset(ctx, offset);
-    const Id sample = ctx.OpImageSampleExplicitLod(result_type, sampled_image, coords,
-                                                   operands.mask, operands.operands);
-    return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : sample;
+    const Id cell = ctx.OpFloor(V, uv), frac = ctx.OpFSub(V, uv, cell);
+    const auto component = [&](Id x, u32 i) { return ctx.OpCompositeExtract(F, x, i); };
+    const auto smooth = [&](Id x) {
+        return ctx.OpFMul(F, ctx.OpFMul(F, x, x), ctx.OpFSub(F, f(3), ctx.OpFMul(F, f(2), x)));
+    };
+    const Id fx = rx ? smooth(component(frac, 0)) : f(0),
+             fy = ry ? smooth(component(frac, 1)) : f(0);
+    const Id ax = ctx.OpFSub(F, f(1), fx), ay = ctx.OpFSub(F, f(1), fy);
+    std::array<Id, 4> weights{ctx.OpFMul(F, ax, ay), ctx.OpFMul(F, fx, ay), ctx.OpFMul(F, ax, fy),
+                              ctx.OpFMul(F, fx, fy)};
+    Id sum = f(0);
+    for (auto& weight : weights) {
+        weight = ctx.OpPow(F, weight, f(8));
+        sum = ctx.OpFAdd(F, sum, weight);
+    }
+    const Id image = ctx.OpLoad(tex.image_type, tex.id);
+    const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
+    const Id combined = ctx.OpSampledImage(tex.sampled_type, image, sampler);
+    Id blended = ctx.ConstantNull(C), square_sum = f(0);
+    for (u32 i = 0; i < 4; ++i) {
+        const Id cx = rx ? ctx.OpFAdd(F, component(cell, 0), f(float(i & 1))) : f(0);
+        const Id cy = ry ? ctx.OpFAdd(F, component(cell, 1), f(float(i >> 1))) : f(0);
+        const Id ix = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], cx));
+        const Id iy = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], cy));
+        Id h = ctx.OpIAdd(U,
+                          ctx.OpIAdd(U, ctx.OpIMul(U, ix, ctx.ConstU32(1664525u)),
+                                     ctx.OpIMul(U, iy, ctx.ConstU32(1013904223u))),
+                          ctx.ConstU32(2246822519u));
+        const auto mix = [&](Id h, u32 shift, u32 mul) {
+            return ctx.OpIMul(
+                U, ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(shift))),
+                ctx.ConstU32(mul));
+        };
+        h = mix(h, 16, 2246822519u);
+        h = mix(h, 13, 3266489917u);
+        h = ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u)));
+        const Id ox =
+            rx ? ctx.OpFMul(F, ctx.OpConvertUToF(F, ctx.OpBitwiseAnd(U, h, ctx.ConstU32(65535u))),
+                            f((samp.clamp_x == AmdGpu::ClampMode::Mirror ? 2.f : 1.f) / 65536.f))
+               : f(0);
+        const Id oy =
+            ry ? ctx.OpFMul(F,
+                            ctx.OpConvertUToF(F, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u))),
+                            f((samp.clamp_y == AmdGpu::ClampMode::Mirror ? 2.f : 1.f) / 65536.f))
+               : f(0);
+        const Id shifted = ctx.OpFAdd(V, uv, v(ox, oy));
+        const Id sample_coords =
+            tex.view_type == AmdGpu::ImageType::Color2DArray
+                ? ctx.OpCompositeConstruct(ctx.F32[3], component(shifted, 0), component(shifted, 1),
+                                           ctx.OpCompositeExtract(F, coords, 2))
+                : shifted;
+        const Id sample = ctx.OpImageSampleExplicitLod(C, combined, sample_coords,
+                                                       spv::ImageOperandsMask::Grad, dx, dy);
+        const Id weight = ctx.OpFDiv(F, weights[i], sum);
+        blended = ctx.OpFAdd(C, blended, ctx.OpVectorTimesScalar(C, sample, weight));
+        square_sum = ctx.OpFAdd(F, square_sum, ctx.OpFMul(F, weight, weight));
+    }
+    ctx.AddCapability(spv::Capability::ImageQuery);
+    const Id levels = ctx.OpImageQueryLevels(U, image);
+    const Id lod = ctx.OpConvertUToF(F, ctx.OpISub(U, levels, ctx.ConstU32(1u)));
+    const Id centre = tex.view_type == AmdGpu::ImageType::Color2DArray
+                          ? ctx.OpCompositeConstruct(ctx.F32[3], f(.5f), f(.5f),
+                                                     ctx.OpCompositeExtract(F, coords, 2))
+                          : v(f(.5f), f(.5f));
+    const Id mean =
+        ctx.OpImageSampleExplicitLod(C, combined, centre, spv::ImageOperandsMask::Lod, lod);
+    const Id altered = ctx.OpFAdd(
+        C, mean,
+        ctx.OpVectorTimesScalar(C, ctx.OpFSub(C, blended, mean), ctx.OpInverseSqrt(F, square_sum)));
+    Id result = ctx.OpFMix(C, original, altered, splat(amount));
+    // Never alter opacity/cutout semantics through the generic colour hook.
+    result = ctx.OpCompositeInsert(C, ctx.OpCompositeExtract(F, original, 3), result, 3);
+    return result;
+}
+
+Id EmitImageSampleImplicitLod(EmitContext &ctx, IR::Inst *inst, u32 handle,
+                              Id coords, Id bias, const IR::Value &offset) {
+  const auto &texture = ctx.images[handle & 0xFFFF];
+  const Id image = ctx.OpLoad(texture.image_type, texture.id);
+  const Id result_type = texture.data_types->Get(4);
+  const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
+  const Id sampled_image =
+      ctx.OpSampledImage(texture.sampled_type, image, sampler);
+  ImageOperands operands;
+  operands.Add(spv::ImageOperandsMask::Bias, bias);
+  operands.AddOffset(ctx, offset);
+  const Id sample = ctx.OpImageSampleImplicitLod(
+      result_type, sampled_image, coords, operands.mask, operands.operands);
+  return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample)
+                            : ApplyGlobalRepeat(ctx, inst, handle, coords, bias,
+                                                offset, sample);
+}
+
+Id EmitImageSampleExplicitLod(EmitContext &ctx, IR::Inst *inst, u32 handle,
+                              Id coords, Id lod, const IR::Value &offset) {
+  const auto &texture = ctx.images[handle & 0xFFFF];
+  const Id image = ctx.OpLoad(texture.image_type, texture.id);
+  const Id result_type = texture.data_types->Get(4);
+  const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
+  const Id sampled_image =
+      ctx.OpSampledImage(texture.sampled_type, image, sampler);
+  if (texture.native_cube) {
+    coords = NativeCubeCoordinates(ctx, coords);
+  }
+  ImageOperands operands;
+  operands.Add(spv::ImageOperandsMask::Lod, lod);
+  operands.AddOffset(ctx, offset);
+  const Id sample = ctx.OpImageSampleExplicitLod(
+      result_type, sampled_image, coords, operands.mask, operands.operands);
+  return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : sample;
 }
 
 Id EmitImageSampleDrefImplicitLod(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id dref,
@@ -224,7 +359,7 @@ Id EmitImageGradient(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id
     operands.AddOffset(ctx, offset);
     const Id sample = ctx.OpImageSampleExplicitLod(result_type, sampled_image, coords,
                                                    operands.mask, operands.operands);
-    return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : sample;
+    return texture.is_integer ? ctx.OpBitcast(ctx.F32[4], sample) : ApplyGlobalRepeat(ctx, inst, handle, coords, {}, offset, sample, derivatives_dx, derivatives_dy);
 }
 
 Id EmitImageRead(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id lod, Id ms) {

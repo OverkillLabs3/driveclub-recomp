@@ -93,6 +93,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                                 : value == "short" || value == "60" ? 60 : 0;
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "texture_repetition") {
+        v.texture_repetition = i != 0;
     } else if (key == "show_pedals") {
         v.show_pedals = i != 0;
     } else if (key == "fsr4_auto_exposure") {
@@ -170,6 +172,7 @@ void Load() {
         {"BB_AA", "aa"},                            {"BB_AA_SCALE", "aa_scale"},                            {"BB_FRAME_GEN", "frame_gen"},              {"BB_FRAME_GEN_MULTIPLIER", "frame_gen_multiplier"},
         {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
         {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
+        {"BB_TEXTURE_REPETITION", "texture_repetition"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
     };
     for (const auto& [env, key] : env_keys) {
@@ -177,6 +180,7 @@ void Load() {
             Set(v, key, value);
         }
     }
+    v.startup_texture_repetition = v.texture_repetition;
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
     v.startup_object_motion = v.object_motion;
@@ -229,10 +233,10 @@ int RenderPreset() {
 bool ResolutionNeedsRestart() {
     const auto& v = Get();
     // TAA needs the live path (native guest targets): run.sh selects it on restart.
-    return FixedRenderSession() &&
+    return v.texture_repetition != v.startup_texture_repetition || (FixedRenderSession() &&
         (v.preset != v.startup_preset || v.output_res != v.startup_output_res ||
          (v.upscaler == UpscalerOff) != (v.startup_upscaler == UpscalerOff) ||
-         (v.upscaler == UpscalerTaa) != (v.startup_upscaler == UpscalerTaa));
+         (v.upscaler == UpscalerTaa) != (v.startup_upscaler == UpscalerTaa)));
 }
 
 void Save() {
@@ -255,6 +259,7 @@ void Save() {
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
     std::fprintf(file, "motion_blur_reference=%d\n", v.motion_blur_reference.load());
     std::fprintf(file, "show_pedals=%d\n", int(v.show_pedals.load()));
+    std::fprintf(file, "texture_repetition=%d\n", int(v.texture_repetition.load()));
     std::fprintf(file, "aa_scale=%s", AaScaleName(v.aa_scale));
     std::fputc(10, file);
     std::fprintf(file, "aa=%s", AaName(v.aa_mode));

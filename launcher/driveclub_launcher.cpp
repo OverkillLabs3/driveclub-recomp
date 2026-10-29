@@ -342,6 +342,7 @@ int fgen_saved = 0;   // "Frame generation" choice, from launcher.ini
 int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.ini
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
+int g_texture_repetition = -1;
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
@@ -489,11 +490,16 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
   for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER",
-                             L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
+                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
 }
 bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_env.end(), name) != g_user_env.end(); }
+void SetTextureRepetitionEnvironment() {
+  if (!UserEnv(L"BB_TEXTURE_REPETITION"))
+    SetEnvironmentVariableW(L"BB_TEXTURE_REPETITION", g_c[g_texture_repetition].sel ? L"1" : L"0");
+}
+
 
 // ------------------------------------------------------------------------------------------
 // steering wheel: the force feedback lines of data\user\input_config\default.ini (wheel_ffb_*, read by the game's
@@ -1078,6 +1084,10 @@ void BuildModel() {
   const int unlock = toggle(L"Unlock DLC content",
                             L"Unlocks the DLC content: add-on cars, bikes, tours and livery decals. Cars you earn by playing still unlock through normal progression. Built from your own game files; the game folders are not modified.",
                             "@unlock", false);
+  g_texture_repetition = toggle(L"Reduce texture repetition",
+      L"Breaks up repeating patterns on compatible ground, road and building surfaces while retaining nearby detail. "
+      L"Uses extra texture samples. Enabled by default for PC presets; PS4 keeps the original sampling. Takes effect on the next game start.",
+      "@texture_repetition", true);
   // Graphics detail the PS4 version keeps low and the game's camera effects, from the game's own quality file
   // (graphics.cpp).
   g_gfx[kGfxCar] = toggle(L"Your car: full detail",
@@ -1211,7 +1221,7 @@ void BuildModel() {
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"SCENE DETAIL", {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery],
-                                      g_gfx[kGfxShadows], g_gfx[kGfxParticles]}, 0, kTabDetail});
+                                      g_gfx[kGfxShadows], g_gfx[kGfxParticles], g_texture_repetition}, 0, kTabDetail});
   g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
   g_cards.push_back({L"CAMERA EFFECTS", {g_gfx[kGfxBlur], g_motion_blur, g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail});
   g_cards.push_back({L"PLAYER", {pname, g_lang}, 0, kTabGameplay});
@@ -1310,7 +1320,7 @@ constexpr int kPs4Preset = 6;
 std::vector<std::pair<int, int>> Ps4Profile() {
   std::vector<std::pair<int,int>> values = {{g_fps,0},{g_outres,0},{g_inres,0},{g_wide,0},
       {g_aa,0},{g_up,0},{g_aniso,1},{g_mirror,0},{g_hdr,0},{g_fgen,0},
-      {g_motion_blur,0},{g_fov,100},{g_camera_patch_row,0}};
+      {g_motion_blur,0},{g_fov,100},{g_camera_patch_row,0},{g_texture_repetition,0}};
   for (int i=0;i<kGfxRows;++i) if(g_gfx[i]>=0) values.emplace_back(g_gfx[i],g_c[g_gfx[i]].def);
   for(size_t i=0;i<g_c.size();++i) {
     const auto& tag=g_c[i].patches[0];
@@ -1342,11 +1352,13 @@ bool ReadOptimizationMask(uint64_t& mask) {
   in>>std::ws; return in.eof();
 }
 void LoadSettings() {
+  int texture_repetition_saved = -1;
   g_two_thread = !PrimaryGpuIsAmd();  // the saved choice (draw_threads=) replaces it below
   for (const auto& line : ReadLines(IniPath())) {
     if (line.rfind("update=", 0) == 0) g_folder[0].path = Widen(line.substr(7));
     if (line.rfind("base=", 0) == 0) g_folder[1].path = Widen(line.substr(5));
     if (line.rfind("fps=", 0) == 0) fps_counter = line.substr(4) == "1";
+    if (line.rfind("texture_repetition=", 0) == 0) texture_repetition_saved = line.substr(19) == "0" ? 0 : 1;
     if (line.rfind("pedals=", 0) == 0) pedal_display = line.substr(7) == "1";
     if (line.rfind("fast=", 0) == 0) fast_render = line.substr(5) == "1";
     if (line.rfind("name=", 0) == 0) g_name = Widen(line.substr(5));
@@ -1402,6 +1414,10 @@ void LoadSettings() {
   for (auto& c : g_c) {
     if (c.kind == Kind::Toggle && c.patches[0] == "@fps") {
       c.sel = fps_counter ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@texture_repetition") {
+      c.sel = texture_repetition_saved < 0 ? 1 : texture_repetition_saved;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@pedals") {
@@ -1492,6 +1508,12 @@ void LoadSettings() {
       if (line.rfind("fov=", 0) == 0) g_c[g_fov].sel = (std::clamp)(atoi(line.substr(4).c_str()), g_c[g_fov].min, g_c[g_fov].max);
     }
   }
+  // Older PS4 profiles have no setting key. Preserve their original sampling;
+  // other legacy profiles inherit the PC default. Explicit saved opt-outs win.
+  if (texture_repetition_saved < 0 && g_texture_repetition >= 0) {
+    g_c[g_texture_repetition].sel = 0;
+    g_c[g_texture_repetition].sel = IsPs4Profile() ? 0 : 1;
+  }
   DerivePreset();
 }
 
@@ -1539,7 +1561,9 @@ void ApplyPreset(int preset) {
     for(const auto& [id,value]:Ps4Profile()) if(id>=0) g_c[id].sel=value;
     NameNativeUpscale(); return;
   }
-  if (preset <= 0 || preset > 5 || g_outres < 0 || g_inres < 0) return;
+  if (preset < 0 || preset > 5) return;
+  if (g_texture_repetition >= 0) g_c[g_texture_repetition].sel = 1;
+  if (preset == 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];
   if (g_wide >= 0) g_c[g_wide].sel = 0;
@@ -1602,6 +1626,7 @@ bool SaveSettings() {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
+    ini << "texture_repetition=" << (g_c[g_texture_repetition].sel ? 1 : 0) << "\r\n";
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "motion_blur=" << (g_c[g_motion_blur].sel == 1 ? "fast" : "slow") << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
@@ -1624,6 +1649,7 @@ bool SaveSettings() {
     if(!SaveTextAtomically(toggles,std::to_string(mask))) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_fps",fps_on ? "1" : "0")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_pedals",pedals_on ? "1" : "0")) return false;
+    if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","texture_repetition",g_c[g_texture_repetition].sel ? "1" : "0")) return false;
   }
   std::ostringstream out;
   for (const auto& c : g_c) {
@@ -2580,6 +2606,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
                      unlock_arg + graphics_arg + L" --stub-unresolved";
   SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel ? L"1" : L"0");
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
+  SetTextureRepetitionEnvironment();
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());
   SetEnvironmentVariableW(L"BB_PREFLIGHT_NOTE", g_preflight_note.empty() ? nullptr : std::wstring(g_preflight_note.begin(), g_preflight_note.end()).c_str());
   SetEnvironmentVariableW(L"BB_CRASH_DIR", (g_home + L"\\logs").c_str());

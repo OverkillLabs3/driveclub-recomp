@@ -9,27 +9,41 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Serialization {
-/* You should increment versions below once corresponding serialization scheme is changed. */
-static const u32 ShaderBinaryVersion = [] {
-    // The switches that change the translated shaders are part of the version, so cached shaders never mix.
-    const char* nan = std::getenv("BB_NAN_MINMAX");
-    const char* undef = std::getenv("BB_UNDEF_ZERO");
-    const char* lds = std::getenv("BB_LDS_BOUNDS");
-    const char* wide = std::getenv("BB_WIDE_LOADS");
-    // The generation sits above the switch bits and changes with the translator or the serialized layout (66:
-    // upstream's base 64 plus this branch's translator changes).
-    return (66u << 16) + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u) +
-           (lds && lds[0] == '0' ? 8u : 0u) + (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
-           (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u); // WideLoads: on unless =0
-}();
-/// bbport: the whole version names the cache folder (cache_storage.cpp): each switch combination and each version
-/// base keeps its own, so an A/B of a switch, or two builds of different bases, never clear each other's shaders.
-u32 ShaderCacheVersion() {
-    return ShaderBinaryVersion;
+/* You should increment versions below once corresponding serialization scheme
+ * is changed. */
+static u32 ShaderBinaryVersion() {
+  // Initialized after BbSettings::Load, so the saved setting participates in
+  // the cache key.
+  static const u32 version = [] {
+    // The switches that change the translated shaders are part of the version,
+    // so cached shaders never mix.
+    const char *nan = std::getenv("BB_NAN_MINMAX");
+    const char *undef = std::getenv("BB_UNDEF_ZERO");
+    const char *lds = std::getenv("BB_LDS_BOUNDS");
+    const char *wide = std::getenv("BB_WIDE_LOADS");
+    // The generation sits above the switch bits and changes with the translator
+    // or the serialized layout (71: world-layer sampling and its image/sampler
+    // specialization fields).
+    return (71u << 16) +
+           (BbSettings::Get().startup_texture_repetition ? 1024u : 0u) +
+           (nan && std::atoi(nan) != 0 ? 1u : 0u) +
+           (undef && std::atoi(undef) != 0 ? 2u : 0u) +
+           (lds && lds[0] == '0' ? 8u : 0u) +
+           (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
+           (!wide || !wide[0] || wide[0] == '1'
+                ? 512u
+                : 0u); // WideLoads: on unless =0
+  }();
+  return version;
 }
+/// bbport: the whole version names the cache folder (cache_storage.cpp): each
+/// switch combination and each version base keeps its own, so an A/B of a
+/// switch, or two builds of different bases, never clear each other's shaders.
+u32 ShaderCacheVersion() { return ShaderBinaryVersion(); }
 static constexpr u32 ShaderMetaVersion = 8u; // bbport: ImageResource::native_cube
 static constexpr u32 PipelineKeyVersion = 6u; // bbport: native cube images and sampler cube-wrap specialization
 } // namespace Serialization
@@ -86,7 +100,7 @@ void RegisterShaderMeta(const Shader::Info& info,
     Serialization::Writer meta{ar};
 
     meta.Write(Serialization::ShaderMetaVersion);
-    meta.Write(Serialization::ShaderBinaryVersion);
+    meta.Write(Serialization::ShaderBinaryVersion());
 
     meta.Write(perm_hash);
     meta.Write(perm_idx);
@@ -121,7 +135,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     u32 binary_version{};
     meta.Read(binary_version);
-    if (binary_version != Serialization::ShaderBinaryVersion) {
+    if (binary_version != Serialization::ShaderBinaryVersion()) {
         return false;
     }
 
