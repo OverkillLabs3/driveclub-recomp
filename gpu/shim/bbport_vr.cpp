@@ -146,6 +146,8 @@ struct Settings {
     int reproject = 0;
     // diagnostics, without a headset too: draw_trace = 1 (DrawTrace), hide_shader = <hex> ... (HiddenShader)
     bool draw_trace = false;
+    // the head pose stated for a frame takes the turn the game added after the hook (frame_pose, key =)
+    int frame_pose = 1; // 1 on, 2 the opposite turn (a sign check), 0 off
     uint64_t hidden[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     // and the turn compensation, the reprojection, the DLSS model
@@ -349,6 +351,7 @@ void ReadSettings() {
         else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
         else if (k == "draw_trace") settings.draw_trace = value != 0;
+        else if (k == "frame_pose" && value >= 0 && value <= 2) settings.frame_pose = int(value);
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
         else if (k == "seat_x") settings.seat[0] = value;
@@ -611,6 +614,7 @@ struct HookCall {
     const float* camera = nullptr; // which driver's head camera
     float car[9]{};      // the frame the head turns in (the car body's axes as rows, world): the car's turn
     float forward[3]{};  // the camera's z axis (world): with the position it names the frame's camera
+    float axes[9]{};     // the camera's axes as the hook set them (rows x, y, z; world)
 };
 HookCall head_history[64];
 std::atomic<int> drawing_eye{-1}; // the eye the head hook set the camera up for last
@@ -803,6 +807,8 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     HookCall& call = head_history[head_next++ % 64];
     call = {NowUs(), head, {cam[12], cam[13], cam[14]}, eye, camera};
     for (int k = 0; k < 3; ++k) call.forward[k] = cam[8 + k];
+    for (int i = 0; i < 3; ++i)
+        for (int k = 0; k < 3; ++k) call.axes[i * 3 + k] = cam[i * 4 + k];
     drawing_eye = eye;
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k) call.car[i * 3 + k] = rest[i][k];
@@ -1535,6 +1541,13 @@ void ReadKeys() {
         }
         was[k] = down;
     }
+    static bool was_pose = false;
+    const bool pose_down = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
+    if (pose_down && !was_pose) {
+        settings.frame_pose = settings.frame_pose == 1 ? 2 : settings.frame_pose == 2 ? 0 : 1;
+        std::printf("VR: the frame's own turn in the stated pose %s (key =)\n", settings.frame_pose == 1 ? "on" : settings.frame_pose == 2 ? "on, the opposite way" : "off");
+    }
+    was_pose = pose_down;
     static bool was_shift = false;
     const bool shift_down = settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
     if (shift_down && !was_shift) {
@@ -1709,6 +1722,9 @@ struct MatchStats {
     unsigned frames = 0, ambiguous = 0, first_wrong = 0;
     float worst_deg = 0.0f;    // the old match's turn from the best one, the most seen
     float best_off_deg = 0.0f; // the best match's view direction from the constants', the most seen (about 0)
+    double frame_sum = 0.0;    // the frame's own turn from the hook's (degrees): sum, count, most
+    unsigned frame_count = 0;
+    float frame_most = 0.0f;
 } match_stats;
 
 void NoteCameraConstants(const float* data) {
@@ -1763,6 +1779,60 @@ void NoteCameraConstants(const float* data) {
     }
     camera_now = {true, best->eye, best->head};
     std::memcpy(camera_now.car, best->car, sizeof best->car);
+    // The frame's own camera axes: its view-projection's rows x, y and w are P00 x + P20 z, P11 y + P21 z and z (the
+    // view's rows, world); made orthonormal, each signed like the hook's. The turn from the hook's axes to them, in
+    // the camera's own axes (the game turns the camera a little after the hook: 1-4 degrees seen), is put on the
+    // stated head (the camera's x and z are the headset's -x and -z), so the headset turns the picture by what it
+    // was really drawn with.
+    float frame_deg = -1.0f;
+    if (have_w) {
+        float b[3][3];
+        const float rows[3][3] = {{data[0], data[4], data[8]}, {data[1], data[5], data[9]}, {data[3], data[7], data[11]}};
+        const auto dot3 = [](const float* u, const float* v) { return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]; };
+        const auto unit = [&](float* v) {
+            const float l = std::sqrt(dot3(v, v));
+            if (!(l > 1e-6f)) return false;
+            for (int k = 0; k < 3; ++k) v[k] /= l;
+            return true;
+        };
+        bool ok = true;
+        for (int k = 0; k < 3; ++k) b[2][k] = rows[2][k];
+        ok = ok && unit(b[2]);
+        for (int i = 0; i < 2 && ok; ++i) {
+            for (int k = 0; k < 3; ++k) b[i][k] = rows[i][k];
+            for (int j = 2; j > i; --j) {
+                const float d = dot3(b[i], b[j]);
+                for (int k = 0; k < 3; ++k) b[i][k] -= d * b[j][k];
+            }
+            ok = ok && unit(b[i]);
+        }
+        if (ok) {
+            // signed like the hook's axes
+            for (int i = 0; i < 3; ++i) {
+                if (dot3(b[i], best->axes + i * 3) < 0.0f) {
+                    for (int k = 0; k < 3; ++k) b[i][k] = -b[i][k];
+                }
+            }
+            // q[i][j] = hook axis i . frame axis j, the headset's axes (x and z flipped)
+            static const float flip[3] = {-1.0f, 1.0f, -1.0f};
+            float q[3][3];
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j) q[i][j] = flip[i] * flip[j] * dot3(best->axes + i * 3, b[j]);
+            Quat t;
+            const float trace = q[0][0] + q[1][1] + q[2][2];
+            if (trace > 0.0f) {
+                const float r = std::sqrt(1.0f + trace) * 2.0f;
+                t = {(q[2][1] - q[1][2]) / r, (q[0][2] - q[2][0]) / r, (q[1][0] - q[0][1]) / r, 0.25f * r};
+                const float n = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w);
+                t = {t.x / n, t.y / n, t.z / n, t.w / n};
+                frame_deg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(t.w))) * 180.0f / Pi;
+                if (settings.frame_pose && frame_deg < 10.0f) {
+                    const Quat h = Mul(ToQuat(camera_now.head.orientation), settings.frame_pose == 2 ? Conj(t) : t);
+                    camera_now.head.orientation = {h.x, h.y, h.z, h.w};
+                }
+            }
+        }
+    }
     drawn_camera = best->camera;
     drawn_camera_us = NowUs();
     // the log
@@ -1772,6 +1842,11 @@ void NoteCameraConstants(const float* data) {
         m.since_us = now;
     }
     ++m.frames;
+    if (frame_deg >= 0.0f) {
+        m.frame_sum += frame_deg;
+        ++m.frame_count;
+        m.frame_most = std::fmax(m.frame_most, frame_deg);
+    }
     if (have_w) {
         m.best_off_deg = std::fmax(m.best_off_deg, std::acos(std::fmax(-1.0f, std::fmin(1.0f, 1.0f - best_score))) *
                                                        180.0f / Pi);
@@ -1790,7 +1865,11 @@ void NoteCameraConstants(const float* data) {
                     "frame's%s\n",
                     m.frames, m.ambiguous, m.first_wrong, m.worst_deg, m.best_off_deg,
                     have_w ? "" : "; no view direction in the constants");
-        m = {now, 0, 0, 0, 0.0f, 0.0f};
+        std::printf("VR: the game turned the frames' camera after the hook by %.2f degrees on average, %.2f the most "
+                    "(stated with it: %s, key =)\n",
+                    m.frame_count ? float(m.frame_sum / m.frame_count) : 0.0f, m.frame_most,
+                    settings.frame_pose == 1 ? "on" : settings.frame_pose == 2 ? "the opposite way" : "off");
+        m = {now, 0, 0, 0, 0.0f, 0.0f, 0.0, 0, 0.0f};
     }
 }
 
