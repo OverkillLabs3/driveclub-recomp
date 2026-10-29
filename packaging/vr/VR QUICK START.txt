@@ -39,6 +39,8 @@ KEYS (number row; the numpad works too)
 IF SOMETHING IS WRONG
   Menu at your feet or the view turned sideways: press 0
   Low FPS: pick a smaller headset picture, check Dynamic resolution is off
+           close background downloads (game launchers, torrents), Wallpaper Engine and
+           overlays: the game is CPU-limited, every background app costs frames
   Bugs and FPS reports: send the log from the logs folder, plus the headset, the connection
   (Virtual Desktop / Link / SteamVR), CPU, GPU, headset picture size and anti-aliasing
 

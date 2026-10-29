@@ -28,6 +28,8 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
      cockpit's focal length together with VR.
 3. Put the headset on and start the headset's PC link (Virtual Desktop, SteamVR, Oculus Link) **before** the game.
    A connected headset that is not worn holds the game's frames back (5 to 10 FPS).
+   Close background downloads (game launchers, torrents), Wallpaper Engine and overlays: the game is limited by the
+   CPU, and on the test PC they cost about 7% of the FPS.
 
 The game's camera shake at speed is still there (it is applied after the head camera). A loose-file mod with zero
 shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) takes it away.
