@@ -86,6 +86,7 @@ runtime_fov = 1    # each eye drawn with the field of view and eye distance the 
                    # the headset gets just its own part); 0: cockpit_vfov
 dlss_model = auto  # with DLSS: auto, k, l or m (key 7 cycles it in a race)
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
+frame_pose = 1     # each frame stated to the headset with the turn it was really drawn with; 0: the hook's
 auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture

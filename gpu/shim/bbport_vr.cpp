@@ -31,6 +31,8 @@
 //                        9/3)
 //   smoothing = 1        steadies a head that holds still ("1 euro" filter); smooth_hz = 0.5 (lower: steadier),
 //                        smooth_turn = 0.05 and smooth_move = 0.1 (how fast it lets go, per degree/s and per cm/s)
+//   frame_pose = 1       each frame is stated to the headset with the turn it was really drawn with (the game turns
+//                        the camera up to a few degrees after the hook: its view-projection's axes); 0: the hook's
 //   cockpit_vfov = 90    the driver's head camera's vertical field of view in the headset, degrees (VR sets the
 //                        game's field of view for it while on: SetFieldOfView; F5/F6 do not apply then)
 //   screen_vfov = 40     the height of the still screen, degrees
@@ -76,7 +78,6 @@
 #include <initializer_list>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <utility>
 
 #include <openxr/openxr.h>
@@ -147,8 +148,8 @@ struct Settings {
     int reproject = 0;
     // diagnostics, without a headset too: draw_trace = 1 (DrawTrace), hide_shader = <hex> ... (HiddenShader)
     bool draw_trace = false;
-    // the head pose stated for a frame takes the turn the game added after the hook (frame_pose, key =)
-    int frame_pose = 1; // 1 on, 2 the opposite turn (a sign check), 0 off
+    // the head pose stated for a frame takes the turn the game gave the camera after the hook (frame_pose)
+    bool frame_pose = true;
     uint64_t hidden[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     // and the turn compensation, the reprojection, the DLSS model
@@ -352,7 +353,7 @@ void ReadSettings() {
         else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
         else if (k == "draw_trace") settings.draw_trace = value != 0;
-        else if (k == "frame_pose" && value >= 0 && value <= 2) settings.frame_pose = int(value);
+        else if (k == "frame_pose") settings.frame_pose = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
         else if (k == "seat_x") settings.seat[0] = value;
@@ -1542,22 +1543,6 @@ void ReadKeys() {
         }
         was[k] = down;
     }
-    static bool was_pose = false;
-    const bool pose_down = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
-    if (pose_down && !was_pose) {
-        settings.frame_pose = settings.frame_pose == 1 ? 2 : settings.frame_pose == 2 ? 0 : 1;
-        // heard in the headset: 1 high beep on, 2 the opposite way, 3 low ones off
-        const int mode = settings.frame_pose;
-        std::thread([mode] {
-            const int beeps = mode == 1 ? 1 : mode == 2 ? 2 : 3;
-            for (int i = 0; i < beeps; ++i) {
-                Beep(mode == 0 ? 440 : 1000, 120);
-                Sleep(80);
-            }
-        }).detach();
-        std::printf("VR: the frame's own turn in the stated pose %s (key =)\n", settings.frame_pose == 1 ? "on" : settings.frame_pose == 2 ? "on, the opposite way" : "off");
-    }
-    was_pose = pose_down;
     static bool was_shift = false;
     const bool shift_down = settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
     if (shift_down && !was_shift) {
@@ -1731,7 +1716,6 @@ struct MatchStats {
     long long since_us = 0;
     unsigned frames = 0, ambiguous = 0, first_wrong = 0;
     float worst_deg = 0.0f;    // the old match's turn from the best one, the most seen
-    float best_off_deg = 0.0f; // the best match's view direction from the constants', the most seen (about 0)
     double frame_sum = 0.0;    // the frame's own turn from the hook's (degrees): sum, count, most
     unsigned frame_count = 0;
     float frame_most = 0.0f;
@@ -1839,7 +1823,7 @@ void NoteCameraConstants(const float* data) {
                 t = {t.x / n, t.y / n, t.z / n, t.w / n};
                 frame_deg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(t.w))) * 180.0f / Pi;
                 if (settings.frame_pose && frame_deg < 10.0f) {
-                    const Quat h = Mul(ToQuat(camera_now.head.orientation), settings.frame_pose == 2 ? Conj(t) : t);
+                    const Quat h = Mul(ToQuat(camera_now.head.orientation), t);
                     camera_now.head.orientation = {h.x, h.y, h.z, h.w};
                 }
             }
@@ -1859,10 +1843,6 @@ void NoteCameraConstants(const float* data) {
         ++m.frame_count;
         m.frame_most = std::fmax(m.frame_most, frame_deg);
     }
-    if (have_w) {
-        m.best_off_deg = std::fmax(m.best_off_deg, std::acos(std::fmax(-1.0f, std::fmin(1.0f, 1.0f - best_score))) *
-                                                       180.0f / Pi);
-    }
     if (close_calls > 1) {
         ++m.ambiguous;
     }
@@ -1872,16 +1852,14 @@ void NoteCameraConstants(const float* data) {
         m.worst_deg = std::fmax(m.worst_deg, deg);
     }
     if (now - m.since_us > 30000000) {
-        std::printf("VR: frame cameras over 30 s: %u frames, %u with several calls within 2 mm, %u where the old match "
-                    "was another call (its head turned up to %.2f degrees off); the best's view %.3f degrees from the "
-                    "frame's%s\n",
-                    m.frames, m.ambiguous, m.first_wrong, m.worst_deg, m.best_off_deg,
-                    have_w ? "" : "; no view direction in the constants");
-        std::printf("VR: the game turned the frames' camera after the hook by %.2f degrees on average, %.2f the most "
-                    "(stated with it: %s, key =)\n",
+        std::printf("VR: frame cameras over 30 s: %u frames, %u matched among several calls within 2 mm (the "
+                    "first of them, the old match, %u times another call, up to %.1f degrees off); the game turned "
+                    "the camera after the hook by %.2f degrees on average, %.2f the most%s\n",
+                    m.frames, m.ambiguous, m.first_wrong, m.worst_deg,
                     m.frame_count ? float(m.frame_sum / m.frame_count) : 0.0f, m.frame_most,
-                    settings.frame_pose == 1 ? "on" : settings.frame_pose == 2 ? "the opposite way" : "off");
-        m = {now, 0, 0, 0, 0.0f, 0.0f, 0.0, 0, 0.0f};
+                    !have_w ? " (no view direction in the constants)"
+                    : settings.frame_pose ? "" : " (not stated: frame_pose = 0)");
+        m = {now, 0, 0, 0, 0.0f, 0.0, 0, 0.0f};
     }
 }
 
