@@ -517,6 +517,13 @@ bool BlurLocked() { return g_aa >= 0 && g_c[g_aa].sel > 0; }
 bool BlurRowLocked(const Ctl& c) {
   return BlurLocked() && ((g_blur_patch >= 0 && &c == &g_c[g_blur_patch]) || (g_gfx[kGfxBlur] >= 0 && &c == &g_c[g_gfx[kGfxBlur]]));
 }
+// The VR switch as it stands on screen (g_vr takes it when the settings are saved).
+bool VrChosen() {
+  for (const Ctl& c : g_c) {
+    if (c.kind == Kind::Toggle && c.patches[0] == "@vr") return c.sel != 0;
+  }
+  return g_vr;
+}
 // Rows that do nothing with the other choices: the physics settings with Original Physics; Upscaling and
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
 bool RowHidden(const Ctl& c) {
@@ -939,7 +946,8 @@ void BuildModel() {
     const int top = DisplayHz() ? DisplayHz() - 3 : 117;
     Ctl c{L"Frame cap", L"The highest frame rate with Unlocked (VRR). The right end is your display's refresh rate less 3. "
           L"A little below what your PC can hold (for example 90 when it runs about 95-100) gives the steadiest, smoothest motion: "
-          L"the graphics card keeps some room, so every frame takes the same time.",
+          L"the graphics card keeps some room, so every frame takes the same time. "
+          L"With the VR headset on, the right end is no cap: the headset, not your display, sets the pace.",
           Kind::Slider, {}, {"@fpscap"}, top, top};
     c.min = 30;
     c.max = top;
@@ -2012,7 +2020,9 @@ void Paint(HDC hdc, int w, int h) {
       if (c.kind == Kind::Slider) {
         // Label and value above a track with a knob.
         RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width - 70 * S, 22 * S));
-        Text(g, std::to_wstring(c.sel) + c.unit, fSegBold, RectF(row.X + row.Width - 90 * S, row.Y + 2 * S, 90 * S, 22 * S),
+        // VR: the frame cap's right end is no cap (the display's refresh rate does not hold the headset's frames)
+        const bool no_cap = g_fps_cap >= 0 && i == g_fps_cap && c.sel >= c.max && VrChosen();
+        Text(g, no_cap ? std::wstring(L"No cap") : std::to_wstring(c.sel) + c.unit, fSegBold, RectF(row.X + row.Width - 90 * S, row.Y + 2 * S, 90 * S, 22 * S),
              hot ? kWhite : kText, StringAlignmentFar);
         const float t = c.max > c.min ? float((std::clamp)(c.sel, c.min, c.max) - c.min) / float(c.max - c.min) : 0.f;
         const RectF track(ct.X + 8 * S, ct.Y + ct.Height / 2 - 3 * S, ct.Width - 16 * S, 6 * S);
@@ -2528,9 +2538,16 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     // display (Fifo) and the rate stays 3 below its refresh, so a variable refresh display (G-Sync, FreeSync) follows
     // each frame; Mailbox showed them on a fixed refresh, some for one refresh and some for two (stutter).
     const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3;
-    const std::wstring cap = g_fps_cap >= 0 ? std::to_wstring(g_c[g_fps_cap].sel) : DisplayHz() ? std::to_wstring(DisplayHz() - 3) : L"1000";
+    // VR: the headset is the display. The slider's right end is no cap, and frames do not wait for the monitor
+    // (Mailbox): a 60 Hz monitor held the game at 57 FPS, under 30 per eye.
+    const bool vr_free = unlocked && VrChosen();
+    const bool cap_at_end = g_fps_cap >= 0 && g_c[g_fps_cap].sel >= g_c[g_fps_cap].max;
+    const std::wstring cap = vr_free && cap_at_end ? L"1000"
+                             : g_fps_cap >= 0 ? std::to_wstring(g_c[g_fps_cap].sel)
+                             : DisplayHz() ? std::to_wstring(DisplayHz() - 3) : L"1000";
     if (!UserEnv(L"BB_FPS_LIMIT")) SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked ? cap.c_str() : delta ? L"60" : nullptr);
-    if (!UserEnv(L"BB_PRESENT_MODE")) SetEnvironmentVariableW(L"BB_PRESENT_MODE", unlocked ? L"Fifo" : nullptr);
+    if (!UserEnv(L"BB_PRESENT_MODE"))
+      SetEnvironmentVariableW(L"BB_PRESENT_MODE", vr_free ? L"Mailbox" : unlocked ? L"Fifo" : nullptr);
   }
   // A value set before the launcher started is the player's override and is kept. Checking the environment
   // itself is not enough: the launcher sets these for every start, so a second start (Play, or Run benchmark
