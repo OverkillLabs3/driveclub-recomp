@@ -1616,7 +1616,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                             VkFormat(display.info.pixel_format), display.info.size.width,
                             display.info.size.height, depth ? VkImage(depth->GetImage()) : VK_NULL_HANDLE,
                             depth ? VkFormat(depth->info.pixel_format) : VK_FORMAT_UNDEFINED,
-                            depth ? depth->info.size.width : 0, depth ? depth->info.size.height : 0);
+                            depth ? depth->info.size.width : 0, depth ? depth->info.size.height : 0,
+                            Vr::Multiview::Stereo(display)); // VR multiview: the right eye's scene too
         }
     }
     std::optional<BbStats::PhaseTimer> phase;

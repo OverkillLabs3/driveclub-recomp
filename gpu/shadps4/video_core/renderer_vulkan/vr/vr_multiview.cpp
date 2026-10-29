@@ -232,6 +232,23 @@ void OnDevice(VkDevice device, bool supported) {
     }
 }
 
+namespace {
+// The first two-layer images by size, for the log.
+u32 TwoLayers(const VideoCore::ImageInfo& info) {
+    static std::mutex m;
+    static std::vector<std::pair<u32, u32>> told;
+    std::scoped_lock lock{m};
+    const std::pair<u32, u32> size{info.size.width, info.size.height};
+    if (told.size() < 12 && std::find(told.begin(), told.end(), size) == told.end()) {
+        told.push_back(size);
+        std::printf("VR multiview: two-layer images at %ux%u (format %d)\n", size.first, size.second,
+                    int(info.pixel_format));
+        std::fflush(stdout);
+    }
+    return 2;
+}
+} // namespace
+
 u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
     static int logged = 0;
     static const bool log = std::getenv("BB_VR_HASHES") != nullptr;
@@ -253,7 +270,7 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
     // picture and the right eye got its glow in other places (the fire by the lake blocky and bright, BB_VR_AUDIT).
     if (info.size.width == 1024 && info.size.height == 896 &&
         (info.pixel_format == vk::Format::eB10G11R11UfloatPack32 || info.pixel_format == vk::Format::eR16G16B16A16Sfloat)) {
-        return 2;
+        return TwoLayers(info);
     }
     // The render size and the output size (larger when DLSS upscales) and their halvings (rounded up), down to a
     // sixteenth.
@@ -269,7 +286,7 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
         for (u32 k = 0; k <= 4; ++k) {
             const u32 w = (size[0] + (1u << k) - 1) >> k, h = (size[1] + (1u << k) - 1) >> k;
             if (info.size.width == w && info.size.height == h) {
-                return 2;
+                return TwoLayers(info);
             }
         }
     }
@@ -281,7 +298,7 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
     if (std::abs(s64(info.size.width) - bloom_w) <= 1 && std::abs(s64(info.size.height) - bloom_h) <= 1 &&
         (info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
          info.pixel_format == vk::Format::eB10G11R11UfloatPack32)) {
-        return 2;
+        return TwoLayers(info);
     }
     return layers;
 }
