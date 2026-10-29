@@ -2298,7 +2298,8 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     {
         std::scoped_lock lock{gpu.mutex}; // the entry stays until this frame is presented and made again
         for (const auto& e : gpu.pictures) {
-            if (e.frame == image && e.valid && e.width >= width) {
+            // (an eye-shaped picture can be narrower than the window: 2496x2688 on a 2560x1440 monitor)
+            if (e.frame == image && e.valid && (e.tagged || e.width >= width || e.height >= height)) {
                 made = &e;
                 source = e.picture.image;
                 width = e.width, height = e.height;
