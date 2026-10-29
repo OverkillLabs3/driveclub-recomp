@@ -20,7 +20,9 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
      **2496x2688** and 2688x2880: Virtual Desktop's High and Ultra on a Quest 2; 3200x3440 and 3584x3840: Quest 3,
      Pimax and other sharp headsets. Pick about what your streaming app sends: more only costs frames. Leave
      *Output*, *Render resolution* and *Widescreen* on Default and Off;
-   - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate;
+   - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate. With VR on, the *Frame cap*
+     slider's right end is **No cap**: the headset sets the pace, not your monitor (a 60 Hz monitor no longer holds
+     the game at 57 FPS);
    - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
      launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the
      cockpit's focal length together with VR.
@@ -33,7 +35,7 @@ shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) 
 ## Recommended settings
 What the test PC (RTX 4070 Ti Super) plays with:
 
-- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap at the headset's refresh rate (72 to 120; the test PC holds
+- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap **No cap** (the right end; the test PC holds
   about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz). Output and Render resolution **Default**,
   Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
   Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
@@ -78,7 +80,8 @@ ipd = 0.063        # metres between the eyes
 rigid = 1          # the camera fixed to the car body; 0: the game's head on springs (it sways in VR)
 seat_x = 0         # the eyes relative to the driver's eyes the game sets for each car, metres:
                    # x left, y up, z forward (seat_y, seat_z); data\user\vr_seat.ini (the seat keys) wins
-runtime_fov = 1    # each eye drawn with the field of view and eye distance the runtime gives it; 0: cockpit_vfov
+runtime_fov = 1    # each eye drawn with the field of view and eye distance the runtime gives it (drawn symmetric,
+                   # the headset gets just its own part); 0: cockpit_vfov
 dlss_model = auto  # with DLSS: auto, k, l or m (key 7 cycles it in a race)
 smoothing = 1      # steadies a head that holds still; smooth_hz = 0.5, smooth_turn = 0.05, smooth_move = 0.1
 auto_recentre = 1  # recentre on getting into the car (race start, restart, another car); 0: only by the key
@@ -114,8 +117,10 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
   [hookmanuk's VR fork](https://github.com/hookmanuk/driveclub-recomp).
 
 ## Known limits
-- Alternate frames: each eye gets half the game's frame rate (about 40 in a race on the test PC), so the picture can
-  shake a little, most of all near objects while turning.
+- Alternate frames: each eye gets half the game's frame rate (about 55-60 in a race on the test PC), so the picture
+  can shake a little, most of all near objects while turning. Below about 90 game FPS (45 per eye) it feels laggy
+  when you move your head. DriveClub Recomp is heavy on the CPU: a lower headset picture helps little when the CPU is
+  the limit.
 - Without DLSS the picture can look grainy: the game's own temporal AA mixes the two eyes, so its FXAA pass
   (Detail tab) is the only other anti-aliasing that helps. DLSS per eye is experimental: softer, some ghosting, and
   no FPS gain where the CPU is the limit (the test PC). No FSR, no frame generation.

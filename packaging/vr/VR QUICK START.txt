@@ -4,9 +4,11 @@ VR QUICK START: what to set and press
 BEFORE PLAY
   Start Virtual Desktop / Link / SteamVR first and put the headset on. A headset that isn't on
   your head holds the game back (5-10 FPS).
+  Each eye gets half the game's FPS: you need about 90-100 FPS or more in the game to be
+  comfortable (the game is heavy on the CPU).
 
 LAUNCHER (the test PC's settings)
-  Graphics  Frame rate: Unlocked (VRR), Frame cap: max
+  Graphics  Frame rate: Unlocked (VRR), Frame cap: max (with VR on it shows "No cap")
             Output / Render resolution: Default, Widescreen: Off, Widescreen FOV fix: off
             Two-thread rendering: on
             VR headset: ON, Headset picture: 2688x2880
