@@ -21,6 +21,7 @@
 
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
+#include "bbport_vr.h"
 #include "imgui.h"
 #include "bbport_scene_debug.h"
 #include "../../src/runtime_exit.h"
@@ -997,7 +998,9 @@ bool CapturesInput() {
 }
 bool ExitDialogAvailable() {
     std::scoped_lock lock{imgui_mutex};
-    return initialized && !text_entry_active && !menu_open;
+    // VR: the overlay is drawn on the window only, after the headset's copy: in the headset the dialog would be
+    // invisible and still take the pad. The root menu's back button does what it did before the dialog.
+    return initialized && !text_entry_active && !menu_open && !BbVr::Active();
 }
 
 void SetTextEntry(bool active, const std::string& prompt, const std::string& text) {
