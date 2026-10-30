@@ -1231,7 +1231,16 @@ struct ReprojectPush {
 struct CopyPush {
     float size[2];
     float encode;
+    float power = 1.0f, contrast = 1.0f, brightness = 0.0f; // the picture (PicturePush)
 };
+
+// The launcher's picture (gamma, contrast, brightness), as the presenter gives post_process.frag for the window: the
+// headset's copies get it too (the window's picture is made from the display buffer before that pass).
+CopyPush PicturePush(float width, float height, bool encode) {
+    const auto& picture = BbSettings::Get();
+    return {{width, height}, encode ? 1.0f : 0.0f, float(picture.picture_gamma.load()) / 220.0f,
+            float(picture.picture_contrast.load()) / 100.0f, float(picture.picture_brightness.load()) / 400.0f};
+}
 
 struct WindowPush {
     float size[2];
@@ -2250,7 +2259,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                 writes[i].descriptorType = i >= 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
                 writes[i].pImageInfo = &infos[i];
             }
-            const CopyPush push{{float(display_width), float(display_height)}, encode ? 1.0f : 0.0f};
+            const CopyPush push = PicturePush(float(display_width), float(display_height), encode);
             VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.hud_pipeline);
             VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.hud_layout, 0, 5, writes);
             VKF.vkCmdPushConstants(cmd, gpu.hud_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
@@ -2300,7 +2309,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
         writes[i].descriptorType = i == 1 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
         writes[i].pImageInfo = &infos[i];
     }
-    const CopyPush push{{float(display_width), float(display_height)}, encode ? 1.0f : 0.0f};
+    const CopyPush push = PicturePush(float(display_width), float(display_height), encode);
     VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.copy_pipeline);
     VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.copy_layout, 0, 2, writes);
     VKF.vkCmdPushConstants(cmd, gpu.copy_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);

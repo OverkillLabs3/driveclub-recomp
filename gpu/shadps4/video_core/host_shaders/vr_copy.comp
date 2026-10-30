@@ -12,7 +12,17 @@ layout(binding = 1, rgba8) uniform writeonly image2D out_img;
 layout(push_constant) uniform Constants {
     vec2 size;
     float encode; // 1: the view decodes sRGB: store it encoded again
+    float power;      // the picture: TV gamma (gamma / 2.2) on the encoded values
+    float contrast;   // around mid grey
+    float brightness; // added
 };
+
+// The launcher's picture (gamma, contrast, brightness; F4 and Page Up / Page Down while playing) as the window gets it
+// in post_process.frag, on the encoded values: the headset sees the game as the monitor does.
+vec3 Adjust(vec3 e) {
+    e = pow(max(e, vec3(0.0)), vec3(power));
+    return clamp((e - 0.5) * contrast + 0.5 + brightness, 0.0, 1.0);
+}
 
 void main() {
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -23,5 +33,5 @@ void main() {
     if (encode > 0.5) {
         c = mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
     }
-    imageStore(out_img, pixel, vec4(c, 1.0));
+    imageStore(out_img, pixel, vec4(Adjust(c), 1.0));
 }
