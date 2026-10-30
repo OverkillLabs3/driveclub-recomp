@@ -1494,6 +1494,28 @@ std::wstring MonitorText() {
 
 // The monitor keeps itself current while its card is on screen.
 constexpr UINT_PTR kMonitorTimer = 29;
+// The monitor redraws at 60 Hz from a cached copy of the page, so only its row is
+// repainted: the rest of the page (cards, labels, the wheel rows) does not change
+// while it runs, and a full repaint every 16 ms would cost far more than it shows.
+HBITMAP g_page_cache;
+HDC g_page_cache_dc;
+int g_page_cache_w, g_page_cache_h;
+HBITMAP g_mon_bmp;
+HDC g_mon_dc;
+int g_mon_w, g_mon_h;
+RectF g_mon_row;
+int g_mon_ctl = -1;
+float g_mon_S = 1.f;
+bool g_mon_timer_on;
+RECT MonitorDirtyRect() {
+  RECT r = {};
+  if (g_mon_ctl < 0) return r;
+  r.left = (LONG)floorf(g_mon_row.X) - 2;
+  r.top = (LONG)floorf(g_mon_row.Y) - 2;
+  r.right = (LONG)ceilf(g_mon_row.X + g_mon_row.Width) + 2;
+  r.bottom = (LONG)ceilf(g_mon_row.Y + g_mon_row.Height) + 2;
+  return r;
+}
 ULONGLONG g_dev_poll_at = 0;
 void Relayout(HWND h);
 bool SyncDevices(bool announce);
@@ -1510,7 +1532,11 @@ void RefreshMonitorRows(HWND h) {
     const std::wstring text = MonitorText();
     if (text != c.items[0]) { c.items[0] = text; any = true; }
   }
-  if (any) InvalidateRect(h, nullptr, FALSE);
+  if (!any) return;
+  if (g_info_open >= 0) return;   // the help overlay dims the page: keep the last frame under it
+  const RECT dirty = MonitorDirtyRect();
+  if (g_mon_ctl >= 0 && g_page_cache_dc) InvalidateRect(h, &dirty, FALSE);   // only the row: the page is cached
+  else InvalidateRect(h, nullptr, FALSE);
 }
 void NameFfbGainRows() {
   for (int k = 0; k < 2; ++k) {
@@ -3466,9 +3492,11 @@ void DrawMonitorRow(Graphics& g, const Font& fn, const RectF& box, const std::ws
 }
 void Paint(HDC hdc, int w, int h) {
   // The monitor refreshes itself only while its page is on screen.
+  g_mon_ctl = -1;
   if (g_hwnd) {
-    if (g_tab == kTabDriving && g_subtab == kSubInput) SetTimer(g_hwnd, kMonitorTimer, 150, nullptr);
-    else KillTimer(g_hwnd, kMonitorTimer);
+    const bool want = g_tab == kTabDriving && g_subtab == kSubInput;
+    if (want && !g_mon_timer_on) { SetTimer(g_hwnd, kMonitorTimer, 16, nullptr); g_mon_timer_on = true; }
+    else if (!want && g_mon_timer_on) { KillTimer(g_hwnd, kMonitorTimer); g_mon_timer_on = false; }
   }
   Graphics g(hdc);
   g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -3649,6 +3677,7 @@ void Paint(HDC hdc, int w, int h) {
         continue;
       }
       if (c.kind == Kind::Monitor) {
+        g_mon_row = row; g_mon_ctl = i; g_mon_S = S;
         RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
         DrawMonitorRow(g, fHint, RectF(row.X, row.Y + 26 * S, row.Width, row.Height - 30 * S),
                        c.items.empty() ? std::wstring() : c.items[0], S);
@@ -5044,12 +5073,69 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC dc = BeginPaint(h, &ps);
+      {
+        const RECT dirty = MonitorDirtyRect();
+        const RECT& want = ps.rcPaint;
+        const bool row_only = g_mon_ctl >= 0 && g_page_cache_dc && g_info_open < 0 && want.left >= dirty.left &&
+            want.top >= dirty.top && want.right <= dirty.right && want.bottom <= dirty.bottom;
+        if (row_only) {
+          // 60 Hz monitor tick: compose the row off-screen and put it on the window in one blit.
+          // Drawing straight to the window let the compositor show the erased row for a frame,
+          // which read as flicker.
+          const int rw = dirty.right - dirty.left, rh = dirty.bottom - dirty.top;
+          if (!g_mon_dc || g_mon_w != rw || g_mon_h != rh) {
+            if (g_mon_dc) DeleteDC(g_mon_dc);
+            if (g_mon_bmp) DeleteObject(g_mon_bmp);
+            g_mon_dc = CreateCompatibleDC(dc);
+            g_mon_bmp = CreateCompatibleBitmap(dc, rw, rh);
+            SelectObject(g_mon_dc, g_mon_bmp);
+            g_mon_w = rw;
+            g_mon_h = rh;
+          }
+          BitBlt(g_mon_dc, 0, 0, rw, rh, g_page_cache_dc, dirty.left, dirty.top, SRCCOPY);
+          {
+            Graphics g(g_mon_dc);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            g.TranslateTransform((REAL)-dirty.left, (REAL)-dirty.top);
+            const FontFamily& fam = *UiFamily();
+            const float S = g_mon_S;
+            Font fLabel(&fam, 14 * S, FontStyleRegular, UnitPixel), fHint(&fam, 12.5f * S, FontStyleRegular, UnitPixel);
+            Ctl& c = g_c[g_mon_ctl];
+            RowLabel(g, c, g_mon_ctl, fLabel, RectF(g_mon_row.X, g_mon_row.Y + 2 * S, g_mon_row.Width, 22 * S));
+            DrawMonitorRow(g, fHint, RectF(g_mon_row.X, g_mon_row.Y + 26 * S, g_mon_row.Width, g_mon_row.Height - 30 * S),
+                           c.items.empty() ? std::wstring() : c.items[0], S);
+            g.Flush();
+          }
+          BitBlt(dc, dirty.left, dirty.top, rw, rh, g_mon_dc, 0, 0, SRCCOPY);
+          EndPaint(h, &ps);
+          return 0;
+        }
+      }
       RECT rc;
       GetClientRect(h, &rc);
       HDC mem = CreateCompatibleDC(dc);
       HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
       HGDIOBJ old = SelectObject(mem, bmp);
       Paint(mem, rc.right, rc.bottom);
+      if (!g_page_cache_dc || g_page_cache_w != rc.right || g_page_cache_h != rc.bottom) {
+        if (g_page_cache_dc) DeleteDC(g_page_cache_dc);
+        if (g_page_cache) DeleteObject(g_page_cache);
+        g_page_cache_dc = CreateCompatibleDC(dc);
+        g_page_cache = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+        SelectObject(g_page_cache_dc, g_page_cache);
+        g_page_cache_w = rc.right;
+        g_page_cache_h = rc.bottom;
+      }
+      BitBlt(g_page_cache_dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);   // the static page, for the monitor row
+      if (g_mon_ctl >= 0 && g_info_open < 0) {
+        // The cached row must be empty: a tick puts the old frame back first, and anything left
+        // in it (a stick dot, a lit button) would show as a ghost under the new one.
+        const RECT mr = MonitorDirtyRect();
+        SolidBrush blank(kCard);
+        Graphics gc(g_page_cache_dc);
+        gc.FillRectangle(&blank, Rect(mr.left, mr.top, mr.right - mr.left, mr.bottom - mr.top));
+      }
       BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
       SelectObject(mem, old);
       DeleteObject(bmp);
