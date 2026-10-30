@@ -13,16 +13,16 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 1. **OpenXR loader.** Put `openxr_loader.dll` next to `DriveClubGame.exe` (in `runtime\`). It comes with the
    [OpenXR SDK](https://github.com/KhronosGroup/OpenXR-SDK/releases) (`native\x64\release\bin\openxr_loader.dll`)
    or MSYS2's `mingw-w64-clang-x86_64-openxr-sdk` (`libopenxr_loader.dll`, renamed).
-2. **Launcher:**
-   - *Graphics* → *VR headset (experimental)*: **VR headset** on;
-   - *Graphics* → *VR headset* → *Headset picture (pixels per eye)*: the size the game draws each eye at, in the shape
+2. **Launcher** (the card *VR headset (experimental)* is on the *Display* page of the new launcher, the *Graphics* tab
+   of the classic one):
+   - **VR headset** on;
+   - *Headset picture (pixels per eye)*: the size the game draws each eye at, in the shape
      of a headset eye (the menus and the HUD keep their 16:9 shape). 1856x1984: the Quest 2 panel, light;
      **2496x2688** and 2688x2880: Virtual Desktop's High and Ultra on a Quest 2; 3200x3440 and 3584x3840: Quest 3,
      Pimax and other sharp headsets. Pick about what your streaming app sends: more only costs frames. Leave
      *Output*, *Render resolution* and *Widescreen* on Default and Off;
-   - *Frame rate* → **Unlocked**: with stereo each eye gets half the frame rate. With VR on, the *Frame cap*
-     slider's right end is **No cap**: the headset sets the pace, not your monitor (a 60 Hz monitor no longer holds
-     the game at 57 FPS);
+   - *Frame rate* → **Unlimited**: with stereo each eye gets half the frame rate, and the headset, not your monitor,
+     sets the pace (with *Unlocked (VRR)* a 60 Hz monitor holds the game at 57 FPS);
    - the field of view is set by VR itself while it is on (90° vertical in the cockpit, `cockpit_vfov`); the
      launcher's *Field of view* slider and F5/F6 apply again with VR off. Do not use camera mods that change the
      cockpit's focal length together with VR.
@@ -31,14 +31,18 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
    Close background downloads (game launchers, torrents), Wallpaper Engine and overlays: the game is limited by the
    CPU, and on the test PC they cost about 7% of the FPS.
 
-The game's camera shake at speed is still there (it is applied after the head camera). A loose-file mod with zero
-shake amplitudes (`mods\data\cameras\vehicle\include\vehicle_camera_shake.txt`) takes it away.
+The game's camera shake at speed is applied after the head camera: *Driving* → *Camera shake* sets how much of it
+is left (0 takes it away; a little, such as 20-30%, keeps the feel of speed). *Lock to horizon* does not change the
+cockpit while VR is on (the headset holds the view there); with *All views* the other cameras still keep level.
+
+The *Picture* sliders (brightness, contrast, gamma) and Page Up / Page Down while playing change the headset's
+picture as they do the monitor's. The in-game exit confirmation (an overlay drawn on the monitor only) stays off
+while VR is on.
 
 ## Recommended settings
 What the test PC (RTX 4070 Ti Super) plays with:
 
-- *Graphics*: Frame rate **Unlocked (VRR)**, Frame cap **No cap** (the right end; the test PC holds
-  about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz). Output and Render resolution **Default**,
+- *Display*: Frame rate **Unlimited** (the test PC holds about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz). Output and Render resolution **Default**,
   Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
   Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
 - *DLSS (experimental in VR)*: Anti-aliasing **DLSS (RTX)** with an *Upscaling* level works per eye (each eye its
