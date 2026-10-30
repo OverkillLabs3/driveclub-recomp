@@ -864,6 +864,11 @@ bool Runtime::CopyColorAndDepth(VideoCore::Image* src, VideoCore::Image* dst) {
         }
         blit_helper->CopyDepthToColor(dst->info.size.width, dst->info.size.height, src->backing->image.image_ci.format,
                                       dst->backing->image.image_ci.format, src->GetImage(), dst->GetImage());
+        if (Vr::Multiview::Stereo(*dst)) { // VR multiview: the right eye's layer (the source's, or its only one)
+            blit_helper->CopyDepthToColor(dst->info.size.width, dst->info.size.height,
+                                          src->backing->image.image_ci.format, dst->backing->image.image_ci.format,
+                                          src->GetImage(), dst->GetImage(), Vr::Multiview::Stereo(*src) ? 1 : 0, 1);
+        }
         VerifyFormCopy(src, dst);
         dst->flags |= (src->flags & VideoCore::ImageFlagBits::GpuModified);
         dst->flags &= ~VideoCore::ImageFlagBits::Dirty;
@@ -1073,7 +1078,7 @@ void Runtime::ClearDepth(VideoCore::Image* dst, const VideoCore::SubresourceRang
         .baseMipLevel = range.base.level,
         .levelCount = range.extent.levels,
         .baseArrayLayer = range.base.layer,
-        .layerCount = range.extent.layers,
+        .layerCount = Vr::Multiview::Stereo(*dst) ? 2u : range.extent.layers, // VR multiview: both eyes
     };
     scheduler.Record([image = dst->GetImage(), depth, vk_range](vk::CommandBuffer cmd) {
         cmd.clearDepthStencilImage(image, vk::ImageLayout::eTransferDstOptimal,
@@ -1100,7 +1105,7 @@ void Runtime::ClearImage(VideoCore::Image* dst, const VideoCore::SubresourceRang
         .baseMipLevel = range.base.level,
         .levelCount = range.extent.levels,
         .baseArrayLayer = range.base.layer,
-        .layerCount = range.extent.layers,
+        .layerCount = Vr::Multiview::Stereo(*dst) ? 2u : range.extent.layers, // VR multiview: both eyes
     };
     scheduler.Record([image = dst->GetImage(), color = clear_value.color,
                       vk_range](vk::CommandBuffer cmdbuf) {

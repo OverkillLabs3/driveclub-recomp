@@ -40,7 +40,8 @@ public:
     /// bbport: the depth plane of `source` (in eDepthStencilReadOnlyOptimal) into the single-sample colour image
     /// `dest` (in eColorAttachmentOptimal) with a full-screen draw: texel for texel, a float depth into R32F.
     void CopyDepthToColor(u32 width, u32 height, vk::Format depth_format, vk::Format color_format,
-                          vk::Image source, vk::Image dest);
+                          vk::Image source, vk::Image dest, u32 src_layer = 0,
+                          u32 dst_layer = 0); // VR multiview: the layers (eyes)
 
 private:
     void CreateShaders();

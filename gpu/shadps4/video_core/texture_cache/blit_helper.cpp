@@ -352,19 +352,19 @@ void BlitHelper::CopyBetweenMsImages(u32 width, u32 height, u32 num_samples,
 }
 
 void BlitHelper::CopyDepthToColor(u32 width, u32 height, vk::Format depth_format, vk::Format color_format,
-                                  vk::Image source, vk::Image dest) {
+                                  vk::Image source, vk::Image dest, u32 src_layer, u32 dst_layer) {
     const auto device = instance.GetDevice();
     const vk::ImageViewUsageCreateInfo src_usage_ci{.usage = vk::ImageUsageFlagBits::eSampled};
     const auto [src_view_result, src_view] = device.createImageView({
         .pNext = &src_usage_ci, .image = source, .viewType = vk::ImageViewType::e2D, .format = depth_format,
-        .subresourceRange{vk::ImageAspectFlagBits::eDepth, 0U, 1U, 0U, 1U},
+        .subresourceRange{vk::ImageAspectFlagBits::eDepth, 0U, 1U, src_layer, 1U},
     });
     ASSERT_MSG(src_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
                vk::to_string(src_view_result));
     const vk::ImageViewUsageCreateInfo dst_usage_ci{.usage = vk::ImageUsageFlagBits::eColorAttachment};
     const auto [dst_view_result, dst_view] = device.createImageView({
         .pNext = &dst_usage_ci, .image = dest, .viewType = vk::ImageViewType::e2D, .format = color_format,
-        .subresourceRange{vk::ImageAspectFlagBits::eColor, 0U, 1U, 0U, 1U},
+        .subresourceRange{vk::ImageAspectFlagBits::eColor, 0U, 1U, dst_layer, 1U},
     });
     ASSERT_MSG(dst_view_result == vk::Result::eSuccess, "Failed to create image view: {}",
                vk::to_string(dst_view_result));

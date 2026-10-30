@@ -1557,6 +1557,9 @@ void ReadKeys() {
                 const int next = model.load() == 0 ? 11 : model.load() >= 13 ? 0 : model.load() + 1;
                 model = next;
                 std::printf("VR: DLSS model %s\n", next == 0 ? "auto" : next == 11 ? "K" : next == 12 ? "L" : "M");
+            } else if (k == 7 && Vulkan::Vr::Multiview::Requested()) {
+                settings.window_eye = 1 - settings.window_eye;
+                std::printf("VR: multiview: the window shows the %s eye\n", settings.window_eye == 0 ? "left" : "right");
             } else if (k == 7) {
                 st.turn_on = !st.turn_on;
                 std::printf("VR: car turn compensation %s (%.2f)\n", st.turn_on ? "on" : "off",
@@ -2348,6 +2351,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             entry->valid = true;
             DumpPictures(cmd, entry->picture, display_width, display_height, camera.found ? camera.eye : -1);
             const int mode = reproject_mode.load();
+            VkImageView window_scene = scene_view;
             if (Vulkan::Vr::Multiview::Enabled() && camera.found && camera.eye < 0 && gpu.right_ok[scene_index] &&
                 gpu.scenes_right[scene_index].width == display_width) {
                 // multiview: the left eye's scene (layer 0) and the right eye's (layer 1), both drawn this frame
@@ -2355,6 +2359,9 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                 entry->both = right_view && ScenePicture(cmd, scene_view, entry->other, encode, display_width,
                                                          display_height) &&
                               ScenePicture(cmd, right_view, entry->right, encode, display_width, display_height);
+                if (entry->both && settings.window_eye == 1) {
+                    window_scene = right_view; // key 9: the right eye on the monitor
+                }
             } else if (mode == 1 && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index]) {
                 const int other = 1 - camera.eye;
                 entry->reprojected = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other,
@@ -2366,7 +2373,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                               Reproject(cmd, *entry, gpu.depths[scene_index], entry->right, 0.5f * settings.ipd,
                                         nullptr);
             }
-            if (const VkImageView window = WindowPicture(cmd, alpha_view, scene_view, 0, encode, display_width,
+            if (const VkImageView window = WindowPicture(cmd, alpha_view, window_scene, 0, encode, display_width,
                                                          display_height, camera, window_width, window_height)) {
                 return window;
             }
