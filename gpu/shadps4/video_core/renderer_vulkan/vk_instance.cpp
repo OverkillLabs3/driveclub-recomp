@@ -17,6 +17,7 @@
 #include "bbport_vr.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -563,6 +564,10 @@ bool Instance::CreateDevice() {
         },
         vk::PhysicalDeviceVulkan11Features{
             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
+            // VR multiview (BB_VR_STEREO=mv only)
+            .multiview = Vr::Multiview::Requested() && vk11_features.multiview,
+            .multiviewGeometryShader = Vr::Multiview::Requested() && vk11_features.multiviewGeometryShader,
+            .multiviewTessellationShader = Vr::Multiview::Requested() && vk11_features.multiviewTessellationShader,
             .shaderDrawParameters = vk11_features.shaderDrawParameters,
         },
         vk::PhysicalDeviceVulkan12Features{
@@ -751,6 +756,7 @@ bool Instance::CreateDevice() {
         dlss->Initialize(*instance, physical_device, *device);
     }
     BbVr::OnDevice(*instance, physical_device, *device, queue_family_index, 0);
+    Vr::Multiview::OnDevice(VkDevice(*device), vk11_features.multiview == VK_TRUE); // VR multiview
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);

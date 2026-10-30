@@ -36,6 +36,7 @@ struct ImageViewInfo {
     vk::ComponentMapping mapping{};
     u32 min_lod = 0;
     bool is_storage = false;
+    bool vr_array = false; ///< VR multiview: a guest 2D view made a 2D array (vr_multiview.h)
 
     auto operator<=>(const ImageViewInfo&) const = default;
 };

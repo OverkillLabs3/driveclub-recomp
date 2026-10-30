@@ -60,6 +60,12 @@
 #define XR_USE_GRAPHICS_API_VULKAN
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "bbport_vr.h"
+// VR multiview (video_core/renderer_vulkan/vr/vr_multiview.h): both eyes drawn in each frame
+namespace Vulkan::Vr::Multiview {
+bool Requested();
+bool Enabled();
+void SetShift(float shift);
+} // namespace Vulkan::Vr::Multiview
 #include "bbport_settings.h"
 #include "video_core/host_shaders/vr_copy_comp.h"
 #include "video_core/host_shaders/vr_hud_comp.h"
@@ -204,6 +210,7 @@ std::atomic<bool> active{false};
 // The eyes made from depth (reproject, key_reproject): 0 off, 1 the other eye from each alternate frame, 2 both eyes
 // from a frame drawn between them.
 std::atomic<int> reproject_mode{0};
+bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
 std::atomic<int> eye_shifts{0};
 std::string instance_extension_storage, device_extension_storage;
@@ -894,14 +901,18 @@ XrFovf SymmetricFov(const XrFovf& f) {
 // The part of a picture of `eye` (drawn with SymmetricFov) that is the runtime's own field of view for it, in pixels of
 // a `width` x `height` picture (x, y, width, height), and that part's exact angles. Meta's runtime shows a picture at
 // its own angles whatever the layer states (the symmetric picture squinted there), so the layer gives it just these.
-bool EyeCrop(int eye, uint32_t width, uint32_t height, int32_t rect[4], XrFovf& out) {
-    if (eye < 0 || !settings.runtime_fov || !runtime_eye_known.load()) {
+XrFovf UnionFov(const XrFovf& a, const XrFovf& b);
+
+// `eye`: the eye the picture was drawn for, or -1 for one drawn from the middle (UnionFov) shown to `shown`.
+bool EyeCrop(int eye, int shown, uint32_t width, uint32_t height, int32_t rect[4], XrFovf& out) {
+    if (shown < 0 || !settings.runtime_fov || !runtime_eye_known.load()) {
         return false;
     }
     XrFovf drawn, exact;
     {
         std::scoped_lock lock{runtime_eye_mutex};
-        drawn = runtime_eye_fov[eye & 1], exact = runtime_eye_exact[eye & 1];
+        drawn = eye < 0 ? UnionFov(runtime_eye_fov[0], runtime_eye_fov[1]) : runtime_eye_fov[eye & 1];
+        exact = runtime_eye_exact[shown & 1];
     }
     const float tx = std::tan(drawn.angleRight), ty = std::tan(drawn.angleUp);
     if (tx <= 0.0f || ty <= 0.0f) {
@@ -995,6 +1006,10 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
         eye_fov_us = NowUs();
     } else {
         p[0] = p[5] / render;
+    }
+    if (Vulkan::Vr::Multiview::Enabled()) {
+        // multiview: each eye half the eye distance aside, as a clip x shift (left +, right -; emit_spirv_vr.h)
+        Vulkan::Vr::Multiview::SetShift(mv_shift_on ? p[0] * settings.ipd * 0.5f : 0.0f);
     }
     static bool told = false;
     if (!told) {
@@ -1208,6 +1223,8 @@ struct Gpu {
     // The display buffer before the HUD (TakeScene): a ring, as the GPU may still read the last one; `scene_ready`
     // names the one taken since the last presenter frame.
     GpuImage scenes[3];
+    GpuImage scenes_right[3]; // multiview: the right eye's scene (layer 1 of the display buffer)
+    bool right_ok[3]{};
     GpuImage depths[3];   // their frames' scene depth (sample_view: the depth aspect), SHADER_READ_ONLY_OPTIMAL
     bool depth_ok[3]{};
     GpuImage hits;        // the reprojection's nearest-pixel record (R32_UINT)
@@ -1525,6 +1542,9 @@ void ReadKeys() {
             std::scoped_lock lock{head_mutex};
             if (k == 0) {
                 st.have_centre = false;
+            } else if (k == 8 && Vulkan::Vr::Multiview::Requested()) {
+                mv_shift_on = !mv_shift_on;
+                std::printf("VR: multiview eye offset %s\n", mv_shift_on ? "on" : "off (both eyes the same)");
             } else if (k == 8) {
                 const int mode = (reproject_mode.load() + 1) % 3;
                 reproject_mode = mode;
@@ -1594,6 +1614,11 @@ void AppendInstanceExtensions(std::vector<const char*>& extensions) {
     ReadSeat();
     st.turn_on = settings.turn_comp > 0.0f;
     reproject_mode = settings.reproject;
+    if (Vulkan::Vr::Multiview::Requested()) {
+        reproject_mode = 2; // the camera between the eyes, both eyes from each frame (their layers)
+        std::printf("VR: multiview: both eyes drawn in every frame (BB_VR_STEREO=mv); key 8 turns the eye "
+                    "offset off and on\n");
+    }
     if (!Start() || !xr.GetVulkanInstanceExtensionsKHR) {
         st.failed = true;
         std::printf("VR: off\n");
@@ -1939,7 +1964,7 @@ bool SceneDrawn() {
 VkFormat last_display_format = VK_FORMAT_UNDEFINED; // the presenter's view of the display buffer
 
 void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t width, uint32_t height, VkImage depth,
-               VkFormat depth_format, uint32_t depth_width, uint32_t depth_height) {
+               VkFormat depth_format, uint32_t depth_width, uint32_t depth_height, bool stereo) {
     scene_drawn.store(false, std::memory_order_relaxed);
     switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM:
@@ -1960,10 +1985,26 @@ void TakeScene(VkCommandBuffer cmd, VkImage display, VkFormat format, uint32_t w
     Copy(cmd, display, scene.image, width, height, 0);
     Barrier(cmd, scene.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    // multiview: the right eye's scene from layer 1
+    GpuImage& right = gpu.scenes_right[index];
+    gpu.right_ok[index] = stereo && MakeImage(right, width, height, VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                                  VK_IMAGE_USAGE_SAMPLED_BIT, format, true);
+    if (gpu.right_ok[index]) {
+        Barrier(cmd, right.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkImageCopy layer1{};
+        layer1.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 1};
+        layer1.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        layer1.extent = {width, height, 1};
+        VKF.vkCmdCopyImage(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, right.image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &layer1);
+        Barrier(cmd, right.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
     Barrier(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     const VkClearColorValue clear{};
-    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, stereo ? 2u : 1u};
     VKF.vkCmdClearColorImage(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
     Barrier(cmd, display, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -2189,6 +2230,34 @@ VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView s
     return window_view;
 }
 
+// Multiview: an eye's picture (RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL) from its scene (`scene_view`, sampled).
+bool ScenePicture(VkCommandBuffer cmd, VkImageView scene_view, GpuImage& out, bool encode, uint32_t width,
+                  uint32_t height) {
+    if (!MakeImage(out, width, height, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        return false;
+    }
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT);
+    VkDescriptorImageInfo infos[2] = {{VK_NULL_HANDLE, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                      {VK_NULL_HANDLE, out.view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (uint32_t i = 0; i < 2; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i == 1 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[i].pImageInfo = &infos[i];
+    }
+    const CopyPush push{{float(width), float(height)}, encode ? 1.0f : 0.0f};
+    VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.copy_pipeline);
+    VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.copy_layout, 0, 2, writes);
+    VKF.vkCmdPushConstants(cmd, gpu.copy_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+    VKF.vkCmdDispatch(cmd, (width + 7) / 8, (height + 7) / 8, 1);
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT);
+    return true;
+}
+
 VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_view, VkImageView alpha_view,
                       VkFormat display_format, uint32_t display_width, uint32_t display_height,
                       uint32_t* window_width, uint32_t* window_height) {
@@ -2279,7 +2348,14 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             entry->valid = true;
             DumpPictures(cmd, entry->picture, display_width, display_height, camera.found ? camera.eye : -1);
             const int mode = reproject_mode.load();
-            if (mode == 1 && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index]) {
+            if (Vulkan::Vr::Multiview::Enabled() && camera.found && camera.eye < 0 && gpu.right_ok[scene_index] &&
+                gpu.scenes_right[scene_index].width == display_width) {
+                // multiview: the left eye's scene (layer 0) and the right eye's (layer 1), both drawn this frame
+                const VkImageView right_view = SampleView(gpu.scenes_right[scene_index], display_format);
+                entry->both = right_view && ScenePicture(cmd, scene_view, entry->other, encode, display_width,
+                                                         display_height) &&
+                              ScenePicture(cmd, right_view, entry->right, encode, display_width, display_height);
+            } else if (mode == 1 && camera.found && camera.eye >= 0 && gpu.depth_ok[scene_index]) {
                 const int other = 1 - camera.eye;
                 entry->reprojected = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other,
                                                other == 1 ? settings.ipd : -settings.ipd,
@@ -2713,7 +2789,7 @@ void AfterSubmit() {
                 if ((st.reproject_frame || st.afr_frame) && EyeFov(drawn, own)) {
                     v.fov = own;
                     int32_t crop[4];
-                    if (EyeCrop(drawn, st.width, st.height, crop, own)) {
+                    if (EyeCrop(drawn, drawn >= 0 ? drawn : e, st.width, st.height, crop, own)) {
                         v.fov = own; // just the runtime's own angles of the picture
                         v.subImage.imageRect.offset.x += crop[0];
                         v.subImage.imageRect.offset.y += crop[1];

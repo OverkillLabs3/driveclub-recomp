@@ -26,7 +26,8 @@ public:
 
     void ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_samples,
                                    vk::Format src_pixel_format, vk::Format dst_pixel_format,
-                                   vk::Image source, vk::Image dest);
+                                   vk::Image source, vk::Image dest, u32 src_layer = 0,
+                                   u32 dst_layer = 0); // VR multiview: the layers (eyes)
 
     // Copies a multi-sample depth image into the single-sample color image the game reads it through, sample i
     // into channel i (screen-space lighting, SSAO and soft particles read it that way).

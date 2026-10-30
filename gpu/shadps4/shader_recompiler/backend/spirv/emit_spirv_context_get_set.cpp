@@ -4,6 +4,7 @@
 #include "common/assert.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_vr.h" // VR multiview
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/ir/attribute.h"
 #include "shader_recompiler/ir/microinstruction.h"
@@ -87,6 +88,10 @@ Id EmitReadConst(EmitContext& ctx, IR::Inst* inst, Id addr, Id offset) {
 // 1440p render); =0 turns it off.
 bool WideLoads() {
     static const bool on = [] {
+        // VR multiview: off (guest buffers are per-eye arrays there, and the wide alias is made after EyeBuffers)
+        if (Vr::MultiviewShaders()) {
+            return false;
+        }
         const char* env = std::getenv("BB_WIDE_LOADS");
         return !env || !env[0] || env[0] == '1';
     }();
