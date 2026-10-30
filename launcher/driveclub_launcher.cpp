@@ -571,7 +571,14 @@ bool BlurRowLocked(const Ctl& c) {
 }
 // Rows that do nothing with the other choices: the physics settings with Original Physics; Upscaling and
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
+int g_vr_row = -1, g_vr_fps = -1;  // the VR switch; the Frame rate row shown with it on, in place of the usual rows
+// The VR switch as the page shows it now (g_vr is set when saving).
+bool VrChosen() { return g_vr_row >= 0 && g_c[g_vr_row].sel != 0; }
+
 bool RowHidden(const Ctl& c) {
+  if (g_vr_fps >= 0 && &c == &g_c[g_vr_fps]) return !VrChosen();
+  if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
+  if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap] && VrChosen()) return true;
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
@@ -1017,6 +1024,12 @@ void BuildModel() {
     g_fps_cap = int(g_c.size());
     g_c.push_back(std::move(c));
   }
+  // VR: the headset sets the pace, so this row stands in for Frame rate and Frame cap (they keep their choices).
+  g_vr_fps = seg(L"Frame rate",
+                 L"With the VR headset on the game follows the headset's refresh rate by itself. Pick the rate in Virtual "
+                 L"Desktop, Link or SteamVR, a little below the FPS your PC holds: repeated frames show as double images "
+                 L"in turns.",
+                 {L"Follows the headset"}, {"@vrfps"}, 0);
   const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture (with the menus and HUD). It is then scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
                          {"", "720p [1280x720] Output resolution", "1440p [2560x1440] Output resolution",
@@ -1117,6 +1130,7 @@ void BuildModel() {
                         L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
                         L"head, in stereo. Needs openxr_loader.dll next to the game; see packaging/vr/README.md.",
                         "@vr", false);
+  g_vr_row = vr;
   const int vr_stereo = seg(L"Stereo mode",
                             L"How the VR headset gets its two eyes.\n"
                             L"\x2022 AFR: one eye per frame, in turn. The higher FPS, but each eye gets half of it.\n"
@@ -1349,7 +1363,7 @@ void BuildModel() {
   }
   NameFfbGainRows();
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
-  g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap}, 0, kTabGraphics});
+  g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap, g_vr_fps}, 0, kTabGraphics});
   if (g_fgen >= 0) g_cards.back().ctls.push_back(g_fgen);
   g_cards.push_back({L"RESOLUTION AND WINDOW", {outres, inres, wide, g_gfx[kGfxDynres], full}, 0, kTabGraphics});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
@@ -1847,6 +1861,8 @@ bool SaveSettings() {
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
+    } else if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) {
+      out << "60 FPS with deltatime\n";  // VR: the frame rate follows the headset, whatever the row holds for flat play
     } else if (c.sel > 0 && c.patches[c.sel] == "@unlocked") {
       out << "60 FPS with deltatime\n";  // the same timing patch; only the frame cap differs
     } else if (c.sel > 0 && !c.patches[c.sel].empty() && c.patches[c.sel][0] != '@') {
@@ -3051,7 +3067,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     // each frame; Mailbox showed them on a fixed refresh, some for one refresh and some for two (stutter).
     // Unlimited: unlocked with no cap (1000; 0 would tie frames to the 60 Hz vblank) and Immediate presents, for
     // fixed refresh displays; past about 120 FPS the game's timing breaks (the Frame rate hint says so).
-    const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3, free = g_fps >= 0 && g_c[g_fps].sel == 4;
+    // VR: always free, the game takes its limit from the headset (BbVr::HeadsetHz).
+    const bool unlocked = !VrChosen() && g_fps >= 0 && g_c[g_fps].sel == 3;
+    const bool free = VrChosen() || (g_fps >= 0 && g_c[g_fps].sel == 4);
     const std::wstring cap = free ? L"1000" : g_fps_cap >= 0 ? std::to_wstring(g_c[g_fps_cap].sel) : DisplayHz() ? std::to_wstring(DisplayHz() - 3) : L"1000";
     if (!UserEnv(L"BB_FPS_LIMIT")) SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked || free ? cap.c_str() : delta ? L"60" : nullptr);
     // VR: the headset is the display. Mailbox keeps the monitor from holding frames back and shows only whole frames
@@ -3918,7 +3936,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (GpuBlocked()) { g_status = g_gpu_problem; g_status_color = kBad; }
           }
           g_changed = true;
-          if (c == g_hdr) Relayout(h);  // its sliders show or hide
+          if (c == g_hdr || c == g_vr_row) Relayout(h);  // the rows they show or hide
         } else if (seg >= 0) {
           // choices that show or hide other rows (RowHidden)
           const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
