@@ -200,6 +200,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     neural = std::make_unique<NeuralRendering>(instance, draw_scheduler);
     swapchain_frame_gen = frame_generator->Wanted();
     rasterizer->GetUpscaler().SetFrameGenerator(frame_generator.get());
+    const vk::Extent2D extent = swapchain.GetExtent();
+    if (extent.width > 0 && extent.height > 0) {
+        expected_ratio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        SetExpectedGameSize(s32(extent.width), s32(extent.height));
+    }
 }
 
 Presenter::~Presenter() {
@@ -574,6 +579,17 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};
         image_id = texture_cache.FindImage(desc);
         texture_cache.UpdateImage(image_id);
+    }
+
+    const u32 src_w = upscaled ? display.width : attribute.attrib.width;
+    const u32 src_h = upscaled ? display.height : attribute.attrib.height;
+    if (src_w > 0 && src_h > 0) {
+        const float new_ratio = static_cast<float>(src_w) / static_cast<float>(src_h);
+        if (new_ratio != expected_ratio) {
+            expected_ratio = new_ratio;
+            const vk::Extent2D extent = swapchain.GetExtent();
+            SetExpectedGameSize(s32(extent.width), s32(extent.height));
+        }
     }
 
     Frame* frame = GetRenderFrame();

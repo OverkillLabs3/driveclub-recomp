@@ -822,11 +822,24 @@ static void game_options_apply(void) {
  * (+0x731cb0): percent/100 x 0.5 goes there. At 100% (or with no file) the value is left as the game and patches
  * have it. */
 #ifdef _WIN32
+static float camera_fov_base_factor(void) {
+    if (!runtime_image_base) return 0.5f;
+    uint32_t out_w = 0, out_h = 0;
+    memcpy(&out_w, (const void *)(runtime_image_base + 0x754c1b), 4);
+    memcpy(&out_h, (const void *)(runtime_image_base + 0x754c21), 4);
+    if (out_w >= 640 && out_w <= 16384 && out_h >= 360 && out_h <= 8640) {
+        float aspect = (float)out_w / (float)out_h;
+        if (aspect < 1.777f && aspect > 0.5f) {
+            return 0.5f * (16.0f / 9.0f) / aspect;
+        }
+    }
+    return 0.5f;
+}
 static void camera_fov_set(int percent) {
     float *k=(float *)(runtime_image_base+0x12efac4);
     DWORD old;
     if (!VirtualProtect(k,4,PAGE_READWRITE,&old)) return;
-    *k=0.5f*(float)percent/100.0f;
+    *k=camera_fov_base_factor()*(float)percent/100.0f;
     VirtualProtect(k,4,old,&old);
 }
 static void camera_fov_path(char *path, size_t size) {
@@ -856,7 +869,7 @@ static void camera_fov_apply(void) {
     if (!step) return;
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(),&pid);
     if (pid!=GetCurrentProcessId()) return;
-    if (percent<0) percent=(int)lroundf(*(const float *)(runtime_image_base+0x12efac4)/0.5f*100.0f);   /* from the game's (or the patch's) */
+    if (percent<0) percent=(int)lroundf(*(const float *)(runtime_image_base+0x12efac4)/camera_fov_base_factor()*100.0f);   /* from the game's (or the patch's) */
     percent=percent+step<50 ? 50 : percent+step>150 ? 150 : percent+step;   /* the launcher slider's range */
     camera_fov_set(percent);
     char path[600]; camera_fov_path(path,sizeof path);

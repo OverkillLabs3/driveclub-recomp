@@ -386,7 +386,7 @@ int g_online_row = -1, g_online_host_row = -1, g_online_ip_row = -1;  // "Online
 int g_profile_row = -1, g_save_backup_row = -1, g_save_restore_row = -1;  // "Save profile" and its two buttons
 int profile_saved = 0;  // "Save profile" choice, from "profile=" in launcher.ini
 int online_saved = 0;             // "Online play" choice, from "online=" in launcher.ini
-int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
+int g_inres = -1, g_wide = -1, g_aspect = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
               kGfxHaze, kGfxFxaa, kGfxRows };
@@ -982,6 +982,12 @@ void BuildModel() {
     g_c.push_back(std::move(c));
     return int(g_c.size()) - 1;
   };
+  auto picker_choices = [](const wchar_t* label, const wchar_t* hint, std::vector<std::wstring> items,
+                           std::vector<std::string> patches, int def) {
+    Ctl c{label, hint, Kind::Picker, std::move(items), std::move(patches), def, def};
+    g_c.push_back(std::move(c));
+    return int(g_c.size()) - 1;
+  };
   auto toggle = [](const wchar_t* label, const wchar_t* hint, const char* patch, bool def) {
     Ctl c{label, hint, Kind::Toggle, {}, {patch}, def ? 1 : 0, def ? 1 : 0};
     g_c.push_back(std::move(c));
@@ -1025,17 +1031,52 @@ void BuildModel() {
                          "1800p [3200x1800] Internal resolution [DEPTH BUG]", "4K [3840x2160] Internal resolution [DEPTH BUG]",
                          "8K [7680x4320] Internal resolution [DEPTH BUG]"},
                         00));
-  const int wide = (g_wide = int(g_c.size()), seg(L"Widescreen (render and output)",
-                       L"Ultrawide sizes. These change both the render and the output size. The needed memory patch is added for you.",
-                       {L"Off", L"2560x1080", L"3440x1080", L"3840x1080", L"3440x1440",
-                        L"5120x1440", L"5120x2160"},
-                       {"", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
-                        "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]",
-                        "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]",
-                        "1440p 21:9 [3440x1440] Internal + Output resolution [DEPTH BUG]",
-                        "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
-                        "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
-                       00));
+  const int aspect = (g_aspect = int(g_c.size()), picker_choices(L"Aspect ratio and widescreen (render and output)",
+                        L"Non-16:9 and ultrawide sizes (16:10, 21:9, 32:9, 32:10, 3:2, 4:3). These change both the render and the output size. The needed memory patch is added for you.",
+                        {L"Off",
+                         // 16:10 (Handhelds & Laptops)
+                         L"1280x800 (16:10)",
+                         L"1920x1200 (16:10)",
+                         L"2560x1600 (16:10)",
+                         // 21:9 (Ultrawide)
+                         L"2560x1080 (21:9)",
+                         L"3440x1440 (21:9)",
+                         L"5120x2160 (21:9)",
+                         // 32:9 (Super Ultrawide)
+                         L"3840x1080 (32:9)",
+                         L"5120x1440 (32:9)",
+                         L"7680x2160 (32:9)",
+                         // 32:10 (Super Ultrawide)
+                         L"3440x1080 (32:10)",
+                         // 3:2 (Productivity / Surface)
+                         L"1920x1280 (3:2)",
+                         L"2160x1440 (3:2)",
+                         // 4:3 (Classic / CRT)
+                         L"1280x960 (4:3)",
+                         L"1440x1080 (4:3)"},
+                        {"",
+                         // 16:10
+                         "800p 16:10 [1280x800] Internal + Output resolution",
+                         "1200p 16:10 [1920x1200] Internal + Output resolution [DEPTH BUG]",
+                         "1600p 16:10 [2560x1600] Internal + Output resolution [DEPTH BUG]",
+                         // 21:9
+                         "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]",
+                         "1440p 21:9 [3440x1440] Internal + Output resolution [DEPTH BUG]",
+                         "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]",
+                         // 32:9
+                         "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]",
+                         "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
+                         "2160p 32:9 [7680x2160] Internal + Output resolution [DEPTH BUG]",
+                         // 32:10
+                         "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]",
+                         // 3:2
+                         "1280p 3:2 [1920x1280] Internal + Output resolution [DEPTH BUG]",
+                         "1440p 3:2 [2160x1440] Internal + Output resolution [DEPTH BUG]",
+                         // 4:3
+                         "960p 4:3 [1280x960] Internal + Output resolution",
+                         "1080p 4:3 [1440x1080] Internal + Output resolution [DEPTH BUG]"},
+                        0));
+  g_wide = -1;
   const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
   const int camera_patch = g_camera_patch_row = toggle(L"High-FPS camera fix",
@@ -1323,7 +1364,7 @@ void BuildModel() {
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
   g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap}, 0, kTabGraphics});
   if (g_fgen >= 0) g_cards.back().ctls.push_back(g_fgen);
-  g_cards.push_back({L"RESOLUTION AND WINDOW", {outres, inres, wide, g_gfx[kGfxDynres], full}, 0, kTabGraphics});
+  g_cards.push_back({L"RESOLUTION AND WINDOW", {outres, inres, aspect, g_gfx[kGfxDynres], full}, 0, kTabGraphics});
   g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"PICTURE", {g_picture[0], g_picture[1], g_picture[2]}, 0, kTabGraphics,
@@ -1355,7 +1396,7 @@ void BuildModel() {
   g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
   // The details each (i) opens, after the row's hint.
   const struct { const wchar_t* label; const wchar_t* more; } kMore[] = {
-      {L"Widescreen (render and output)", L"Leave Output resolution and Render resolution on Default when you use a widescreen size: the widescreen size sets both, and other sizes there crop the picture. Choosing a widescreen size puts them back on Default for you."},
+      {L"Aspect ratio and widescreen (render and output)", L"Leave Output resolution and Render resolution on Default when you use an aspect ratio or widescreen size: the size sets both, and other sizes there crop the picture. Choosing an aspect ratio or widescreen size puts them back on Default for you."},
       {L"Force feedback", L"Reworked Physics is recommended for every wheel. The wheel gets heavier in fast corners, goes light when the front tyres lose grip (the car runs wide), and turns itself the right way when the back of the car slides, like in Assetto Corsa. It learns each car as you drive. Original Physics gives the forces the PS4 game made for Logitech wheels in 2014: a spring that follows the car, without the tyres' grip. It is not recommended for wheels."},
       {L"Preset", L"Direct drive: wheels with the motor on the steering shaft (for example Fanatec DD, Moza, Simagic, Simucube). Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels. A preset only moves the sliders below."},
       {L"Gain", L"Too weak and the car feels vague; too strong and the wheel hits its limit in fast corners, where it feels flat and you lose the detail. Start at 100 on a strong wheel; weaker wheels may want 150 to 200."},
@@ -1430,7 +1471,7 @@ void ApplyFrameModeCameraDefault() {
 }
 constexpr int kPs4Preset = 6;
 std::vector<std::pair<int, int>> Ps4Profile() {
-  std::vector<std::pair<int,int>> values = {{g_fps,0},{g_outres,0},{g_inres,0},{g_wide,0},
+  std::vector<std::pair<int,int>> values = {{g_fps,0},{g_outres,0},{g_inres,0},{g_aspect,0},
       {g_aa,0},{g_up,0},{g_aniso,1},{g_mirror,0},{g_hdr,0},{g_fgen,0},
       {g_motion_blur,0},{g_fov,100},{g_camera_patch_row,0}};
   for (int i=0;i<kGfxRows;++i) if(g_gfx[i]>=0) values.emplace_back(g_gfx[i],g_c[g_gfx[i]].def);
@@ -1452,7 +1493,7 @@ void DerivePreset() {
   if (g_preset < 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_preset].sel = 0;
   if (IsPs4Profile()) { g_c[g_preset].sel=kPs4Preset; return; }
-  if (g_wide >= 0 && g_c[g_wide].sel != 0) return;
+  if (g_aspect >= 0 && g_c[g_aspect].sel != 0) return;
   for (int p = 1; p <= 5; ++p) {
     if (g_c[g_outres].sel == kPresetOut[p] && g_c[g_inres].sel == kPresetIn[p]) g_c[g_preset].sel = p;
   }
@@ -1589,6 +1630,11 @@ void LoadSettings() {
     for (size_t i = 0; i < c.patches.size(); ++i) {
       if (c.patches[i].empty()) continue;
       if (std::find(lines.begin(), lines.end(), c.patches[i]) != lines.end()) c.sel = c.kind == Kind::Toggle ? 1 : int(i);
+      if (g_aspect >= 0 && &c == &g_c[g_aspect]) {
+        if (std::find(lines.begin(), lines.end(), "Resolution patch (1920x1200) (16:10)") != lines.end() && c.patches[i].find("1920x1200") != std::string::npos) c.sel = int(i);
+        if (std::find(lines.begin(), lines.end(), "Resolution patch (2560x1080)") != lines.end() && c.patches[i].find("2560x1080") != std::string::npos) c.sel = int(i);
+        if (std::find(lines.begin(), lines.end(), "Resolution patch (3840x1080)") != lines.end() && c.patches[i].find("3840x1080") != std::string::npos) c.sel = int(i);
+      }
     }
   }
   // After the loop above, which resets every row that has no patch of its own.
@@ -1680,12 +1726,26 @@ int OutputMemoryTier() {
 }
 
 int RenderMemoryTier() {
-  if (g_inres < 0 || g_wide < 0) return 0;
-  const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
-  if (r >= 5) return 3;
-  if (w == 6) return 3;  // 5120x2160 is 11 megapixels
-  if (w > 0 || r >= 3) return 2;
-  return r == 2 ? 1 : 0;
+  if (g_inres < 0) return 0;
+  const int r = g_c[g_inres].sel;
+  int tier = r >= 5 ? 3 : r >= 3 ? 2 : r == 2 ? 1 : 0;
+  if (g_aspect >= 0 && g_c[g_aspect].sel > 0 && size_t(g_c[g_aspect].sel) < g_c[g_aspect].items.size()) {
+    const int a = g_c[g_aspect].sel;
+    unsigned int w = 0, h = 0;
+    int a_tier = 1;  // Any custom aspect ratio needs at least Tier 1 (8056 MB)
+    if (swscanf(g_c[g_aspect].items[a].c_str(), L"%ux%u", &w, &h) == 2 && w > 0 && h > 0) {
+      const uint64_t pixels = uint64_t(w) * uint64_t(h);
+      if (pixels > 3840ULL * 2160ULL) {
+        a_tier = 3;  // > 4K (e.g. 5120x2160, 7680x2160) -> 8K memory tier (17056 MB)
+      } else if (pixels > 1920ULL * 1080ULL || w > 1920 || h > 1080) {
+        a_tier = 2;  // > 1080p (e.g. 2560x1600, 3440x1440, 2560x1080, 5120x1440) -> 4K memory tier (10056 MB)
+      } else {
+        a_tier = 1;  // <= 1080p (e.g. 1280x800, 1440x1080, 1280x960) -> 1440p memory tier (8056 MB)
+      }
+    }
+    tier = (std::max)(tier, a_tier);
+  }
+  return tier;
 }
 
 int MemoryTier() { return (std::max)(RenderMemoryTier(), OutputMemoryTier()); }
@@ -1699,7 +1759,7 @@ void ApplyPreset(int preset) {
   if (preset <= 0 || preset > 5 || g_outres < 0 || g_inres < 0) return;
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];
-  if (g_wide >= 0) g_c[g_wide].sel = 0;
+  if (g_aspect >= 0) g_c[g_aspect].sel = 0;
   if (g_mirror >= 0) g_c[g_mirror].sel = kPresetMirror[preset];
 }
 
@@ -2306,7 +2366,8 @@ void Paint(HDC hdc, int w, int h) {
         // A box with the chosen name and a down arrow: a click opens the menu of choices.
         RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
         FillRound(g, ct, 9 * S, hot ? kTrackHover : kTrack);
-        Text(g, c.items[0], fSegBold, RectF(ct.X + 12 * S, ct.Y, ct.Width - 44 * S, ct.Height), kText);
+        const std::wstring& picker_text = (c.sel >= 0 && size_t(c.sel) < c.items.size()) ? c.items[c.sel] : c.items[0];
+        Text(g, picker_text, fSegBold, RectF(ct.X + 12 * S, ct.Y, ct.Width - 44 * S, ct.Height), kText);
         SolidBrush arrow(kMuted);
         const float ax = ct.X + ct.Width - 22 * S, ay = ct.Y + ct.Height / 2 - 2 * S;
         const PointF tri[3] = {PointF(ax - 5 * S, ay), PointF(ax + 5 * S, ay), PointF(ax, ay + 6 * S)};
@@ -3817,13 +3878,43 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           return 0;
         }
         if (ctl.kind == Kind::Picker) {
-          const bool track = c == g_btrack;
-          const int pick = BenchMenu(h, Scaled(ctl.ctl), track ? kBenchTracks : kBenchCars, track ? kBenchTrackCount : kBenchCarCount,
-                                     track ? g_bench_track : g_bench_car);
-          if (pick >= 0) {
-            (track ? g_bench_track : g_bench_car) = pick;
-            ShowBenchChoices();
-            g_changed = true;
+          if (c == g_btrack || c == g_bcar) {
+            const bool track = c == g_btrack;
+            const int pick = BenchMenu(h, Scaled(ctl.ctl), track ? kBenchTracks : kBenchCars, track ? kBenchTrackCount : kBenchCarCount,
+                                       track ? g_bench_track : g_bench_car);
+            if (pick >= 0) {
+              (track ? g_bench_track : g_bench_car) = pick;
+              ShowBenchChoices();
+              g_changed = true;
+            }
+          } else {
+            HMENU menu = CreatePopupMenu();
+            for (size_t opt = 0; opt < ctl.items.size(); ++opt) {
+              AppendMenuW(menu, MF_STRING | (int(opt) == ctl.sel ? MF_CHECKED : 0), UINT_PTR(1 + opt), ctl.items[opt].c_str());
+            }
+            const RectF ct = Scaled(ctl.ctl);
+            POINT pt{LONG(ct.X), LONG(ct.Y + ct.Height)};
+            ClientToScreen(h, &pt);
+            const int pick = int(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, pt.x, pt.y, 0, h, nullptr));
+            DestroyMenu(menu);
+            if (pick > 0) {
+              const int chosen = pick - 1;
+              if (chosen != ctl.sel) {
+                ctl.sel = chosen;
+                if (c == g_aspect) {
+                  if (chosen > 0) {
+                    if (g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
+                      g_c[g_outres].sel = g_c[g_inres].sel = 0;
+                      g_status = L"Output and render resolution are back on Default: the aspect ratio and widescreen size sets both, and other sizes there crop the picture.";
+                      g_status_color = kWarn;
+                      g_status_sticky = true;
+                    }
+                  }
+                  DerivePreset();
+                }
+                g_changed = true;
+              }
+            }
           }
           InvalidateRect(h, nullptr, FALSE);
           return 0;
@@ -3877,17 +3968,22 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           ctl.sel = seg;
           if (c == g_fps && model_changed) ApplyFrameModeCameraDefault();
           if (c == g_preset) ApplyPreset(seg);
-          else if (c == g_outres || c == g_inres || c == g_wide) {
-            // A widescreen size sets the render and output size itself: other sizes there crop the picture.
-            if (c == g_wide && seg > 0 && g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
-              g_c[g_outres].sel = g_c[g_inres].sel = 0;
-              g_status = L"Output and render resolution are back on Default: the widescreen size sets both, and other sizes there crop the picture.";
-              g_status_color = kWarn;
-              g_status_sticky = true;
-            } else if ((c == g_outres || c == g_inres) && seg > 0 && g_wide >= 0 && g_c[g_wide].sel > 0) {
-              g_status = L"With a widescreen size, leave Output and Render resolution on Default, or the picture is cropped.";
-              g_status_color = kWarn;
-              g_status_sticky = true;
+          else if (c == g_outres || c == g_inres || c == g_aspect) {
+            // An aspect ratio or widescreen size sets the render and output size itself: other sizes there crop the picture.
+            if (c == g_aspect && seg > 0) {
+              if (g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
+                g_c[g_outres].sel = g_c[g_inres].sel = 0;
+                g_status = L"Output and render resolution are back on Default: the aspect ratio and widescreen size sets both, and other sizes there crop the picture.";
+                g_status_color = kWarn;
+                g_status_sticky = true;
+              }
+            } else if ((c == g_outres || c == g_inres) && seg > 0) {
+              if (g_aspect >= 0 && g_c[g_aspect].sel > 0) {
+                g_c[g_aspect].sel = 0;
+                g_status = L"With custom sizes, leave other resolution options on Default.";
+                g_status_color = kWarn;
+                g_status_sticky = true;
+              }
             }
             DerivePreset();
           }
