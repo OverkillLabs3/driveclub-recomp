@@ -36,8 +36,10 @@ if (BB_PGO STREQUAL "generate")
 elseif (BB_PGO STREQUAL "use")
     # Clang: code without recorded counts is optimized normally, and functions changed since the profile
     # (or built differently for it, bbgpu_init) are compiled without it.
+    # bbport VR: functions this build changes since the profile (main inlines the VR-aware horizon lock) are
+    # reported through -Wbackend-plugin, which -Werror would stop on.
     add_compile_options(-fprofile-use=${BB_PGO_DIR} -Wno-profile-instr-missing
-                        -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled)
+                        -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin)
 endif()
 
 find_package(Vulkan REQUIRED)
