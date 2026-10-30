@@ -1609,6 +1609,12 @@ bool Active() {
     return active.load(std::memory_order_relaxed);
 }
 
+static std::atomic<uint32_t> headset_hz{0};
+
+uint32_t HeadsetHz() {
+    return Active() ? headset_hz.load(std::memory_order_relaxed) : 0;
+}
+
 void AppendInstanceExtensions(std::vector<const char*>& extensions) {
     if (!Wanted() || st.instance || st.failed) {
         return;
@@ -2423,6 +2429,14 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     st.frame_state = {XR_TYPE_FRAME_STATE};
     if (!Ok(xr.WaitFrame(st.session, &wait, &st.frame_state), "xrWaitFrame")) {
         return;
+    }
+    if (st.frame_state.predictedDisplayPeriod > 0) {
+        const uint32_t hz = uint32_t(1e9 / double(st.frame_state.predictedDisplayPeriod) + 0.5);
+        const uint32_t was = headset_hz.load(std::memory_order_relaxed);
+        if (hz >= 30 && hz <= 1000 && (hz > was + 1 || hz + 1 < was)) { // a small wobble keeps the limit where it is
+            headset_hz.store(hz, std::memory_order_relaxed);
+            std::printf("VR: the headset runs at %u Hz: the game's frame limit follows it\n", hz);
+        }
     }
     {
         std::scoped_lock lock{*g_queue_mutex};

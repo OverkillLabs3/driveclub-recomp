@@ -22,6 +22,8 @@ extern std::mutex* g_queue_mutex;
 bool Wanted();
 /// A headset session exists: the per-frame entry points have work to do.
 bool Active();
+/// The headset's refresh rate (from its frame timing), 0 before its first frame or without a headset.
+uint32_t HeadsetHz();
 
 /// Before vkCreateInstance: starts OpenXR and adds the instance extensions its runtime needs.
 void AppendInstanceExtensions(std::vector<const char*>& extensions);
