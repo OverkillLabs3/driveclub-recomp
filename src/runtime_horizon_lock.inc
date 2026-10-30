@@ -231,6 +231,19 @@ static __attribute__((naked,used)) ABI void camera_shake_bridge(void) {
     );
 }
 
+/* VR (gpu/shim/bbport_vr.cpp) is wanted as BbVr::Wanted() decides: BB_VR (not 0), or else vr.ini next to the game. */
+static int horizon_vr_wanted(void) {
+    const char *env=getenv("BB_VR");
+    if (env && *env) return env[0]!='0';
+    wchar_t path[MAX_PATH];
+    const DWORD n=GetModuleFileNameW(NULL,path,MAX_PATH);
+    if (!n || n>=MAX_PATH) return 0;
+    wchar_t *slash=wcsrchr(path,L'\\');
+    if (!slash || (size_t)(slash-path)+8>=MAX_PATH) return 0;
+    wcscpy(slash+1,L"vr.ini");
+    return GetFileAttributesW(path)!=INVALID_FILE_ATTRIBUTES;
+}
+
 static void horizon_lock_install(void) {
     const char *mode=getenv("BB_LOCK_HORIZON"), *smooth=getenv("BB_LOCK_HORIZON_SMOOTH"), *shake=getenv("BB_CAMERA_SHAKE");
     horizon_mode=mode && (mode[0]=='1' || mode[0]=='2') && !mode[1] ? mode[0]-'0' : 0;
@@ -256,6 +269,14 @@ static void horizon_lock_install(void) {
     static const unsigned char cameras[14]={0xc4,0xc1,0x78,0x29,0x44,0x24,0x40,   /* vmovaps [r12+0x40],xmm0 */
                                             0x49,0x8b,0x04,0x24,                  /* mov rax,[r12] */
                                             0x4c,0x89,0xe7};                      /* mov rdi,r12 */
+    if (horizon_vr_wanted()) {
+        /* VR head tracking hooks the same place (+0xb92420): the cockpit view is the headset's, the other views
+           can still keep the horizon level (the base update leaves the driver's head camera alone). */
+        const int others=horizon_mode==2 && horizon_patch(0xcc8a57,cameras,(uintptr_t)horizon_cameras_bridge,&horizon_cameras_resume);
+        printf("Runtime: lock to horizon: the cockpit view is left to VR head tracking%s\n",
+               others ? "; the bonnet, bumper, dash and chase views keep the horizon level" : "");
+        return;
+    }
     if (!horizon_patch(0xb92420,head,(uintptr_t)horizon_lock_bridge,&horizon_lock_resume)) {
         puts("Runtime: lock to horizon does not fit this game version; off");
         return;
