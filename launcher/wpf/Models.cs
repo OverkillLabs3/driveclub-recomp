@@ -63,6 +63,11 @@ public sealed class LauncherState
     public string Message { get; set; } = "";
     public bool CaptureCancelled { get; set; }
     public bool CaptureClear { get; set; }
+    public bool XboxNames { get; set; }
+    public int ReadSlot { get; set; } = -1;
+    public int DeviceSlot { get; set; } = -1;
+    public int CaptureId { get; set; }
+    public int CaptureSide { get; set; }
     public string InstalledVersion { get; set; } = "";
     public string UpdateVersion { get; set; } = "";
     public string UpdateNote { get; set; } = "";

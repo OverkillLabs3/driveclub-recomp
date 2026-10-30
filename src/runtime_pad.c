@@ -594,7 +594,16 @@ static void sample(PadData *d) {
     replay_sample(d);
     d->buttons|=injected.buttons;
     if (injected.touch_side>=0) touch_click(d,injected.touch_side);
-    else if ((d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
+    else {
+        /* Launcher switch: both sticks pressed together tap the right half of the touchpad, so a pad
+         * without one still reaches the game's touchpad-right action (photo mode). Edge triggered: one
+         * tap per press, not one per frame. */
+        static bool combo_down;
+        const bool combo=l3r3_touchpad_right && (d->buttons & BTN_L3) && (d->buttons & BTN_R3);
+        if (combo && !combo_down && !d->touch_count) touch_click(d,1);
+        combo_down=combo;
+        if (!combo && (d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
+    }
     if (injected.buttons & BTN_L2) d->l2=255;
     if (injected.buttons & BTN_R2) d->r2=255;
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};

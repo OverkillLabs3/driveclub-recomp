@@ -27,6 +27,7 @@ static float kb_steer_time[2]={0.18f,0.10f}, kb_pedal_time[2]={0.10f,0.06f};  /*
 static int dz_inner[4]={5,5,0,0}, dz_outer[4]={127,127,127,127};   /* left stick, right stick, l2, r2 */
 static bool color_override; static uint8_t color_rgb[3]={0,0,255};
 static int mouse_target;               /* 0 none, 1 left stick, 2 right stick */
+static bool l3r3_touchpad_right;       /* launcher switch: both sticks pressed = the right half of the touchpad */
 static float mouse_dz_offset=0.5f, mouse_speed=1.0f, mouse_speed_offset=0.125f;
 static int input_loaded;
 
@@ -166,6 +167,7 @@ static void parse_line(char *line) {
     }
     if (!strncmp(lhs,"wheel_",6)) { wheel_parse(lhs,rhs); return; }
     if (!strcmp(lhs,"mouse_to_joystick")) { lower(rhs); mouse_target=!strcmp(rhs,"left") ? 1 : !strcmp(rhs,"right") ? 2 : 0; return; }
+    if (!strcmp(lhs,"l3r3_touchpad_right")) { lower(rhs); l3r3_touchpad_right=!strcmp(rhs,"true")||!strcmp(rhs,"1"); return; }
     if (!strcmp(lhs,"mouse_movement_params")) {
         float a,b,c; if (sscanf(rhs," %f , %f , %f",&a,&b,&c)==3) { mouse_dz_offset=a; mouse_speed=b; mouse_speed_offset=c; }
         return;

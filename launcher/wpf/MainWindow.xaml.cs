@@ -19,6 +19,9 @@ using Path = System.IO.Path;
 namespace DriveClub.Launcher;
 public partial class MainWindow : Window
 {
+    private InputMonitorView? monitorView;
+
+    private double pageScrollOffset;
     private readonly Backend backend = new();
     private LauncherState state = new();
     private readonly Dictionary<int, FrameworkElement> pages = [];
@@ -115,6 +118,7 @@ public partial class MainWindow : Window
             {
                 Adopt(await backend.Call("state"));
                 OperationStatus(state.FoldersOk ? "" : "Choose the game folders on Play.");
+
                 if (Environment.GetCommandLineArgs().Contains("--mod-manager")) ShowPage(ModsPage, false);
                 if (!preview && Environment.GetCommandLineArgs().Contains("--benchmark")) { ShowPage(6, false); await Launch(true); }
                 else if (!preview && (Environment.GetCommandLineArgs().Contains("--play") || (File.Exists(Path.Combine(root, "launcher.ini")) && File.ReadLines(Path.Combine(root, "launcher.ini")).Any(x => x.Trim() == "auto_play=1")))) await Launch(false);
@@ -122,6 +126,20 @@ public partial class MainWindow : Window
             }
             catch (Exception ex) { SetStatus(ex.Message, true); }
         };
+        // One 16 ms timer at Render priority: a Background-priority timer is starved by the page's own
+        // layout work, which made the monitor crawl while the rest of the window was idle. The lambda
+        // reads the field, so it always drives the view of the page currently on screen (rebuilt pages
+        // get a fresh view) and does nothing when that page is not visible.
+        var monitorTimer = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Render)
+        { Interval = TimeSpan.FromMilliseconds(16) };
+        monitorTimer.Tick += (_, _) =>
+        {
+            var view = monitorView;
+            if (view is { IsVisible: true }) view.ReadPad();
+            PollControllers();   // a pad plugged in or removed shows up without reopening the page
+        };
+        monitorTimer.Start();
+
     }
     private void LoadFonts()
     {
@@ -251,7 +269,16 @@ public partial class MainWindow : Window
         if (args.PropertyName == "Selected")
         {
             string action = setting.Id == state.PresetId ? "preset" : setting.Tag == "@drive_preset" ? "drive-preset" : setting.Tag == "@wheelpreset" ? "wheel-preset" : "validate";
-            try { var result = await backend.Call(action, state); if (changed == revision) { Adopt(result); OperationStatus("Unsaved changes"); } }
+            try
+            {
+                var result = await backend.Call(action, state);
+                if (changed == revision)
+                {
+                    Adopt(result); OperationStatus("Unsaved changes");
+                    // A slot switch rewrites default.ini, so the chips have to show the new slot's bindings.
+                    if (setting.Tag == "@profile") { pages.Remove(currentPage); ShowPage(currentPage, false); }
+                }
+            }
             catch (Exception ex) { SetStatus(ex.Message, true); }
         }
     }
@@ -262,6 +289,29 @@ public partial class MainWindow : Window
     }
     private const double PageTransitionSeconds = .280;
     private const double NavigationSelectionSeconds = .220;
+    private DateTime nextControllerPoll = DateTime.MinValue;
+    private string controllerSignature = "";
+    private bool controllerPolling;
+    // Once a second: is the set of pads different from when the page was built? If so, re-read the state
+    // so DEVICES shows the new pad (and the status line says so).
+    private async void PollControllers()
+    {
+        if (controllerPolling || DateTime.UtcNow < nextControllerPoll) return;
+        nextControllerPoll = DateTime.UtcNow.AddSeconds(1);
+        string signature = InputMonitorView.SlotSignature();
+        if (signature == controllerSignature) return;
+        bool first = controllerSignature.Length == 0;
+        controllerSignature = signature;
+        if (first || busy || preview) return;
+        controllerPolling = true;
+        try
+        {
+            Adopt(await backend.Call("state"));
+            SetStatus("Controller list updated.");
+        }
+        catch (Exception) { }
+        finally { controllerPolling = false; }
+    }
     private void MoveNavigationSelection(int index, bool animate)
     {
         NavigationSelection.Opacity = navButtons[index].IsMouseOver ? .85 : 1;
@@ -365,6 +415,8 @@ public partial class MainWindow : Window
         if (index == 0) return BuildHomePage();
         var canvas = new Canvas { VerticalAlignment = VerticalAlignment.Top, HorizontalAlignment = HorizontalAlignment.Left };
         var scroll = new ScrollViewer { VerticalContentAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Left, RenderTransform = new TranslateTransform(), Content = canvas, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, PanningMode = PanningMode.VerticalOnly };
+        scroll.ScrollChanged += (_, e) => { if (Math.Abs(e.VerticalChange) > 0.5) pageScrollOffset = scroll.VerticalOffset; };
+        scroll.Loaded += (_, _) => scroll.ScrollToVerticalOffset(pageScrollOffset);
         double previousWidth = -1;
         void ArrangePage()
         {
@@ -390,6 +442,8 @@ public partial class MainWindow : Window
         AutomationProperties.SetAutomationId(dock, "QuickSettingsDock");
         Grid.SetRow(dock, 1); page.Children.Add(dock);
         var scroll = new ScrollViewer { Content = page, RenderTransform = new TranslateTransform(), VerticalContentAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Left, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        scroll.ScrollChanged += (_, e) => { if (Math.Abs(e.VerticalChange) > 0.5) pageScrollOffset = scroll.VerticalOffset; };
+        scroll.Loaded += (_, _) => scroll.ScrollToVerticalOffset(pageScrollOffset);
         double previousWidth = -1;
         void ArrangeHome()
         {
@@ -450,6 +504,41 @@ public partial class MainWindow : Window
         }
         return Math.Max(75, Math.Max(Measure(setting.Minimum), Measure(setting.Maximum)));
     }
+
+    private string PadDisplay(string token)
+    {
+        if (string.IsNullOrEmpty(token)) return "\u2014";
+        var ps = new System.Collections.Generic.Dictionary<string, string> {
+            ["cross"]="Cross", ["circle"]="Circle", ["square"]="Square", ["triangle"]="Triangle",
+            ["l1"]="L1", ["r1"]="R1", ["l3"]="L3", ["r3"]="R3", ["options"]="OPTIONS",
+            ["back"]="Back / Share", ["touchpad_center"]="Touchpad",
+            ["pad_up"]="D-pad up", ["pad_down"]="D-pad down", ["pad_left"]="D-pad left", ["pad_right"]="D-pad right" };
+        var xb = new System.Collections.Generic.Dictionary<string, string> {
+            ["cross"]="A", ["circle"]="B", ["square"]="X", ["triangle"]="Y",
+            ["l1"]="LB", ["r1"]="RB", ["l3"]="LS click", ["r3"]="RS click", ["options"]="Menu",
+            ["back"]="View", ["touchpad_center"]="Touchpad",
+            ["pad_up"]="D-pad up", ["pad_down"]="D-pad down", ["pad_left"]="D-pad left", ["pad_right"]="D-pad right" };
+        var map = state.XboxNames ? xb : ps;
+        return map.TryGetValue(token, out var shown) ? shown : token;
+    }
+
+
+    // Built once per page render; a 60 Hz timer feeds it straight from XInput (no backend call).
+    private FrameworkElement BuildMonitorView(string text)
+    {
+        int[] dz = new int[8];
+        foreach (var c in state.Controls)
+        {
+            if (!c.Tag.StartsWith("@dead:")) continue;
+            var parts = c.Tag.Split(':');
+            int dev = parts.Length > 1 ? parts[1] switch { "leftjoystick" => 0, "rightjoystick" => 1, "l2" => 2, "r2" => 3, _ => 0 } : 0;
+            int part = parts.Length > 2 ? int.Parse(parts[2]) : 0;
+            dz[dev * 2 + part] = c.Selected;
+        }
+        monitorView = new InputMonitorView(dz, state.ReadSlot);
+        return monitorView;
+    }
+
     private (double Width, double Height) SettingLabelSize(Setting setting, double width, bool quick)
     {
         double labelWidth = width - (setting.Kind == "Toggle" ? 42 : setting.Kind == "Slider" ? SliderValueWidth(setting) + 12 : 0) - (setting.Details.Length == 0 ? 0 : 26);
@@ -457,11 +546,25 @@ public partial class MainWindow : Window
         label.Measure(new Size(Math.Max(1, labelWidth), double.PositiveInfinity));
         return (labelWidth, Math.Max(quick ? 24 : 20, Math.Ceiling(label.DesiredSize.Height)));
     }
+    // The input monitor keeps its proportions: taller when the card is wider (0.3.0's MonitorHeight),
+    // so the stick boxes, dead-zone rings and buttons grow with the window instead of staying at 46 px.
+    private const double MonitorDesignWidth = 240;
+    private static double MonitorScale(double width) => Math.Clamp(width / MonitorDesignWidth, 0.85, 2.2);
+    private static double MonitorHeight(double width) => 200 * MonitorScale(width) + 18;
     private double RowHeight(Setting setting, double width, bool quick = false)
     {
         if (setting.Kind == "Action") return state.BenchmarkRanDetails.Count > 0 ? 288 : 242;
+        if (setting.Kind == "Info")
+        {
+            // The body *is* the row (the device list is several lines): measure the wrapped text at the
+            // card width, otherwise the list is cut off after two lines and looks incomplete.
+            var body = Text(setting.Options.FirstOrDefault() ?? "", 14);
+            body.Measure(new Size(Math.Max(1, width), double.PositiveInfinity));
+            return Math.Max(46, Math.Ceiling(body.DesiredSize.Height) + 14);
+        }
         double labelHeight = SettingLabelSize(setting, width, quick).Height;
         if (setting.Kind == "Toggle") return Math.Max(52, labelHeight + 12);
+        if (setting.Kind == "Monitor") return MonitorHeight(width);
         return Math.Max(quick ? 76 : 82, labelHeight + (quick ? 52 : 62));
     }
     private void LayoutPage(Canvas canvas, int index, double availableWidth)
@@ -475,15 +578,15 @@ public partial class MainWindow : Window
         var cards = state.Cards.Where(c => c.Page == sourcePages[index] && (names[index] != "Driving" || c.Subpage == drivingSubpage)).ToArray();
         if (names[index] == "Driving")
         {
-            string[] sections = ["Assists and view", "Wheel and force feedback"];
-            double sectionWidth = Math.Min(maxPanelWidth, (width - 18) / 2);
+            string[] sections = ["Assists and view", "Wheel and force feedback", "Controller and keyboard"];
+            double sectionWidth = Math.Min(maxPanelWidth, (width - 18 * (sections.Length - 1)) / sections.Length);
             for (int i = 0; i < sections.Length; ++i)
             {
                 int section = i;
                 var button = new Button { Content = sections[i], Style = (Style)FindResource("FieldButton"), Padding = new(12,0,12,0), Background = drivingSubpage == i ? Brush("#ED2B38") : (Brush)FindResource("OptionInactive"), BorderThickness = new(drivingSubpage == i ? 3 : 0,0,0,0), BorderBrush = Brush("#ED2B38") };
                 AutomationProperties.SetAutomationId(button, "DrivingSubpage" + i);
                 button.Click += (_, _) => { drivingSubpage = section; pages.Remove(index); ShowPage(index, false); };
-                Place(canvas, button, PanelGroupLeft(availableWidth, 2 * sectionWidth + 18) + i * (sectionWidth + 18), y, sectionWidth, 38);
+                Place(canvas, button, PanelGroupLeft(availableWidth, sections.Length * sectionWidth + (sections.Length - 1) * 18) + i * (sectionWidth + 18), y, sectionWidth, 38);
             }
             y += 56;
         }
@@ -562,6 +665,53 @@ public partial class MainWindow : Window
             slider.LostMouseCapture += (_, _) => { if (!slider.IsMouseCaptureWithin && state.Controls.Contains(setting)) SettingChanged(setting, new(nameof(Setting.Selected))); };
             slider.KeyUp += (_, _) => { if (state.Controls.Contains(setting)) SettingChanged(setting, new(nameof(Setting.Selected))); };
             field = slider; Place(row, field, 0, fieldTop, width, 38);
+        }
+        else if (setting.Kind == "Binding")
+        {
+            Label(quick ? 0 : 6, labelSize.Height);
+            var kbText = setting.Options.ElementAtOrDefault(0) ?? "";
+            var padText = setting.Options.ElementAtOrDefault(1) ?? "";
+            // An axis (and a trigger the runtime reads as an axis) has no remappable pad button, but its
+            // keyboard key still is a binding: only the right chip is locked.
+            bool padLocked = setting.Tag.EndsWith("@ro");
+            var kb = new Button { Content = kbText.Length == 0 ? "\u2014" : kbText, Padding = new(10, 0, 10, 0), ToolTip = "Click, then press the key to use. Esc cancels." };
+            var pad = new Button { Content = padLocked ? padText : PadDisplay(padText), Padding = new(10, 0, 10, 0) };
+            kb.Click += async (_, _) => await ActivateBinding(kb, setting, 0);
+            if (padLocked) { pad.IsEnabled = false; pad.ToolTip = "Read as an axis by the game: it cannot be remapped."; }
+            else pad.ToolTip = "Click, then press the controller button to use. Esc cancels.";
+            pad.Click += async (_, _) => await ActivateBinding(pad, setting, 1);
+            var chips = new Grid();
+            chips.ColumnDefinitions.Add(new ColumnDefinition());
+            chips.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+            chips.ColumnDefinitions.Add(new ColumnDefinition());
+            Grid.SetColumn(kb, 0); Grid.SetColumn(pad, 2);
+            chips.Children.Add(kb); chips.Children.Add(pad);
+            field = chips; Place(row, field, 0, fieldTop, width, 38);
+        }
+        else if (setting.Kind == "Info")
+        {
+            // A device row (@dev:N) is red while it is the pad the launcher reads, and a double-click
+            // makes it that pad. Other Info rows are plain read-only text.
+            bool device = setting.Tag.StartsWith("@dev:");
+            bool red = setting.Tag == "@devhint" || (device && setting.Selected != 0);
+            var body = Text(setting.Options.FirstOrDefault() ?? "", 14, color: red ? "#ED2B38" : "#B9C0CC");
+            body.TextWrapping = TextWrapping.Wrap;
+            if (device)
+            {
+                body.Cursor = System.Windows.Input.Cursors.Hand;
+                body.ToolTip = "Double-click to read this pad.";
+                body.MouseLeftButtonDown += async (_, e) => { if (e.ClickCount == 2) await ActivateDevice(setting); };
+            }
+            Place(row, body, 0, 2, width, height - 10);
+            field = body;
+        }
+        else if (setting.Kind == "Monitor")
+        {
+            // Live: the window's own 16 ms timer reads the pad in this process, no backend call and no click.
+            var view = BuildMonitorView(setting.Options.FirstOrDefault() ?? "");
+            view.ToolTip = "Live from the pad in use. A stick, trigger or d-pad that never moves here is not reaching the game either.";
+            Place(row, view, 0, 0, width, height - 8);
+            field = view;
         }
         else
         {
@@ -733,7 +883,7 @@ public partial class MainWindow : Window
         ++revision;
         state.ResetPage = sourcePages[currentPage];
         state.ResetSubpage = names[currentPage] == "Driving" ? drivingSubpage : -1;
-        string pageName = names[currentPage] == "Driving" ? drivingSubpage == 0 ? "Assists and view" : "Wheel and force feedback" : names[currentPage];
+        string pageName = names[currentPage] == "Driving" ? (drivingSubpage == 0 ? "Assists and view" : drivingSubpage == 1 ? "Wheel and force feedback" : "Controller and keyboard") : names[currentPage];
         try { ResetButton.IsEnabled = false; Adopt(await backend.Call("reset-page", state)); SetStatus($"{pageName} defaults restored. Unsaved changes."); }
         catch (Exception ex) { SetStatus(ex.Message, true); }
         finally { ResetButton.IsEnabled = true; }
@@ -967,4 +1117,296 @@ public sealed class OriginalMenuEase : EasingFunctionBase
     public OriginalMenuEase() { EasingMode = EasingMode.EaseIn; }
     protected override double EaseInCore(double t) => t * t * (3 - 2 * t);
     protected override Freezable CreateInstanceCore() => new OriginalMenuEase();
+}
+
+public sealed class InputMonitorView : System.Windows.Controls.Canvas
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PadState
+    {
+        public uint Packet; public ushort Buttons;
+        public byte LeftTrigger, RightTrigger;
+        public short Lx, Ly, Rx, Ry;
+    }
+    [DllImport("xinput1_4.dll", EntryPoint = "XInputGetState")] private static extern uint GetState(uint pad, out PadState state);
+
+    private static SolidColorBrush B(byte r, byte g, byte b) => new(System.Windows.Media.Color.FromRgb(r, g, b));
+    private static readonly SolidColorBrush Rail = B(35, 37, 43);
+    private static readonly SolidColorBrush Accent = B(237, 43, 56);
+    private static readonly SolidColorBrush Muted = B(139, 147, 161);
+    private static readonly SolidColorBrush Bright = B(245, 246, 248);
+    private static readonly SolidColorBrush Ring = B(120, 128, 142);
+
+    // The dead zones of the rows above, in the order the runtime keeps them:
+    // 0/1 left stick inner/outer, 2/3 right stick, 4/5 L2, 6/7 R2.
+    private readonly int[] dz;
+    private readonly Border[] boxes = new Border[4];
+    private readonly TextBlock[] axisLabels = new TextBlock[4];
+    private readonly System.Windows.Shapes.Ellipse[][] rings = new System.Windows.Shapes.Ellipse[4][];
+    private readonly System.Windows.Shapes.Ellipse[] dots = new System.Windows.Shapes.Ellipse[4];
+    private readonly TextBlock[] padLabels = new TextBlock[2];
+    private readonly Border[] tracks = new Border[2];
+    private readonly Border[] bars = new Border[2];
+    private readonly Border[] ticks = new Border[4];
+    private readonly Border[] dpad = new Border[4];
+    private readonly Border padFrame;
+    private readonly Border[] pills = new Border[12];
+    private readonly TextBlock[] pillLabels = new TextBlock[12];
+    private readonly TextBlock empty;
+
+    private static readonly int[] PillMasks = { 0x1000, 0x2000, 0x4000, 0x8000, 0x0100, 0x0200, 0x0040, 0x0080, 0x0010, 0x0020, 0, 0 };
+    private static readonly string[] PillNames = { "A", "B", "X", "Y", "L1", "R1", "L3", "R3", "Menu", "View", "LT", "RT" };
+    private static readonly int[] DpadMasks = { 0x0001, 0x0002, 0x0004, 0x0008 };
+
+    // 0.3.0 lays the picture out in units of 240 wide and scales it to the card, so it follows the window.
+    private const double DesignWidth = 240;
+    private double u = 1;
+    private bool laidOut;
+    private bool xinputChecked, xinputMissing;
+    // Starts false so the first SetLive() (from the constructor) really applies the whole state: with true
+    // here, SetLive(true) returned early and the "no pad" line was never hidden — it then sat on top of
+    // the axis labels while the live picture was drawn underneath.
+    private bool live;
+
+    private readonly int padSlot;   // -1: the first connected pad
+    public InputMonitorView(int[] deadzones, int padSlot = -1)
+    {
+        this.padSlot = padSlot;
+        dz = deadzones;
+        Background = System.Windows.Media.Brushes.Transparent;
+        ClipToBounds = false;
+        string[] axisNames = { "LX", "LY", "RX", "RY" };
+        for (int i = 0; i < 4; ++i)
+        {
+            axisLabels[i] = Caption(axisNames[i], 0, 0);
+            Children.Add(axisLabels[i]);
+            boxes[i] = new System.Windows.Controls.Border { Background = Rail, CornerRadius = new CornerRadius(6) };
+            Children.Add(boxes[i]);
+            rings[i] = new System.Windows.Shapes.Ellipse[2];
+            for (int k = 0; k < 2; ++k)
+            {
+                rings[i][k] = new System.Windows.Shapes.Ellipse { Stroke = Ring, StrokeThickness = 1, Width = 0, Height = 0, Visibility = Visibility.Collapsed };
+                Children.Add(rings[i][k]);
+            }
+            dots[i] = new System.Windows.Shapes.Ellipse { Fill = Accent, Width = 7, Height = 7 };
+            Children.Add(dots[i]);
+        }
+        for (int i = 0; i < 2; ++i)
+        {
+            padLabels[i] = Caption(i == 0 ? "L2" : "R2", 0, 0);
+            Children.Add(padLabels[i]);
+            tracks[i] = new System.Windows.Controls.Border { Background = Rail, CornerRadius = new CornerRadius(4.5) };
+            Children.Add(tracks[i]);
+            bars[i] = new System.Windows.Controls.Border { Background = Accent, CornerRadius = new CornerRadius(4.5), Width = 0 };
+            Children.Add(bars[i]);
+            for (int k = 0; k < 2; ++k)
+            {
+                ticks[i * 2 + k] = new System.Windows.Controls.Border { Background = Ring, Width = 1, Height = 13 };
+                Children.Add(ticks[i * 2 + k]);
+            }
+        }
+        padFrame = new System.Windows.Controls.Border { Background = Rail, CornerRadius = new CornerRadius(4) };
+        Children.Add(padFrame);
+        for (int i = 0; i < 4; ++i)
+        {
+            // order: up, down, left, right (the masks of DpadMasks)
+            dpad[i] = new System.Windows.Controls.Border { Background = Rail, CornerRadius = new CornerRadius(3) };
+            Children.Add(dpad[i]);
+        }
+        for (int i = 0; i < 12; ++i)
+        {
+            pills[i] = new System.Windows.Controls.Border { Background = Rail, CornerRadius = new CornerRadius(9) };
+            Children.Add(pills[i]);
+            pillLabels[i] = Caption(PillNames[i], 0, 0);
+            Children.Add(pillLabels[i]);
+        }
+        empty = Caption("No pad is sending data right now.", 0, 0);
+        empty.Foreground = Muted;
+        Children.Add(empty);
+        SetLive(true);   // live: hide the "no pad" line before the first read
+        SizeChanged += (_, _) => ApplyLayout(true);
+        Loaded += (_, _) => { ApplyLayout(true); ReadPad(); };
+    }
+
+    private static TextBlock Caption(string text, double x, double y)
+    {
+        var t = new System.Windows.Controls.TextBlock { Text = text, FontSize = 11, Foreground = Muted };
+        System.Windows.Controls.Canvas.SetLeft(t, x);
+        System.Windows.Controls.Canvas.SetTop(t, y);
+        return t;
+    }
+
+    private double Width_ => ActualWidth > 0 ? ActualWidth : (double.IsNaN(Width) ? DesignWidth : Width);
+
+    // One design unit follows the card width (0.3.0: clamp(width / 240, 0.85, 2.2)).
+    private void ApplyLayout(bool force)
+    {
+        double k = Math.Clamp(Width_ / DesignWidth, 0.85, 2.2);
+        if (!force && laidOut && Math.Abs(k - u) < 0.001) return;
+        u = k; laidOut = true;
+        double side = 46 * u, reach = side / 2 - 5 * u;
+        for (int i = 0; i < 4; ++i)
+        {
+            double x = i * 58 * u;
+            axisLabels[i].FontSize = 11 * u;
+            Canvas.SetLeft(axisLabels[i], x); Canvas.SetTop(axisLabels[i], 0);
+            boxes[i].Width = side; boxes[i].Height = side; boxes[i].CornerRadius = new CornerRadius(6 * u);
+            Canvas.SetLeft(boxes[i], x); Canvas.SetTop(boxes[i], 16 * u);
+            for (int k2 = 0; k2 < 2; ++k2) rings[i][k2].StrokeThickness = 1 * u;
+            dots[i].Width = 7 * u; dots[i].Height = 7 * u;
+        }
+        for (int i = 0; i < 2; ++i)
+        {
+            double y = (i == 0 ? 78 : 100) * u;
+            padLabels[i].FontSize = 11 * u;
+            Canvas.SetLeft(padLabels[i], 0); Canvas.SetTop(padLabels[i], y - 2 * u);
+            tracks[i].Width = 120 * u; tracks[i].Height = 9 * u; tracks[i].CornerRadius = new CornerRadius(4.5 * u);
+            Canvas.SetLeft(tracks[i], 30 * u); Canvas.SetTop(tracks[i], y);
+            bars[i].Height = 9 * u; bars[i].CornerRadius = new CornerRadius(4.5 * u);
+            // The fill grows from the left edge of its track, not from the origin of the view: without this
+            // it started at x=0 and covered the "L2" label.
+            Canvas.SetLeft(bars[i], 30 * u); Canvas.SetTop(bars[i], y);
+            for (int k2 = 0; k2 < 2; ++k2)
+            {
+                ticks[i * 2 + k2].Width = 1 * u; ticks[i * 2 + k2].Height = 13 * u;
+                Canvas.SetTop(ticks[i * 2 + k2], y - 2 * u);
+            }
+        }
+        double cell = 15 * u;
+        padFrame.Width = cell * 3; padFrame.Height = cell * 3; padFrame.CornerRadius = new CornerRadius(4 * u);
+        Canvas.SetLeft(padFrame, 0); Canvas.SetTop(padFrame, 126 * u);
+        for (int i = 0; i < 4; ++i)
+        {
+            int col = i == 2 ? 0 : i == 3 ? 2 : 1, row = i == 0 ? 0 : i == 1 ? 2 : 1;
+            dpad[i].Width = cell - 2 * u; dpad[i].Height = cell - 2 * u; dpad[i].CornerRadius = new CornerRadius(3 * u);
+            Canvas.SetLeft(dpad[i], col * cell + 1 * u); Canvas.SetTop(dpad[i], 126 * u + row * cell + 1 * u);
+        }
+        for (int i = 0; i < 12; ++i)
+        {
+            double x = (60 + (i % 4) * 40) * u, y = (126 + (i / 4) * 22) * u;
+            pills[i].Width = 34 * u; pills[i].Height = 18 * u; pills[i].CornerRadius = new CornerRadius(9 * u);
+            Canvas.SetLeft(pills[i], x); Canvas.SetTop(pills[i], y);
+            pillLabels[i].FontSize = 11 * u;
+            Canvas.SetLeft(pillLabels[i], x + 6 * u); Canvas.SetTop(pillLabels[i], y + 2 * u);
+        }
+        empty.FontSize = 12 * u;
+        Canvas.SetLeft(empty, 0); Canvas.SetTop(empty, 20 * u);   // 0.3.0 puts it below the axis label row
+    }
+
+    private void SetLive(bool on)
+    {
+        if (live == on) return;
+        live = on;
+        foreach (var e in boxes) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in axisLabels) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in dots) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in padLabels) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in tracks) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in bars) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in ticks) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in pills) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in pillLabels) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        padFrame.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in dpad) e.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var e in rings) foreach (var r in e) r.Visibility = on && r.Width > 0 ? Visibility.Visible : Visibility.Collapsed;
+        empty.Visibility = on ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    // The dead-zone rows are in the runtime's units (0..127), the pad reports -32768..32767 / 0..255.
+    // Feeding the raw value straight into a 0..127 scale made the dot jump to the rim at the slightest
+    // deflection (a 9% push already looked like full lock).
+    private const double AxisScale = 127.0 / 32768.0;
+    private const double TriggerScale = 127.0 / 255.0;
+
+    private static double MapThrough(double value, int inner, int outer)
+    {
+        if (outer <= inner) return value >= inner ? 1 : 0;
+        double t = (value - inner) / (double)(outer - inner);
+        return Math.Clamp(t, 0, 1);
+    }
+
+    // Which XInput slots have a pad right now, as a string: "1010". Used to spot a pad being plugged in.
+    public static string SlotSignature()
+    {
+        try
+        {
+            var chars = new char[4];
+            for (uint slot = 0; slot < 4; ++slot) chars[slot] = GetState(slot, out _) == 0 ? '1' : '0';
+            return new string(chars);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        { return "0000"; }
+    }
+
+    private bool QueryPad(out PadState state)
+    {
+        state = default;
+        if (xinputMissing) return false;
+        if (!xinputChecked)
+        {
+            xinputChecked = true;
+            try { GetState(0, out _); }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { xinputMissing = true; return false; }
+        }
+        if (padSlot >= 0) return GetState((uint)padSlot, out state) == 0;   // the pad chosen in the launcher
+        for (uint slot = 0; slot < 4; ++slot)
+            if (GetState(slot, out state) == 0) return true;
+        return false;
+    }
+
+    public void ReadPad()
+    {
+        ApplyLayout(false);
+        if (!QueryPad(out var st)) { SetLive(false); return; }
+        SetLive(true);
+        const double Reach = 18;   // 46u / 2 - 5u, in design units
+        int[] values = { st.Lx, st.Ly, st.Rx, st.Ry };
+        for (int i = 0; i < 4; ++i)
+        {
+            int inner = dz[(i / 2) * 2], outer = dz[(i / 2) * 2 + 1];
+            double cxBox = i * 58 * u + 23 * u, cyBox = 16 * u + 23 * u;
+            double reach = Reach * u;
+            double ri = reach * Math.Min(Math.Max(inner, 0), 127) / 127.0, ro = reach * Math.Min(Math.Max(outer, 0), 127) / 127.0;
+            for (int k = 0; k < 2; ++k)
+            {
+                double rad = k == 0 ? ri : ro;
+                bool show = k == 0 ? ri > 1 : outer < 127;
+                rings[i][k].Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+                if (!show) continue;
+                rings[i][k].Width = rad * 2; rings[i][k].Height = rad * 2;
+                Canvas.SetLeft(rings[i][k], cxBox - rad);
+                Canvas.SetTop(rings[i][k], cyBox - rad);
+            }
+            double mag = MapThrough(Math.Abs(values[i]) * AxisScale, inner, outer);
+            double signed = values[i] < 0 ? -mag : mag;
+            double cx = cxBox + (i % 2 == 0 ? signed * ro : 0);
+            double cy = cyBox - (i % 2 == 1 ? signed * ro : 0);
+            Canvas.SetLeft(dots[i], cx - 3.5 * u);
+            Canvas.SetTop(dots[i], cy - 3.5 * u);
+        }
+        int[] trig = { st.LeftTrigger, st.RightTrigger };
+        for (int i = 0; i < 2; ++i)
+        {
+            int inner = dz[4 + i * 2], outer = dz[5 + i * 2];
+            for (int k = 0; k < 2; ++k)
+            {
+                int edge = k == 0 ? inner : outer;
+                bool show = edge > 0 && edge < 127;
+                ticks[i * 2 + k].Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+                if (show) Canvas.SetLeft(ticks[i * 2 + k], 30 * u + 120 * u * edge / 127.0);
+            }
+            double t = MapThrough(trig[i] * TriggerScale, inner, outer);
+            bars[i].Width = Math.Max(2 * u, 120 * u * Math.Min(Math.Max(outer, 0), 127) / 127.0 * t);
+        }
+        for (int i = 0; i < 4; ++i)
+            dpad[i].Background = (st.Buttons & DpadMasks[i]) != 0 ? Accent : Rail;
+        for (int i = 0; i < 12; ++i)
+        {
+            bool on = i == 10 ? MapThrough(st.LeftTrigger * TriggerScale, dz[4], dz[5]) > 0.4
+                    : i == 11 ? MapThrough(st.RightTrigger * TriggerScale, dz[6], dz[7]) > 0.4
+                    : (st.Buttons & PillMasks[i]) != 0;
+            pills[i].Background = on ? Accent : Rail;
+            pillLabels[i].Foreground = on ? Bright : Muted;
+        }
+    }
 }

@@ -59,16 +59,16 @@ Json UiState(const std::wstring& error=L"") {
   Json controls=Json::array(),cards=Json::array();
   for(size_t i=0;i<g_c.size();++i){
     const auto& c=g_c[i];Json options=Json::array();int selected=c.sel;
-    std::string kind=c.kind==Kind::Toggle?"Toggle":c.kind==Kind::Action?"Action":c.kind==Kind::Slider?"Slider":c.kind==Kind::Button?"Button":(c.patches[0]=="@name"||c.patches[0]=="@onhost")?"Text":"Choice";
-    if(int(i)==g_lang){for(auto* n:kLangName)options.push_back(Narrow(n));selected=g_lang_id;}
+    if(c.kind==Kind::Slider) selected=(std::max)(c.min,(std::min)(c.max,selected));
+    std::string kind=c.kind==Kind::Toggle?"Toggle":c.kind==Kind::Action?"Action":c.kind==Kind::Slider?"Slider":c.kind==Kind::Button?"Button":c.kind==Kind::Binding?"Binding":c.kind==Kind::Info?"Info":c.kind==Kind::Monitor?"Monitor":(c.patches[0]=="@name"||c.patches[0]=="@onhost")?"Text":"Choice";    if(int(i)==g_lang){for(auto* n:kLangName)options.push_back(Narrow(n));selected=g_lang_id;}
     else if(int(i)==g_btrack){for(const auto& x:kBenchTracks)options.push_back(Narrow(std::wstring(x.name)+L" ("+x.group+L")"));selected=g_bench_track;}
     else if(int(i)==g_bcar){for(const auto& x:kBenchCars)options.push_back(Narrow(x.name));selected=g_bench_car;}
     else for(const auto& x:c.items)options.push_back(Narrow(x));
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
     controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint)},{"Kind",kind},{"Tag",c.patches[0]},
-      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
-      {"Options",options},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
-      {"Details",c.more?Narrow(c.more):""}});
+      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},
+      {"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
+      {"Options",options},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},      {"Details",c.more?Narrow(c.more):""}});
   }
   // The native model owns category/card membership, reset scopes and Driving subpages.
   for(const auto& c:g_cards) {
@@ -82,7 +82,8 @@ Json UiState(const std::wstring& error=L"") {
     {"QuickControls",{g_preset,g_fps,g_outres,g_aa}},{"PresetId",g_preset},
     {"BenchmarkFps",Narrow(g_bench_result.fps)},{"BenchmarkLows",Narrow(g_bench_result.lows)},{"BenchmarkAbout",Narrow(g_bench_result.about)},
     {"BenchmarkRanSummary",Narrow(g_bench_ran_short)},{"BenchmarkRanDetails",[&]{Json lines=Json::array();for(const auto& line:g_bench_ran_lines)lines.push_back(Narrow(line));return lines;}()},
-    {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},
+    {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},{"XboxNames",g_xbox_names},
+    {"ReadSlot",g_read_slot},
     {"InstalledVersion",Narrow(UiInstalledVersion())},{"UpdateVersion",Narrow(g_ui_update_version)},
     {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required}};
 }
@@ -92,7 +93,7 @@ void ImportUiState(const Json& input) {
   for(const auto& item:input.at("Controls")){
     const int id=item.at("Id").get<int>();if(id<0||id>=int(g_c.size()))throw std::runtime_error("Invalid control ID");
     auto& c=g_c[id];const int selected=item.value("Selected",c.sel);
-    if(c.kind==Kind::Action || c.kind==Kind::Button)continue;
+    if(c.kind==Kind::Action || c.kind==Kind::Button || c.kind==Kind::Info || c.kind==Kind::Monitor)continue;
     if(c.patches[0]=="@name"){
       const std::string name=item.value("Text",Narrow(g_name));
       if(name.empty()||name.size()>20||std::any_of(name.begin(),name.end(),[](unsigned char ch){return ch<32||ch>126;}))throw std::runtime_error("Player name must contain 1-20 printable Latin characters");
@@ -104,7 +105,7 @@ void ImportUiState(const Json& input) {
     }else if(id==g_lang){if(selected<0||selected>=21)throw std::runtime_error("Invalid language");g_lang_id=selected;c.items[0]=kLangName[selected];}
     else if(id==g_btrack){if(selected<0||selected>=kBenchTrackCount)throw std::runtime_error("Invalid track");g_bench_track=selected;}
     else if(id==g_bcar){if(selected<0||selected>=kBenchCarCount)throw std::runtime_error("Invalid car");g_bench_car=selected;}
-    else if(c.kind==Kind::Slider){if(selected<c.min||selected>c.max)throw std::runtime_error("Invalid slider value");c.sel=selected;}
+    else if(c.kind==Kind::Slider){c.sel=(std::max)(c.min,(std::min)(c.max,selected));}
     else {const int count=c.kind==Kind::Toggle?2:int(c.items.size());if(selected<((id==g_drive_preset||id==g_ffb_preset)?-1:0)||selected>=count)throw std::runtime_error("Invalid setting value");c.sel=selected;}
     if(c.patches[0]=="@skipgpu")g_skip_gpu_check=c.sel!=0;
   }
@@ -132,11 +133,15 @@ int RunWpfBridge(int argc,wchar_t** argv) {
           ids.insert(ids.end(),card.ctls.begin(),card.ctls.end());
         for(int id:ids){
           auto& c=g_c[id];
-          if(c.kind==Kind::Action || c.kind==Kind::Button || c.patches[0]=="@name" || c.patches[0]=="@onhost" || id==g_lang)continue;
-          c.sel=id==g_camera_patch_row ? (FrameModeNeedsCameraPatch()?1:0) : c.def;
+          if(c.kind==Kind::Action || c.kind==Kind::Button || c.kind==Kind::Info || c.kind==Kind::Monitor || c.patches[0]=="@name" || c.patches[0]=="@onhost" || id==g_lang)continue;          c.sel=id==g_camera_patch_row ? (FrameModeNeedsCameraPatch()?1:0) : c.def;
           if(id==g_btrack)g_bench_track=0;
           if(id==g_bcar)g_bench_car=kBenchDefaultCar;
           if(c.patches[0]=="@skipgpu")g_skip_gpu_check=c.sel!=0;
+        }
+        // Controller and keyboard: "Reset this page" puts every binding back on the built-in template.
+        if(page==kTabDriving && sub==kSubInput){
+          if(!WriteFullTemplate()) throw std::runtime_error("Could not write the default bindings to default.ini");
+          RefreshBindingChips();
         }
         DerivePreset();
         if(page==kTabDriving && sub==kSubAssists)DeriveDrivePreset();
@@ -145,6 +150,11 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       }
       else if(command==L"--ui-validate"){
         const int changed=request.value("ChangedId",-1);
+        if(changed==g_l3r3_row && changed>=0){
+          g_l3r3_touchpad=g_c[size_t(changed)].sel!=0;
+          WriteL3R3Setting(g_l3r3_touchpad);
+        }
+
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_wide && g_c[g_wide].sel>0)g_c[g_outres].sel=g_c[g_inres].sel=0;
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
@@ -156,6 +166,21 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-preset")ApplyPreset(g_c[g_preset].sel);
       else if(command==L"--ui-drive-preset"){if(g_c[g_drive_preset].sel>=0)ApplyDrivePreset(g_c[g_drive_preset].sel);}
       else if(command==L"--ui-wheel-preset"){if(g_c[g_ffb_preset].sel>=0)ApplyWheelPreset(g_c[g_ffb_preset].sel);}
+      else if(command==L"--ui-usedevice"){
+        const int slot=request.value("DeviceSlot",-1);
+        if(slot < -1 || slot > 3 || (slot >= 0 && !XInputRead(slot,new unsigned short(0))))
+          throw std::runtime_error("That device is not connected");
+        g_read_slot=slot;                      // remembered once the saved choice was read (see SyncDevices)
+        g_xbox_names=DetectXboxNaming();       // the pad's kind names the buttons and picks the template
+        const bool filled=WritePadTemplate();  // double-click: the pad half only, the keys stay the player's
+        if(filled) RefreshBindingChips();
+        SyncDevices(false);                    // the red name and the monitor follow the pad just chosen
+        g_status=g_read_slot<0?L"Reading the first connected pad.":L"Reading the pad in XInput slot "+std::to_wstring(g_read_slot+1)+L".";
+        if(filled) g_status+=g_xbox_names?L" The Xbox pad template was filled in.":L" The PlayStation pad template was filled in.";
+        g_status_color=kOk;
+        g_status_sticky=true;
+      }
+
       else if(command==L"--ui-wheelsetup"){
         OpenWheelSetup();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
@@ -191,6 +216,32 @@ int RunWpfBridge(int argc,wchar_t** argv) {
             g_ui_update_note=Widen(why);
             if(command==L"--ui-install-update")throw std::runtime_error(why.empty()?"No newer release is available.":why);
           }
+        }
+      }
+      else if(command==L"--ui-monitor"){
+        for(auto& c:g_c) if(c.kind==Kind::Monitor) c.items[0]=MonitorText();
+      }
+      else if(command==L"--ui-capture"){
+        const int id=request.value("Id",request.value("CaptureId",-1));
+        if(id<0 || id>=int(g_c.size()) || g_c[id].kind!=Kind::Binding)
+          throw std::runtime_error("Not a binding row");
+        const int side=request.value("CaptureSide",0);
+        if(side!=0 && side!=1) throw std::runtime_error("Invalid capture side");
+        if(side==1 && BindPadLocked(g_c[id]))
+          throw std::runtime_error("That control is read as an axis and cannot be remapped.");
+        std::string value;
+        if(side==1){
+          const char* token=CapturePadToken(15000,output+L".control");
+          if(!token){
+            g_ui_capture_cancelled=true;
+            g_status=ReadLines(output+L".control").empty()?L"No controller button was pressed.":L"Binding unchanged.";
+          }
+          else if(!ApplyBinding(id,1,token)) throw std::runtime_error("Could not save the binding to default.ini");
+        }
+        else {
+          if(!request.value("CaptureClear",false)) value=CaptureKey(15000, output+L".control");
+          if(value.empty()){ g_ui_capture_cancelled=true; g_status=L"Binding unchanged."; }
+          else if(!ApplyBinding(id,side,value)) throw std::runtime_error("Could not save the binding to default.ini");
         }
       }
       else if(command==L"--ui-ffbgainup" || command==L"--ui-ffbgaindown"){
