@@ -673,6 +673,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             constant_ring->HasHostCopy() &&
             (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
              (size == 512 && BbVr::Active()) || // VR: the G-buffer camera (BbVr::NoteCameraConstants)
+             (Vr::Multiview::Enabled() && (size == 1936 || Vr::Multiview::EyeLightBinding(stage.pgm_hash, index))) ||
              (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
         u8* write = host_read ? constant_ring->HostCopy(*offset) : dst;
         if (source) {
@@ -3079,6 +3080,106 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
     return true;
 }
 
+std::pair<const u8*, u32> Rasterizer::EyeBindingBytes(const Shader::Info& stage, const PreparedStage* prepared,
+                                                      u32 index) {
+    if (const RingBinding* ring = num_ring_stages ? FindRingBinding(stage, index) : nullptr) {
+        return {ring->host_copy ? constant_ring->HostCopy(ring->offset) : constant_ring->Data(ring->offset),
+                ring->size};
+    }
+    if (stage.buffers[index].IsSpecial()) {
+        return {nullptr, 0};
+    }
+    const auto sharp = prepared ? prepared->buffer_sharps[index] : stage.buffers[index].GetSharp(stage);
+    if (sharp.base_address == 0 || !memory->IsValidGpuMapping(sharp.base_address, 0)) {
+        return {nullptr, 0};
+    }
+    return {reinterpret_cast<const u8*>(sharp.base_address), u32(sharp.GetSize())};
+}
+
+bool Rasterizer::BindEyeCopies(const void* left, const void* right, u32 bytes, vk::WriteDescriptorSet& write) {
+    // The copies keep the binding's offset adjustment (push data): the constants start `adjust` bytes in.
+    const u64 adjust = buffer_infos.back().range > bytes ? buffer_infos.back().range - bytes : 0;
+    if (adjust > 256 || adjust + bytes > 2304) {
+        return false;
+    }
+    auto& stream = buffer_cache.GetStreamBuffer();
+    const u64 alignment = instance.StorageMinAlignment();
+    for (int eye = 0; eye < 2; ++eye) {
+        std::array<u8, 2304> copy{};
+        std::memcpy(copy.data() + adjust, eye == 0 ? left : right, bytes);
+        const u64 offset = stream.Copy(copy.data(), u32(adjust + bytes), alignment);
+        const vk::DescriptorBufferInfo info{stream.Handle(), offset, adjust + bytes};
+        if (eye == 0) {
+            buffer_infos.back() = info;
+        } else {
+            buffer_infos.push_back(info);
+        }
+    }
+    write.descriptorCount = 2;
+    write.pBufferInfo = &buffer_infos[buffer_infos.size() - 2];
+    return true;
+}
+
+// VR multiview: the scene constants (fog, the sun's shadow matrix), one copy per eye in a two-eye pass. The eye offset
+// comes from the main camera's constants among the stage's bindings (512 bytes, the render size twice at dwords 96-105).
+bool Rasterizer::BindEyeSceneConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                                       vk::WriteDescriptorSet& write) {
+    // The binding's range rules out all but the scene constants first: this runs for every buffer of every draw.
+    const u64 range = buffer_infos.back().range;
+    if (range < 1936 || range > 1936 + 256 || !Vr::Multiview::Enabled() ||
+        stage.sw_stage == Shader::SwStage::Compute) {
+        return false;
+    }
+    const auto [scene, scene_bytes] = EyeBindingBytes(stage, prepared, buffer_index);
+    if (!scene || scene_bytes != 1936 || Vr::Multiview::PassViewMask(texture_cache, cb_descs, 1, db_desc) != 0b11) {
+        return false;
+    }
+    const float* camera = nullptr;
+    for (u32 i = 0; i < stage.buffers.size() && !camera; ++i) {
+        const auto [bytes, size] = EyeBindingBytes(stage, prepared, i);
+        if (bytes && size == 512) {
+            const auto* c = reinterpret_cast<const float*>(bytes);
+            if (c[96] > 0.f && c[96] == c[104] && c[97] == c[105]) {
+                camera = c;
+            }
+        }
+    }
+    std::array<std::vector<u32>, 2> eyes;
+    if (!camera ||
+        !Vr::Multiview::EyeSceneConstants(reinterpret_cast<const u32*>(scene), scene_bytes, camera, eyes)) {
+        return false;
+    }
+    static std::atomic_flag told = ATOMIC_FLAG_INIT;
+    if (!told.test_and_set()) {
+        std::printf("VR multiview: per-eye scene constants in use\n");
+    }
+    return BindEyeCopies(eyes[0].data(), eyes[1].data(), scene_bytes, write);
+}
+
+// VR multiview: a deferred spot light's constants, one copy per eye in a two-eye pass.
+bool Rasterizer::BindEyeLightConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                                       vk::WriteDescriptorSet& write) {
+    if (!Vr::Multiview::EyeLightBinding(stage.pgm_hash, buffer_index) || stage.buffers.size() <= buffer_index ||
+        Vr::Multiview::PassViewMask(texture_cache, cb_descs, 1, db_desc) != 0b11) {
+        return false;
+    }
+    const auto [light, light_bytes] = EyeBindingBytes(stage, prepared, buffer_index);
+    const auto [camera, camera_bytes] = EyeBindingBytes(stage, prepared, 0);
+    if (!light || !camera || camera_bytes != 512 || light_bytes > 256) {
+        return false;
+    }
+    std::array<std::array<u32, 64>, 2> eyes;
+    if (!Vr::Multiview::EyeLightConstants(reinterpret_cast<const u32*>(light), light_bytes,
+                                          reinterpret_cast<const float*>(camera), eyes)) {
+        return false;
+    }
+    static std::atomic_flag told = ATOMIC_FLAG_INIT;
+    if (!told.test_and_set()) {
+        std::printf("VR multiview: per-eye light constants in use\n");
+    }
+    return BindEyeCopies(eyes[0].data(), eyes[1].data(), light_bytes, write);
+}
+
 void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                              Shader::Backend::Bindings& binding,
                              Shader::PushData& push_data, u32& write_index) {
@@ -3323,8 +3424,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         set_write.descriptorCount = 1;
         set_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         set_write.pBufferInfo = &buffer_infos.back();
-        Vr::Multiview::EyeBufferWrite(instance, runtime, desc.IsSpecial(), set_write,
-                                      buffer_infos); // VR multiview: the right eye's descriptor
+        if (!BindEyeLightConstants(stage, prepared, buffer_index, set_write) &&
+            !BindEyeSceneConstants(stage, prepared, buffer_index, set_write)) {
+            Vr::Multiview::EyeBufferWrite(instance, runtime, desc.IsSpecial(), set_write,
+                                          buffer_infos); // VR multiview: the right eye's descriptor
+        }
         ++binding.buffer;
     }
 }

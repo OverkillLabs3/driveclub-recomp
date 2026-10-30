@@ -313,6 +313,14 @@ private:
     AmdGpu::CbDbExtent CbExtent(u32 index) const;
     AmdGpu::CbDbExtent DbExtent() const;
 
+    /// VR multiview: a stage's buffer binding as this draw sees it: the ring's copy, else guest memory.
+    std::pair<const u8*, u32> EyeBindingBytes(const Shader::Info& stage, const PreparedStage* prepared, u32 index);
+    /// VR multiview: the binding's two descriptors become these two copies, keeping its offset adjustment.
+    bool BindEyeCopies(const void* left, const void* right, u32 bytes, vk::WriteDescriptorSet& write);
+    bool BindEyeSceneConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                               vk::WriteDescriptorSet& write);
+    bool BindEyeLightConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                               vk::WriteDescriptorSet& write);
     void BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                      Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data, u32& write_index);
