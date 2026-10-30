@@ -50,6 +50,13 @@ Requirements
 ------------
 Windows 10 or 11 (64-bit), a processor from Intel Haswell (2013) or AMD Excavator or Ryzen onward, and a graphics card with a Vulkan 1.3 driver. About 40 GB of free disk space for the game dumps.
 
+Online play (private, with friends)
+-----------------------------------
+In the launcher, Gameplay tab, ONLINE: choose Host a session to run a private server on your PC, or Join a session and type the IP address of the friend who hosts. Everyone uses a player name of 3 to 16 letters, digits, - or _.
+Players reach each other over the home network or a VPN (Tailscale, Hamachi, Radmin). The host runs Allow-Firewall.bat once (and every player runs it once for the game) so Windows lets those connections in.
+The host starts the game first and lets the others get in, because the game reads its friend list at start. With Online play Off, the game behaves as always and nothing online is touched.
+The folder server\ holds the community server (GPL-2.0, see licenses\). More in online\README.md.
+
 Known issues
 ------------
 Some reflections (rain drops on the side window, paint on cars on the stage select screen) are brighter than they should be.

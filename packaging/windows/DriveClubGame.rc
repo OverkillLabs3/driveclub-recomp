@@ -1,4 +1,4 @@
 #include <winuser.h>
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "DriveClubGame.manifest"
 // The first icon is the one Explorer and the game window show.
-1 ICON "../../launcher/driveclub.ico"
+1 ICON "../../launcher/wpf/Assets/app.ico"

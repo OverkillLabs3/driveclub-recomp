@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>DriveClub.Launcher</AssemblyName>
+    <Version>0.3.1</Version>
+    <InformationalVersion>0.3.1-wpf.79fc2fe</InformationalVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/app.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/app.ico" />
+    <Content Include="..\setup\Install-Launcher.ps1" Link="Install-Launcher.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\assets\**\*">
+      <Link>assets\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+  <Target Name="CopyDotNetRuntimeNotices" AfterTargets="Publish" Condition="'$(SelfContained)' == 'true'">
+    <ItemGroup>
+      <_DotNetNotice Include="%(ResolvedRuntimePack.PackageDirectory)\LICENSE*;%(ResolvedRuntimePack.PackageDirectory)\THIRD-PARTY-NOTICES*"
+                     Condition="'%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.NETCore.App' Or '%(ResolvedRuntimePack.FrameworkName)' == 'Microsoft.WindowsDesktop.App'">
+        <RuntimeFramework>%(ResolvedRuntimePack.FrameworkName)</RuntimeFramework>
+      </_DotNetNotice>
+    </ItemGroup>
+    <Copy SourceFiles="@(_DotNetNotice)" DestinationFiles="@(_DotNetNotice->'$(PublishDir)licenses\dotnet\%(RuntimeFramework)\%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

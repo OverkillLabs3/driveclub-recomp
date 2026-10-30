@@ -830,6 +830,17 @@ static void QueueNpStateEvent(Libraries::UserService::OrbisUserServiceUserId use
     g_np_state_events.emplace_back(event);
 }
 
+// A local account (BB_NP_LOCAL) has no login to wait for: the game is told it is signed in when it
+// registers for state changes, as the console does for a user who is already signed in.
+static void QueueLocalSignedIn() {
+    if (!Libraries::Np::NpHandler::GetInstance().IsLocalAccount()) {
+        return;
+    }
+    s32 user_id = 1;
+    Libraries::UserService::sceUserServiceGetInitialUser(&user_id);
+    QueueNpStateEvent(user_id, OrbisNpState::SignedIn);
+}
+
 void NotifyNpStateFromUserServiceEvent(Libraries::UserService::OrbisUserServiceEventType event_type,
                                        Libraries::UserService::OrbisUserServiceUserId user_id) {
     switch (event_type) {
@@ -961,8 +972,109 @@ static void DispatchPendingNpStateCallbacks() {
     }
 }
 
+extern "C" uintptr_t runtime_image_base;
+
+// Diagnostics only: the game's online status bar (guest 0x3daf90) asks one object three yes/no questions
+// (1 network down, 2 signed out of PSN, 3 server unreachable). Log every change of the answers.
+static void ProbeStatusBar() {
+    if (!BB_DIAGNOSTICS || runtime_image_base == 0 ||
+        !Libraries::Np::NpHandler::GetInstance().IsLocalAccount()) {
+        return;
+    }
+    static int calls = 0;
+    if (++calls % 8 != 0) {
+        return;
+    }
+    const auto rd64 = [](uintptr_t address) { return *reinterpret_cast<const uint64_t*>(address); };
+    const uintptr_t base = runtime_image_base;
+    const uintptr_t root = rd64(base + 0x1911100);
+    const uintptr_t holder = root ? rd64(root + 0x968) : 0;
+    const uintptr_t object = holder ? rd64(holder + 0x8d8) : 0;
+    const uintptr_t vtable = object ? rd64(object) : 0;
+    const uintptr_t getter = vtable ? rd64(vtable + 0x70) : 0;
+    if (getter == 0) {
+        return;
+    }
+    using Getter = char(__attribute__((sysv_abi)) *)(void*, int);
+    int answers = 0;
+    for (int i = 1; i <= 3; ++i) {
+        answers |= (reinterpret_cast<Getter>(getter)(reinterpret_cast<void*>(object), i) ? 1 : 0) << (i - 1);
+    }
+    static int last = -1;
+    if (answers != last) {
+        LOG_INFO(Lib_NpManager, "ONLINE-STATUS: network_down={} psn_signed_out={} server_unreachable={}",
+                 answers & 1, (answers >> 1) & 1, (answers >> 2) & 1);
+        last = answers;
+    }
+}
+
+// Diagnostics only: shows which gate of the game's server-session state machine is closed
+// (state machine at guest 0x632410: flag at +0x340 of the EGS object, local user 0 active, platform object).
+static void ProbeOnlineState() {
+    if (!BB_DIAGNOSTICS || runtime_image_base == 0 ||
+        !Libraries::Np::NpHandler::GetInstance().IsLocalAccount()) {
+        return;
+    }
+    static int calls = 0;
+    if (++calls % 120 != 1) {
+        return;
+    }
+    const auto rd64 = [](uintptr_t address) { return *reinterpret_cast<const uint64_t*>(address); };
+    const uintptr_t base = runtime_image_base;
+    const uintptr_t mgr = rd64(base + 0x1915c38);
+    const uintptr_t egs = mgr ? rd64(mgr) : 0;
+    const int flag340 = egs ? *reinterpret_cast<const uint8_t*>(egs + 0x340) : -1;
+    const uintptr_t parts = mgr ? rd64(mgr + 0x10) : 0;
+    const uintptr_t session = parts ? rd64(parts + 8) : 0;
+    const int state = session ? *reinterpret_cast<const int32_t*>(session + 0x40) : -1;
+    const uintptr_t platform = session ? rd64(session + 0x68) : 0;
+    const uintptr_t user0 = rd64(base + 0x27267f0);
+    const int user0_active = user0 ? *reinterpret_cast<const uint8_t*>(user0 + 0x4c) : -1;
+    LOG_INFO(Lib_NpManager,
+             "ONLINE-PROBE: egs={:#x} flag340={} session={:#x} state={} platform={:#x} user0={:#x} "
+             "user0_active={}",
+             egs, flag340, session, state, platform, user0, user0_active);
+    // The three parts of the server layer: which one owns the state machine at guest 0x632410?
+    for (int i = 0; i < 3 && parts; ++i) {
+        const uintptr_t obj = rd64(parts + 8 * i);
+        if (!obj) {
+            continue;
+        }
+        const uintptr_t vtable = rd64(obj);
+        int slot = -1;
+        if (vtable) {
+            for (int k = 0; k < 96; ++k) {
+                if (rd64(vtable + 8 * k) == base + 0x632410) {
+                    slot = k;
+                    break;
+                }
+            }
+        }
+        LOG_INFO(Lib_NpManager,
+                 "ONLINE-PROBE2: part{} obj={:#x} vtable_off={:#x} update_slot={} +0x40={} +0x68={:#x}",
+                 i, obj, vtable ? vtable - base : 0, slot, *reinterpret_cast<const int32_t*>(obj + 0x40),
+                 rd64(obj + 0x68));
+    }
+    // Per-user table the game copies into its user object each frame (user 0).
+    LOG_INFO(Lib_NpManager, "ONLINE-PROBE3: user table 0x272f528={} 0x272f5a8={} 0x272f5f0={} 0x272f5f1={}",
+             *reinterpret_cast<const uint8_t*>(base + 0x272f528),
+             *reinterpret_cast<const uint8_t*>(base + 0x272f5a8),
+             *reinterpret_cast<const uint8_t*>(base + 0x272f5f0),
+             *reinterpret_cast<const uint8_t*>(base + 0x272f5f1));
+    // User-name worker (0x272e900) and user-status worker (0x272f0e0) results, user id list.
+    const auto u8 = [&](uintptr_t off) { return int(*reinterpret_cast<const uint8_t*>(base + off)); };
+    const auto i32 = [&](uintptr_t off) { return int(*reinterpret_cast<const int32_t*>(base + off)); };
+    LOG_INFO(Lib_NpManager,
+             "ONLINE-PROBE4: name_worker inflight={} result={} | status_worker inflight(0x272f2b0)={} "
+             "ready(0x272f1ec)={} done(0x272f9c8)={} gate(0x155ea30)={} | userlist={:#x},{:#x} count(0x272f520)={}",
+             u8(0x272f0d0), i32(0x272ed0c), u8(0x272f2b0), i32(0x272f1ec), u8(0x272f9c8), u8(0x155ea30),
+             rd64(base + 0x272f8c8), rd64(base + 0x272f8d0), u8(0x272f520));
+}
+
 s32 PS4_SYSV_ABI sceNpCheckCallback() {
     LOG_DEBUG(Lib_NpManager, "called");
+    ProbeStatusBar();
+    ProbeOnlineState();
     DispatchPendingNpStateCallbacks();
 
     std::scoped_lock lk{g_np_callbacks_mutex};
@@ -983,14 +1095,17 @@ s32 PS4_SYSV_ABI sceNpRegisterStateCallback(OrbisNpStateCallback callback, void*
         return ORBIS_NP_ERROR_INVALID_ARGUMENT;
     }
 
-    std::scoped_lock lk{g_np_state_callbacks_mutex};
-    if (LegacyNpStateCb.func != nullptr) {
-        return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
-    }
+    {
+        std::scoped_lock lk{g_np_state_callbacks_mutex};
+        if (LegacyNpStateCb.func != nullptr) {
+            return ORBIS_NP_ERROR_CALLBACK_ALREADY_REGISTERED;
+        }
 
-    LOG_INFO(Lib_NpManager, "called, userdata = {}", userdata);
-    LegacyNpStateCb.func = callback;
-    LegacyNpStateCb.userdata = userdata;
+        LOG_INFO(Lib_NpManager, "called, userdata = {}", userdata);
+        LegacyNpStateCb.func = callback;
+        LegacyNpStateCb.userdata = userdata;
+    }
+    QueueLocalSignedIn();
     return ORBIS_OK;
 }
 
@@ -1006,7 +1121,11 @@ s32 PS4_SYSV_ABI sceNpUnregisterStateCallback() {
 
 s32 PS4_SYSV_ABI sceNpRegisterStateCallbackA(OrbisNpStateCallbackA callback, void* userdata) {
     LOG_INFO(Lib_NpManager, "called, userdata = {}", userdata);
-    return RegisterStateCallbackA(callback, userdata);
+    const s32 id = RegisterStateCallbackA(callback, userdata);
+    if (id > 0) {
+        QueueLocalSignedIn();
+    }
+    return id;
 }
 
 s32 PS4_SYSV_ABI sceNpUnregisterStateCallbackA(s32 callback_id) {

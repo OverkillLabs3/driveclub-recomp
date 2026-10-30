@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_threads.h"
+#include "bbport_intro_pacing.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -110,7 +111,21 @@ void VideoOutDriver::SwapThread(std::stop_token token) {
     }
 }
 
-VideoOutDriver::~VideoOutDriver() = default;
+void VideoOutDriver::StopPresenting() {
+    if (present_thread.joinable()) {
+        present_thread.request_stop();
+        request_cv.notify_all();
+        present_thread.join();
+    }
+    // No new presenter work can be enqueued after the vblank thread stops.
+    // The swap thread drains queued work before leaving its stop-aware wait.
+    if (swap_thread.joinable()) {
+        swap_thread.request_stop();
+        swap_cv.notify_all();
+        swap_thread.join();
+    }
+}
+VideoOutDriver::~VideoOutDriver() { StopPresenting(); }
 
 int VideoOutDriver::Open(const ServiceThreadParams* params) {
     if (main_port.is_open) {
@@ -922,8 +937,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: frame limit (see EmulatorSettings::GetFrameLimit). A request waits in the queue
     // until its slot; slots advance by one period (no drift) but never lag behind by more.
-    const u32 frame_limit = EmulatorSettings.GetFrameLimit();
-    const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
+    const u32 configured_limit = EmulatorSettings.GetFrameLimit();
+    u32 frame_limit = configured_limit;
+    auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
     // bbport: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
@@ -936,7 +952,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // 5.23 -> 3.66 ms, 1% low 29.1 -> 31.5 FPS, menus sd 5.07 -> 2.89 ms.
     const long credit_pct =
         std::clamp<long>(EmulatorSettingsImpl::Number("BB_PACE_CREDIT", 0), 0, 200);
-    const auto credit = frame_period * credit_pct / 100;
+    auto credit = frame_period * credit_pct / 100;
     // Off the old rule the waits for a slot use the precise sleep: a release that wakes late
     // would otherwise come out short of its period.
     const bool precise_wait = credit_pct != 200;
@@ -971,9 +987,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: with a frame limit (uncapped presets) a queued flip is presented as soon as it
     // arrives and its slot allows, between vblanks, instead of on the next vblank tick.
-    const bool immediate_flips = frame_limit != 0;
-
     while (!token.stop_requested()) {
+        const u32 effective_limit = BbIntroPacing::EffectiveLimit(configured_limit);
+        if (effective_limit != frame_limit) {
+            frame_limit = effective_limit;
+            frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
+                                       : std::chrono::nanoseconds(0);
+            credit = frame_period * credit_pct / 100;
+            // Rebase the schedule so changing caps cannot release a burst of queued flips.
+            next_flip = std::chrono::steady_clock::now() + frame_period;
+            std::printf("VideoOut: presentation cap %u FPS (configured %u; intro pacing %s)\n",
+                        frame_limit, configured_limit, frame_limit != configured_limit ? "active" : "restored");
+        }
+        const bool immediate_flips = frame_limit != 0;
         timer.Start();
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
 

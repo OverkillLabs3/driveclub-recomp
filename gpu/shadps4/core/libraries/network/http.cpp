@@ -126,6 +126,10 @@ struct HttpRequest {
     int epoll_id = 0;
     void* epoll_user_arg = nullptr;
     std::vector<std::pair<std::string, std::string>> headers;
+    // Streamed response (RunStreamingRequest): the body grows while the server keeps the
+    // connection open; reads past the end wait (or EAGAIN) until stream_done.
+    bool streaming = false;
+    bool stream_done = false;
 };
 
 struct HttpState {
@@ -991,6 +995,11 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
         for (const auto& [k, v] : plan.headers) {
             headers.emplace(k, v);
         }
+        // Community server: who is asking. Some requests carry no session at all (the EGS
+        // messaging long poll), and a local account has no PSN bearer token.
+        if (const char* local = std::getenv("BB_NP_LOCAL"); local && *local) {
+            headers.emplace("X-Dccoop-Online-Id", local);
+        }
         if (plan.settings.accept_encoding_gzip) {
             bool already_set = false;
             for (const auto& [k, v] : plan.headers) {
@@ -1152,6 +1161,115 @@ static s32 RunRealHttpRequest(const SendRequestPlan& plan_in, HttpResponse& out_
         ORBIS_HTTP_NB_EVENT_IN | ORBIS_HTTP_NB_EVENT_OUT | ORBIS_HTTP_NB_EVENT_RESOLVED;
     return 0;
 #endif // ORBIS_HTTP_WITH_HTTPLIB
+}
+
+// Experimental (BB_COOP_STREAM=1): pass GET /egs/messaging through as a stream instead of a whole
+// response. The game's EvoSliccPersistentAction turned out to restart the request after each piece
+// of data anyway, so this is off by default; the server only streams when asked (X-Dccoop-Stream).
+static bool IsPersistentStreamPath(const std::string& path) {
+    const char* v = std::getenv("BB_COOP_STREAM");
+    if (!v || v[0] != '1') {
+        return false;
+    }
+    return path.size() >= 14 && path.compare(path.size() - 14, 14, "/egs/messaging") == 0;
+}
+
+static void PushEpollEvent(HttpRequest& req, int reqId, u32 bits) {
+    if (req.epoll_id == 0) {
+        return;
+    }
+    auto it = g_state.epolls.find(req.epoll_id);
+    if (it == g_state.epolls.end() || it->second->destroyed) {
+        return;
+    }
+    OrbisHttpNBEvent ev{};
+    ev.events = bits;
+    ev.eventDetail = bits;
+    ev.id = reqId;
+    ev.userArg = req.epoll_user_arg;
+    it->second->events.push_back(ev);
+    it->second->cv.notify_all();
+}
+
+// Runs a streamed GET on the worker thread: the request becomes readable as soon as the headers
+// arrive, and every received chunk is appended to the body and announced with an IN event.
+static void RunStreamingRequest(const SendRequestPlan& plan, std::shared_ptr<HttpRequest> req_ptr,
+                                int reqId) {
+#ifdef ORBIS_HTTP_WITH_HTTPLIB
+    std::string base_url = plan.scheme + "://" + plan.host;
+    if ((plan.scheme == "https" && plan.port != 443) || (plan.scheme == "http" && plan.port != 80)) {
+        base_url += ":" + std::to_string(plan.port);
+    }
+    httplib::Client cli(base_url);
+    cli.set_connection_timeout(std::chrono::seconds(15));
+    cli.set_read_timeout(std::chrono::seconds(60)); // the server pings far more often
+    httplib::Headers headers;
+    for (const auto& [k, v] : plan.headers) {
+        headers.emplace(k, v);
+    }
+    if (const char* local = std::getenv("BB_NP_LOCAL"); local && *local) {
+        headers.emplace("X-Dccoop-Online-Id", local);
+    }
+    headers.emplace("X-Dccoop-Stream", "1");
+    const auto gone = [&req_ptr] {
+        return g_state.shutting_down.load() || req_ptr->deleted ||
+               req_ptr->state == HttpRequestState::Aborted;
+    };
+    LOG_INFO(Lib_Http, "reqId={} streaming GET {}{}", reqId, base_url, plan.path);
+    auto result = cli.Get(
+        plan.path, headers,
+        [&](const httplib::Response& r) {
+            std::lock_guard<std::mutex> lock(g_state.m_mutex);
+            if (gone()) {
+                return false;
+            }
+            auto& res = req_ptr->res;
+            res.status_code = r.status;
+            res.content_length_result = ORBIS_HTTP_ERROR_NO_CONTENT_LENGTH;
+            const std::string label = HttpStatusLabel(r.status);
+            const auto space = label.find(' ');
+            res.all_headers_blob =
+                "HTTP/1.1 " + std::to_string(r.status) + " " +
+                (space == std::string::npos ? label : label.substr(space + 1)) + "\r\n";
+            for (const auto& [k, v] : r.headers) {
+                res.all_headers_blob += k + ": " + v + "\r\n";
+            }
+            res.all_headers_blob += "\r\n";
+            req_ptr->streaming = true;
+            req_ptr->state = HttpRequestState::Sent;
+            req_ptr->cv.notify_all();
+            PushEpollEvent(*req_ptr, reqId,
+                           ORBIS_HTTP_NB_EVENT_IN | ORBIS_HTTP_NB_EVENT_OUT |
+                               ORBIS_HTTP_NB_EVENT_RESOLVED);
+            return true;
+        },
+        [&](const char* data, size_t len) {
+            std::lock_guard<std::mutex> lock(g_state.m_mutex);
+            if (gone()) {
+                return false;
+            }
+            req_ptr->res.body.insert(req_ptr->res.body.end(), data, data + len);
+            req_ptr->cv.notify_all();
+            PushEpollEvent(*req_ptr, reqId, ORBIS_HTTP_NB_EVENT_IN);
+            return true;
+        });
+    std::lock_guard<std::mutex> lock(g_state.m_mutex);
+    LOG_INFO(Lib_Http, "reqId={} stream ended ({})", reqId,
+             result ? std::to_string(result->status) : httplib::to_string(result.error()));
+    if (gone()) {
+        req_ptr->cv.notify_all();
+        return;
+    }
+    if (!req_ptr->streaming) {
+        // Never got headers: report it like any failed request.
+        SynthesizeTransportFailureResponse(req_ptr->res);
+        req_ptr->state = HttpRequestState::Sent;
+        req_ptr->last_errno = result ? 0 : TranslateHttplibError(result.error());
+    }
+    req_ptr->stream_done = true;
+    req_ptr->cv.notify_all();
+    PushEpollEvent(*req_ptr, reqId, ORBIS_HTTP_NB_EVENT_IN | ORBIS_HTTP_NB_EVENT_HUP);
+#endif
 }
 
 // Case-insensitive ASCII comparison of two HTTP header names.
@@ -1785,6 +1903,10 @@ int PS4_SYSV_ABI sceHttpSendRequest(int reqId, const void* postData, u64 size) {
              plan.port, plan.path);
 
     std::thread([req_ptr, reqId, plan = std::move(plan), online]() {
+        if (online && IsPersistentStreamPath(plan.path)) {
+            RunStreamingRequest(plan, req_ptr, reqId);
+            return;
+        }
         HttpResponse local_res;
         s32 worker_errno = 0;
         u32 success_event_bits = 0; // 0 = no event (offline path uses failure bits)
@@ -2534,6 +2656,17 @@ int PS4_SYSV_ABI sceHttpReadData(s32 reqId, void* data, u64 size) {
             LOG_ERROR(Lib_Http, "Wait failed for reqId={}: {:#x}", reqId, static_cast<u32>(wr));
         }
         return wr;
+    }
+    // A stream still open with nothing new: like a socket, nothing to read yet rather than EOF.
+    while (req.streaming && !req.stream_done && req.res.read_cursor >= req.res.body.size()) {
+        if (req.settings.nonblock) {
+            return ORBIS_HTTP_ERROR_EAGAIN;
+        }
+        req.cv.wait(lock);
+        if (g_state.shutting_down.load() || req.deleted ||
+            req.state == HttpRequestState::Aborted) {
+            return ORBIS_HTTP_ERROR_ABORTED;
+        }
     }
     u64 remaining = req.res.body.size() - req.res.read_cursor;
     u64 to_copy = std::min(size, remaining);

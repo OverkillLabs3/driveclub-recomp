@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "unlock-2";
+constexpr const char* kVersion = "unlock-3";
 
 std::wstring Widen(const std::string& s) {
   if (s.empty()) return L"";
@@ -113,7 +113,7 @@ std::string JoinLine(const std::vector<Field>& fields) {
 
 // `has_file(path)` says whether the game archive holds a file: a car is only made customisable when the template
 // of its livery editor exists (one add-on car has none, and the game stops when it is asked for it).
-bool PatchVehicles(std::string& text, const std::function<bool(const std::string&)>& has_file) {
+bool PatchVehicles(std::string& text, const std::function<bool(const std::string&)>& has_file, bool all_cars) {
   std::string out;
   size_t pos = 0;
   int status = -1, versions = -1, customise = -1, player = -1, club = -1, vehicle_name = -1;
@@ -164,6 +164,17 @@ bool PatchVehicles(std::string& text, const std::function<bool(const std::string
           f[player] = f[club];
           f[club] = Field{};
           changed = true;
+        }
+        // Every car and bike from the first level on.
+        if (all_cars && player >= 0 && f.size() > size_t(player)) {
+          if (!f[player].text.empty() && f[player].text != "1") {
+            f[player].text = "1";
+            changed = true;
+          }
+          if (club >= 0 && f.size() > size_t(club) && !f[club].text.empty()) {
+            f[club] = Field{};
+            changed = true;
+          }
         }
         line = JoinLine(f);
       }
@@ -262,10 +273,11 @@ bool PatchLiveries(std::string& text) {
 
 }  // namespace
 
-std::wstring BuildUnlock(const std::wstring& update_dir, const std::wstring& base_dir, const std::wstring& out_dir) {
+std::wstring BuildUnlock(const std::wstring& update_dir, const std::wstring& base_dir, const std::wstring& out_dir,
+                         bool all_cars) {
   const std::wstring stamp_path = out_dir + L"\\stamp.txt";
   char stamp[256];
-  snprintf(stamp, sizeof stamp, "%s %llx %llx", kVersion, (unsigned long long)FileStamp(update_dir + L"\\game.ndx"),
+  snprintf(stamp, sizeof stamp, "%s%s %llx %llx", kVersion, all_cars ? "-all" : "", (unsigned long long)FileStamp(update_dir + L"\\game.ndx"),
            (unsigned long long)FileStamp(base_dir + L"\\game.ndx"));
   const std::wstring files[3] = {L"\\newdata\\vehicles.csv", L"\\data\\databases\\dc.tour", L"\\liveryeditor\\assets\\assets.txt"};
   if (ReadText(stamp_path) == stamp) {
@@ -280,7 +292,7 @@ std::wstring BuildUnlock(const std::wstring& update_dir, const std::wstring& bas
   if (!err.empty()) return Widen("vehicle list: " + err);
   std::string vehicles(raw.begin(), raw.end());
   const auto has_file = [&](const std::string& path) { return DatxContains(update_dir, base_dir, path); };
-  if (!PatchVehicles(vehicles, has_file)) return L"the vehicle list has an unexpected layout";
+  if (!PatchVehicles(vehicles, has_file, all_cars)) return L"the vehicle list has an unexpected layout";
 
   err = DatxExtract(update_dir, base_dir, "data/databases/dc.tour", raw);
   if (!err.empty()) return Widen("tour list: " + err);

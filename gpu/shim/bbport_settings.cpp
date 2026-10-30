@@ -2,6 +2,7 @@
 #include "bbport_settings.h"
 #include "bbport_neural_settings.h"
 
+#include <cmath>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -18,12 +19,15 @@ const char* Path() {
     return env && env[0] ? env : "bbport.ini";
 }
 
-// hdr.ini in the settings file's folder: the HDR brightness set while playing.
-std::string HdrIniPath() {
+// A file in the settings file's folder.
+std::string NextToConfig(const char* name) {
     const std::string config = Path();
     const size_t slash = config.find_last_of("/\\");
-    return (slash == std::string::npos ? std::string() : config.substr(0, slash + 1)) + "hdr.ini";
+    return (slash == std::string::npos ? std::string() : config.substr(0, slash + 1)) + name;
 }
+// hdr.ini: the HDR brightness set while playing; picture.ini: the SDR picture (launcher sliders, F4).
+std::string HdrIniPath() { return NextToConfig("hdr.ini"); }
+std::string PictureIniPath() { return NextToConfig("picture.ini"); }
 
 float Clamp(float v, float lo, float hi) {
     return std::clamp(v, lo, hi);
@@ -80,6 +84,13 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.hdr_paper = Clamp(f, 80.0f, 600.0f);
     } else if (key == "hdr_peak") {
         v.hdr_peak = Clamp(f, 400.0f, 10000.0f);
+    } else if (key == "brightness") {
+        v.picture_brightness = std::clamp(i, -50, 50);
+    } else if (key == "contrast") {
+        v.picture_contrast = std::clamp(i, 50, 150);
+    } else if (key == "gamma") {
+        // hundredths, or a plain 2.4
+        v.picture_gamma = std::clamp(f < 10.0f ? int(std::lround(f * 100.0f)) : i, 180, 280);
     } else if (key == "dlss_model") {
         // auto, or the preset's letter
         v.dlss_model = value == "k" || value == "K" ? 11 : value == "l" || value == "L" ? 12
@@ -93,6 +104,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                                 : value == "short" || value == "60" ? 60 : 0;
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "show_pedals") {
+        v.show_pedals = i != 0;
     } else if (key == "fsr4_auto_exposure") {
         v.fsr4_auto_exposure = i != 0;
     } else if (key == "fsr4_invert_jitter") {
@@ -153,6 +166,22 @@ void Load() {
         }
         std::fclose(file);
     }
+    if (FILE* file = std::fopen(PictureIniPath().c_str(), "r")) {
+        char line[64];
+        while (std::fgets(line, sizeof(line), file)) {
+            std::string text{line};
+            text.erase(text.find_last_not_of(" \t\r\n") + 1);
+            const auto eq = text.find('=');
+            if (eq != std::string::npos) {
+                Set(v, text.substr(0, eq), text.substr(eq + 1));
+            }
+        }
+        std::fclose(file);
+    }
+    // BB_TV_GAMMA=0 (before picture.ini): the picture as on a PC monitor.
+    if (const char* tv = std::getenv("BB_TV_GAMMA"); tv && tv[0] == '0') {
+        v.picture_gamma = 220;
+    }
     // Environment overrides (scripts, A/B tests).
     if (const char* env = std::getenv("BB_UPSCALER")) {
         v.upscaler = UpscalerOff;
@@ -169,6 +198,8 @@ void Load() {
         {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
         {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
+        {"BB_BRIGHTNESS", "brightness"},              {"BB_CONTRAST", "contrast"},
+        {"BB_GAMMA", "gamma"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env)) {
@@ -252,6 +283,7 @@ void Save() {
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
     std::fprintf(file, "motion_blur_reference=%d\n", v.motion_blur_reference.load());
+    std::fprintf(file, "show_pedals=%d\n", int(v.show_pedals.load()));
     std::fprintf(file, "aa_scale=%s", AaScaleName(v.aa_scale));
     std::fputc(10, file);
     std::fprintf(file, "aa=%s", AaName(v.aa_mode));
@@ -295,6 +327,15 @@ const char* AaName(int aa) {
 void SaveHdrBrightness(int nits) {
     if (FILE* file = std::fopen(HdrIniPath().c_str(), "w")) {
         std::fprintf(file, "paper=%d\n", nits);
+        std::fclose(file);
+    }
+}
+
+void SavePicture() {
+    const auto& v = Get();
+    if (FILE* file = std::fopen(PictureIniPath().c_str(), "w")) {
+        std::fprintf(file, "brightness=%d\ncontrast=%d\ngamma=%d\n", v.picture_brightness.load(),
+                     v.picture_contrast.load(), v.picture_gamma.load());
         std::fclose(file);
     }
 }

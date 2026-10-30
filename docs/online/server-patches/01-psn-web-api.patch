@@ -1,0 +1,78 @@
+--- a/src/handler.cpp
++++ b/src/handler.cpp
+@@ -3,18 +3,74 @@
+ 
+ #include "handler.h"
+ 
++#include "database.h"
+ #include "egs.h"
+ #include "otg.h"
+ 
++#include <QJsonDocument>
++#include <QJsonObject>
+ #include <QLoggingCategory>
++#include <QRegularExpression>
+ 
+ namespace {
+ Q_LOGGING_CATEGORY(lcHandler, "handler")
+ }
+ 
++// The Sony web API calls the game makes next to EGS and OTG, answered with the smallest valid reply:
++// nobody has friends, presence updates are accepted, a profile exists for every known player.
++// shortcut: presence is not stored, the store container is empty; upgrade when they matter.
++static bool handlePsn(const HttpRequest& request, const QString& endpoint,
++                      const HttpServer::Responder& respond) {
++    static const QRegularExpression users(
++        QStringLiteral("^v1/users/([^/]+)/(friendList|presence/gameStatus)$"));
++    const bool get = request.method == "GET";
++    HttpResponse r;
++    r.contentType = "application/json";
++    const auto m = users.match(endpoint);
++    if (m.hasMatch() && get && m.captured(2) == QLatin1String("friendList")) {
++        // Same as EGS friends: every other known player.
++        QJsonArray list;
++        for (const db::Player& p : db::players()) {
++            if (p.loggedIn && p.name.compare(m.captured(1), Qt::CaseInsensitive) != 0) {
++                list.append(QJsonObject{{"onlineId", p.name}, {"personalDetail", QJsonObject{}}});
++            }
++        }
++        r.body = QJsonDocument(QJsonObject{{"friendList", list}, {"start", 0}, {"size", list.size()},
++                                           {"totalResults", list.size()}})
++                     .toJson(QJsonDocument::Compact);
++    } else if (m.hasMatch() && request.method == "PUT" && m.captured(2) == QLatin1String("presence/gameStatus")) {
++        r.status = 204;
++    } else if (get && endpoint == QLatin1String("v1/profiles")) {
++        const auto player = db::playerByName(request.query.queryItemValue(QStringLiteral("onlineId")));
++        if (!player) {
++            r.status = 404;
++            r.body = R"({"error":{"code":2105356,"message":"User not found"}})";
++        } else {
++            r.body = QJsonDocument(QJsonObject{{"profile",
++                QJsonObject{{"onlineId", player->name},
++                            {"plus", 1},
++                            {"aboutMe", QString()},
++                            {"languagesUsed", QJsonArray()},
++                            {"avatarUrls", QJsonArray()},
++                            {"isOfficiallyVerified", false},
++                            {"personalDetail", QJsonObject{{"firstName", QString()},
++                                                           {"lastName", QString()},
++                                                           {"profilePictureUrls", QJsonArray()}}}}}})
++                         .toJson(QJsonDocument::Compact);
++        }
++    } else if (get && endpoint.startsWith(QLatin1String("v1/users/me/container/"))) {
++        r.body = R"({"skus":[],"links":[]})";
++    } else {
++        return false;
++    }
++    respond(r);
++    return true;
++}
++
+ void handleRequest(const HttpRequest& request, const QString& endpoint,
+                    const HttpServer::Responder& respond) {
+-    if (handleEgs(request, endpoint, respond) || handleOtg(request, endpoint, respond)) {
++    if (handleEgs(request, endpoint, respond) || handleOtg(request, endpoint, respond) ||
++        handlePsn(request, endpoint, respond)) {
+         return;
+     }
+ 

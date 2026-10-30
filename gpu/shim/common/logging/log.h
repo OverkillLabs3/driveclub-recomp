@@ -25,7 +25,7 @@ enum class level : int { trace, debug, info, warn, err, critical, off };
 }
 namespace Common::Log {
 using Level = spdlog::level;
-bool ShouldLog(Level level);
+bool ShouldLog(std::string_view log_class, Level level);
 void Write(std::string_view log_class, Level level, const char* file, int line, const char* function,
            std::string&& message);
 inline void Flush() {}
@@ -33,7 +33,7 @@ inline void Flush() {}
 
 #define LOG_GENERIC(log_class, log_level, fmt_str, ...)                                             \
     do {                                                                                           \
-        if (Common::Log::ShouldLog(log_level)) {                                                   \
+        if (Common::Log::ShouldLog(log_class, log_level)) {                                                   \
             Common::Log::Write(log_class, log_level, __FILE__, __LINE__, __func__,                 \
                                fmt::format(fmt_str __VA_OPT__(, ) __VA_ARGS__));                    \
         }                                                                                          \

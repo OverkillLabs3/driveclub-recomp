@@ -1,0 +1,7 @@
+{
+  "hub.services.otg.scee.com": "http://127.0.0.1:8080",
+  "Aegs.driveclub.online.scee.com": "http://127.0.0.1:8080",
+  "aegs.driveclub.online.scee.com": "http://127.0.0.1:8080",
+  "driveclub.api.wwsga.me": "http://127.0.0.1:8080",
+  "*": "http://127.0.0.1:8080"
+}

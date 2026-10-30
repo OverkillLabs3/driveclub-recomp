@@ -1,0 +1,28 @@
+gmServer = Aegs.driveclub.online.scee.com
+betaServer = Aegs.driveclub.online.scee.com
+<< Config >>
+fa_egsConnection 100 100
+fa_storeCatalog 100 100
+gs_retrospectiveGhosts false
+egs_allowPSPlus false
+egs_oAuthRefreshTime 1200
+egs_timeout 3600
+otg_telemetry_enabled false
+OTG_Login_Type fake
+OTG_Domain driveclub
+OTG_Default_TimeoutMS 30000
+OTG_Service_Enabled dc-community
+OTG_Service_LBPost dc-community
+OTG_Service_LBRead dc-community
+OTG_Service_FaceOffs dc-community
+OTG_Service_AccRead dc-community
+OTG_Service_AccPost dc-community
+OTG_Service_AccEGSOff dc-community
+OTG_Service_stats dc-community
+OTG_Service_statsWrite dc-community
+OTG_ErrorTimeout_200 0
+OTG_ErrorTimeout_400 0
+OTG_ErrorTimeout_404 0
+OTG_ErrorTimeout_503 300000
+OTG_ErrorTimeout_504 300000
+OTG_ErrorTimeout_500 300000

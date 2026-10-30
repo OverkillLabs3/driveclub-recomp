@@ -223,6 +223,9 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
 }
 
 Instance::~Instance() {
+    // NGX owns device-dependent state. Its process-exit callback must become
+    // an idempotent no-op before the unique Vulkan device below is destroyed.
+    if (Dlss* dlss = Dlss::Get()) dlss->Shutdown();
     ImGui::Core::Shutdown(GetDevice());
     vmaDestroyAllocator(allocator);
 }

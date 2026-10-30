@@ -19,6 +19,8 @@ public:
         u32 hdr = 0;
         u32 srgb_input = 0;
         float power = 1.0f;  // bbport: TV gamma (2.4 / 2.2) on the encoded values
+        float contrast = 1.0f;    // bbport: around mid grey on the encoded values
+        float brightness = 0.0f;  // bbport: added to the encoded values
     };
 
     void Create(vk::Device device, vk::Format surface_format);

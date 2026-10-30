@@ -449,8 +449,12 @@ Image PrepareImage(const SelfFile& self, bool init_env_ret, const Module& main) 
 // link: the eboot plus the game's own modules in one image
 // ------------------------------------------------------------------------------------------
 struct LinkedModule {
-  uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module;
+  uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module, flags;
+  std::string name;
 };
+// LinkedModule::flags: the module starts when the game loads it with sceKernelLoadStartModule, which hands
+// module_start its arguments, instead of with the others before the game.
+constexpr uint64_t kStartOnLoad = 1;
 
 struct Identity {
   std::string nid, lib, mod;
@@ -486,7 +490,8 @@ unsigned PatchFsLoads(Bytes& image, const std::vector<Ph>& ph, uint64_t base) {
   return patched;
 }
 
-Bytes Link(Image& img, const Module& main, const std::vector<std::pair<std::string, Module>>& mods) {
+Bytes Link(Image& img, const Module& main, const std::vector<std::pair<std::string, Module>>& mods,
+           const std::set<std::string>& on_load) {
   const uint64_t size = img.size;
   std::unordered_map<std::string, uint32_t> identities;  // key -> import index (insertion order = names)
   std::map<std::string, std::string> main_lib_key, main_mod_key;  // "name:ver" -> encoded id
@@ -641,7 +646,8 @@ Bytes Link(Image& img, const Module& main, const std::vector<std::pair<std::stri
     fs_patched += PatchFsLoads(img.bytes, m.self.ph, base);
     const auto init = m.tags.find(12);
     table.push_back({base, modsize, base + (init == m.tags.end() ? 0 : init->second), tls ? base + tls->vaddr : 0,
-                     tls ? tls->memsz : 0, tls ? tls->filesz : 0, module_id});
+                     tls ? tls->memsz : 0, tls ? tls->filesz : 0, module_id, on_load.count(filename) ? kStartOnLoad : 0,
+                     filename});
     base = (base + modsize + 65535) & ~uint64_t(65535);
   }
 
@@ -678,8 +684,7 @@ Bytes Link(Image& img, const Module& main, const std::vector<std::pair<std::stri
   if (!procparam) Fail("no procparam segment");
 
   Bytes out;
-  const char magic[8] = {'B', 'B', 'P', 'R', 'O', 'B', 'E', '5'};
-  out.insert(out.end(), magic, magic + 8);
+  out.insert(out.end(), kBootFormat, kBootFormat + 8);
   Put<uint64_t>(out, img.bytes.size());
   Put<uint64_t>(out, img.entry);
   Put<uint64_t>(out, img.segs.size());
@@ -692,6 +697,11 @@ Bytes Link(Image& img, const Module& main, const std::vector<std::pair<std::stri
   for (const auto& t : table) {
     Put<uint64_t>(out, t.base); Put<uint64_t>(out, t.size); Put<uint64_t>(out, t.init); Put<uint64_t>(out, t.tls_address);
     Put<uint64_t>(out, t.tls_memsz); Put<uint64_t>(out, t.tls_filesz); Put<uint64_t>(out, t.tls_module);
+    Put<uint64_t>(out, t.flags);
+    if (t.name.size() >= 32) Fail("module name too long");
+    const size_t at = out.size();
+    out.resize(at + 32, 0);
+    std::memcpy(out.data() + at, t.name.data(), t.name.size());
   }
   Put<uint64_t>(out, bindings.size());
   for (const auto& b : bindings) { Put<uint64_t>(out, b.index); Put<uint64_t>(out, b.address); Put<uint64_t>(out, b.kind); }
@@ -877,11 +887,15 @@ struct ModuleSource {
   const char* name;
   const char* folder;
   const char* order;  // U = update dump first, B = base dump first
+  bool on_load = false;  // started when the game loads it (kStartOnLoad); a dump without it only lacks that feature
 };
 const ModuleSource kModules[] = {
     {"libc.prx", "sce_module/", "UB"},      {"libSceFios2.prx", "sce_module/", "UB"}, {"libtbb.prx", "", "UB"},
     {"libfmod.prx", "", "BU"},              {"libfmodstudio.prx", "", "BU"},          {"iksemelGNMm.prx", "", "UB"},
     {"logiWheel.prx", "", "UB"},
+    // The on-screen keyboard (club names, searches): its module_start registers the "OnScreenKeyboard" service with
+    // the service list the game passes, and the service shows the system text dialog (libSceImeDialog).
+    {"oskGNMm.prx", "", "UB", true},
 };
 
 }  // namespace
@@ -972,6 +986,7 @@ std::string PrepareGame(const fs::path& update, const fs::path& base, const fs::
 
     progress(1, "Collecting the game modules");
     std::vector<std::pair<std::string, Module>> mods;
+    std::set<std::string> on_load;
     fs::path libc_path;
     for (const auto& src : kModules) {
       fs::path found;
@@ -979,8 +994,10 @@ std::string PrepareGame(const fs::path& update, const fs::path& base, const fs::
         const fs::path candidate = (*o == 'U' ? update : base) / (std::string(src.folder) + src.name);
         if (fs::exists(candidate)) { found = candidate; break; }
       }
+      if (found.empty() && src.on_load) continue;
       if (found.empty()) return std::string(src.name) + " was not found in the game folders.";
       if (std::string(src.name) == "libc.prx") libc_path = found;
+      if (src.on_load) on_load.insert(src.name);
       mods.push_back({src.name, LoadModule(found)});
     }
 
@@ -1001,7 +1018,7 @@ std::string PrepareGame(const fs::path& update, const fs::path& base, const fs::
     }
 
     progress(3, "Linking the game modules");
-    WriteFile(prep / "boot-linked.bin", Link(img, main, mods));
+    WriteFile(prep / "boot-linked.bin", Link(img, main, mods, on_load));
 
     progress(4, "Writing the content profile");
     {

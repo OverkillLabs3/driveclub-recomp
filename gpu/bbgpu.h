@@ -21,6 +21,8 @@ void bbgpu_register_kernel(void);
 void bbnet_configure(const char *app0, const char *serial, const char *title, const char *app_ver);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
+/* After guest finalizers: join presentation/GPU/window threads and destroy their owners. */
+void bbgpu_shutdown(void);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
 uintptr_t bbgpu_resolve(const char *scoped_nid);
 /* Called first by the loader's SIGSEGV handler: 1 when a GPU page-tracking fault was handled. */
@@ -33,8 +35,14 @@ int bbgpu_text_input_begin(const char *initial_utf8, const char *prompt_utf8);
 int bbgpu_text_input_poll(char *out_utf8, uint64_t size);
 /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
 int bbgpu_overlay_captures_input(void);
+/* Exit dialog can open only after its renderer is ready and without an IME dialog. */
+int bbgpu_exit_dialog_available(void);
+/* Requested mouse-stick mode; modal cursor ownership is applied on the window thread. */
+void bbgpu_mouse_stick_capture(int capture);
 /* A short line at the top of the screen for a few seconds (a hotkey's new value). */
 void bbgpu_overlay_note(const char *text_utf8);
+/* A trophy banner (grade 0 platinum, 1 gold, 2 silver, 3 bronze) with its name and description. */
+void bbgpu_overlay_trophy(int id, int grade, const char *title_utf8, const char *description_utf8);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
 /* Frames presented so far (a freeze watchdog reads it). */

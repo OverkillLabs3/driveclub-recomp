@@ -1,0 +1,220 @@
+{
+  "description": "Artwork and fonts used by the DRIVECLUB WPF launcher. Game-derived assets retain their original ownership; see launcher/ASSETS.md.",
+  "files": [
+    {
+      "path": "brand/logo-red.png",
+      "bytes": 9490,
+      "sha256": "940729a5979375c672c86975383bc012f770a5bf6e03cf69d5c9aef1c802162c"
+    },
+    {
+      "path": "fonts/001futura-webfont.ttf",
+      "bytes": 81968,
+      "sha256": "3bb1ae68fa0ca254cf345eefa1f10fb915e7f400f35d58439efec4b26c18eced"
+    },
+    {
+      "path": "fonts/004russian-webfont.ttf",
+      "bytes": 68724,
+      "sha256": "0e502ce10a62ed264abe09f95304df81d4b8006696d005fcf58de71a36d72149"
+    },
+    {
+      "path": "backgrounds/page-0.png",
+      "bytes": 1278556,
+      "sha256": "063a0c7c21a43c896d0866fe29fdd206fa77810ffc2d3047d4714b27eb226199"
+    },
+    {
+      "path": "backgrounds/page-2.png",
+      "bytes": 436422,
+      "sha256": "947148373406320b1c04f68271caf10a17db11afe7736ff355230fbd77287772"
+    },
+    {
+      "path": "backgrounds/detail.png",
+      "bytes": 957255,
+      "sha256": "14df39a7c31af3df5cc72a5f0eab4c5c3065926c81221a8c98d51edc5d5740ae"
+    },
+    {
+      "path": "backgrounds/page-4.png",
+      "bytes": 1632191,
+      "sha256": "368a26bbd26774c79d86c5cafc97047b611287f45917f9fe29ebfa668f1556d7"
+    },
+    {
+      "path": "backgrounds/driving.png",
+      "bytes": 1499763,
+      "sha256": "4a5c7da5422b89c356d2c184f31cecc6ef6fd66dd2ce1aadb00fdab9d80cf700"
+    },
+    {
+      "path": "backgrounds/patches.png",
+      "bytes": 1498472,
+      "sha256": "e0d30711df92e282f7bf323fa72330271a9717ab2520f37e988feb4efa1442bf"
+    },
+    {
+      "path": "backgrounds/page-5.png",
+      "bytes": 611961,
+      "sha256": "3997a72c947b2ff4ae6aa053fd3b593b26bbdbdf92b6e3609a4fd5cc35776568"
+    },
+    {
+      "path": "backgrounds/mods.png",
+      "bytes": 955668,
+      "sha256": "154203c65822a80cb60adf8827520d74f431541f586bbe3a6ad68238ec5a24c6"
+    },
+    {
+      "path": "controls/option-inactive.png",
+      "bytes": 11031,
+      "sha256": "fe5d05f35cc4f53342bf306d4bf722e74b7b6e353a3ab9725585a2c9c5f3ca82"
+    },
+    {
+      "path": "transitions/swipe.png",
+      "bytes": 215248,
+      "sha256": "a45120779d4a38ceb1cefc71916601c792894397a626c0a49e287b7d060b57b4"
+    },
+    {
+      "path": "transitions/stamp.png",
+      "bytes": 19479,
+      "sha256": "d024bde6233a96ef0c2a1d14d2de5433c060baae971e0d07435bfac8d7d6854f"
+    },
+    {
+      "path": "spinner/00.png",
+      "bytes": 4726,
+      "sha256": "6c4c77a5f2b24a26fb61e6d22b056c67d5cb3f4aa52eb7f867ae9797bb18bc4d"
+    },
+    {
+      "path": "spinner/01.png",
+      "bytes": 4708,
+      "sha256": "e25f6714654fbb85df972a56bc4f8915bedf2e9121f60afe9c22cfa2251e2af8"
+    },
+    {
+      "path": "spinner/02.png",
+      "bytes": 4766,
+      "sha256": "2618b1772bcffb491db3534005582e77f73caec24d878356934eb11194f7fb3b"
+    },
+    {
+      "path": "spinner/03.png",
+      "bytes": 4759,
+      "sha256": "3ed0fac3efdaba988263de3ddfa2c3d85ed6f53f54fba73949256f0542802755"
+    },
+    {
+      "path": "spinner/04.png",
+      "bytes": 4717,
+      "sha256": "5a93bfa11443c34b7f62dfaa4eaa950218533d59376aa675c06340f69835bd13"
+    },
+    {
+      "path": "spinner/05.png",
+      "bytes": 4753,
+      "sha256": "613007cee6075bdb460fa72a0d02b47d8b01987a314c03acfee42673f76c7bf5"
+    },
+    {
+      "path": "spinner/06.png",
+      "bytes": 4701,
+      "sha256": "738b29470708059908959d673fa7fd6fea96316a3e1f733da2300f0e6cc2b86a"
+    },
+    {
+      "path": "spinner/07.png",
+      "bytes": 4760,
+      "sha256": "b0cb3728ba4526d0e5349545b94deed762320d231b27613213b919779f63633c"
+    },
+    {
+      "path": "spinner/08.png",
+      "bytes": 4704,
+      "sha256": "c0ebc230fa941e4cc47203ca4236dc28e71266bb87d7b7385a5f159cd9f4b17c"
+    },
+    {
+      "path": "spinner/09.png",
+      "bytes": 4765,
+      "sha256": "a9e1ccbe031685596b927f630a19162be6e660c32c09aaea250652eecd545d0a"
+    },
+    {
+      "path": "spinner/10.png",
+      "bytes": 4787,
+      "sha256": "5acc796b732e9fb6ae732893dfa034dae467f5257687e56c3cfc0f8cc5c0d6a5"
+    },
+    {
+      "path": "spinner/11.png",
+      "bytes": 4642,
+      "sha256": "d032236eef6cea0f5474ee0f5fa372806034bb0cbc6e8bcff72c7eacd4b222f7"
+    },
+    {
+      "path": "spinner/12.png",
+      "bytes": 4722,
+      "sha256": "21dacdca0ee91b270bd53dbb902cc9a1a4d53d4a25b6eb8f8bcf9e25be07b918"
+    },
+    {
+      "path": "spinner/13.png",
+      "bytes": 4748,
+      "sha256": "4297066129301477297034ff3745a85091c214789b3c9762e4875fb030f085e2"
+    },
+    {
+      "path": "spinner/14.png",
+      "bytes": 4774,
+      "sha256": "3a98e37b41d75bcc2a6c0429ddfe6244317cc488d44acf75ce3c01661845e96c"
+    },
+    {
+      "path": "spinner/15.png",
+      "bytes": 4793,
+      "sha256": "a684039a70bf5e014340047f0119613f023931157bda58c0ed0c7b39d5bdd488"
+    },
+    {
+      "path": "spinner/16.png",
+      "bytes": 4836,
+      "sha256": "f3c91db6186a66e1345f33071b964fd534e7fb810fe751e96769599259d9b58c"
+    },
+    {
+      "path": "spinner/17.png",
+      "bytes": 4767,
+      "sha256": "7ebff9b739c73e8ec93dc917f04a895c22a9fc5718e7afb8f79e5ebe3fd4890e"
+    },
+    {
+      "path": "spinner/18.png",
+      "bytes": 4786,
+      "sha256": "8301f14d9c02968a5fb4d7e2280df4014a928312b50804f5c7f781289feac2ac"
+    },
+    {
+      "path": "spinner/19.png",
+      "bytes": 4815,
+      "sha256": "25728c416ee06289ff6d27aa68b5bc9dabf47d7bf6fd8122e60394748feb20a2"
+    },
+    {
+      "path": "spinner/20.png",
+      "bytes": 4789,
+      "sha256": "2f4426af2315711ce751c955e92743db3fec0b18aa4e500e01ea7bbd12e5e661"
+    },
+    {
+      "path": "spinner/21.png",
+      "bytes": 4829,
+      "sha256": "d7a24d1c0eaffef734e9b6fa016da6aa1c7a4409e667ac2a878b6de679becdbb"
+    },
+    {
+      "path": "spinner/22.png",
+      "bytes": 4766,
+      "sha256": "45e2864abc460893f2f887ec586404f3d1b1168c5ef8c7b3b10662ae4a18217a"
+    },
+    {
+      "path": "spinner/23.png",
+      "bytes": 4716,
+      "sha256": "6b3294bafb27236a05f326a17619ca29ba21a838245ede1b28e1e89538db6bd9"
+    },
+    {
+      "path": "spinner/24.png",
+      "bytes": 4742,
+      "sha256": "a2392e7a3ffb798b4c83271877ec89fd6ecebb27fe8a680459b3203657064f4f"
+    },
+    {
+      "path": "spinner/25.png",
+      "bytes": 4659,
+      "sha256": "9bfd9361b3f59f0e3bd8a5d6916271a6cc1f922eeb7f60df6bffb0de5ecaeab0"
+    },
+    {
+      "path": "spinner/26.png",
+      "bytes": 4670,
+      "sha256": "4b035d76292404f4e648d16634c72cb3d4255fbffdd21137988693c507eb2af9"
+    },
+    {
+      "path": "spinner/27.png",
+      "bytes": 4751,
+      "sha256": "793e9b8ca2975d4ba376abea920c8cb5c89be235cb32b5d9f15d52ed0e6d3346"
+    },
+    {
+      "path": "spinner/28.png",
+      "bytes": 4767,
+      "sha256": "76ce0092e1303b11789aeaca9d3da9f2107116b43c745c33b24091e25084b6cb"
+    }
+  ]
+}

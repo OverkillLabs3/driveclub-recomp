@@ -45,9 +45,202 @@ static int next_id=1;
 static int new_id(void) { pthread_mutex_lock(&lock); int id=next_id++; pthread_mutex_unlock(&lock); return id; }
 static void note(const char *what) { printf("Runtime: %s\n",what); }
 
+/* Debug: BB_GUEST_PATCH="0xADDR=HEXBYTES,..." writes bytes into guest code before the game uses
+ * it (applied when UserService initializes), to try out changes to the eboot without rebuilding. */
+static void apply_guest_patches(void) {
+    const char *spec=getenv("BB_GUEST_PATCH");
+    if (!spec || !*spec) return;
+    char buf[1024]; snprintf(buf,sizeof buf,"%s",spec);
+    for (char *item=strtok(buf,","); item; item=strtok(NULL,",")) {
+        char *eq=strchr(item,'=');
+        if (!eq) continue;
+        *eq=0;
+        uintptr_t addr=(uintptr_t)strtoull(item,NULL,16);
+        unsigned char bytes[64]; size_t n=0;
+        for (const char *h=eq+1; h[0] && h[1] && n<sizeof bytes; h+=2) {
+            char pair[3]={h[0],h[1],0}; bytes[n++]=(unsigned char)strtoul(pair,NULL,16);
+        }
+#ifdef _WIN32
+        DWORD old;
+        if (!VirtualProtect((void*)addr,n,PAGE_EXECUTE_READWRITE,&old)) { printf("Guest patch %#llx failed\n",(unsigned long long)addr); continue; }
+        memcpy((void*)addr,bytes,n);
+        VirtualProtect((void*)addr,n,old,&old);
+        FlushInstructionCache(GetCurrentProcess(),(void*)addr,n);
+#else
+        memcpy((void*)addr,bytes,n);
+#endif
+        printf("Guest patch: %zu bytes at %#llx\n",n,(unsigned long long)addr);
+    }
+}
+
+/* Debug: BB_GUEST_TRACE="0xADDR,0xADDR,..." puts an int3 at each guest address and logs the
+ * registers whenever one is hit (at most BB_GUEST_TRACE_MAX times each, default 20), then lets the
+ * instruction run: restore the byte, single-step it, put the int3 back. Windows only. */
+#ifdef _WIN32
+#define TRACE_MAX 32
+static struct { uintptr_t addr; unsigned char orig; int hits; } traces[TRACE_MAX];
+static int trace_count, trace_limit=20;
+static __thread int trace_rearm=-1;
+/* BB_GUEST_TRACE_DUMP="reg:len" also hex-dumps len bytes at that register on every hit. */
+static void trace_dump(const CONTEXT *c) {
+    const char *spec=getenv("BB_GUEST_TRACE_DUMP");
+    if (!spec || !*spec) return;
+    char reg[8]={0}; unsigned len=0;
+    if (sscanf(spec,"%7[a-z0-9]:%i",reg,&len)!=2 || !len) return;
+    const struct { const char *n; DWORD64 v; } regs[]={{"rax",c->Rax},{"rbx",c->Rbx},{"rcx",c->Rcx},
+        {"rdx",c->Rdx},{"rsi",c->Rsi},{"rdi",c->Rdi},{"r12",c->R12},{"r13",c->R13},{"r14",c->R14},
+        {"r15",c->R15}};
+    DWORD64 at=0;
+    for (unsigned i=0;i<sizeof regs/sizeof regs[0];++i) if (!strcmp(regs[i].n,reg)) at=regs[i].v;
+    MEMORY_BASIC_INFORMATION mi;
+    if (!at || !VirtualQuery((void*)at,&mi,sizeof mi) || mi.State!=MEM_COMMIT) return;
+    const unsigned char *p=(const unsigned char*)at;
+    for (unsigned o=0;o<len;o+=16) {
+        printf("DUMP %#llx+%03x:",(unsigned long long)at,o);
+        for (unsigned j=0;j<16 && o+j<len;++j) printf(" %02x",p[o+j]);
+        printf("\n");
+    }
+}
+static LONG CALLBACK trace_handler(EXCEPTION_POINTERS *e) {
+    CONTEXT *c=e->ContextRecord;
+    DWORD code=e->ExceptionRecord->ExceptionCode;
+    if (code==EXCEPTION_SINGLE_STEP && trace_rearm>=0) {
+        DWORD old;
+        unsigned char *p=(unsigned char*)traces[trace_rearm].addr;
+        VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old); *p=0xCC; VirtualProtect(p,1,old,&old);
+        FlushInstructionCache(GetCurrentProcess(),p,1);
+        trace_rearm=-1;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code!=EXCEPTION_BREAKPOINT) return EXCEPTION_CONTINUE_SEARCH;
+    uintptr_t at=(uintptr_t)e->ExceptionRecord->ExceptionAddress;
+    for (int i=0;i<trace_count;++i) {
+        if (traces[i].addr!=at) continue;
+        if (traces[i].hits++<trace_limit) {
+            printf("TRACE %#llx #%d rdi=%#llx rsi=%#llx rdx=%#llx rcx=%#llx rax=%#llx rbx=%#llx "
+                   "r12=%#llx r13=%#llx r14=%#llx r15=%#llx rsp=%#llx ret=%#llx\n",
+                   (unsigned long long)at,traces[i].hits,(unsigned long long)c->Rdi,
+                   (unsigned long long)c->Rsi,(unsigned long long)c->Rdx,(unsigned long long)c->Rcx,
+                   (unsigned long long)c->Rax,(unsigned long long)c->Rbx,(unsigned long long)c->R12,
+                   (unsigned long long)c->R13,(unsigned long long)c->R14,(unsigned long long)c->R15,
+                   (unsigned long long)c->Rsp,(unsigned long long)*(uint64_t*)c->Rsp);
+            trace_dump(c);
+            fflush(stdout);
+        }
+        DWORD old;
+        unsigned char *p=(unsigned char*)at;
+        VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old); *p=traces[i].orig; VirtualProtect(p,1,old,&old);
+        FlushInstructionCache(GetCurrentProcess(),p,1);
+        c->Rip=at;
+        if (traces[i].hits<trace_limit) { c->EFlags|=0x100; trace_rearm=i; } /* trap flag: re-arm after one step */
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+static void install_guest_traces(void) {
+    const char *spec=getenv("BB_GUEST_TRACE");
+    if (!spec || !*spec) return;
+    if (getenv("BB_GUEST_TRACE_MAX")) trace_limit=atoi(getenv("BB_GUEST_TRACE_MAX"));
+    AddVectoredExceptionHandler(1,trace_handler);
+    char buf[1024]; snprintf(buf,sizeof buf,"%s",spec);
+    for (char *item=strtok(buf,","); item && trace_count<TRACE_MAX; item=strtok(NULL,",")) {
+        uintptr_t addr=(uintptr_t)strtoull(item,NULL,16);
+        DWORD old;
+        unsigned char *p=(unsigned char*)addr;
+        if (!VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old)) continue;
+        traces[trace_count].addr=addr; traces[trace_count].orig=*p; traces[trace_count].hits=0;
+        *p=0xCC;
+        VirtualProtect(p,1,old,&old);
+        FlushInstructionCache(GetCurrentProcess(),p,1);
+        printf("Guest trace at %#llx\n",(unsigned long long)addr);
+        ++trace_count;
+    }
+}
+/* Debug: BB_GUEST_SAMPLE=1 samples every game thread 20 times a second (suspend, read rip and the
+ * stack) and every 10 s prints the guest code addresses seen most, as rip and as return addresses
+ * on the stack: shows where the game waits. */
+#include <tlhelp32.h>
+#define GUEST_LO 0x800000000ull
+#define GUEST_HI 0x801551ab8ull
+#define SAMPLE_SLOTS 4096
+static struct { uint64_t addr; unsigned count; } sample_rip[SAMPLE_SLOTS], sample_ret[SAMPLE_SLOTS];
+static void sample_add(uint64_t a, int ret) {
+    __typeof__(sample_rip[0]) *t=ret ? sample_ret : sample_rip;
+    unsigned h=(unsigned)((a>>2)*2654435761u)%SAMPLE_SLOTS;
+    for (unsigned i=0;i<SAMPLE_SLOTS;++i) {
+        unsigned s=(h+i)%SAMPLE_SLOTS;
+        if (t[s].addr==a) { t[s].count++; return; }
+        if (!t[s].addr) { t[s].addr=a; t[s].count=1; return; }
+    }
+}
+static void sample_print(int ret) {
+    __typeof__(sample_rip[0]) *t=ret ? sample_ret : sample_rip;
+    printf("SAMPLE %s top:",ret ? "stack" : "rip");
+    for (int k=0;k<25;++k) {
+        int best=-1;
+        for (int i=0;i<SAMPLE_SLOTS;++i) if (t[i].addr && (best<0 || t[i].count>t[best].count)) best=i;
+        if (best<0) break;
+        printf(" %#llx:%u",(unsigned long long)t[best].addr,t[best].count);
+        t[best].count=0; t[best].addr=0;
+    }
+    printf("\n");
+    memset(t,0,sizeof sample_rip);
+    fflush(stdout);
+}
+static DWORD WINAPI sampler(void *arg) {
+    (void)arg;
+    const DWORD self=GetCurrentThreadId(), pid=GetCurrentProcessId();
+    for (int tick=1;;++tick) {
+        Sleep(50);
+        HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
+        if (snap==INVALID_HANDLE_VALUE) continue;
+        THREADENTRY32 te; te.dwSize=sizeof te;
+        for (BOOL ok=Thread32First(snap,&te); ok; ok=Thread32Next(snap,&te)) {
+            if (te.th32OwnerProcessID!=pid || te.th32ThreadID==self) continue;
+            HANDLE th=OpenThread(THREAD_SUSPEND_RESUME|THREAD_GET_CONTEXT,FALSE,te.th32ThreadID);
+            if (!th) continue;
+            if (SuspendThread(th)!=(DWORD)-1) {
+                CONTEXT c; c.ContextFlags=CONTEXT_CONTROL|CONTEXT_INTEGER;
+                if (GetThreadContext(th,&c)) {
+                    if (c.Rip>=GUEST_LO && c.Rip<GUEST_HI) sample_add(c.Rip,0);
+                    /* return addresses: guest code pointers in the top of the stack */
+                    MEMORY_BASIC_INFORMATION mi;
+                    if (VirtualQuery((void*)c.Rsp,&mi,sizeof mi) && mi.State==MEM_COMMIT) {
+                        uint64_t end=(uint64_t)mi.BaseAddress+mi.RegionSize;
+                        for (uint64_t p=c.Rsp;p+8<=end && p<c.Rsp+0x400;p+=8) {
+                            uint64_t v=*(uint64_t*)p;
+                            if (v>=GUEST_LO && v<GUEST_HI) sample_add(v,1);
+                        }
+                    }
+                }
+                ResumeThread(th);
+            }
+            CloseHandle(th);
+        }
+        CloseHandle(snap);
+        if (tick%200==0) { sample_print(0); sample_print(1); }
+    }
+    return 0;
+}
+static void start_guest_sampler(void) {
+    if (!getenv("BB_GUEST_SAMPLE")) return;
+    CreateThread(NULL,0,sampler,NULL,0,NULL);
+    printf("Guest sampler started\n");
+}
+#else
+static void install_guest_traces(void) {}
+static void start_guest_sampler(void) {}
+#endif
+
 /* ---- UserService ---- */
 static int login_event_pending=1;
-static ABI int32_t user_initialize(const void *params) { (void)params; note("UserService initialized (user 1 logged in)"); return 0; }
+static ABI int32_t user_initialize(const void *params) {
+    (void)params;
+    static int once;
+    if (!once) { once=1; apply_guest_patches(); install_guest_traces(); start_guest_sampler(); }
+    note("UserService initialized (user 1 logged in)");
+    return 0;
+}
 static ABI int32_t user_terminate(void) { return 0; }
 static ABI int32_t user_initial(int32_t *id) { if (!id) return USER_INVALID_ARGUMENT; *id=USER_ID; return 0; }
 static ABI int32_t user_list(int32_t *ids) {
@@ -90,12 +283,121 @@ static ABI int32_t system_param(int32_t id,int32_t *value) {
     }
     return 0;
 }
-static ABI int32_t system_status(unsigned char *status) {
-    if (!status) return SYSTEM_PARAMETER;
-    memset(status,0,12); /* event_num=0, no overlay, foreground, normal CPU mode */
+/* Pending system events (co-op: game custom data from friends). A SceSystemServiceEvent is the
+ * 32-bit type followed by 8192 bytes of parameters. The game asks for events only while
+ * GetStatus reports some. */
+#define SYSTEM_EVENT_SIZE (4+8192)
+#define SYSTEM_EVENT_MAX 8
+static unsigned char system_events[SYSTEM_EVENT_MAX][SYSTEM_EVENT_SIZE];
+static int system_event_count;
+void runtime_push_system_event(uint32_t type,const void *param,size_t size) {
+    pthread_mutex_lock(&lock);
+    if (system_event_count<SYSTEM_EVENT_MAX) {
+        unsigned char *e=system_events[system_event_count++];
+        memset(e,0,SYSTEM_EVENT_SIZE);
+        memcpy(e,&type,4);
+        memcpy(e+4,param,size<8192 ? size : 8192);
+    }
+    pthread_mutex_unlock(&lock);
+    printf("SystemService: event %#x queued\n",type);
+}
+
+/* Co-op: game custom data (private lobby invitations, challenges) that friends sent this player.
+ * A console's system announces each item with a GAME_CUSTOM_DATA event; here a thread asks the
+ * community server (BB_COOP_SERVER, default 127.0.0.1:8080) every 3 s for new items addressed to
+ * BB_NP_LOCAL and raises the event. The game's handler (guest 0x8001583e0) copies the 32-byte
+ * parameter: item id (u64), online id (16 chars, terminator, 3 pad), user id. */
+#define GAME_CUSTOM_DATA_EVENT 0x10000004u
+static int http_get_local(const char *host,int port,const char *path,char *out,size_t size) {
+    SOCKET s=socket(AF_INET,SOCK_STREAM,IPPROTO_TCP);
+    if (s==INVALID_SOCKET) return -1;
+    struct sockaddr_in a; memset(&a,0,sizeof a);
+    a.sin_family=AF_INET; a.sin_port=htons((u_short)port);
+    if (inet_pton(AF_INET,host,&a.sin_addr)!=1 || connect(s,(struct sockaddr*)&a,sizeof a)) { closesocket(s); return -1; }
+    char req[512];
+    int n=snprintf(req,sizeof req,"GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",path,host);
+    send(s,req,n,0);
+    size_t got=0; int r;
+    while (got+1<size && (r=recv(s,out+got,(int)(size-1-got),0))>0) got+=(size_t)r;
+    out[got]=0;
+    closesocket(s);
+    char *body=strstr(out,"\r\n\r\n");
+    if (!body) return -1;
+    memmove(out,body+4,strlen(body+4)+1);
     return 0;
 }
-static ABI int32_t system_event(void *event) { (void)event; return SYSTEM_NO_EVENT; }
+static void *custom_data_poll(void *arg) {
+    (void)arg;
+    const char *me=getenv("BB_NP_LOCAL");
+    const char *server=getenv("BB_COOP_SERVER") ? getenv("BB_COOP_SERVER") : "127.0.0.1:8080";
+    char host[64]; int port=8080;
+    snprintf(host,sizeof host,"%s",server);
+    char *colon=strchr(host,':');
+    if (colon) { *colon=0; port=atoi(colon+1); }
+#ifdef _WIN32
+    WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa);
+#endif
+    char path[160], body[8192];
+    snprintf(path,sizeof path,"/dccoop/pending/%s",me);
+    printf("Co-op: polling %s:%d for game custom data to '%s'\n",host,port,me);
+    for (;;) {
+#ifdef _WIN32
+        Sleep(3000);
+#else
+        sleep(3);
+#endif
+        if (http_get_local(host,port,path,body,sizeof body)) continue;
+        /* [{"from":"Name","itemId":1000},...] (keys in any order) */
+        for (char *obj=strchr(body,'{'); obj; obj=strchr(obj+1,'{')) {
+            char *close=strchr(obj,'}');
+            if (!close) break;
+            *close=0;
+            char *p=strstr(obj,"\"itemId\":");
+            if (!p) { *close='}'; continue; }
+            unsigned char param[32]; memset(param,0,sizeof param);
+            uint64_t item=strtoull(p+9,NULL,10);
+            memcpy(param,&item,8);
+            char from[17]={0};
+            char *f=strstr(obj,"\"from\":\"");
+            if (f) { f+=8; size_t i=0; while (f[i] && f[i]!='"' && i<16) { from[i]=f[i]; ++i; } }
+            *close='}';
+            memcpy(param+8,from,16);
+            int32_t user=USER_ID; memcpy(param+28,&user,4);
+            printf("Co-op: game custom data item %llu from '%s'\n",(unsigned long long)item,from);
+            runtime_push_system_event(GAME_CUSTOM_DATA_EVENT,param,sizeof param);
+        }
+    }
+    return NULL;
+}
+static void start_custom_data_poll(void) {
+    static int started;
+    if (started) return;
+    started=1;
+    const char *online=getenv("BB_ONLINE"), *me=getenv("BB_NP_LOCAL");
+    if (!online || online[0]!='1' || !me || !*me) return;
+    pthread_t t;
+    if (!pthread_create(&t,NULL,custom_data_poll,NULL)) pthread_detach(t);
+}
+static ABI int32_t system_status(unsigned char *status) {
+    if (!status) return SYSTEM_PARAMETER;
+    memset(status,0,12); /* no overlay, foreground, normal CPU mode */
+    start_custom_data_poll();
+    pthread_mutex_lock(&lock);
+    int32_t n=system_event_count;
+    pthread_mutex_unlock(&lock);
+    memcpy(status,&n,4); /* event_num */
+    return 0;
+}
+static ABI int32_t system_event(void *event) {
+    if (!event) return SYSTEM_PARAMETER;
+    pthread_mutex_lock(&lock);
+    if (!system_event_count) { pthread_mutex_unlock(&lock); return SYSTEM_NO_EVENT; }
+    memcpy(event,system_events[0],SYSTEM_EVENT_SIZE);
+    memmove(system_events[0],system_events[1],(size_t)(--system_event_count)*SYSTEM_EVENT_SIZE);
+    pthread_mutex_unlock(&lock);
+    printf("SystemService: event %#x delivered (caller %p)\n",*(uint32_t*)event,__builtin_return_address(0));
+    return 0;
+}
 static ABI int32_t hide_splash(void) { note("SystemService: splash screen hidden"); return 0; }
 static ABI int32_t launch_browser(void) { note("SystemService: web browser request ignored (offline)"); return 0; }
 
@@ -281,29 +583,7 @@ static ABI int32_t ime_result(uint32_t *result) {
 }
 static ABI int32_t ime_term(void) { memset(&ime,0,sizeof(ime)); return 0; }
 
-/* ---- Trophies: accepted locally, recorded in the log ---- */
-static ABI int32_t trophy_context(int32_t *ctx,int32_t user,uint32_t label,uint64_t options) {
-    (void)user; (void)label; (void)options;
-    if (!ctx) return TROPHY_INVALID;
-    *ctx=new_id(); return 0;
-}
-static ABI int32_t trophy_handle(int32_t *handle) { if (!handle) return TROPHY_INVALID; *handle=new_id(); return 0; }
-static ABI int32_t trophy_register(int32_t ctx,int32_t handle,uint64_t options) { (void)ctx; (void)handle; (void)options; return 0; }
-static ABI int32_t trophy_unlock(int32_t ctx,int32_t handle,int32_t id,int32_t *platinum) {
-    (void)ctx; (void)handle;
-    printf("Runtime: trophy %d unlocked\n",id);
-    if (platinum) *platinum=-1;
-    return 0;
-}
-static ABI int32_t trophy_game_info(int32_t ctx,int32_t handle,void *details,void *data) {
-    (void)ctx; (void)handle;
-    if (details) { uint64_t size; memcpy(&size,details,8); memset((char *)details+8,0,size>8 && size<4096 ? size-8 : 0); }
-    if (data) { uint64_t size; memcpy(&size,data,8); memset((char *)data+8,0,size>8 && size<4096 ? size-8 : 0); }
-    return 0;
-}
-static ABI int32_t trophy_info(int32_t ctx,int32_t handle,int32_t id,void *details,void *data) {
-    (void)id; return trophy_game_info(ctx,handle,details,data);
-}
+#include "runtime_trophy.inc"
 
 /* ---- PlayGo: fully installed package ---- */
 static int playgo_handle, playgo_chunks=-1;
@@ -536,6 +816,8 @@ static const RuntimeExport exports[]={
     {"sceNpTrophyCreateContext",trophy_context}, {"sceNpTrophyCreateHandle",trophy_handle},
     {"sceNpTrophyRegisterContext",trophy_register}, {"sceNpTrophyUnlockTrophy",trophy_unlock},
     {"sceNpTrophyGetGameInfo",trophy_game_info}, {"sceNpTrophyGetTrophyInfo",trophy_info},
+    {"sceNpTrophyDestroyContext",trophy_destroy_context}, {"sceNpTrophyDestroyHandle",trophy_destroy_handle},
+    {"sceNpTrophyGetTrophyUnlockState",trophy_unlock_state},
     {"scePlayGoInitialize",playgo_init}, {"scePlayGoOpen",playgo_open}, {"scePlayGoGetChunkId",playgo_chunk_ids},
     {"scePlayGoGetLocus",playgo_locus}, {"scePlayGoSetInstallSpeed",playgo_speed}, {"scePlayGoGetInstallSpeed",playgo_get_speed}, {"scePlayGoPrefetch",playgo_prefetch},
     {"scePlayGoClose",playgo_close}, {"scePlayGoTerminate",playgo_terminate},
@@ -552,7 +834,7 @@ static const RuntimeExport exports[]={
 /* Co-op (BB_ONLINE=1): network and PSN calls go to the shadNet libraries in bbgpu when they
  * implement them. Trophies, voice and the store/profile dialogs stay here. */
 static int online_symbol(const char *symbol) {
-    static const char *const online[]={"sceNet","sceNp","sceHttp","sceSsl"};
+    static const char *const online[]={"sceNet","sceNp","sceHttp","sceSsl","sceRudp"};
     static const char *const local[]={"sceNpTrophy","sceNpCommerce","sceNpProfileDialog"};
     int match=0;
     for (size_t i=0;i<sizeof(online)/sizeof(*online);++i)

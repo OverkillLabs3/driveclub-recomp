@@ -5,6 +5,9 @@
 #include <functional>
 #include <string>
 
+// The format of work/prep/boot-linked.bin: a game prepared in another format is prepared again.
+constexpr char kBootFormat[] = "BBPROBE6";
+
 // Converts the update dump (and the base dump's modules) into the runtime image under `work`:
 //   work/prep/boot-linked.bin, content.bin, patches.bin, eboot.elf, image.meta
 // With patches_only the image is reused and only patches.bin is rebuilt.

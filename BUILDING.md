@@ -81,3 +81,9 @@ The coordinate test evaluates the production emitter helper against independent 
 bases at centers, edges, corners and multiple array indices (2,430 cases). The shader test
 uses the same helper in a compute shader with both 2D-array and cube-array sampling, then
 validates the generated SPIR-V. These checks require no game files or captured resources.
+
+## Faster release build (profile-guided)
+
+The player release is built with link-time optimization and a recorded profile (`pgo/default.profdata`): `packaging/package.sh` does this by itself when the profile is there. To build it by hand: `BB_PGO=use BB_LTO=ON bash build.sh`. The default `bash build.sh` stays the quick build.
+
+To record a new profile after the code has changed a lot: build with `BB_PGO=generate BB_LTO=ON`, run the game's benchmark and a race or two with your usual settings (the profile is written every 30 seconds into `pgo/`), then merge the `.profraw` files with `llvm-profdata merge -output=pgo/default.profdata pgo/*.profraw`.

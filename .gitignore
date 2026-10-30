@@ -3,3 +3,9 @@ out/
 data/
 logs/
 launcher.ini
+mods/
+launcher/wpf/bin/
+launcher/wpf/obj/
+launcher/tests/**/bin/
+launcher/tests/**/obj/
+pgo/*.profraw

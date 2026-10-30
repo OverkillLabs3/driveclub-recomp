@@ -5,18 +5,26 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
+#include <map>
+#include <sstream>
+#include <thread>
 #include <httplib.h>
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/invitation_dialog/invitation_dialog.h"
+#include "core/libraries/network/net.h"
 #include "core/libraries/network/net_upnp.h"
+#include "core/libraries/network/sockets.h"
+#include "core/libraries/np/np_signaling/np_signaling_stubs.h"
 #include "core/libraries/np/np_error.h"
 #include "core/libraries/np/np_manager.h"
 #include "core/libraries/np/np_matching2/np_matching2_mm.h"
 #include "core/libraries/np/np_score/np_score.h"
 #include "core/libraries/np/np_web_api/np_web_api.h"
 #include "core/libraries/system/systemservice.h"
+#include "core/libraries/system/userservice.h"
 #include "core/user_settings.h"
 #include "imgui/invitation_prompt_layer.h"
 #include "imgui/shadnet_notifications_layer.h"
@@ -25,6 +33,175 @@
 #include "shadnet/server_probe.h"
 
 namespace Libraries::Np {
+
+namespace {
+// BB_NP_LOCAL=<name>: a signed-in account that lives on this PC. The game sees an online ID and a Plus
+// subscription without a PSN or a shadNet server, which unlocks its online menus; nothing is sent anywhere.
+const std::string& LocalNpName() {
+    static const std::string name = [] {
+        const char* env = std::getenv("BB_NP_LOCAL");
+        return std::string(env ? env : "");
+    }();
+    return name;
+}
+
+// Co-op server of a local account (BB_COOP_SERVER=host:port, default 127.0.0.1:8080).
+std::string CoopServerUrl() {
+    const char* env = std::getenv("BB_COOP_SERVER");
+    return std::string("http://") + (env && *env ? env : "127.0.0.1:8080");
+}
+
+// A local account has no shadNet matchmaking server to tell signaling where a peer's P2P transport
+// listens. The co-op server keeps that directory instead: each game registers its UDP port (the
+// server takes the address the request came from) and signaling resolves a peer's online ID there.
+bool ResolveLocalPeer(std::string_view online_id, u32* out_addr, u16* out_port) {
+    httplib::Client cli(CoopServerUrl());
+    cli.set_connection_timeout(3);
+    cli.set_read_timeout(3);
+    const auto res = cli.Get(("/dccoop/p2p/" + std::string(online_id)).c_str());
+    if (!res || res->status != 200) {
+        LOG_WARNING(NpHandler, "P2P peer '{}' not registered on the co-op server", online_id);
+        return false;
+    }
+    // body: "<ipv4> <udp port>"
+    const auto space = res->body.find(' ');
+    if (space == std::string::npos) {
+        return false;
+    }
+    const std::string ip = res->body.substr(0, space);
+    const int port = std::atoi(res->body.c_str() + space + 1);
+    u32 addr_nbo = 0;
+    if (port <= 0 || port > 0xffff ||
+        Libraries::Net::sceNetInetPton(Libraries::Net::ORBIS_NET_AF_INET, ip.c_str(), &addr_nbo) <= 0) {
+        return false;
+    }
+    *out_addr = addr_nbo;
+    *out_port = Libraries::Net::sceNetHtons(static_cast<u16>(port));
+    LOG_INFO(NpHandler, "P2P peer '{}' -> {}:{}", online_id, ip, port);
+    return true;
+}
+
+void StartLocalPresencePoll();
+
+extern "C" void bbgpu_overlay_note(const char* text_utf8); // the port's overlay (gpu/shim/bbgpu.cpp)
+
+void StartLocalPeerDirectory() {
+    namespace Stubs = NpSignaling::Stubs;
+    Stubs::SetTransportHooks({
+        .signaling_send = Net::P2PSignalingSendTo,
+        .signaling_recv = Net::P2PSignalingRecvFrom,
+        .control_send = Net::P2PControlSendTo,
+        .control_recv = Net::P2PControlRecvFrom,
+        .transport_ready = Net::P2PTransportIsReady,
+        .configured_port = Net::GetP2PConfiguredPort,
+        .advertised_addr = Net::GetP2PAdvertisedAddr,
+        .ensure_transport = Net::EnsureP2PTransport,
+    });
+    Stubs::SetPeerResolver(ResolveLocalPeer);
+    // Re-register now and then: the transport starts late and its port changes with each run.
+    std::thread([] {
+        u16 registered = 0;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(registered ? 30 : 2));
+            if (!Net::P2PTransportIsReady()) {
+                continue;
+            }
+            const u16 port = Net::GetP2PConfiguredPort();
+            httplib::Client cli(CoopServerUrl());
+            cli.set_connection_timeout(3);
+            cli.set_read_timeout(3);
+            const std::string path =
+                "/dccoop/p2p/register/" + LocalNpName() + "?port=" + std::to_string(port);
+            const auto res = cli.Get(path.c_str());
+            if (res && res->status >= 200 && res->status < 300) {
+                if (registered != port) {
+                    LOG_INFO(NpHandler, "P2P port {} registered on the co-op server", port);
+                }
+                registered = port;
+            }
+        }
+    }).detach();
+    StartLocalPresencePoll();
+}
+
+// Friends' presence. A console's PSN pushes each change (online, offline, what a friend is doing) to
+// the game's presence filter; the game reads the friend list only at start and learns everything
+// later from those events. Ask the co-op server every 5 s and raise the events for what changed.
+std::string PresenceEscape(const std::string& s) {
+    std::string out;
+    for (const char c : s) {
+        if (c == '"' || c == '\\') {
+            out += '\\';
+        }
+        out += static_cast<unsigned char>(c) < 0x20 ? ' ' : c;
+    }
+    return out;
+}
+
+void StartLocalPresencePoll() {
+    std::thread([] {
+        std::map<std::string, std::pair<bool, std::string>> known; // name -> online, gameStatus
+        bool polled_once = false;
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            httplib::Client cli(CoopServerUrl());
+            cli.set_connection_timeout(3);
+            cli.set_read_timeout(3);
+            const auto res = cli.Get(("/dccoop/presence/" + LocalNpName()).c_str());
+            if (!res || res->status != 200) {
+                continue;
+            }
+            std::istringstream lines(res->body);
+            for (std::string line; std::getline(lines, line);) {
+                const size_t a = line.find('\t'), b = a == std::string::npos ? a : line.find('\t', a + 1);
+                if (b == std::string::npos) {
+                    continue;
+                }
+                const std::string name = line.substr(0, a);
+                const bool online = line.substr(a + 1, b - a - 1) == "1";
+                const std::string status = line.substr(b + 1);
+                const auto it = known.find(name);
+                if (it != known.end() && it->second == std::make_pair(online, status)) {
+                    continue;
+                }
+                const bool was_online = it != known.end() && it->second.first;
+                known[name] = {online, status};
+                NpWebApi::PushEventInput ev;
+                ev.targetUserId = 1; // the local account's user
+                ev.npServiceName = "inGamePresence";
+                ev.hasFrom = true;
+                std::snprintf(ev.fromOnlineId.data, sizeof(ev.fromOnlineId.data) + 1, "%s", name.c_str());
+                const std::string status_json =
+                    "\"gameStatus\":\"" + PresenceEscape(online ? (status.empty() ? "In the menus" : status) : "") + "\"";
+                ev.dataType = "np:service:presence:onlineStatus";
+                ev.data = std::string("{\"onlineStatus\":\"") + (online ? "online" : "offline") +
+                          "\",\"platform\":\"PS4\"," + status_json + "}";
+                NpWebApi::EnqueuePushEvent(ev);
+                if (online) {
+                    ev.dataType = "np:service:presence:gameTitleInfo";
+                    ev.data = R"({"npTitleId":"CUSA00003_00","titleName":"DRIVECLUB",)" + status_json + "}";
+                    NpWebApi::EnqueuePushEvent(ev);
+                    ev.dataType = "np:service:presence:gameStatus";
+                    ev.data = "{" + status_json + "}";
+                    NpWebApi::EnqueuePushEvent(ev);
+                }
+                LOG_INFO(NpHandler, "presence push: '{}' {} '{}'", name, online ? "online" : "offline", status);
+                // The game's own friend list only says "Playing DRIVECLUB" (on a console the system's
+                // friend list showed the status): show what changed in the port's overlay instead.
+                if (polled_once) { // not for what everyone was doing when this game started
+                    const std::string note = online != was_online
+                                                 ? name + (online ? " is now online" : " went offline")
+                                                 : name + ": " + status;
+                    if (online || was_online) {
+                        bbgpu_overlay_note(note.c_str());
+                    }
+                }
+            }
+            polled_once = true;
+        }
+    }).detach();
+}
+} // namespace
 
 NpHandler& NpHandler::GetInstance() {
     static NpHandler s_instance;
@@ -100,6 +277,11 @@ void NpHandler::Initialize() {
 
     if (!EmulatorSettings.IsShadNetEnabled()) {
         LOG_INFO(NpHandler, "shadNet disabled globally we are in offline mode");
+        return;
+    }
+    if (!LocalNpName().empty()) {
+        LOG_INFO(NpHandler, "local account '{}': no shadNet server is contacted", LocalNpName());
+        StartLocalPeerDirectory();
         return;
     }
 
@@ -413,13 +595,23 @@ void NpHandler::TryReconnect() {
     }
 }
 
+bool NpHandler::IsLocalAccount() const {
+    return !LocalNpName().empty();
+}
+
 bool NpHandler::IsPsnSignedIn(s32 user_id) const {
+    if (!LocalNpName().empty()) {
+        return true;
+    }
     std::lock_guard lock(m_mutex_clients);
     auto it = m_clients.find(user_id);
     return it != m_clients.end() && it->second->IsAuthenticated();
 }
 
 bool NpHandler::IsAnySignedIn() const {
+    if (!LocalNpName().empty()) {
+        return true;
+    }
     std::lock_guard lock(m_mutex_clients);
     for (auto& [_, client] : m_clients)
         if (client->IsAuthenticated())
@@ -428,6 +620,11 @@ bool NpHandler::IsAnySignedIn() const {
 }
 
 OrbisNpId NpHandler::GetNpId(s32 user_id) const {
+    if (!LocalNpName().empty()) {
+        OrbisNpId id{};
+        SetNpOnlineId(id.handle, LocalNpName());
+        return id;
+    }
     std::lock_guard lock(m_mutex_clients);
     auto it = m_np_ids.find(user_id);
     return it != m_np_ids.end() ? it->second : OrbisNpId{};
@@ -444,6 +641,13 @@ std::string NpHandler::GetAvatarUrl(s32 user_id) const {
 }
 
 OrbisNpAccountId NpHandler::GetAccountId(s32 user_id) const {
+    if (!LocalNpName().empty()) {
+        u64 hash = 1469598103934665603ull; // FNV-1a of the name: the same account ID on every start
+        for (const unsigned char c : LocalNpName()) {
+            hash = (hash ^ c) * 1099511628211ull;
+        }
+        return static_cast<OrbisNpAccountId>(hash | 0x1000000000000000ull);
+    }
     std::lock_guard lock(m_mutex_clients);
     auto it = m_clients.find(user_id);
     return it != m_clients.end() ? static_cast<OrbisNpAccountId>(it->second->GetUserId()) : 0;
@@ -678,6 +882,11 @@ u32 NpHandler::GetLocalIpAddr(s32 user_id) const {
 }
 
 s32 NpHandler::GetUserIdByAccountId(u64 account_id) const {
+    if (!LocalNpName().empty()) {
+        s32 user_id = 1;
+        Libraries::UserService::sceUserServiceGetInitialUser(&user_id);
+        return GetAccountId(user_id) == account_id ? user_id : -1;
+    }
     std::lock_guard lock(m_mutex_clients);
     for (auto& [uid, client] : m_clients) {
         if (static_cast<u64>(client->GetUserId()) == account_id)
@@ -687,6 +896,13 @@ s32 NpHandler::GetUserIdByAccountId(u64 account_id) const {
 }
 
 s32 NpHandler::GetUserIdByOnlineId(const OrbisNpOnlineId& online_id) const {
+    if (!LocalNpName().empty()) {
+        s32 user_id = 1;
+        Libraries::UserService::sceUserServiceGetInitialUser(&user_id);
+        return strncmp(GetNpId(user_id).handle.data, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH) == 0
+                   ? user_id
+                   : -1;
+    }
     std::lock_guard lock(m_mutex_clients);
     for (auto& [uid, np_id] : m_np_ids) {
         if (strncmp(np_id.handle.data, online_id.data, ORBIS_NP_ONLINEID_MAX_LENGTH) == 0)

@@ -141,7 +141,7 @@ private:
     /// bbport: blits `image` (General layout) into a swapchain image with the overlay and
     /// presents it. `last`: the game frame itself, which also signals the frame's fence.
     /// False when the swapchain could not give an image.
-    bool PresentImage(Frame* frame, vk::Image image, bool last);
+    bool PresentImage(Frame* frame, vk::Image image, bool last, bool notify_launcher = false);
 
     void SetExpectedGameSize(s32 width, s32 height);
 

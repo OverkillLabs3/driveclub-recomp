@@ -229,9 +229,16 @@ static ABI int guest_memcmp(const void *a, const void *b, size_t size) {
     return memcmp(a, b, size);
 }
 static ABI size_t guest_strlen(const char *text) { return strlen(text); }
+/* Orbis raises a debug exception on return from main, even for status 0.
+ * The PC CRT accepts that return and proceeds to the next entry instruction,
+ * which calls the guest exit service with the original status. */
+static ABI void guest_catch_return_from_main(int status) {
+    printf("Runtime: game main returned %d\n",status);
+}
 static ABI __attribute__((noreturn)) void guest_libc_exit(int status) {
     printf("Runtime: guest requested exit(%d)\n", status);
     runtime_finalize(NULL);
+    bbgpu_shutdown();
     runtime_report();
     exit(status);
 }
@@ -250,6 +257,7 @@ uintptr_t runtime_resolve(const char *name, int is_data) {
     if (nid_match(name, "8G2LB+A3rzg#q#q")) return (uintptr_t)guest_atexit;
     if (nid_match(name, "tsvEmnenz48#q#q")) return (uintptr_t)guest_cxa_atexit;
     if (nid_match(name, "uMei1W9uyNo#q#q")) return (uintptr_t)guest_libc_exit;
+    if (nid_match(name, "XKRegsFpEpk")) return (uintptr_t)guest_catch_return_from_main;
     /* Not imported by the current eboot, exposed for ABI tests/future use. */
     if (nid_match(name, "H2e8t5ScQGc#q#q")) return (uintptr_t)guest_finalize;
     if (nid_match(name, "3GPpjQdAMTw#q#q")) return (uintptr_t)guard_acquire;

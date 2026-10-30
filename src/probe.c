@@ -38,11 +38,15 @@ static uint64_t import_count;
 static unsigned char *image;
 static size_t page_size;
 #include "runtime_camera_patch.inc"
+#include "runtime_horizon_lock.inc"
 #include "runtime_scene_debug.inc"
 #include "runtime_motion_blur.inc"
 #include "runtime_menu_repeat.inc"
+#include "runtime_replay_seek.inc"
 #include "runtime_resource_entry.inc"
-typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module; } LinkedModule;
+/* flags bit 0: the module starts when the game loads it (BBPROBE6), see runtime_start_linked_module. */
+typedef struct { uint64_t base, size, init, tls_address, tls_memsz, tls_filesz, tls_module, flags; char name[32]; int started; } LinkedModule;
+#define MODULE_START_ON_LOAD 1
 static LinkedModule modules[16];
 static uint64_t module_count;
 static int entered_game;
@@ -56,6 +60,29 @@ static uint64_t read64(FILE *f) {
     uint64_t n = 0;
     for (int i = 7; i >= 0; --i) n = (n << 8) | b[i];
     return n;
+}
+
+/* The game loads a linked module that starts on load (oskGNMm.prx): its initializer runs the module's
+ * constructors and then module_start(args, argp), as the PS4 loader does. Returns 1 when path names such a
+ * module (*result: what module_start returned), 0 for any other path. */
+int runtime_start_linked_module(const char *path, uint64_t args, const void *argp, int32_t *result) {
+    const char *file=path ? strrchr(path,'/') : NULL;
+    file=file ? file+1 : path;
+    if (!file) return 0;
+    for (uint64_t m=0;m<module_count;++m) {
+        LinkedModule *x=&modules[m];
+        if (!(x->flags & MODULE_START_ON_LOAD) || strcmp(x->name,file)) continue;
+        int32_t start=0;
+        if (!x->started) {
+            x->started=1;
+            typedef int (ABI *ModuleInit)(uint64_t,const void *,void *);
+            start=((ModuleInit)(image+x->init))(args,argp,NULL);
+            printf("Runtime: linked module %s started; module_start returned %d\n",x->name,start);
+        }
+        if (result) *result=start;
+        return 1;
+    }
+    return 0;
 }
 static size_t round_page(size_t size) { return (size + page_size - 1) & ~(page_size - 1); }
 static void *allocate(size_t size) {
@@ -1331,7 +1358,7 @@ int main(int argc, char **argv) {
     FILE *f = fopen(argv[1], "rb");
     if (!f) fail("cannot open boot file; run prepare.py first");
     char magic[8];
-    if (fread(magic, 1, 8, f) != 8 || (memcmp(magic, "BBPROBE1", 8) && memcmp(magic, "BBPROBE2", 8) && memcmp(magic,"BBPROBE3",8) && memcmp(magic,"BBPROBE4",8) && memcmp(magic,"BBPROBE5",8))) fail("bad boot file signature");
+    if (fread(magic, 1, 8, f) != 8 || (memcmp(magic, "BBPROBE1", 8) && memcmp(magic, "BBPROBE2", 8) && memcmp(magic,"BBPROBE3",8) && memcmp(magic,"BBPROBE4",8) && memcmp(magic,"BBPROBE5",8) && memcmp(magic,"BBPROBE6",8))) fail("bad boot file signature");
     uint64_t size = read64(f), entry = read64(f), ns = read64(f), nr = read64(f);
     import_count = read64(f);
     uint64_t capabilities = memcmp(magic, "BBPROBE1", 8) ? read64(f) : 0;
@@ -1339,7 +1366,8 @@ int main(int argc, char **argv) {
     runtime_start(strict_imports ? 0 : capabilities);
     if (!size || size > 512*1024*1024 || entry >= size || !ns || ns > 64 || nr > 1000000 || import_count > 100000)
         fail("boot file limits exceeded");
-    int multi=!memcmp(magic,"BBPROBE5",8);
+    int named=!memcmp(magic,"BBPROBE6",8);
+    int multi=!memcmp(magic,"BBPROBE5",8) || named;
     int linked=!memcmp(magic,"BBPROBE3",8) || !memcmp(magic,"BBPROBE4",8) || multi;
     int native_libc=linked && !strict_imports && (capabilities&1);
     uint64_t main_tls[4]={0};
@@ -1348,7 +1376,8 @@ int main(int argc, char **argv) {
     uint64_t *binding_kinds=calloc(import_count ? import_count : 1,sizeof(*binding_kinds));
     if (!bindings || !binding_kinds) fail("allocation failed");
     if (multi) {
-        /* BBPROBE5: procparam, eboot TLS, module table, bindings (link_modules.py). */
+        /* BBPROBE5: procparam, eboot TLS, module table, bindings (link_modules.py).
+         * BBPROBE6: each module also has its flags and file name (launcher/prepare.cpp). */
         procparam=read64(f);
         for (int i=0;i<4;++i) main_tls[i]=read64(f);
         module_count=read64(f);
@@ -1357,6 +1386,11 @@ int main(int argc, char **argv) {
             LinkedModule *x=&modules[m];
             x->base=read64(f); x->size=read64(f); x->init=read64(f); x->tls_address=read64(f);
             x->tls_memsz=read64(f); x->tls_filesz=read64(f); x->tls_module=read64(f);
+            if (named) {
+                x->flags=read64(f);
+                if (fread(x->name,1,sizeof(x->name),f)!=sizeof(x->name) || !memchr(x->name,0,sizeof(x->name)) ||
+                    (x->flags & ~(uint64_t)MODULE_START_ON_LOAD)) fail("invalid linked module metadata");
+            }
         }
         nb=read64(f);
     } else if (linked) {
@@ -1496,8 +1530,10 @@ int main(int argc, char **argv) {
         printf("SSE4a: %" PRIu64 " guest EXTRQ rewritten, %" PRIu64 " left to the fault handler\n", rewritten, left);
     }
     menu_repeat_install();
+    replay_seek_install();
     resource_entry_install();
     if (!cpu_only) camera_patch_install();
+    if (!cpu_only) horizon_lock_install();
     protect(traps, round_page((import_count + 1) * 32), 5);
     protect(image, round_page(size), 0);
     int executable_entry = 0;
@@ -1522,14 +1558,21 @@ int main(int argc, char **argv) {
         runtime_set_procparam(image+procparam);
         /* Dependencies start in link order (libc first), as the PS4 dynamic linker does. */
         for (uint64_t m=0;m<module_count;++m) {
+            if (modules[m].flags & MODULE_START_ON_LOAD) {
+                printf("Linked module %" PRIu64 " (%s) starts when the game loads it\n",m,modules[m].name);
+                continue;
+            }
             printf("Starting linked module %" PRIu64 " at image offset 0x%" PRIx64 "; native bindings=%" PRIu64 "\n",m,modules[m].init,nb);
             typedef int (ABI *ModuleInit)(uint64_t,void *,void *);
             int result=((ModuleInit)(image+modules[m].init))(0,NULL,NULL);
             printf("Module %" PRIu64 " initializer returned %d\n",m,result);
             if (result) fail("module initializer failed");
+            modules[m].started=1;
         }
     }
     printf("Entering original x86-64 code at guest offset 0x%" PRIx64 "\n", entry);
+    extern void runtime_exit_initialize(void);
+    runtime_exit_initialize();
     entered_game=1;
     struct { uint64_t argc; const char *argv[3]; } params = {1, {"/app0/eboot.bin", NULL, NULL}};
     if ((params.argv[1]=runtime_benchmark_guest_arg())) params.argc=2;

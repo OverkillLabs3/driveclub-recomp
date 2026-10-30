@@ -17,6 +17,11 @@
 
 #include "gpu_check.h"
 
+#include <versionhelpers.h>
+#include <wbemidl.h>
+#include <comdef.h>
+#pragma comment(lib, "wbemuuid.lib")
+
 namespace {
 
 std::wstring Widen(const char* text) {
@@ -215,6 +220,9 @@ int GpuCheckChildMain(const wchar_t* result_path) {
   return outcome.message.empty() ? 0 : 1;
 }
 
+// Forward declaration
+std::wstring CheckAncientIgpuDriver();
+
 std::wstring CheckGpu() {
   if (FileExists(ExeDir() + L"\\skip_gpu_check.txt") || GetEnvironmentVariableW(L"DRIVECLUB_SKIP_GPU_CHECK", nullptr, 0) > 0) {
     return L"";
@@ -263,6 +271,10 @@ std::wstring CheckGpu() {
       SetEnvironmentVariableW(L"BB_GPU_ID", Widen(std::to_string(std::atoi(text.c_str() + at + 6)).c_str()).c_str());
     }
   }
+
+  std::wstring igpu_warning = CheckAncientIgpuDriver();
+  if (!igpu_warning.empty()) return igpu_warning;
+
   return L"";
 }
 
@@ -317,6 +329,87 @@ std::wstring DescribeCpu() {
   std::string text(name);
   while (!text.empty() && text.back() == ' ') text.pop_back();
   return Widen((text + features).c_str());
+}
+
+std::wstring CheckAncientIgpuDriver() {
+  std::wstring warning;
+  HRESULT hres = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  bool com_init = SUCCEEDED(hres);
+  IWbemLocator* locator = nullptr;
+  IWbemServices* services = nullptr;
+  IEnumWbemClassObject* enumerator = nullptr;
+  
+  if (com_init) {
+    hres = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                            IID_IWbemLocator, reinterpret_cast<void**>(&locator));
+  }
+  if (com_init && locator) {
+    hres = locator->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), nullptr, nullptr, nullptr,
+                                  0, nullptr, nullptr, &services);
+  }
+  if (com_init && services) {
+    hres = CoSetProxyBlanket(services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+                             RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+  }
+  if (com_init && services) {
+    hres = services->ExecQuery(_bstr_t(L"WQL"),
+                               _bstr_t(L"SELECT DriverVersion, DriverDate, Name FROM Win32_VideoController WHERE Name LIKE '%AMD%' OR Name LIKE '%Radeon%' OR Name LIKE '%Intel%' OR Name LIKE '%UHD%' OR Name LIKE '%Iris%' OR Name LIKE '%HD Graphics%'"),
+                               WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enumerator);
+  }
+  if (com_init && enumerator) {
+    IWbemClassObject* obj = nullptr;
+    ULONG returned = 0;
+    while (enumerator->Next(WBEM_INFINITE, 1, &obj, &returned) == WBEM_S_NO_ERROR && returned == 1) {
+      VARIANT v_name, v_version, v_date;
+      VariantInit(&v_name); VariantInit(&v_version); VariantInit(&v_date);
+      obj->Get(L"Name", 0, &v_name, nullptr, nullptr);
+      obj->Get(L"DriverVersion", 0, &v_version, nullptr, nullptr);
+      obj->Get(L"DriverDate", 0, &v_date, nullptr, nullptr);
+      
+      if (v_name.vt == VT_BSTR && v_version.vt == VT_BSTR && v_date.vt == VT_BSTR) {
+        std::wstring name(v_name.bstrVal, SysStringLen(v_name.bstrVal));
+        std::wstring version(v_version.bstrVal, SysStringLen(v_version.bstrVal));
+        std::wstring date_str(v_date.bstrVal, SysStringLen(v_date.bstrVal));
+        
+        // Parse driver date: WMI format is YYYYMMDDHHMMSS.mmmmmm+UUU
+        // e.g., 20210825053000.000000+000
+        if (date_str.size() >= 8) {
+          int year = _wtoi(date_str.substr(0, 4).c_str());
+          int month = _wtoi(date_str.substr(4, 2).c_str());
+          // Warn if driver is older than 2 years
+          SYSTEMTIME now;
+          GetLocalTime(&now);
+          int current_year = now.wYear;
+          int current_month = now.wMonth;
+          int months_old = (current_year - year) * 12 + (current_month - month);
+          
+          if (months_old > 24) { // Older than 2 years
+            if (!warning.empty()) warning += L"\n";
+            warning += L"\u26A0 Ancient AMD GPU driver detected: " + name;
+            warning += L"\n   Driver version: " + version;
+            warning += L"\n   Driver date: " + std::to_wstring(year) + L"-" + std::to_wstring(month);
+            warning += L" (" + std::to_wstring(months_old) + L" months old)";
+            warning += L"\n   This will cause Vulkan initialization to hang on hybrid laptops (iGPU + dGPU).";
+            warning += L"\n   Please update your GPU driver (AMD Adrenalin / Intel Arc Control / laptop OEM support page).";
+          }
+        }
+      }
+      VariantClear(&v_name); VariantClear(&v_version); VariantClear(&v_date);
+      obj->Release();
+    }
+  }
+  
+  if (enumerator) enumerator->Release();
+  if (services) services->Release();
+  if (locator) locator->Release();
+  if (com_init) CoUninitialize();
+  
+  return warning;
+}
+
+std::wstring CheckVulkanLayers() {
+  // Placeholder for future Vulkan layer checks
+  return L"";
 }
 
 std::wstring DescribeSystem() {

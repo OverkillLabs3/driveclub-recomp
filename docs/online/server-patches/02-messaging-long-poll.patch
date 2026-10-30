@@ -1,0 +1,30 @@
+--- a/src/egs.cpp
++++ b/src/egs.cpp
+@@ -16,6 +16,9 @@
+ #include <QHash>
+ #include <QList>
+ #include <QLoggingCategory>
++#include <QTimer>
++
++#include <chrono>
+ #include <QMessageAuthenticationCode>
+ #include <QMutex>
+ #include <QMutexLocker>
+@@ -443,9 +446,14 @@
+ bool handleEgs(const HttpRequest& request, const QString& endpoint,
+                const HttpServer::Responder& respond) {
+     if (endpoint == QLatin1String("egs/messaging")) {
+-        HttpResponse r;
+-        r.contentType = "application/octet-stream";
+-        respond(r);
++        // The game polls this for pushed messages. Answering at once makes it poll several times a second
++        // and, 30 s later, treat the server as lost. Hold the request instead (long poll), shorter than the
++        // game's 15 s receive timeout. shortcut: nothing is ever pushed; upgrade when a message exists.
++        QTimer::singleShot(std::chrono::seconds(10), [respond] {
++            HttpResponse r;
++            r.contentType = "application/octet-stream";
++            respond(r);
++        });
+         return true;
+     }
+     const QStringList parts = splitPath(endpoint);

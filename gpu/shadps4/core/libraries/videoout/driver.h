@@ -81,6 +81,7 @@ class VideoOutDriver {
 public:
     VideoOutDriver(u32 width, u32 height);
     ~VideoOutDriver();
+    void StopPresenting();
 
     int Open(const ServiceThreadParams* params);
     void Close(s32 handle);

@@ -96,7 +96,8 @@ int PS4_SYSV_ABI sceNetCtlUnregisterCallbackV6() {
 }
 
 int PS4_SYSV_ABI sceNetCtlCheckCallback() {
-    LOG_DEBUG(Lib_NetCtl, "(STUBBED) called");
+    LOG_DEBUG(Lib_NetCtl, "called");
+    netctl.CheckCallback();
     return ORBIS_OK;
 }
 

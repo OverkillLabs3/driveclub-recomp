@@ -9,6 +9,7 @@
  *   IJKL d-pad (I up, K down, J left, L right). */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "runtime_exit.h"
 #include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,6 +92,26 @@ static void touch_click(PadData *d, int right) {
 #include "runtime_input.inc"
 #include "runtime_wheel.inc"
 #include "runtime_logiwheel.inc"
+
+/* The overlay's pedal display (F2): the throttle, brake and clutch the game read last, 0..1. Returns 3 for a wheel
+ * with a clutch axis, 2 for a wheel without one, 1 for a gamepad's triggers (R2 throttle, L2 brake), 0 before the
+ * game has read a pad. */
+static PadData pad_last_read;   /* the last read of any port, under lock */
+static bool pad_was_read;
+int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
+    pthread_mutex_lock(&lock);
+    WheelExtension w; memcpy(&w,wheel_last_read.extension,sizeof w);
+    const PadData p=pad_last_read;
+    const bool read=pad_was_read, has_clutch=wheel_axis[WAX_CLUTCH].axis>=0;
+    pthread_mutex_unlock(&lock);
+    if (w.magic==WHEEL_MAGIC) {
+        *throttle=(float)w.throttle/65535.0f; *brake=(float)w.brake/65535.0f; *clutch=(float)w.clutch/65535.0f;
+        return has_clutch ? 3 : 2;
+    }
+    if (!read) return 0;
+    *throttle=(float)p.r2/255.0f; *brake=(float)p.l2/255.0f; *clutch=0.0f;
+    return 1;
+}
 
 /* ---- motion -------------------------------------------------------------------------
  * Like shadPS4: the pad's sensors pass straight through. Acceleration is reported the way the
@@ -270,7 +291,6 @@ static void sample_buttons(PadData *d) {
     input_load();
     SDL_Gamepad *g=current_gamepad();
     if (g) SDL_UpdateGamepads(); /* the window's event loop may not pump this thread's view of the pad */
-    if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
     if (g) {
         static const struct { SDL_GamepadButton sdl; uint32_t ps; } map[]={
@@ -318,9 +338,15 @@ static void sample_buttons(PadData *d) {
     const SDL_MouseButtonFlags mouse=SDL_GetMouseState(&mx,&my);
     int axis_sum[4]={0,0,0,0}; bool axis_used[4]={false,false,false,false};
     bool kb_l2=false, kb_r2=false;
+    const bool modal_pointer=runtime_exit_captures()!=0;
     for (int i=0;i<binding_count;++i) {
         const Binding *b=&bindings[i];
         if (!binding_down(b,k,mouse)) continue;
+        if (modal_pointer) {
+            bool pointer_binding=false;
+            for(unsigned j=0;j<b->in_count;++j) if(b->in[j].kind==IN_MOUSE) pointer_binding=true;
+            if(pointer_binding) continue; /* Modal pointer clicks have their own hit targets. */
+        }
         if (b->out_kind==OUT_BUTTON) {
             d->buttons|=b->button;
             if (b->button==BTN_L2) kb_l2=true;
@@ -371,14 +397,9 @@ static void sample_buttons(PadData *d) {
     const int f7=k && k[SDL_SCANCODE_F7];
     if (f7 && !f7_prev) mouse_on=!mouse_on;
     f7_prev=f7;
+    bbgpu_mouse_stick_capture(mouse_target && mouse_on);
     if (mouse_target) {
-        SDL_Window *w=mouse_on ? SDL_GetKeyboardFocus() : NULL;
-        static SDL_Window *captured;
-        if (w!=captured) {
-            if (captured) SDL_SetWindowRelativeMouseMode(captured,false);
-            captured=w;
-            if (w) SDL_SetWindowRelativeMouseMode(w,true);
-        }
+        SDL_Window *w=mouse_on && !bbgpu_overlay_captures_input() ? SDL_GetKeyboardFocus() : NULL;
         float dx=0, dy=0;
         if (w) SDL_GetRelativeMouseState(&dx,&dy);
         if (w && (dx!=0 || dy!=0)) {
@@ -522,9 +543,52 @@ static void replay_sample(PadData *d) {
 /* After the menu or the text dialog closes, buttons still held (the Cross that accepted a
  * name) stay hidden until released: the game would take them as a new press. */
 static int hold_after_capture;
+static bool exit_suppressed;
+static void neutralize_pad(PadData *d) {
+    d->buttons=0; d->left_x=d->left_y=d->right_x=d->right_y=128;
+    d->l2=d->r2=d->touch_count=0;
+    memset(d->touches,0,sizeof(d->touches));
+    memset(d->acceleration,0,sizeof(d->acceleration));
+    memset(d->angular_velocity,0,sizeof(d->angular_velocity));
+    memset(d->orientation,0,sizeof(d->orientation)); d->orientation[3]=1;
+}
+static const char *exit_button_label(int button, bool ps) {
+    switch (button) {
+    case SDL_GAMEPAD_BUTTON_SOUTH: return ps ? "Cross" : "A";
+    case SDL_GAMEPAD_BUTTON_EAST: return ps ? "Circle" : "B";
+    case SDL_GAMEPAD_BUTTON_WEST: return ps ? "Square" : "X";
+    case SDL_GAMEPAD_BUTTON_NORTH: return ps ? "Triangle" : "Y";
+    default: { const char *name=SDL_GetGamepadStringForButton((SDL_GamepadButton)button); return name ? name : "Button"; }
+    }
+}
+static bool exit_input(PadData *d) {
+    uint32_t physical=0; int axis_direction=0,device=2;
+    bool ps=false;
+    if (gamepad) {
+        SDL_GamepadType type=SDL_GetGamepadType(gamepad);
+        ps=type==SDL_GAMEPAD_TYPE_PS3 || type==SDL_GAMEPAD_TYPE_PS4 || type==SDL_GAMEPAD_TYPE_PS5;
+        if (ps) device=1;
+        for(int i=0;i<SDL_GAMEPAD_BUTTON_COUNT && i<32;++i)
+            if(SDL_GetGamepadButton(gamepad,(SDL_GamepadButton)i)) physical|=1u<<i;
+        int x=SDL_GetGamepadAxis(gamepad,SDL_GAMEPAD_AXIS_LEFTX), y=SDL_GetGamepadAxis(gamepad,SDL_GAMEPAD_AXIS_LEFTY);
+        if(abs(x)>22000 || abs(y)>22000) axis_direction=abs(x)>=abs(y) ? (x>0 ? 1:2) : (y>0 ? 3:4);
+    }
+    static uint32_t previous_physical; static int previous_axis;
+    bool activity=(physical & ~previous_physical) || (axis_direction && axis_direction!=previous_axis);
+    previous_physical=physical; previous_axis=axis_direction;
+    int confirm=SDL_GAMEPAD_BUTTON_SOUTH,back=SDL_GAMEPAD_BUTTON_EAST;
+    for(int i=0;i<pad_remap_count;++i) {
+        if((uint32_t)pad_remap[i][0]==BTN_CROSS) confirm=pad_remap[i][1];
+        if((uint32_t)pad_remap[i][0]==BTN_CIRCLE) back=pad_remap[i][1];
+    }
+    bool neutral=!d->buttons && !d->touch_count && !SDL_GetMouseState(NULL,NULL) && d->l2<25 && d->r2<25 &&
+        abs(d->left_x-128)<32 && abs(d->left_y-128)<32 &&
+        abs(d->right_x-128)<32 && abs(d->right_y-128)<32;
+    return runtime_exit_pad(d->buttons,d->left_x,d->left_y,neutral,
+        bbgpu_exit_dialog_available(),activity,device,exit_button_label(confirm,ps),exit_button_label(back,ps));
+}
 static void sample(PadData *d) {
     sample_host(d);
-    if (bbgpu_overlay_captures_input()) { hold_after_capture=1; return; }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -535,6 +599,12 @@ static void sample(PadData *d) {
     if (injected.buttons & BTN_R2) d->r2=255;
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
     for (int i=0;i<4;++i) if (injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
+    /* Modal actions use the same mapped logical buttons as the game. Sampling
+     * must continue while captured to observe releases and neutral sticks. */
+    exit_suppressed=exit_input(d);
+    if (exit_suppressed || bbgpu_overlay_captures_input()) {
+        hold_after_capture=1; neutralize_pad(d); return;
+    }
     if (hold_after_capture) {
         if (d->buttons) d->buttons=0;
         else hold_after_capture=0;
@@ -774,9 +844,12 @@ static void camera_fov_apply(void) {}
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
+    runtime_exit_tick();
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
+    if (exit_suppressed || bbgpu_overlay_captures_input()) neutralize_pad(data);
+    pad_last_read=*data; pad_was_read=true;
 #ifdef _WIN32
     { static int armed; if (data->buttons && !armed && BB_DIAGNOSTIC_ENV("DR_WATCH")) { armed=1; watch_install(data); } }
 #endif

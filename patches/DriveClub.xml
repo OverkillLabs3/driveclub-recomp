@@ -9,8 +9,20 @@
     </TitleID>
     <Metadata Title="Driveclub"
               Always="true"
+              Name="Native render feedback timing"
+              Note="Keep the native interval in renderer frame-time feedback to avoid fountain mist flicker with high-FPS patches. Simulation and presentation timing are unchanged."
+              Author="HeyOkay"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b3a7f0" Value="b802000000909090" OriginalHash="9b5df33222e489e1"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Always="true"
               Name="Red zone fix (particle curve sampler)"
-              Note="The function at 0x64d980 keeps seven locals below the stack pointer. A memory-tracking fault taken inside it on Windows overwrites them and the game stopped with a read of address 0 at 0x64db13. It gets a real stack frame instead."
+              Note="The function at 0x64d980 keeps seven locals below the stack pointer. A memory-tracking fault taken inside it on Windows overwrites them and the game stopped with a read of address 0 at 0x64db13. It gets a real stack frame instead. A particle system without curve data (a null pointer at [rsi+0x740], seen as a read of 0x140 at 0x64d9b2) now returns instead of crashing."
               Author="Ianespaa"
               PatchVer="1.0"
               AppVer="01.28"
@@ -33,14 +45,14 @@
             <Line Type="bytes" Address="0x00a4e735" Value="488b442430" OriginalHash="469c901fe033edc4"/>
             <Line Type="bytes" Address="0x00a4e8c5" Value="488b442428" OriginalHash="469c981fe033fb5c"/>
             <Line Type="bytes" Address="0x00a4e8f6" Value="e9e531f000909090909090" OriginalHash="b09699eac1a0b4d6"/>
-            <Line Type="bytes" Address="0x01951ac0" Value="554157415641554154534883ec40e9b7be0fff"/>
+            <Line Type="bytes" Address="0x01951ac0" Value="554157415641554154534883ec404883be40070000007408e9adbe0fff"/>
             <Line Type="bytes" Address="0x01951ae0" Value="4883c4405b415c415d415e415f5dc3"/>
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub" 
               isEnabled="true"
               Name="60 FPS with deltatime" 
-              Note="Patch version 2.0 features deltatime. this version will break some things in the game, if that is an issue for you, use the other 60 FPS patch. A frame longer than 33 ms is counted as 33 ms so a slow frame cannot throw the camera." 
+              Note="Patch version 2.0 features deltatime. this version will break some things in the game, if that is an issue for you, use the other 60 FPS patch. A frame longer than 33 ms is counted as 33 ms so a slow frame cannot throw the camera; the rest of it is made up over the next frames (33 ms each at most), so the game clock keeps to the wall clock and race times match between players at different frame rates. A stall over 250 ms (loading) is dropped."
               Author="illusion, u/Charlie_Muggins" 
               PatchVer="2.0" 
               AppVer="01.28" 
@@ -49,7 +61,7 @@
             <Line Type="bytes" Address="0x01184800" Value="b801000000"/>
             <Line Type="bytes" Address="0x01184725" Value="48b001"/>
             <Line Type="bytes" Address="0x00a6306e" Value="e90d50bf0090909090"/>
-            <Line Type="bytes" Address="0x01658080" Value="4889c6482b73084881fe358200007605be35820000e9ddaf40ff"/>
+            <Line Type="bytes" Address="0x01658080" Value="4889c6482b73084881fe90d0030077134881fe35820000760f488b4308480535820000be35820000e9caaf40ff"/>
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"

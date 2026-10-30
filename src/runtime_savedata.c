@@ -65,7 +65,7 @@ _Static_assert(sizeof(SearchCond)==64 && sizeof(SearchResult)==56,"dir name sear
 static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
 static int initialized;
 static char title_id[16]="UNKNOWN";
-static struct { int used; char host[700], meta[700]; } slots[SLOTS];
+static struct { int used, writable; char host[700], meta[700]; } slots[SLOTS];
 static char memory_path[720];
 static uint64_t memory_size;
 static size_t mounts_done, memory_writes;
@@ -104,6 +104,7 @@ void runtime_savedata_configure(const char *title) {
     if (title && *title) snprintf(title_id,sizeof(title_id),"%s",title);
     bloodborne_sound_hack();
 }
+const char *runtime_savedata_title(void) { return title_id; }
 
 static int make_dirs(const char *path) {
     char buffer[700];
@@ -171,6 +172,7 @@ static int32_t mount(int32_t user, const char *title, const DirName *dir, uint32
     if (!exists && (make_dirs(host) || make_dirs(meta))) { pthread_mutex_unlock(&lock); return ERR_INTERNAL; }
     if (!exists) { Param empty={0}; write_param(meta,&empty); }
     slots[slot].used=1;
+    slots[slot].writable=!(mode & MODE_RDONLY);
     snprintf(slots[slot].host,sizeof(slots[slot].host),"%s",host);
     snprintf(slots[slot].meta,sizeof(slots[slot].meta),"%s",meta);
     memset(result,0,sizeof(*result));
@@ -205,6 +207,15 @@ static ABI int32_t save_umount(const MountPoint *point) {
     if (slot>=0) { runtime_file_unmount(point->data); slots[slot].used=0; }
     pthread_mutex_unlock(&lock);
     return slot>=0 ? 0 : ERR_NOT_FOUND;
+}
+/* A writable mount is the game's save transaction. The exit request must let
+ * it finish closing its files and unmounting before requesting app shutdown. */
+int runtime_savedata_busy(void) {
+    pthread_mutex_lock(&lock);
+    int busy=0;
+    for (int i=0;i<SLOTS;++i) if (slots[i].used && slots[i].writable) busy=1;
+    pthread_mutex_unlock(&lock);
+    return busy;
 }
 static ABI int32_t save_set_param(const MountPoint *point, uint32_t type, const void *buffer, uint64_t size) {
     if (!initialized) return ERR_NOT_INITIALIZED;

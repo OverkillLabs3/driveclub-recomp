@@ -300,12 +300,13 @@ static ABI int32_t posix_key_create(uint32_t *k,KeyDestructor d) { int32_t r=key
 static ABI int32_t posix_key_delete(uint32_t k) { int32_t r=key_delete(k); return r ? r&0xffff : 0; }
 static ABI int32_t posix_key_set(uint32_t k,void *v) { int32_t r=key_set(k,v); return r ? r&0xffff : 0; }
 
-/* App PRXs (libtbb, logiWheel) are linked into the image offline; the game only needs a handle. */
+/* App PRXs (libtbb, logiWheel) are linked into the image offline and started with the game; the game only
+ * needs a handle. A module that starts on load (oskGNMm.prx) gets its module_start with the arguments here. */
 static ABI int32_t kernel_load_start_module(const char *path,uint64_t args,const void *argp,uint32_t flags,const void *opt,int32_t *result) {
     static int32_t next=0x1000;
-    (void)args;(void)argp;(void)flags;(void)opt;
+    (void)flags;(void)opt;
     printf("Runtime: sceKernelLoadStartModule(%s) -> handle %d\n",path ? path : "(null)",next);
-    if (result) *result=0;
+    if (!runtime_start_linked_module(path,args,argp,result) && result) *result=0;
     return next++;
 }
 static ABI int32_t kernel_set_gpo(uint32_t value) { (void)value; return 0; }

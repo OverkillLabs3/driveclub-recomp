@@ -32,6 +32,9 @@ namespace Libraries::Net {
 namespace {
 
 constexpr u16 kSignalingVPortNbo = 0xffff;
+// libSceRudp traffic (core/libraries/network/rudp.cpp) on its own virtual port.
+constexpr u16 kRudpVPortNbo = 0xfeff;
+std::atomic<P2PRudpReceiver> g_rudp_receiver{nullptr};
 constexpr size_t kVPortHeaderSize = 4;
 constexpr size_t kMaxUdpPayload = 65507;
 constexpr size_t kMaxP2PPayload = kMaxUdpPayload - kVPortHeaderSize;
@@ -436,6 +439,12 @@ private:
             if (dest_vport_nbo == kSignalingVPortNbo) {
                 PushInternal(ClassifyInternal(payload, payload_size), from.sin_addr.s_addr,
                              from.sin_port, payload, payload_size);
+                continue;
+            }
+            if (dest_vport_nbo == kRudpVPortNbo) {
+                if (const auto receiver = g_rudp_receiver.load()) {
+                    receiver(from.sin_addr.s_addr, from.sin_port, payload, payload_size);
+                }
                 continue;
             }
 
@@ -982,6 +991,15 @@ int P2PControlSendTo(const void* data, u32 len, u32 dest_addr, u16 dest_port) {
 int P2PControlRecvFrom(void* buf, u32 len, u32* from_addr, u16* from_port) {
     return P2PTransport::Instance().ReceiveInternal(InternalChannel::Control, buf, len, from_addr,
                                                     from_port);
+}
+
+void SetP2PRudpReceiver(P2PRudpReceiver receiver) {
+    g_rudp_receiver.store(receiver);
+}
+
+int P2PRudpSendTo(const void* data, u32 len, u32 dest_addr, u16 dest_port) {
+    return P2PTransport::Instance().SendFrame(kRudpVPortNbo, kRudpVPortNbo, data, len, dest_addr,
+                                              dest_port);
 }
 
 int P2PMatching2SendTo(const void* data, u32 len, u32 dest_addr, u16 dest_port) {

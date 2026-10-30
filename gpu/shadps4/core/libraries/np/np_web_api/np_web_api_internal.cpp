@@ -1967,6 +1967,79 @@ u64 PS4_SYSV_ABI copyRequestData(OrbisNpWebApiRequest* request, void* data, u64 
     return readSize;
 }
 
+// Without shadNet nothing produces presence push events, yet the game counts friends online only
+// from them (np:service:presence:* on its "inGamePresence" service filter). So when the game reads
+// a friend list whose entries carry presence (community server), raise those events here, as if
+// each online friend had just come online. Bodies arrive in chunks, so collect them per request.
+// shortcut: a string scan of the community server's compact JSON, no general JSON parsing.
+static std::mutex g_friendlist_mutex;
+static std::map<s64, std::string> g_friendlist_bodies;
+
+static void raiseFriendPresence(s64 requestId, const std::string& path,
+                         Libraries::UserService::OrbisUserServiceUserId userId, const char* data,
+                         u64 len) {
+    if (path.find("/friendList") == std::string::npos ||
+        path.find("presenceType=") == std::string::npos) {
+        return;
+    }
+    std::string body;
+    {
+        std::scoped_lock lk{g_friendlist_mutex};
+        std::string& acc = g_friendlist_bodies[requestId];
+        acc.append(data, len);
+        if (acc.find("\"totalResults\"") == std::string::npos || acc.back() != '}') {
+            return;
+        }
+        body = std::move(acc);
+        g_friendlist_bodies.erase(requestId);
+    }
+
+    constexpr std::string_view IdKey = "\"onlineId\":\"";
+    for (size_t pos = body.find(IdKey); pos != std::string::npos;) {
+        const size_t start = pos + IdKey.size();
+        const size_t end = body.find('"', start);
+        if (end == std::string::npos) {
+            break;
+        }
+        const std::string name = body.substr(start, end - start);
+        const size_t next = body.find(IdKey, end);
+        const std::string entry = body.substr(end, next == std::string::npos ? next : next - end);
+        pos = next;
+        if (entry.find("\"onlineStatus\":\"online\"") == std::string::npos) {
+            continue;
+        }
+
+        // The game's handler (guest 0x8000911d0) parses the payload as JSON, reads only
+        // "gameStatus" and passes it on with the data type and sender; so every event carries it.
+        std::string status = "In the menus";
+        constexpr std::string_view StatusKey = "\"gameStatus\":\"";
+        if (const size_t s = entry.find(StatusKey); s != std::string::npos) {
+            const size_t e = entry.find('"', s + StatusKey.size());
+            if (e != std::string::npos) {
+                status = entry.substr(s + StatusKey.size(), e - s - StatusKey.size());
+            }
+        }
+        const std::string status_json = "\"gameStatus\":\"" + status + "\"";
+
+        PushEventInput ev;
+        ev.targetUserId = userId;
+        ev.npServiceName = "inGamePresence";
+        ev.hasFrom = true;
+        std::snprintf(ev.fromOnlineId.data, sizeof(ev.fromOnlineId.data) + 1, "%s",
+                      name.c_str());
+        ev.dataType = "np:service:presence:onlineStatus";
+        ev.data = R"({"onlineStatus":"online","platform":"PS4",)" + status_json + "}";
+        EnqueuePushEvent(ev);
+        ev.dataType = "np:service:presence:gameTitleInfo";
+        ev.data = R"({"npTitleId":"CUSA00003_00","titleName":"DRIVECLUB",)" + status_json + "}";
+        EnqueuePushEvent(ev);
+        ev.dataType = "np:service:presence:gameStatus";
+        ev.data = "{" + status_json + "}";
+        EnqueuePushEvent(ev);
+        LOG_INFO(Lib_NpWebApi, "presence push: friend '{}' is online (from friend list)", name);
+    }
+}
+
 s32 PS4_SYSV_ABI readDataInternal(s64 requestId, void* pData, u64 size) {
     u32 offset;
     s32 result;
@@ -2045,6 +2118,8 @@ s32 PS4_SYSV_ABI readDataInternal(s64 requestId, void* pData, u64 size) {
         LOG_INFO(Lib_NpWebApi, "reqId={:#x} -> {} bytes: {:.256s}", requestId, result,
                  std::string(reinterpret_cast<const char*>(pData),
                              std::min<u64>(result, 256))); // debug to be removed
+        raiseFriendPresence(requestId, request->userPath, user_context->userId,
+                            reinterpret_cast<const char*>(pData), static_cast<u64>(result));
     }
 
     unlockContext(context);

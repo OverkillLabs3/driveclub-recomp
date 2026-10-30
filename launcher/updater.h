@@ -21,11 +21,18 @@ bool ParseRelease(const std::string& json, Release& out);
 // offline, or when anything else goes wrong (`why` says what, for the log).
 bool CheckNewer(const std::wstring& current, Release& out, std::string& why);
 
-// Downloads the zip, checks it against the checksum file, unpacks it into <home>\update_download and starts the script
-// that copies it over the program files once the launcher has closed. The player's data, saves, mods, logs and
-// launcher.ini are not touched. True: the caller must close the launcher now. `progress` gets 0..100.
+// Downloads the zip, checks it against the checksum file, unpacks it into <home>\update_download,
+// replaces program files and starts the new native launcher. The player's data, saves, mods,
+// logs and launcher.ini are not touched. True: the caller must close. `progress` gets 0..100.
 bool Install(const Release& release, const std::wstring& home, const std::function<void(int)>& progress,
              std::wstring& error);
+
+// WPF maps its managed DLLs until it exits. Download/verify first, then let a
+// native helper wait for that exact shell process before replacing the package.
+bool InstallForShell(const Release& release, const std::wstring& home, unsigned long shell_pid,
+                     const std::function<void(int)>& progress, std::wstring& error);
+// Internal helper entry point. -1 means this is an ordinary launcher invocation.
+int RunDeferred(int argc, wchar_t** argv);
 
 // Removes the leftovers of an earlier update (the folder is in use while the script still runs). A folder that
 // holds anything the updater did not write there (a game dump named "update", say) is left alone.

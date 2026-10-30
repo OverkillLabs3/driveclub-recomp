@@ -7,6 +7,7 @@
 #include <psapi.h>
 #endif
 #include "bbport_frame_info.h"
+#include "bbport_launch_ready.h"
 #include "bbport_frametrace.h"
 #include "common/debug.h"
 #include "common/elf_info.h"
@@ -210,6 +211,8 @@ Presenter::~Presenter() {
     draw_scheduler.Finish();
     present_scheduler.Finish();
     flip_scheduler.Finish();
+    Check(instance.GetDevice().waitIdle());
+    BbOverlay::Shutdown();
     Check(draw_scheduler.CommandBuffer().reset());
     Check(present_scheduler.CommandBuffer().reset());
     Check(flip_scheduler.CommandBuffer().reset());
@@ -675,13 +678,14 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.srgb_input =
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     // bbport: TV gamma: the game was made for TVs that decode with 2.4, PC displays decode sRGB
-    // (about 2.2) and showed it washed out. The encoded values to the power 2.4 / 2.2 look on a PC
-    // display as the picture did on a TV. SDR only (HDR maps the picture itself). BB_TV_GAMMA=0: off.
-    static const bool tv_gamma = [] {
-        const char* env = std::getenv("BB_TV_GAMMA");
-        return !env || env[0] != '0';
-    }();
-    pp_settings.power = tv_gamma && !hdr_output ? 2.4f / 2.2f : 1.0f;
+    // (about 2.2) and showed it washed out. The encoded values to the power gamma / 2.2 look on a PC
+    // display as the picture did on a display of that gamma (2.4 by default, 2.2 as encoded).
+    // Then contrast around mid grey and brightness, all from picture.ini or F4 while playing.
+    // SDR only (HDR maps the picture itself).
+    const auto& picture = BbSettings::Get();
+    pp_settings.power = hdr_output ? 1.0f : float(picture.picture_gamma.load()) / 220.0f;
+    pp_settings.contrast = hdr_output ? 1.0f : float(picture.picture_contrast.load()) / 100.0f;
+    pp_settings.brightness = hdr_output ? 0.0f : float(picture.picture_brightness.load()) / 400.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     // Neural rendering on the finished, display-referred frame (the UI is in it), before the HDR conversion.
@@ -1035,7 +1039,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         wait_until(start + step * shown);
     }
     const auto presented_generated = std::chrono::steady_clock::now();
-    if (!PresentImage(frame, frame->image, true)) {
+    if (!PresentImage(frame, frame->image, true, is_game_frame && !is_reusing_frame)) {
         if (shown) {
             // The frame's fence was not reset and so does not cover the generated frames'
             // blits: they must be done before the frame is drawn again.
@@ -1238,7 +1242,7 @@ void Presenter::UpdateFrameGenLimit(bool wanted, double present_ms) {
     settings.frame_gen_display_hz = int(hz);
 }
 
-bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
+bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool notify_launcher) {
     if (!swapchain.AcquireNextImage()) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
         if (!swapchain.AcquireNextImage()) {
@@ -1410,7 +1414,11 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last) {
         if (last) {
             BbVr::AfterSubmit();
         }
-        if (!swapchain.Present() && window.GetWidth() != 0 && window.GetHeight() != 0) {
+        const bool presented = swapchain.Present();
+        if (presented && notify_launcher) {
+            BbLauncherReady::GameFramePresented(true, false);
+        }
+        if (!presented && window.GetWidth() != 0 && window.GetHeight() != 0) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
         }
     }

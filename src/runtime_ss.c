@@ -154,19 +154,6 @@ static ABI int32_t appcontent_addcont_info(uint32_t label, const void *entitleme
     return (int32_t)0x80D90007; /* APP_CONTENT_ERROR_DRM_NO_ENTITLEMENT */
 }
 
-/* ---- trophies ------------------------------------------------------------------------ */
-/* Unlocks are not persisted yet, so no trophy reads as unlocked. The trophy count is not read
-   from the title's .trp (its list is encrypted), so it is reported as 0 and logged. */
-static ABI int32_t trophy_destroy(int32_t id) { (void)id; return 0; }
-static ABI int32_t trophy_unlock_state(int32_t context, int32_t handle, uint32_t *flags, uint32_t *count) {
-    (void)context; (void)handle;
-    if (!flags || !count) return (int32_t)0x80551604; /* NP_TROPHY_ERROR_INVALID_ARGUMENT */
-    memset(flags, 0, 16); /* OrbisNpTrophyFlagArray: 128 bits */
-    *count = 0;
-    ONCE("sceNpTrophyGetTrophyUnlockState: no unlock state persisted, reporting none unlocked");
-    return 0;
-}
-
 uintptr_t runtime_ss_resolve(const char *name) {
     uintptr_t evf = runtime_evf_resolve(name);
     if (evf) return evf;
@@ -189,8 +176,6 @@ uintptr_t runtime_ss_resolve(const char *name) {
         {"sceErrorDialogOpen", error_dialog_open}, {"sceErrorDialogUpdateStatus", error_dialog_status},
         {"sceSaveDataDialogGetResult", savedata_dialog_result},
         {"sceAppContentGetAddcontInfo", appcontent_addcont_info},
-        {"sceNpTrophyDestroyContext", trophy_destroy}, {"sceNpTrophyDestroyHandle", trophy_destroy},
-        {"sceNpTrophyGetTrophyUnlockState", trophy_unlock_state},
     };
     return RUNTIME_LOOKUP(table, name);
 }

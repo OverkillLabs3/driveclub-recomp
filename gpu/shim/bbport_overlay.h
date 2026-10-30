@@ -20,6 +20,8 @@ namespace BbOverlay {
 
 /// Present thread, once: the ImGui context and its Vulkan backend.
 void Init(const Vulkan::Instance& instance, vk::Format format, u32 image_count);
+/// After presentation has stopped and the device is idle, before device destruction.
+void Shutdown();
 
 /// Window thread, for every SDL event: true when the menu consumed it.
 bool HandleEvent(const SDL_Event& event);
@@ -37,6 +39,9 @@ void NotePresent();
 
 /// The menu is open or a text entry is shown: the game's input is held neutral.
 bool CapturesInput();
+bool ExitDialogAvailable();
+void RequestMouseCapture(bool capture);
+void UpdateMouseCapture(SDL_Window* window);
 
 /// Window thread: the game's text dialog (sceImeDialog). Shown as a box on screen until
 /// `active` is false; typing goes to the window (sdl_window), the box only displays it.
@@ -44,5 +49,7 @@ void SetTextEntry(bool active, const std::string& prompt, const std::string& tex
 
 /// Any thread: a short line shown at the top of the screen for a few seconds (a hotkey's new value).
 void Note(const std::string& text);
+/// A trophy banner: grade 0 platinum, 1 gold, 2 silver, 3 bronze.
+void Trophy(int id, int grade, const std::string& title, const std::string& description);
 
 } // namespace BbOverlay
