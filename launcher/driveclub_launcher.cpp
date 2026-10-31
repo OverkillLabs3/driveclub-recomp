@@ -85,7 +85,7 @@ constexpr float kWinW = 960.f;
 // ------------------------------------------------------------------------------------------
 // Picker: one box that opens a menu (benchmark track and car). Action: the benchmark's Run button and its result.
 // Slider: a value from min to max (sel), dragged or stepped with the arrow keys. Button: a button across the row.
-enum class Kind { Segmented, Toggle, Picker, Action, Slider, Button };
+enum class Kind { Segmented, Toggle, Picker, Action, Slider, Button, Binding, Info, Monitor };
 
 struct Ctl {
   const wchar_t* label;
@@ -102,6 +102,7 @@ struct Ctl {
   const wchar_t* unit = L"%";          // after a slider's value
   int decimals = 0;                    // a slider's value is shown divided by 10^decimals (gamma 240 as 2.40)
   bool physics_only = false;           // a steering wheel row shown with the physics force model only
+  bool hidden = false;                 // a row that is not shown at all right now (a pad that is not plugged in)
   int loaded = 0;                      // steering wheel rows: the value default.ini had, so only changes are written
 };
 
@@ -168,11 +169,12 @@ bool HitDiscord(float x, float y) {
          y >= g_discord_rect.Y * g_scale - m && y <= (g_discord_rect.Y + g_discord_rect.Height) * g_scale + m;
 }
 // The Driving tab has tabs of its own, in a smaller row under the main one (HitTab gives them as kTabCount + n).
-enum { kSubAssists, kSubWheel, kSubCount };
-const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback"};
+enum { kSubAssists, kSubWheel, kSubInput, kSubCount };
+const wchar_t* const kSubName[kSubCount] = {L"Assists and view", L"Wheel and force feedback", L"Controller and keyboard"};
 const wchar_t* const kSubHint[kSubCount] = {
     L"The field of view, and the game's gearbox, brake assist, hardcore handling and wheel assist.",
-    L"Your steering wheel: Wheel Setup for its controls, and the force feedback."};
+    L"Your steering wheel: Wheel Setup for its controls, and the force feedback.",
+    L"Dead zones, the buttons and sticks of a pad, and what every controller reports right now."};
 constexpr float kSubTabH = 62.f;
 int g_subtab = kSubAssists;
 RectF g_sub_rect[kSubCount];
@@ -430,7 +432,7 @@ const BenchChoice kBenchTracks[] = {
     {"canada_road_circuit_01_n", L"Oliver's Landing", L"Canada"},
     {"canada_dlc_road_circuit_03_n", L"Sinclair Point", L"Canada"},
     {"canada_race_track_v1", L"Maplewood Motorsport Park", L"Canada"},
-    {"chile_road_circuit_01_n", L"ChungarГЎ Lake", L"Chile"},
+    {"chile_road_circuit_01_n", L"Chungará Lake", L"Chile"},
     {"chile_road_circuit_02_n", L"Salar de Surire", L"Chile"},
     {"chile_race_track_v1", L"Autodromo Frontera", L"Chile"},
     {"india_road_circuit_01_n", L"Glenmorgan", L"India"},
@@ -466,7 +468,7 @@ const BenchChoice kBenchCars[] = {
     {"au_rs6", L"Audi RS 6 Avant", L"Performance"},  // not run
     {"ma_mc_st", L"Maserati GranTurismo MC Stradale", L"Performance"},
     {"lo_ex", L"Lotus Exige S", L"Performance"},  // not run
-    {"au_rs5", L"Audi RS 5 CoupГ©", L"Sports"},
+    {"au_rs5", L"Audi RS 5 Coupé", L"Sports"},
     {"bm_m2", L"BMW M235i", L"Sports"},
     {"ren_dez", L"Renault DeZir", L"Sports"},
     {"vw_golf_gti", L"Volkswagen Golf GTI", L"Hot hatch"},
@@ -567,6 +569,7 @@ bool BlurRowLocked(const Ctl& c) {
 // Rows that do nothing with the other choices: the physics settings with Original Physics; Upscaling and
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
 bool RowHidden(const Ctl& c) {
+  if (c.hidden) return true;
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
@@ -582,6 +585,18 @@ bool RowHidden(const Ctl& c) {
 bool IsWheelRow(const Ctl& c) { return c.patches[0].rfind("@ffb:", 0) == 0 || c.patches[0].rfind("@wheel", 0) == 0; }
 bool IsFfbKeyRow(const Ctl& c) { return c.patches[0].rfind("@ffb:", 0) == 0; }
 std::wstring WheelIniPath() { return g_data + L"\\user\\input_config\\default.ini"; }
+
+int g_monitor_row = -1;
+// The pad the launcher reads (binding capture + monitor): an XInput slot, -1 = the first connected one.
+// Double-clicking a name in DEVICES sets it, and it is remembered for the next start.
+int g_read_slot = -1;
+std::vector<int> g_device_rows;        // one row per XInput slot, always created, hidden when unplugged
+int g_dev_sdl_row = -1;                // one line listing the pads SDL3 sees
+constexpr int kDeviceSlots = 4;        // XInput slots the launcher can read
+bool g_dev_loaded = false;             // launcher.ini has been read: a fallback pick may be saved
+int g_dev_click_row = -1;
+ULONGLONG g_dev_click_at = 0;
+std::string g_dev_sig;                 // what was plugged in at the last check
 bool WheelIniReady() { return FileHas(WheelIniPath(), kLayoutMarker); }
 
 // A row's value as default.ini has it, and back (INT32_MIN: a value the launcher does not offer, kept as it is).
@@ -753,6 +768,501 @@ void OpenWheelSetup() {
 }
 
 // ------------------------------------------------------------------------------------------
+
+bool SaveTextAtomically(const std::wstring&, const std::string&);  // defined near the settings writer
+// ------------------------------------------------------------------------------------------
+// dead zones: analog_deadzone = leftjoystick|rightjoystick|l2|r2, inner, outer  (the runtime keeps
+// inner < outer). Two slider rows per device; every other line of the file stays as it is.
+// ------------------------------------------------------------------------------------------
+struct DeadRowDef {
+  const char* dev;
+  const wchar_t* label;
+  const wchar_t* hint;
+  int part;
+  int def;
+};
+const DeadRowDef kDeadRows[] = {
+    {"leftjoystick", L"Left stick, inner",
+     L"Steering that does nothing around the centre. Raise it if the car twitches while you hold the stick still.", 0, 5},
+    {"leftjoystick", L"Left stick, outer",
+     L"Where the stick counts as fully pushed. Lower it to reach full steering sooner.", 1, 127},
+    {"rightjoystick", L"Right stick, inner",
+     L"The same for the camera stick.", 0, 5},
+    {"rightjoystick", L"Right stick, outer",
+     L"The same for the camera stick.", 1, 127},
+    {"l2", L"L2 trigger, inner",
+     L"Travel before the brake starts to count. Raise it if a trigger rests slightly pressed.", 0, 0},
+    {"l2", L"L2 trigger, outer",
+     L"Where the trigger counts as fully pressed; lower it for a shorter pedal travel.", 1, 127},
+    {"r2", L"R2 trigger, inner", L"The same for the throttle.", 0, 0},
+    {"r2", L"R2 trigger, outer", L"The same for the throttle.", 1, 127},
+};
+constexpr int kDeadCount = int(sizeof(kDeadRows) / sizeof(kDeadRows[0]));
+int g_dead_row[kDeadCount] = {-1, -1, -1, -1, -1, -1, -1, -1};
+std::wstring g_dead_label[kDeadCount];
+
+int AddDeadRow(int index) {
+  const DeadRowDef& def = kDeadRows[index];
+  g_dead_label[index] = def.label;
+  Ctl c{g_dead_label[index].c_str(), def.hint, Kind::Slider, {},
+        {std::string("@dead:") + def.dev + ":" + std::to_string(def.part)}, def.def, def.def};
+  c.min = def.part == 0 ? 0 : 1;
+  c.max = def.part == 0 ? 126 : 127;
+  c.unit = L"";
+  c.loaded = c.sel;   // untouched rows must not be written back
+  g_c.push_back(std::move(c));
+  return int(g_c.size()) - 1;
+}
+bool IsDeadRow(const Ctl& c) { return c.patches[0].rfind("@dead:", 0) == 0; }
+
+void LoadDeadzones() {
+  for (const auto& line : ReadLines(WheelIniPath())) {
+    if (line.find("analog_deadzone") == std::string::npos) continue;
+    const auto eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    char dev[32] = {};
+    int inner = 0, outer = 127;
+    if (std::sscanf(line.c_str() + eq + 1, " %31[^, ] , %d , %d", dev, &inner, &outer) < 3) continue;
+    for (char* p = dev; *p; ++p) *p = char(tolower((unsigned char)*p));
+    for (int i = 0; i < kDeadCount; ++i) {
+      if (std::string(kDeadRows[i].dev) != dev || g_dead_row[i] < 0) continue;
+      Ctl& c = g_c[size_t(g_dead_row[i])];
+      c.sel = kDeadRows[i].part == 0 ? inner : outer;
+      c.loaded = c.sel;
+    }
+  }
+}
+
+// Writes one line per device whose two rows changed; everything else is kept byte for byte.
+void FlushDeadzones() {
+  const std::wstring path = WheelIniPath();
+  if (!Exists(path)) return;
+  auto lines = ReadLines(path);
+  bool any = false;
+  for (int i = 0; i < kDeadCount; i += 2) {
+    if (g_dead_row[i] < 0 || g_dead_row[i + 1] < 0) continue;
+    Ctl& inner_row = g_c[size_t(g_dead_row[i])];
+    Ctl& outer_row = g_c[size_t(g_dead_row[i + 1])];
+    if (inner_row.sel == inner_row.loaded && outer_row.sel == outer_row.loaded) continue;
+    int inner = inner_row.sel, outer = outer_row.sel;
+    if (inner >= outer) {  // the runtime requires inner < outer
+      outer = (std::min)(127, inner + 1);
+      if (outer <= inner) inner = outer - 1;
+      inner_row.sel = inner;
+      outer_row.sel = outer;
+    }
+    const std::string dev = kDeadRows[i].dev;
+    const std::string line =
+        "analog_deadzone = " + dev + ", " + std::to_string(inner) + ", " + std::to_string(outer);
+    int at = -1;
+    for (size_t k = 0; k < lines.size(); ++k) {
+      if (lines[k].find("analog_deadzone") == std::string::npos) continue;
+      if (lines[k].find(dev) != std::string::npos) at = int(k);
+    }
+    if (at >= 0) lines[size_t(at)] = line;
+    else lines.push_back(line);
+    inner_row.loaded = inner;
+    outer_row.loaded = outer;
+    any = true;
+  }
+  if (!any) return;
+  static bool backed_up = false;
+  if (!backed_up) {
+    CopyFileW(path.c_str(), (path + L".launcher-backup").c_str(), FALSE);
+    backed_up = true;
+  }
+  std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
+  if (!out) return;
+  for (const auto& line : lines) out << line << "\r\n";
+}
+
+// ------------------------------------------------------------------------------------------
+// Controller and keyboard bindings. default.ini holds two lines for one action: a keyboard line whose
+// right side is a key name (`r2 = w`) and a controller line whose right side is a pad input name
+// (`r2 = r2`). That is the runtime's own rule (src/runtime_input.inc: a pad name on the right remaps the
+// button, a key name on the right binds it), so the right side decides which chip a line belongs to —
+// never the section comment, which the runtime ignores. Writing replaces that one line and leaves every
+// other line of the file untouched.
+// ------------------------------------------------------------------------------------------
+struct BindRowDef;
+bool PadTokenLine(const std::string& value);
+const BindRowDef* FindBindRow(const std::string& out);
+void ReadPair(const std::string& out, std::wstring* key, std::wstring* pad);
+
+
+std::string TrimCopy(std::string value) {
+  const auto first = value.find_first_not_of(" \t\r\n");
+  if (first == std::string::npos) return {};
+  value.erase(0, first);
+  while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' ||
+                            value.back() == '\n'))
+    value.pop_back();
+  return value;
+}
+// The left side of a `key = value` line, lower case; empty for comments and every other line.
+std::string LhsOf(const std::string& line) {
+  if (line.find('#') == 0) return {};
+  const auto eq = line.find('=');
+  if (eq == std::string::npos) return {};
+  std::string key = TrimCopy(line.substr(0, eq));
+  for (char& ch : key) ch = char(tolower((unsigned char)ch));
+  return key;
+}
+// The right side up to the first comma, comment removed: a key name or a pad input name.
+std::string RhsOf(const std::string& line) {
+  const auto eq = line.find('=');
+  if (eq == std::string::npos) return {};
+  std::string value = line.substr(eq + 1);
+  const auto hash = value.find('#');
+  if (hash != std::string::npos) value.resize(hash);
+  return TrimCopy(value.substr(0, value.find(',')));
+}
+
+
+// The only writer used for the input config: create/truncate, write the whole buffer, close.
+// (SaveTextAtomically chained a temp file and could leave stale bytes; this cannot.)
+bool SaveTextTruncate(const std::wstring& path, const std::string& data) {
+  HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  DWORD written = 0;
+  const bool ok = data.empty() ||
+                  WriteFile(h, data.data(), DWORD(data.size()), &written, nullptr) != 0;
+  const bool flushed = ok && SetEndOfFile(h) != 0;
+  CloseHandle(h);
+  return ok && flushed && written == DWORD(data.size());
+}
+
+// Rewrites the one line that carries this action for that chip. A line is keyboard or controller by its
+// right side (the runtime's rule), so the D-pad's `pad_up` and the Up arrow's `up` can never be confused,
+// and every other line of the file is kept as it was, down to its line endings.
+bool WriteBindValue(const std::string& key, const std::string& value, bool pad) {
+  const std::wstring path = WheelIniPath();
+  if (!Exists(path)) return false;   // no input config to change yet
+  std::string raw;
+  {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    raw.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  std::vector<std::string> kept;
+  int at = -1;
+  for (const auto& line : ReadLines(path)) {
+    if (LhsOf(line) == key && PadTokenLine(RhsOf(line)) == pad) {
+      if (at >= 0) continue;   // a leftover second line for the same input: one is enough
+      at = int(kept.size());
+    }
+    kept.push_back(line);
+  }
+  const std::string line = key + " = " + value;
+  if (at >= 0) {
+    kept[size_t(at)] = line;
+  } else {   // first time this action is bound: keep the new line beside the others of its kind
+    int after = -1;
+    for (size_t i = 0; i < kept.size(); ++i) {
+      if (!FindBindRow(LhsOf(kept[i]))) continue;
+      if (PadTokenLine(RhsOf(kept[i])) == pad) after = int(i);
+    }
+    if (after >= 0) kept.insert(kept.begin() + after + 1, line);
+    else kept.push_back(line);
+  }
+  // The file's own line ending and final newline stay as they are.
+  const std::string eol = raw.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  const bool final_newline = !raw.empty() && (raw.back() == '\n' || raw.back() == '\r');
+  std::string joined;
+  for (size_t i = 0; i < kept.size(); ++i) {
+    joined += kept[i];
+    if (i + 1 < kept.size() || final_newline) joined += eol;
+  }
+  static bool backed_up = false;
+  if (!backed_up) {
+    CopyFileW(path.c_str(), (path + L".launcher-backup").c_str(), FALSE);
+    backed_up = true;
+  }
+  return SaveTextTruncate(path, joined);
+}
+
+// ------------------------------------------------------------------------------------------
+// Binding capture: the next key the player presses becomes the value of that default.ini line.
+// The names are exactly the ones the runtime reads (src/runtime_input.inc: key_names, plus a single
+// letter, a digit, f1..f12 and kp0..kp9). Anything else would be written but never work.
+// ------------------------------------------------------------------------------------------
+std::string VkName(unsigned vk) {
+  if (vk >= 'A' && vk <= 'Z') return std::string(1, char(vk - 'A' + 'a'));
+  if (vk >= '0' && vk <= '9') return std::string(1, char(vk));
+  if (vk >= VK_F1 && vk <= VK_F12) return "f" + std::to_string(vk - VK_F1 + 1);
+  if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) return "kp" + std::to_string(vk - VK_NUMPAD0);
+  switch (vk) {
+    case VK_SPACE: return "space";
+    case VK_TAB: return "tab";
+    case VK_RETURN: return "enter";
+    case VK_ESCAPE: return "escape";
+    case VK_BACK: return "backspace";
+    case VK_DELETE: return "delete";
+    case VK_INSERT: return "insert";
+    case VK_HOME: return "home";
+    case VK_END: return "end";
+    case VK_PRIOR: return "pageup";
+    case VK_NEXT: return "pagedown";
+    case VK_LEFT: return "left";
+    case VK_RIGHT: return "right";
+    case VK_UP: return "up";
+    case VK_DOWN: return "down";
+    case VK_LSHIFT: case VK_SHIFT: return "lshift";
+    case VK_RSHIFT: return "rshift";
+    case VK_LCONTROL: case VK_CONTROL: return "lctrl";
+    case VK_RCONTROL: return "rctrl";
+    case VK_LMENU: case VK_MENU: return "lalt";
+    case VK_RMENU: return "ralt";
+    case VK_CAPITAL: return "capslock";
+    case VK_OEM_COMMA: return "comma";
+    case VK_OEM_PERIOD: return "period";
+    case VK_OEM_1: return "semicolon";
+    case VK_OEM_2: return "slash";
+    case VK_OEM_3: return "grave";
+    case VK_OEM_4: return "leftbracket";
+    case VK_OEM_5: return "backslash";
+    case VK_OEM_6: return "rightbracket";
+    case VK_OEM_7: return "apostrophe";
+    case VK_OEM_MINUS: return "minus";
+    case VK_OEM_PLUS: return "equals";
+    case VK_MULTIPLY: return "kpmultiply";
+    case VK_ADD: return "kpplus";
+    case VK_SUBTRACT: return "kpminus";
+    case VK_DIVIDE: return "kpdivide";
+    case VK_DECIMAL: return "kpperiod";
+    default: return {};
+  }
+}
+// The generic VK_SHIFT / VK_CONTROL / VK_MENU report either side, so the poller skips them and reads the
+// left and right keys, which are the names the runtime knows.
+bool IsGenericModifier(unsigned vk) { return vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU; }
+
+// Waits for a key press. controlFile may be empty; when it holds "cancel" the wait stops, and Esc stops
+// it too (0.3.0 consumed the key in its own window, so Esc could never become a binding).
+std::string CaptureKey(int timeoutMs, const std::wstring& controlFile) {
+  const ULONGLONG until = GetTickCount64() + (ULONGLONG)timeoutMs;
+  while (GetTickCount64() < until) {
+    if (!controlFile.empty() && !ReadLines(controlFile).empty()) return {};   // cancelled
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) return {};                     // Esc cancels
+    for (unsigned vk = 8; vk < 256; ++vk) {
+      if (vk >= VK_LBUTTON && vk <= VK_XBUTTON2) continue;   // mouse is not a binding
+      if (IsGenericModifier(vk)) continue;
+      if (vk == VK_ESCAPE) continue;
+      if (!(GetAsyncKeyState(int(vk)) & 0x8000)) continue;
+      std::string name = VkName(vk);
+      if (!name.empty()) return name;
+    }
+    Sleep(25);
+  }
+  return {};
+}
+
+// XInput button mask -> the token default.ini uses for that button (PlayStation names).
+const char* PadTokenFromMask(unsigned short b) {
+  if (b & 0x1000) return "cross";
+  if (b & 0x2000) return "circle";
+  if (b & 0x4000) return "square";
+  if (b & 0x8000) return "triangle";
+  if (b & 0x0100) return "l1";
+  if (b & 0x0200) return "r1";
+  if (b & 0x0040) return "l3";
+  if (b & 0x0080) return "r3";
+  if (b & 0x0010) return "options";   // Start
+  if (b & 0x0020) return "back";      // Back / Share
+  if (b & 0x0001) return "pad_up";    // the D-pad tokens carry the `pad_` prefix: `up` is the Up arrow key
+  if (b & 0x0002) return "pad_down";
+  if (b & 0x0004) return "pad_left";
+  if (b & 0x0008) return "pad_right";
+  return nullptr;
+}
+// One exact XInput slot (0-based): the buttons held there, 0 when that slot has no pad.
+int XInputRead(int slot, unsigned short* mask) {
+  struct Pad { uint32_t packet; unsigned short buttons;
+    unsigned char lt, rt; int16_t lx, ly, rx, ry; };
+  using GetState = uint32_t(__stdcall*)(uint32_t, Pad*);
+  HMODULE lib = LoadLibraryExW(L"xinput1_4.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!lib) return 0;
+  const auto get = reinterpret_cast<GetState>(reinterpret_cast<void*>(GetProcAddress(lib, "XInputGetState")));
+  int found = 0;
+  if (get && slot >= 0 && slot < 4) {
+    Pad pad{};
+    if (get(uint32_t(slot), &pad) == 0) { *mask = pad.buttons; found = slot + 1; }
+  }
+  FreeLibrary(lib);
+  return found;
+}
+// The pad the launcher reads: the chosen device, or the first connected one. 0 when none.
+int XInputPressedMask(unsigned short* mask) {
+  if (g_read_slot >= 0) return XInputRead(g_read_slot, mask);
+  for (int slot = 0; slot < 4; ++slot)
+    if (XInputRead(slot, mask)) return slot + 1;
+  return 0;
+}
+
+
+// A controller button for the right chip, waiting for a new press (used by the WPF bridge). The
+// cancellation file works like the wheel capture's: the shell writes "cancel" and the wait stops.
+const char* CapturePadToken(int timeoutMs, const std::wstring& controlFile) {
+  unsigned short mask = 0;
+  if (!XInputPressedMask(&mask)) return nullptr;
+  unsigned short held = mask;
+  const ULONGLONG until = GetTickCount64() + (ULONGLONG)timeoutMs;
+  while (GetTickCount64() < until) {
+    Sleep(20);
+    if (!controlFile.empty() && !ReadLines(controlFile).empty()) return nullptr;   // cancelled
+    unsigned short now = 0;
+    if (!XInputPressedMask(&now)) continue;
+    const unsigned short fresh = (unsigned short)(now & ~held);
+    held = now;
+    if (const char* token = PadTokenFromMask(fresh)) return token;
+  }
+  return nullptr;
+}
+
+// The action a binding row edits, and whether its right chip only reads (an axis, or a trigger the
+// runtime reads as an axis, so it cannot be remapped: 0.3.0's BindChipLocked).
+std::string BindOutOf(const Ctl& c) {
+  if (c.patches[0].size() <= 6) return {};
+  std::string key = c.patches[0].substr(6);
+  const auto ro = key.find('@');
+  if (ro != std::string::npos) key.resize(ro);
+  return key;
+}
+bool BindPadLocked(const Ctl& c) {
+  return c.patches[0].size() > 3 && c.patches[0].compare(c.patches[0].size() - 3, 3, "@ro") == 0;
+}
+
+bool ApplyBinding(int ctlIndex, int side, const std::string& value) {
+  if (ctlIndex < 0 || ctlIndex >= int(g_c.size())) return false;
+  Ctl& c = g_c[size_t(ctlIndex)];
+  if (c.kind != Kind::Binding) return false;
+  if (side == 1 && BindPadLocked(c)) return false;
+  const std::string key = BindOutOf(c);
+  if (key.empty()) return false;
+  if (!WriteBindValue(key, value, side == 1)) return false;
+  if (c.items.size() < 2) c.items.resize(2);
+  c.items[size_t(side)] = Widen(value);
+  g_changed = true;
+  return true;
+}
+
+
+// A binding row waits for a key the same way the FFB buttons wait for a wheel button: a timer polls,
+// so the window keeps drawing and closing while it waits.
+int g_bind_capture = -1;                 // the Ctl index waiting for a key
+int g_bind_side = 0;                     // 0: keyboard chip, 1: pad chip
+unsigned short g_bind_pad_mask = 0;      // the pad buttons held when the capture started
+ULONGLONG g_bind_capture_until = 0;
+constexpr UINT_PTR kBindCaptureTimer = 27;
+
+void NameBindCapture() {
+  if (g_bind_capture < 0) return;
+  if (g_c[size_t(g_bind_capture)].items.size() < 2) g_c[size_t(g_bind_capture)].items.resize(2);
+  g_c[size_t(g_bind_capture)].items[size_t(g_bind_side)] =
+      g_bind_side == 1 ? L"Press a button\u2026  (Esc: cancel)" : L"Press a key\u2026  (Esc: cancel)";
+}
+void StopBindCapture(HWND h, bool cancelled) {
+  KillTimer(h, kBindCaptureTimer);
+  if (g_bind_capture >= 0 && cancelled) {
+    Ctl& c = g_c[size_t(g_bind_capture)];
+    const std::string key = BindOutOf(c);
+    if (!key.empty()) {
+      // What the file holds now, both chips: the wait never touched the file.
+      std::wstring kb, pad;
+      ReadPair(key, &kb, &pad);
+      if (c.items.size() < 2) c.items.resize(2);
+      c.items[0] = kb;
+      c.items[1] = pad;
+    }
+    g_status = L"Binding unchanged.";
+    g_status_color = kMuted;
+    g_status_sticky = true;
+  }
+  g_bind_capture = -1;
+  g_bind_side = 0;
+}
+void StartBindCapture(HWND h, int ctl, int side) {
+  if (g_bind_capture >= 0) StopBindCapture(h, true);
+  if (ctl < 0 || ctl >= int(g_c.size())) return;
+  if (side == 1) {
+    if (BindPadLocked(g_c[size_t(ctl)])) {
+      g_status = L"That control is read as an axis and cannot be remapped.";
+      g_status_color = kMuted;
+      g_status_sticky = true;
+      InvalidateRect(h, nullptr, FALSE);
+      return;
+    }
+    unsigned short mask = 0;   // ignore buttons already held when the chip was clicked
+    if (!XInputPressedMask(&mask)) {
+      g_status = L"No controller found. Connect a pad, or use Wheel Setup for a wheel.";
+      g_status_color = kWarn;
+      g_status_sticky = true;
+      InvalidateRect(h, nullptr, FALSE);
+      return;
+    }
+    g_bind_pad_mask = mask;
+  }
+  g_bind_capture = ctl;
+  g_bind_side = side;
+  g_bind_capture_until = GetTickCount64() + 6000;
+  NameBindCapture();
+  SetTimer(h, kBindCaptureTimer, 40, nullptr);
+  InvalidateRect(h, nullptr, FALSE);
+}
+
+void PollBindCapture(HWND h) {
+  if (g_bind_capture < 0) return;
+  if (GetTickCount64() > g_bind_capture_until) {
+    StopBindCapture(h, true);
+    InvalidateRect(h, nullptr, FALSE);
+    return;
+  }
+  if (g_bind_side == 1) {   // the pad chip waits for a controller button
+    unsigned short mask = 0;
+    if (XInputPressedMask(&mask)) {
+      const unsigned short fresh = (unsigned short)(mask & ~g_bind_pad_mask);
+      g_bind_pad_mask = mask;
+      const char* token = PadTokenFromMask(fresh);
+      if (token) {
+        const int ctl = g_bind_capture;
+        g_bind_capture = -1;
+        KillTimer(h, kBindCaptureTimer);
+        ApplyBinding(ctl, 1, token);
+        g_status = L"Binding saved.";
+        g_status_color = kOk;
+        g_status_sticky = true;
+        InvalidateRect(h, nullptr, FALSE);
+        return;
+      }
+    }
+    return;
+  }
+  for (unsigned vk = 8; vk < 256; ++vk) {
+    if (vk >= VK_LBUTTON && vk <= VK_XBUTTON2) continue;
+    if (IsGenericModifier(vk)) continue;   // VK_LSHIFT / VK_LCONTROL / VK_LMENU carry the real names
+    if (!(GetAsyncKeyState(int(vk)) & 0x8000)) continue;
+    if (vk == VK_ESCAPE) {
+      StopBindCapture(h, true);
+      InvalidateRect(h, nullptr, FALSE);
+      return;
+    }
+    const std::string name = VkName(vk);
+    if (name.empty()) continue;
+    const int ctl = g_bind_capture, side = g_bind_side;
+    g_bind_capture = -1;
+    KillTimer(h, kBindCaptureTimer);
+    ApplyBinding(ctl, side, name);
+    g_status = L"Binding saved.";
+    g_status_color = kOk;
+    g_status_sticky = true;
+    InvalidateRect(h, nullptr, FALSE);
+    return;
+  }
+}
+
+
+
 // FFB gain + / - (force feedback card): two wheel buttons that make the force of the car being driven 5% stronger or
 // weaker during a race (default.ini: wheel_button = <n>, ffb_gain_up / ffb_gain_down; the game keeps each car's
 // percentage). A click waits for a button of the wheel the game reads (wheel_device). SDL3 is loaded at run time from
@@ -769,6 +1279,8 @@ struct SdlJoyApi {
   const char* (*GetJoystickName)(void*) = nullptr;
   int (*GetNumJoystickButtons)(void*) = nullptr;
   bool (*GetJoystickButton)(void*, int) = nullptr;
+  int (*GetNumJoystickAxes)(void*) = nullptr;
+  int (*GetJoystickAxis)(void*, int) = nullptr;
   void (*UpdateJoysticks)() = nullptr;
   void (*Free)(void*) = nullptr;
 };
@@ -790,10 +1302,13 @@ bool LoadSdlJoysticks() {
   g_joy.GetJoystickName = reinterpret_cast<const char* (*)(void*)>(get("SDL_GetJoystickName"));
   g_joy.GetNumJoystickButtons = reinterpret_cast<int (*)(void*)>(get("SDL_GetNumJoystickButtons"));
   g_joy.GetJoystickButton = reinterpret_cast<bool (*)(void*, int)>(get("SDL_GetJoystickButton"));
+  g_joy.GetNumJoystickAxes = reinterpret_cast<int (*)(void*)>(get("SDL_GetNumJoystickAxes"));
+  g_joy.GetJoystickAxis = reinterpret_cast<int (*)(void*, int)>(get("SDL_GetJoystickAxis"));
   g_joy.UpdateJoysticks = reinterpret_cast<void (*)()>(get("SDL_UpdateJoysticks"));
   g_joy.Free = reinterpret_cast<void (*)(void*)>(get("SDL_free"));
   if (!g_joy.InitSubSystem || !g_joy.WasInit || !g_joy.GetJoysticks || !g_joy.OpenJoystick || !g_joy.CloseJoystick ||
-      !g_joy.GetJoystickName || !g_joy.GetNumJoystickButtons || !g_joy.GetJoystickButton || !g_joy.UpdateJoysticks ||
+      !g_joy.GetJoystickName || !g_joy.GetNumJoystickButtons || !g_joy.GetJoystickButton ||
+      !g_joy.GetNumJoystickAxes || !g_joy.GetJoystickAxis || !g_joy.UpdateJoysticks ||
       !g_joy.Free) {
     FreeLibrary(lib);
     g_joy = SdlJoyApi{};
@@ -810,7 +1325,219 @@ std::vector<void*> g_ffb_capture_joys;
 std::vector<std::vector<char>> g_ffb_capture_held;   // buttons held: a press counts once they are let go
 constexpr UINT_PTR kFfbCaptureTimer = 23;
 constexpr uint32_t kSdlInitJoystick = 0x00000200;
+// What SDL3, XInput and this window can see: the pads and wheels the game itself will use.
+// A pad SDL names as a PlayStation one keeps the PlayStation button names; anything else (an Xbox pad, or
+// the virtual pad a PS4 tool exposes over XInput) is shown with Xbox names. 0.3.0's rule, so the header,
+// the binding chips and the monitor all agree. Must run before the rows are built.
+bool DetectXboxNaming() {
+  if (LoadSdlJoysticks()) {
+    if (!g_joy.WasInit(kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
+    int count = 0;
+    uint32_t* ids = g_joy.GetJoysticks(&count);
+    bool playstation = false;
+    if (ids) {
+      for (int i = 0; i < count && !playstation; ++i) {
+        void* pad = g_joy.OpenJoystick(ids[i]);
+        if (!pad) continue;
+        const char* got = g_joy.GetJoystickName(pad);
+        std::string name;
+        for (const char* p = got; p && *p; ++p) name += char(tolower((unsigned char)*p));
+        for (const char* key : {"dualsense", "dualshock", "wireless controller", "sony", "ps4", "ps5",
+                                "playstation"}) {
+          if (name.find(key) != std::string::npos) { playstation = true; break; }
+        }
+        g_joy.CloseJoystick(pad);
+      }
+      g_joy.Free(ids);
+    }
+    if (playstation) return false;   // a PlayStation pad is in use
+  }
+  unsigned short mask = 0;
+  return XInputPressedMask(&mask) != 0;
+}
 
+extern bool g_xbox_names;
+// The devices plugged in right now. No button-name line: each row already says what its buttons are.
+std::wstring DeviceSummary() {
+  std::wstring out;
+  int slot = 1;
+  if (LoadSdlJoysticks()) {
+    if (!g_joy.WasInit(kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
+    int count = 0;
+    uint32_t* ids = g_joy.GetJoysticks(&count);
+    if (ids) {
+      for (int i = 0; i < count; ++i) {
+        void* pad = g_joy.OpenJoystick(ids[i]);
+        if (!pad) continue;
+        const char* name = g_joy.GetJoystickName(pad);
+        out += L"\nController " + std::to_wstring(slot++) + L": " +
+               Widen(name && *name ? name : "Controller") + L"  (SDL)";
+        g_joy.CloseJoystick(pad);
+      }
+      g_joy.Free(ids);
+    }
+  } else {
+    out += L"\nSDL3.dll was not found in the runtime folder, so pads and wheels cannot be listed.";
+  }
+
+  struct PadState {
+    uint32_t packet;
+    unsigned short buttons;
+    unsigned char lt, rt;
+    int16_t lx, ly, rx, ry;
+  };
+  using GetState = uint32_t(__stdcall*)(uint32_t, PadState*);
+  if (HMODULE xi = LoadLibraryExW(L"xinput1_4.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+    const auto get = reinterpret_cast<GetState>(reinterpret_cast<void*>(GetProcAddress(xi, "XInputGetState")));
+    if (get) {
+      for (uint32_t k = 0; k < 4; ++k) {
+        PadState st{};
+        if (get(k, &st) != 0) continue;
+        out += L"\nXbox pad  \x00b7  XInput slot " + std::to_wstring(k);
+      }
+    }
+    FreeLibrary(xi);
+  }
+  if (out.empty()) out = L"No controller is connected. The keyboard still works.";
+  return out;
+}
+// The game's button names as players see them: the same wording the original input page used.
+const wchar_t* FriendlyBind(const std::string& key) {
+  struct Entry { const char* key; const wchar_t* label; };
+  static const Entry kMap[] = {
+      {"triangle", L"Triangle"}, {"circle", L"Circle"}, {"cross", L"Cross"}, {"square", L"Square"},
+      {"up", L"D-pad up"}, {"down", L"D-pad down"}, {"left", L"D-pad left"}, {"right", L"D-pad right"},
+      {"l1", L"Shoulder L1"}, {"r1", L"Shoulder R1"}, {"l2", L"Brake / reverse (L2)"},
+      {"r2", L"Throttle (R2)"}, {"l3", L"LS click"}, {"r3", L"RS click"},
+      {"options", L"Pause menu (OPTIONS)"}, {"touchpad", L"Touchpad"},
+      {"touchpad_left", L"Touchpad left"}, {"touchpad_right", L"Touchpad right"},
+      {"axis_left_x_minus", L"Steer left"}, {"axis_left_x_plus", L"Steer right"},
+      {"axis_left_y_minus", L"Left stick up"}, {"axis_left_y_plus", L"Left stick down"},
+      {"axis_right_x_minus", L"Right stick left"}, {"axis_right_x_plus", L"Right stick right"},
+      {"axis_right_y_minus", L"Right stick up"}, {"axis_right_y_plus", L"Right stick down"},
+  };
+  for (const auto& e : kMap)
+    if (key == e.key) return e.label;
+  return nullptr;
+}
+
+
+// What every pad reports right now: SDL3 devices, then XInput slots.
+std::wstring MonitorText() {
+  std::wstring out;
+  if (LoadSdlJoysticks()) {
+    if (!g_joy.WasInit(kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
+    g_joy.UpdateJoysticks();
+    int count = 0;
+    uint32_t* ids = g_joy.GetJoysticks(&count);
+    if (ids) {
+      for (int i = 0; i < count; ++i) {
+        void* pad = g_joy.OpenJoystick(ids[i]);
+        if (!pad) continue;
+        const char* name = g_joy.GetJoystickName(pad);
+        if (!out.empty()) out += L"\n";
+        out += Widen(name && *name ? name : "Controller");
+        out += L" (SDL3)";
+        const int axes = g_joy.GetNumJoystickAxes(pad);
+        const int buttons = g_joy.GetNumJoystickButtons(pad);
+        out += L"\n  axes:";
+        for (int a = 0; a < axes && a < 6; ++a) {
+          const int raw = g_joy.GetJoystickAxis(pad, a);
+          const int pct = raw < 0 ? -(int)((-raw) * 100 / 32768) : (int)(raw * 100 / 32768);
+          out += L" " + std::to_wstring(pct);
+        }
+        std::wstring held;
+        for (int b = 0; b < buttons && b < 64; ++b) {
+          if (!g_joy.GetJoystickButton(pad, b)) continue;
+          if (!held.empty()) held += L" ";
+          held += std::to_wstring(b);
+        }
+        out += L"\n  buttons: " + (held.empty() ? std::wstring(L"none") : held);
+        g_joy.CloseJoystick(pad);
+      }
+      g_joy.Free(ids);
+    }
+  }
+  struct XInputState2 {
+    uint32_t packet;
+    struct {
+      uint16_t buttons;
+      uint8_t left_trigger, right_trigger;
+      int16_t thumb_lx, thumb_ly, thumb_rx, thumb_ry;
+    } gamepad;
+  };
+  using GetState2 = uint32_t(__stdcall*)(uint32_t, XInputState2*);
+  if (HMODULE xi = LoadLibraryExW(L"xinput1_4.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+    const auto get = reinterpret_cast<GetState2>(reinterpret_cast<void*>(GetProcAddress(xi, "XInputGetState")));
+    if (get) {
+      const int read = g_read_slot;   // -1: the first connected pad
+      for (uint32_t slot = 0; slot < 4; ++slot) {
+        if (read >= 0 && int(slot) != read) continue;
+        XInputState2 state{};
+        if (get(slot, &state) != 0) continue;
+        const auto& g = state.gamepad;
+        auto pct = [](int v) { return v < 0 ? -(int)((-v) * 100 / 32768) : (int)(v * 100 / 32768); };
+        if (!out.empty()) out += L"\n";
+        out += L"Xbox controller " + std::to_wstring(slot + 1) + L" (XInput)";
+        out += L"\n  LX " + std::to_wstring(pct(g.thumb_lx)) + L"  LY " + std::to_wstring(pct(g.thumb_ly)) +
+               L"  RX " + std::to_wstring(pct(g.thumb_rx)) + L"  RY " + std::to_wstring(pct(g.thumb_ry));
+        out += L"\n  LT " + std::to_wstring(g.left_trigger * 100 / 255) + L"  RT " +
+               std::to_wstring(g.right_trigger * 100 / 255) + L"  buttons 0x" +
+               [&] { wchar_t buf[8]; swprintf(buf, 8, L"%04X", g.buttons); return std::wstring(buf); }();
+        break;   // one pad: the one the launcher reads
+      }
+    }
+    FreeLibrary(xi);
+  }
+  return out.empty() ? std::wstring(L"No game controller is connected.") : out;
+}
+
+// The monitor keeps itself current while its card is on screen.
+constexpr UINT_PTR kMonitorTimer = 29;
+// The monitor redraws at 60 Hz from a cached copy of the page, so only its row is
+// repainted: the rest of the page (cards, labels, the wheel rows) does not change
+// while it runs, and a full repaint every 16 ms would cost far more than it shows.
+HBITMAP g_page_cache;
+HDC g_page_cache_dc;
+int g_page_cache_w, g_page_cache_h;
+HBITMAP g_mon_bmp;
+HDC g_mon_dc;
+int g_mon_w, g_mon_h;
+RectF g_mon_row;
+int g_mon_ctl = -1;
+float g_mon_S = 1.f;
+bool g_mon_timer_on;
+RECT MonitorDirtyRect() {
+  RECT r = {};
+  if (g_mon_ctl < 0) return r;
+  r.left = (LONG)floorf(g_mon_row.X) - 2;
+  r.top = (LONG)floorf(g_mon_row.Y) - 2;
+  r.right = (LONG)ceilf(g_mon_row.X + g_mon_row.Width) + 2;
+  r.bottom = (LONG)ceilf(g_mon_row.Y + g_mon_row.Height) + 2;
+  return r;
+}
+ULONGLONG g_dev_poll_at = 0;
+void Relayout(HWND h);
+bool SyncDevices(bool announce);
+void RefreshMonitorRows(HWND h) {
+  if (g_tab != kTabDriving || g_subtab != kSubInput) return;
+  // A pad plugged in or removed while the page is open shows up on its own.
+  if (GetTickCount64() - g_dev_poll_at > 500) {
+    g_dev_poll_at = GetTickCount64();
+    if (SyncDevices(true)) Relayout(h);   // a pad came or went: the rows change size
+  }
+  bool any = false;
+  for (auto& c : g_c) {
+    if (c.kind != Kind::Monitor || RowHidden(c)) continue;
+    const std::wstring text = MonitorText();
+    if (text != c.items[0]) { c.items[0] = text; any = true; }
+  }
+  if (!any) return;
+  if (g_info_open >= 0) return;   // the help overlay dims the page: keep the last frame under it
+  const RECT dirty = MonitorDirtyRect();
+  if (g_mon_ctl >= 0 && g_page_cache_dc) InvalidateRect(h, &dirty, FALSE);   // only the row: the page is cached
+  else InvalidateRect(h, nullptr, FALSE);
+}
 void NameFfbGainRows() {
   for (int k = 0; k < 2; ++k) {
     if (g_ffb_gain_row[k] < 0) continue;
@@ -969,6 +1696,414 @@ void PollFfbCapture(HWND h) {
       if (!down) held[b] = 0;
     }
   }
+}
+
+
+// One row per action, so the page shows the same rows whatever default.ini holds yet.
+struct BindRowDef {
+  const char* out;
+  const wchar_t* label;   // PlayStation name
+  const wchar_t* xbox;    // the same button on an Xbox pad
+  const wchar_t* hint;
+  const char* key;   // the runtime's own default
+  const char* pad;   // "" none, "=" not remappable (an axis: the right chip only reads)
+};
+const BindRowDef kBindButtons[] = {
+    {"cross", L"Cross", L"A", L"Accept, and the handbrake in a race.", "enter", "cross"},
+    {"circle", L"Circle", L"B", L"Back, and the handbrake in a race.", "space", "circle"},
+    {"square", L"Square", L"X", L"Reset to track.", "x", "square"},
+    {"triangle", L"Triangle", L"Y", L"Change camera.", "c", "triangle"},
+    {"l1", L"L1", L"LB", L"Shift down.", "q", "l1"},
+    {"r1", L"R1", L"RB", L"Shift up.", "e", "r1"},
+    {"l2", L"Brake / reverse (L2)", L"Brake / reverse (LT)", L"Brake; hold to reverse.", "s", "l2"},
+    {"r2", L"Throttle (R2)", L"Throttle (RT)", L"Accelerate.", "w", "r2"},
+    {"l3", L"L3", L"LS click", L"Horn, and look behind.", "lctrl", "l3"},
+    {"r3", L"R3", L"RS click", L"Look back.", "v", "r3"},
+    {"options", L"Pause menu (OPTIONS)", L"Pause menu (Menu)", L"Pause the game.", "escape", "options"},
+    {"touchpad_left", L"Touchpad left", L"View (left)", L"Reset to track (the left half of the touchpad).", "r", "back"},
+    {"touchpad_right", L"Touchpad right", L"View (right)", L"Photo mode (the right half of the touchpad).", "t", "back"},
+};
+const BindRowDef kBindSticks[] = {
+    {"pad_up", L"D-pad up", L"D-pad up", L"Menu up.", "up", "pad_up"},
+    {"pad_down", L"D-pad down", L"D-pad down", L"Menu down.", "down", "pad_down"},
+    {"pad_left", L"D-pad left", L"D-pad left", L"Menu left.", "left", "pad_left"},
+    {"pad_right", L"D-pad right", L"D-pad right", L"Menu right.", "right", "pad_right"},
+    {"axis_left_x_minus", L"Steer left", L"Steer left", L"Steering, left.", "a", ""},
+    {"axis_left_x_plus", L"Steer right", L"Steer right", L"Steering, right.", "d", ""},
+    {"axis_left_y_minus", L"Left stick up", L"Left stick up", L"Unbound unless you set it.", "", ""},
+    {"axis_left_y_plus", L"Left stick down", L"Left stick down", L"Unbound unless you set it.", "", ""},
+    {"axis_right_x_minus", L"Right stick left", L"Right stick left", L"Look left.", "j", ""},
+    {"axis_right_x_plus", L"Right stick right", L"Right stick right", L"Look right.", "l", ""},
+    {"axis_right_y_minus", L"Right stick up", L"Right stick up", L"Look up.", "i", ""},
+    {"axis_right_y_plus", L"Right stick down", L"Right stick down", L"Look down.", "k", ""},
+};
+constexpr int kBindButtonCount = int(sizeof(kBindButtons) / sizeof(kBindButtons[0]));
+constexpr int kBindStickCount = int(sizeof(kBindSticks) / sizeof(kBindSticks[0]));
+
+// The controller inputs a row can be remapped to (src/runtime_input.inc, sdl_button_names).
+struct PadChoice { const char* id; const wchar_t* name; const wchar_t* xbox; const wchar_t* group; };
+const PadChoice kPadChoices[] = {
+    {"cross", L"Cross", L"A", L"Face buttons"}, {"circle", L"Circle", L"B", L"Face buttons"},
+    {"square", L"Square", L"X", L"Face buttons"}, {"triangle", L"Triangle", L"Y", L"Face buttons"},
+    {"l1", L"L1", L"LB", L"Shoulders"}, {"r1", L"R1", L"RB", L"Shoulders"},
+    {"l3", L"L3", L"LS click", L"Sticks and buttons"}, {"r3", L"R3", L"RS click", L"Sticks and buttons"},
+    {"options", L"OPTIONS", L"Menu", L"Sticks and buttons"}, {"back", L"Back / Share", L"View", L"Sticks and buttons"},
+    {"touchpad_center", L"Touchpad", L"Touchpad", L"Sticks and buttons"},
+    {"pad_up", L"D-pad up", L"D-pad up", L"D-pad"}, {"pad_down", L"D-pad down", L"D-pad down", L"D-pad"},
+    {"pad_left", L"D-pad left", L"D-pad left", L"D-pad"}, {"pad_right", L"D-pad right", L"D-pad right", L"D-pad"},
+};
+constexpr int kPadChoiceCount = int(sizeof(kPadChoices) / sizeof(kPadChoices[0]));
+
+
+
+bool IsAxisRow(const std::string& out) { return out.rfind("axis_", 0) == 0; }
+bool LockedChip(const std::string& out) { return out == "l2" || out == "r2" || IsAxisRow(out); }
+const wchar_t* AxisText(const std::string& out) {
+  if (out == "axis_left_x_minus") return L"Left stick \u2190";
+  if (out == "axis_left_x_plus") return L"Left stick \u2192";
+  if (out == "axis_left_y_minus") return L"Left stick \u2191";
+  if (out == "axis_left_y_plus") return L"Left stick \u2193";
+  if (out == "axis_right_x_minus") return L"Right stick \u2190";
+  if (out == "axis_right_x_plus") return L"Right stick \u2192";
+  if (out == "axis_right_y_minus") return L"Right stick \u2191";
+  return L"Right stick \u2193";
+}
+
+// The rows of the Controller and keyboard page: the 0.3.0 action tables, so a row exists even when
+// default.ini has no line for it yet. items[0] is the keyboard key, items[1] the pad button.
+int g_bind_buttons[kBindButtonCount];
+int g_bind_sticks[kBindStickCount];
+int g_bind_n_buttons = 0, g_bind_n_sticks = 0;
+
+bool PadTokenLine(const std::string& value) {
+  for (int i = 0; i < kPadChoiceCount; ++i)
+    if (value == kPadChoices[i].id) return true;
+  return false;
+}
+
+// The game's own action rows, so `axis_...` and every other foreign line stays out of the way.
+const BindRowDef* FindBindRow(const std::string& out) {
+  for (int i = 0; i < kBindButtonCount; ++i)
+    if (out == kBindButtons[i].out) return &kBindButtons[i];
+  for (int i = 0; i < kBindStickCount; ++i)
+    if (out == kBindSticks[i].out) return &kBindSticks[i];
+  return nullptr;
+}
+
+// The two lines of one action: the keyboard value (the first keyboard line) and the controller value.
+// A pad input name on the right is a controller line; anything else is a key name. That is exactly how
+// the runtime sorts them, and it is why the D-pad's `pad_up` and the Up arrow's `up` cannot be mixed up.
+void ReadPair(const std::string& out, std::wstring* key, std::wstring* pad) {
+  key->clear();
+  pad->clear();
+  bool have_key = false;
+  for (const auto& line : ReadLines(WheelIniPath())) {
+    if (LhsOf(line) != out) continue;
+    const std::string value = RhsOf(line);
+    if (value.empty()) continue;
+    if (PadTokenLine(value)) {
+      *pad = Widen(value);
+    } else if (!have_key) {
+      *key = Widen(value);
+      have_key = true;
+    }
+  }
+}
+
+
+bool g_xbox_names = false;   // an XInput pad is connected: show A/B/X/Y instead of Cross/Circle/...
+
+const wchar_t* PadShowName(const std::wstring& token) {
+  const std::string t = Narrow(token);
+  for (int i = 0; i < kPadChoiceCount; ++i)
+    if (t == kPadChoices[i].id) return g_xbox_names ? kPadChoices[i].xbox : kPadChoices[i].name;
+  return nullptr;
+}
+
+void AddTableRow(const BindRowDef& def, int* list, int* count) {
+  const std::string out = def.out;
+  const bool locked = LockedChip(out);
+  std::wstring key, pad;
+  ReadPair(out, &key, &pad);
+  // No fallback to the table's defaults: a slot with no line for this action really has no binding,
+  // and the chip has to say so instead of claiming the template's key.
+  if (locked) {
+    if (out == "l2") pad = g_xbox_names ? L"LT trigger" : L"L2 trigger";
+    else if (out == "r2") pad = g_xbox_names ? L"RT trigger" : L"R2 trigger";
+    else pad = AxisText(out);
+  }
+  const wchar_t* label = def.label;
+  Ctl c{label, def.hint, Kind::Binding, {key, pad},
+        {std::string("@bind:") + out + (locked ? "@ro" : "")}, 0, 0};
+  g_c.push_back(std::move(c));
+  list[(*count)++] = int(g_c.size()) - 1;
+}
+
+// ------------------------------------------------------------------------------------------
+// The pads the launcher can see: one row per XInput slot, always created and hidden while that slot has
+// no pad, so a pad plugged in later shows up without rebuilding the page. Double-clicking a pad's name
+// makes the launcher read it (binding capture and the input monitor), and the row is red for that pad.
+// ------------------------------------------------------------------------------------------
+// One line of launcher.ini, rewritten where it is (the file's other lines are kept as they are).
+void SaveIniLine(const std::string& key, const std::string& value) {
+  const std::wstring path = IniPath();
+  auto lines = ReadLines(path);
+  bool done = false;
+  for (auto& line : lines) {
+    if (line.rfind(key + "=", 0) != 0) continue;
+    line = key + "=" + value;
+    done = true;
+    break;
+  }
+  if (!done) lines.push_back(key + "=" + value);
+  std::string out;
+  for (const auto& l : lines) out += l + "\r\n";
+  MakeDirs(g_home);
+  SaveTextAtomically(path, out);
+}
+// The pad in use is remembered at once: every click in the shell is a new process, and it has to find
+// the same pad.
+void SaveReadSlot() { SaveIniLine("read_slot", std::to_string(g_read_slot)); }
+
+// Reads what is plugged in and shows it: a row per connected pad, red for the one in use.
+bool SyncDevices(bool announce) {
+  if (g_device_rows.size() != size_t(kDeviceSlots)) return false;
+  bool on[4] = {false, false, false, false};
+  int count = 0, first = -1;
+  for (int slot = 0; slot < 4; ++slot) {
+    unsigned short mask = 0;
+    on[slot] = XInputRead(slot, &mask) != 0;
+    if (on[slot]) {
+      ++count;
+      if (first < 0) first = slot;
+    }
+  }
+  // A pad that is not there (or none chosen yet) hands the launcher to the first one connected, so
+  // there is always a red name while a pad is plugged in.
+  if (g_read_slot < 0 || g_read_slot > 3 || !on[g_read_slot]) {
+    const int before = g_read_slot;
+    g_read_slot = first;
+    if (g_dev_loaded && before != g_read_slot) SaveReadSlot();
+  }
+  for (int slot = 0; slot < 4; ++slot) {
+    Ctl& row = g_c[size_t(g_device_rows[size_t(slot)])];
+    row.hidden = !on[slot];
+    row.sel = on[slot] && slot == g_read_slot ? 1 : 0;
+  }
+  if (g_dev_sdl_row >= 0) {
+    Ctl& row = g_c[size_t(g_dev_sdl_row)];
+    std::wstring names;
+    int seen = 0;
+    if (LoadSdlJoysticks()) {
+      if (!g_joy.WasInit(kSdlInitJoystick)) g_joy.InitSubSystem(kSdlInitJoystick);
+      int got = 0;
+      uint32_t* ids = g_joy.GetJoysticks(&got);
+      if (ids) {
+        for (int i = 0; i < got; ++i) {
+          void* pad = g_joy.OpenJoystick(ids[i]);
+          if (!pad) continue;
+          const char* name = g_joy.GetJoystickName(pad);
+          if (seen++) names += L"\n";
+          names += Widen(name && *name ? name : "Controller") + L"  (SDL)";
+          g_joy.CloseJoystick(pad);
+        }
+        g_joy.Free(ids);
+      }
+    }
+    row.hidden = seen == 0;
+    row.items[0] = names;
+  }
+  if (g_monitor_row >= 0) g_c[size_t(g_monitor_row)].items[0] = MonitorText();
+  std::string sig;
+  for (int slot = 0; slot < 4; ++slot) sig += on[slot] ? '1' : '0';
+  const bool changed = sig != g_dev_sig;
+  if (changed) {
+    g_dev_sig = sig;
+    if (announce) {
+      if (count != 0) {
+        g_status = L"Controller connected: XInput slot " + std::to_wstring(g_read_slot + 1) +
+                   L" is now the pad the launcher reads.";
+        g_status_color = kOk;
+      } else {
+        g_status = L"Controller disconnected. The keyboard still works.";
+        g_status_color = kWarn;
+      }
+      g_status_sticky = true;
+    }
+  }
+  return changed;
+}
+// ------------------------------------------------------------------------------------------
+// The built-in template: the game's own pad inputs and its racing keyboard layout, one line per action.
+// Picking a pad in DEVICES writes both into default.ini (every other line stays), and the pad's kind
+// decides how the buttons are named on the page.
+// ------------------------------------------------------------------------------------------
+std::vector<std::string> PadTemplateLines() {
+  std::vector<std::string> out;
+  for (int i = 0; i < kBindButtonCount; ++i) {
+    const BindRowDef& d = kBindButtons[i];
+    if (!d.pad || !*d.pad) continue;
+    out.push_back(std::string(d.out) + " = " + d.pad);
+  }
+  for (int i = 0; i < kBindStickCount; ++i) {
+    const BindRowDef& d = kBindSticks[i];
+    if (!d.pad || !*d.pad) continue;
+    out.push_back(std::string(d.out) + " = " + d.pad);
+  }
+  return out;
+}
+// The keyboard half of the template: the game's racing layout (WASD, the arrows and the menu keys).
+std::vector<std::string> KeyboardTemplateLines() {
+  std::vector<std::string> out;
+  for (int i = 0; i < kBindButtonCount; ++i)
+    if (kBindButtons[i].key && *kBindButtons[i].key)
+      out.push_back(std::string(kBindButtons[i].out) + " = " + kBindButtons[i].key);
+  for (int i = 0; i < kBindStickCount; ++i)
+    if (kBindSticks[i].key && *kBindSticks[i].key)
+      out.push_back(std::string(kBindSticks[i].out) + " = " + kBindSticks[i].key);
+  return out;
+}
+bool IsPadBindingLine(const std::string& line) { return PadTokenLine(RhsOf(line)); }
+// Replaces the binding lines with the built-in template: `pad` and/or `kb` (nullptr keeps that half as it
+// is). Every other line of default.ini stays where it is.
+bool WriteBindingLines(const std::vector<std::string>* kb, const std::vector<std::string>* pad) {
+  const std::wstring path = WheelIniPath();
+  if (!Exists(path)) return false;
+  std::vector<std::string> out;
+  bool kb_done = false, pad_done = false;
+  for (const auto& line : ReadLines(path)) {
+    if (FindBindRow(LhsOf(line))) {
+      const bool is_pad = IsPadBindingLine(line);
+      if (is_pad ? pad != nullptr : kb != nullptr) {
+        if (is_pad ? !pad_done : !kb_done) {
+          out.insert(out.end(), is_pad ? pad->begin() : kb->begin(), is_pad ? pad->end() : kb->end());
+          (is_pad ? pad_done : kb_done) = true;
+        }
+        continue;   // the old lines of this half are replaced
+      }
+      out.push_back(line);   // the half not being written stays as it is
+      continue;
+    }
+    out.push_back(line);
+  }
+  if (!kb_done && kb != nullptr) out.insert(out.end(), kb->begin(), kb->end());
+  if (!pad_done && pad != nullptr) out.insert(out.end(), pad->begin(), pad->end());
+  // The file's own line ending and final newline stay as they are.
+  std::string raw;
+  {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    raw.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  const std::string eol = raw.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  const bool final_newline = !raw.empty() && (raw.back() == '\n' || raw.back() == '\r');
+  std::string joined;
+  for (size_t i = 0; i < out.size(); ++i) {
+    joined += out[i];
+    if (i + 1 < out.size() || final_newline) joined += eol;
+  }
+  CopyFileW(path.c_str(), (path + L".launcher-backup").c_str(), FALSE);
+  return SaveTextTruncate(path, joined);
+}
+// Picking a pad writes the pad half only: the keyboard bindings are the player's own.
+bool WritePadTemplate() {
+  const std::vector<std::string> pad = PadTemplateLines();
+  return WriteBindingLines(nullptr, &pad);
+}
+bool WriteKeyboardTemplate() {
+  const std::vector<std::string> kb = KeyboardTemplateLines();
+  return WriteBindingLines(&kb, nullptr);
+}
+// "Reset this page" on Controller and keyboard: both halves go back to the built-in template.
+bool WriteFullTemplate() {
+  const std::vector<std::string> kb = KeyboardTemplateLines();
+  const std::vector<std::string> pad = PadTemplateLines();
+  return WriteBindingLines(&kb, &pad);
+}
+// The keyboard side is never left empty: when default.ini has no keyboard binding at all, the game's own
+// racing layout goes in. (The pad side is only filled by picking a pad in DEVICES.)
+bool EnsureKeyboardTemplate() {
+  const std::wstring path = WheelIniPath();
+  if (!Exists(path)) return false;
+  for (const auto& line : ReadLines(path))
+    if (FindBindRow(LhsOf(line)) && !IsPadBindingLine(line)) return false;   // keys are already there
+  return WriteKeyboardTemplate();
+}
+// ------------------------------------------------------------------------------------------
+// L3 + R3 switch: both sticks pressed together tap the right half of the touchpad (the game's photo
+// mode), which a pad without a touchpad does not have. The launcher keeps the switch in default.ini,
+// where the runtime reads it.
+// ------------------------------------------------------------------------------------------
+bool g_l3r3_touchpad = true;
+int g_l3r3_row = -1;
+const char* kL3R3Key = "l3r3_touchpad_right";
+// One `key = value` line of default.ini, rewritten where it is; every other line stays as it is.
+bool WriteInputLine(const char* key, const char* value) {
+  const std::wstring path = WheelIniPath();
+  if (!Exists(path)) return false;
+  std::string raw;
+  {
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in) return false;
+    raw.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  }
+  const std::string want = std::string(key) + " = " + value;
+  std::vector<std::string> out;
+  bool done = false;
+  for (const auto& line : ReadLines(path)) {
+    if (LhsOf(line) == key) {
+      if (!done) {
+        out.push_back(want);
+        done = true;
+      }
+      continue;
+    }
+    out.push_back(line);
+  }
+  if (!done) out.push_back(want);
+  const std::string eol = raw.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  const bool final_newline = !raw.empty() && (raw.back() == '\n' || raw.back() == '\r');
+  std::string joined;
+  for (size_t i = 0; i < out.size(); ++i) {
+    joined += out[i];
+    if (i + 1 < out.size() || final_newline) joined += eol;
+  }
+  CopyFileW(path.c_str(), (path + L".launcher-backup").c_str(), FALSE);
+  return SaveTextTruncate(path, joined);
+}
+bool WriteL3R3Setting(bool on) { return WriteInputLine(kL3R3Key, on ? "true" : "false"); }
+// Reads the switch from default.ini; false when the file has no such line.
+bool ReadL3R3Setting() {
+  for (const auto& line : ReadLines(WheelIniPath())) {
+    if (LhsOf(line) != kL3R3Key) continue;
+    const std::string value = RhsOf(line);
+    g_l3r3_touchpad = value == "true" || value == "1";
+    return true;
+  }
+  return false;
+}
+
+// Re-reads both chips of every binding row (after the template was written).
+void RefreshBindingChips() {
+  for (int pass = 0; pass < 2; ++pass) {
+    const int n = pass == 0 ? g_bind_n_buttons : g_bind_n_sticks;
+    const int* list = pass == 0 ? g_bind_buttons : g_bind_sticks;
+    for (int i = 0; i < n; ++i) {
+      Ctl& c = g_c[size_t(list[i])];
+      if (c.kind != Kind::Binding) continue;
+      std::wstring kb, pad;
+      ReadPair(BindOutOf(c), &kb, &pad);
+      if (c.items.size() < 2) c.items.resize(2);
+      c.items[0] = kb;
+      if (!BindPadLocked(c)) c.items[1] = pad;
+    }
+  }
+}
+
+void BuildBindingRows() {
+  g_bind_n_buttons = g_bind_n_sticks = 0;
+  for (int i = 0; i < kBindButtonCount; ++i) AddTableRow(kBindButtons[i], g_bind_buttons, &g_bind_n_buttons);
+  for (int i = 0; i < kBindStickCount; ++i) AddTableRow(kBindSticks[i], g_bind_sticks, &g_bind_n_sticks);
 }
 
 void BuildModel() {
@@ -1319,6 +2454,42 @@ void BuildModel() {
     c.physics_only = true;
     g_c.push_back(std::move(c));
   }
+  // Controller dead zones: two rows per device, as analog_deadzone lines in default.ini.
+  for (int i = 0; i < kDeadCount; ++i) g_dead_row[i] = AddDeadRow(i);
+  LoadDeadzones();
+  g_xbox_names = DetectXboxNaming();   // the pad in use decides how the buttons are named
+  // One row per XInput slot, always created and hidden while that slot has no pad, so a pad plugged in
+  // later shows up without rebuilding the page. Double-clicking a pad's name reads that pad; the row is
+  // red for the pad in use.
+  g_device_rows.clear();
+  for (int slot = 0; slot < 4; ++slot) {
+    Ctl c{L"Device",
+          L"Double-click a pad's name to read that pad for the binding buttons and the monitor.",
+          Kind::Info, {L"Xbox pad  \x00b7  XInput slot " + std::to_wstring(slot)},
+          {std::string("@dev:") + std::to_string(slot)}, 0, 0};
+    c.hidden = true;
+    g_device_rows.push_back(int(g_c.size()));
+    g_c.push_back(std::move(c));
+  }
+
+  {
+    Ctl c{L"Device", L"A pad SDL3 reports. Double-click a pad's name to read that pad.",
+          Kind::Info, {L""}, {"@devsdl"}, 0, 0};
+    c.hidden = true;
+    g_dev_sdl_row = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+
+  EnsureKeyboardTemplate();   // a file with no keyboard bindings at all gets the game's racing layout
+  SyncDevices(false);         // show what is plugged in now
+  BuildBindingRows();
+  {
+    Ctl c{L"Input monitor",
+          L"Movement of the sticks and the buttons that are held right now. Click the row to take a new reading.",
+          Kind::Monitor, {MonitorText()}, {"@monitor"}, 0, 0};
+    g_monitor_row = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
   NameFfbGainRows();
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
   g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap}, 0, kTabGraphics});
@@ -1388,6 +2559,47 @@ void BuildModel() {
   g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[6], g_ffb_softlock,
                                          g_ffb_gain_row[0], g_ffb_gain_row[1]}, 0, kTabDriving});
   g_cards.back().sub = kSubWheel;
+  // The page keeps the five cards the original design had: the buttons, the devices, the live
+  // monitor, the dead zones and the d-pad/stick bindings.
+  {
+    std::vector<int> buttons, sticks;
+    for (int i = 0; i < g_bind_n_buttons; ++i) buttons.push_back(g_bind_buttons[i]);
+    for (int i = 0; i < g_bind_n_sticks; ++i) sticks.push_back(g_bind_sticks[i]);
+    if (!buttons.empty()) {
+      g_cards.push_back({L"BUTTONS", buttons, 0, kTabDriving,
+                         L"One row per action: the left chip is the keyboard key, the right chip the pad button. Only the line you change is rewritten in data\\user\\input_config\\default.ini."});
+      g_cards.back().sub = kSubInput;
+    }
+    {
+      std::vector<int> dev = g_device_rows;
+      if (g_dev_sdl_row >= 0) dev.push_back(g_dev_sdl_row);
+      g_cards.push_back({L"DEVICES", dev, 0, kTabDriving,
+                         L"Double-click a device name to switch the input device the launcher reads. A red name is the one in use."});
+    }
+    g_cards.back().sub = kSubInput;
+    g_cards.push_back({L"INPUT MONITOR", {g_monitor_row}, 0, kTabDriving,
+                       L"Live from the pad in use: a stick, trigger or button that never moves here is not reaching the launcher either."});
+    g_cards.back().sub = kSubInput;
+    std::vector<int> dead;
+    for (int i = 0; i < kDeadCount; ++i) dead.push_back(g_dead_row[i]);
+    g_cards.push_back({L"DEAD ZONES", dead, 0, kTabDriving,
+                       L"How far a stick or trigger must move before the game sees it (inner) and where it counts as fully moved (outer)."});
+    g_cards.back().sub = kSubInput;
+    {
+      Ctl c{L"L3 + R3 taps the touchpad right",
+            L"Press both sticks down together and the game gets a tap on the right half of the touchpad, "
+            L"which it uses for photo mode. Meant for pads that have no touchpad of their own.",
+            Kind::Toggle, {}, {"@l3r3touch"}, 1, 1};
+      g_l3r3_row = int(g_c.size());
+      g_c.push_back(std::move(c));
+    }
+    if (g_l3r3_row >= 0) sticks.push_back(g_l3r3_row);
+    if (!sticks.empty()) {
+      g_cards.push_back({L"D-PAD AND STICKS", sticks, 0, kTabDriving,
+                         L"Steering, the d-pad and the sticks. The right chip shows what the pad reports for that axis."});
+      g_cards.back().sub = kSubInput;
+    }
+  }
   g_cards.push_back({L"EFFECTS", {g_ffb_slider[3], g_ffb_slider[4], g_ffb_slider[5], g_ffb_wave}, 0, kTabDriving});
   g_cards.back().sub = kSubWheel;
 }
@@ -1465,7 +2677,7 @@ bool ReadOptimizationMask(uint64_t& mask) {
 }
 void LoadSettings() {
   g_two_thread = !PrimaryGpuIsAmd();  // the saved choice (draw_threads=) replaces it below
-  for (const auto& line : ReadLines(IniPath())) {
+    for (const auto& line : ReadLines(IniPath())) {
     if (line.rfind("update=", 0) == 0) g_folder[0].path = Widen(line.substr(7));
     if (line.rfind("base=", 0) == 0) g_folder[1].path = Widen(line.substr(5));
     if (line.rfind("fps=", 0) == 0) fps_counter = line.substr(4) == "1";
@@ -1510,6 +2722,7 @@ void LoadSettings() {
     if (line.rfind("dlc_unlock=", 0) == 0) unlock_dlc = line.substr(11) == "1";  // the "unlock=" of earlier versions is not read: off for everyone
     if (line.rfind("bench_track=", 0) == 0) g_bench_track = FindBench(kBenchTracks, kBenchTrackCount, line.substr(12), 0);
     if (line.rfind("bench_car=", 0) == 0) g_bench_car = FindBench(kBenchCars, kBenchCarCount, line.substr(10), kBenchDefaultCar);
+    if (line.rfind("read_slot=", 0) == 0) g_read_slot = atoi(line.substr(10).c_str());
     const struct { const char* key; int row; } bench_rows[] = {{"bench_mode=", g_bmode}, {"bench_tod=", g_btod},
                                                                 {"bench_weather=", g_bweather}, {"bench_rain=", g_brain},
                                                                 {"bench_length=", g_blen}};
@@ -1522,6 +2735,14 @@ void LoadSettings() {
   }
   uint64_t existing_mask=0;
   if(ReadOptimizationMask(existing_mask)) g_two_thread=(existing_mask & (1ull<<37))==0;
+
+  g_dev_loaded = true;   // from here on a fallback pick is a real choice and may be saved
+  SyncDevices(false);    // the rows were built before the saved choice was read
+  if (g_l3r3_row >= 0) {
+    if (!ReadL3R3Setting()) WriteL3R3Setting(true);   // on by default, written once
+    g_c[size_t(g_l3r3_row)].sel = g_l3r3_touchpad ? 1 : 0;
+    g_c[size_t(g_l3r3_row)].def = g_c[size_t(g_l3r3_row)].sel;
+  }
   ShowBenchChoices();
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
   if (g_online_row >= 0 && online_saved >= 0 && online_saved < 3) g_c[g_online_row].sel = online_saved;
@@ -1584,8 +2805,7 @@ void LoadSettings() {
       c.sel = unlock_all_cars ? 1 : 0;
       continue;
     }
-    if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini
-    c.sel = 0;
+    if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c) || IsDeadRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini    c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
       if (c.patches[i].empty()) continue;
       if (std::find(lines.begin(), lines.end(), c.patches[i]) != lines.end()) c.sel = c.kind == Kind::Toggle ? 1 : int(i);
@@ -1767,7 +2987,8 @@ bool SaveSettings() {
     ini << "motion_blur=" << (g_c[g_motion_blur].sel == 1 ? "fast" : "slow") << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
-        << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
+        << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n"
+        << "read_slot=" << g_read_slot << "\r\n";
     for (const auto& d : g_drive) if (d.row >= 0) ini << d.key << g_c[d.row].sel << "\r\n";
     // Only when moved here: the game may have saved a newer one since this window read it.
     if (g_hdr_paper >= 0 && g_c[g_hdr_paper].sel != g_c[g_hdr_paper].loaded) {
@@ -1799,7 +3020,8 @@ bool SaveSettings() {
   }
   std::ostringstream out;
   for (const auto& c : g_c) {
-    if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
+    if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button ||
+        c.kind == Kind::Binding || c.kind == Kind::Info || c.kind == Kind::Monitor) continue;  // no patches
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
@@ -1817,11 +3039,17 @@ bool SaveSettings() {
     for(const auto& c:g_c) for(const auto& patch:c.patches) if(!patch.empty() && patch[0]!='@' && patch==previous) managed=true;
     if(!managed) out<<previous<<"\n";
   }
+    FlushDeadzones();
   if(!SaveTextAtomically(SelectionPath(),out.str())) return false;
   g_changed = false;return true;
 }
 
 void ResetDefaults() {
+  // On Controller and keyboard the reset also puts every binding back on the built-in template.
+  if (g_tab == kTabDriving && g_subtab == kSubInput && WriteFullTemplate()) {
+    RefreshBindingChips();
+    Relayout(g_hwnd);
+  }
   for (auto& c : g_c) {
     if (IsWheelRow(c)) continue;  // the player's wheel tuning stays (its presets are in its card)
     c.sel = c.def;
@@ -1837,9 +3065,36 @@ void ResetDefaults() {
 // layout
 // ------------------------------------------------------------------------------------------
 // full: as if every row were shown (where the cards are placed, so hiding rows does not move them).
+// The input monitor keeps its proportions: taller when the card is wider (0.3.0's MonitorHeight).
+float g_card_inner_w = 320.f;   // the width a card's rows get, set by LayoutPass
+float MonitorScale() { return (std::clamp)(g_card_inner_w / 240.f, 0.85f, 2.2f); }
+float MonitorHeight() { return 200.f * MonitorScale() + 18.f; }
+// An Info row carries its own text (the device list is a few lines), so the row grows with the lines —
+// including the lines the text wraps into at the card's width.
+float InfoHeight(const Ctl& c) {
+  int lines = 0;
+  const float per_line = (std::max)(20.f, (g_card_inner_w - 16.f) / 7.2f);   // characters that fit
+  if (c.items.empty()) {
+    lines = 1;
+  } else {
+    size_t run = 0;
+    for (size_t i = 0; i <= c.items[0].size(); ++i) {
+      if (i == c.items[0].size() || c.items[0][i] == L'\n') {
+        lines += int((float(run) + per_line - 1.f) / per_line) > 0 ? int((float(run) + per_line - 1.f) / per_line) : 1;
+        run = 0;
+      } else {
+        ++run;
+      }
+    }
+    if (lines == 0) lines = 1;
+  }
+  return (std::max)(54.f, 24.f + 20.f * float(lines));
+}
 float RowHeight(const Ctl& c, bool full = false) {
   if (!full && RowHidden(c)) return 0.f;
-  return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : c.kind == Kind::Slider ? 54.f : c.kind == Kind::Button ? 58.f : 70.f) +
+  return (c.kind == Kind::Toggle ? 46.f : c.kind == Kind::Action ? 224.f : c.kind == Kind::Slider ? 54.f
+              : c.kind == Kind::Button ? 58.f : c.kind == Kind::Info ? InfoHeight(c)
+              : c.kind == Kind::Monitor ? MonitorHeight() : 70.f) +
          g_row_extra;
 }
 float FolderRowHeight() { return 74.f; }
@@ -1851,6 +3106,7 @@ bool g_folders_in_flow = false;  // the folders card sits in a column (3+ column
 void LayoutPass(float bottom_extra) {
   g_cols = (std::clamp)(int((g_win_w - 2 * kMargin + kGap) / (380.f + kGap)), 2, 4);
   const float colw = (g_win_w - 2 * kMargin - float(g_cols - 1) * kGap) / float(g_cols);
+  g_card_inner_w = colw - 2 * kPad;
   // Game folders: a full-width card on top with 2 columns. With 3 or 4 the benchmark card alone sets the height
   // and the other columns have room, so the folders card goes into one of them instead of taking a full-width strip.
   g_folders_in_flow = g_cols >= 3;
@@ -1966,6 +3222,9 @@ void LayoutPass(float bottom_extra) {
               : c.kind == Kind::Action ? RectF(c.row.X, cy + 8.f, c.row.Width, 44.f)
               : c.kind == Kind::Slider ? RectF(c.row.X, cy + 26.f, c.row.Width, 22.f)
               : c.kind == Kind::Button ? RectF(c.row.X, cy + 8.f, c.row.Width, 42.f)
+              : c.kind == Kind::Binding ? RectF(c.row.X, cy + 30.f, c.row.Width, 32.f)
+              : c.kind == Kind::Monitor ? RectF(c.row.X, cy + 8.f, c.row.Width, rh - 16.f)
+              : c.kind == Kind::Info    ? RectF(c.row.X, cy + 6.f, c.row.Width, rh - 10.f)
                                        : RectF(c.row.X, cy + 26.f, c.row.Width, 34.f);
       cy += rh;
     }
@@ -2129,7 +3388,116 @@ void PaintHelp(Graphics& g, int w, int h) {
 
 bool FoldersOk() { return g_folder[0].ok && g_folder[1].ok; }
 
+
+
+// The input monitor, laid out like the 0.3.0 page: one box per axis (LX, LY, RX, RY) with its dead
+// zone rings, two trigger bars with their thresholds, a 3x3 d-pad and the button pills. Every size is
+// a multiple of one design unit `u`, so the whole picture grows with the card instead of staying small.
+void DrawMonitorRow(Graphics& g, const Font& fn, const RectF& box, const std::wstring& text, float S) {
+  const float u = S * MonitorScale();
+  const bool live = wcsstr(text.c_str(), L"LX") != nullptr;
+  if (!live) {   // no pad: say so instead of drawing an empty card
+    Text(g, text.empty() ? std::wstring(L"No pad is sending data right now.") : text, fn,
+         RectF(box.X, box.Y + 20 * u, box.Width, 40 * u), kMuted, StringAlignmentNear, StringAlignmentNear, true);
+    return;
+  }
+  int lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0, buttons = 0;
+  const wchar_t* p = text.c_str();
+  if (const wchar_t* q = wcsstr(p, L"LX")) swscanf(q, L"LX %d LY %d RX %d RY %d", &lx, &ly, &rx, &ry);
+  if (const wchar_t* q = wcsstr(p, L"LT")) swscanf(q, L"LT %d RT %d", &lt, &rt);
+  if (const wchar_t* q = wcsstr(p, L"buttons 0x")) swscanf(q, L"buttons 0x%x", &buttons);
+
+  auto dz = [](int i) { return (g_dead_row[i] >= 0) ? g_c[size_t(g_dead_row[i])].sel : 5; };
+  // The runtime's own inner/outer rule, so the dot sits where the game reads it.
+  auto remap = [](float v, int inner, int outer) {
+    const float m = fabsf(v) * 127.f;
+    if (m <= float(inner)) return 0.f;
+    const float scaled = (m - float(inner)) / float((std::max)(inner + 1, outer) - inner) * 127.f;
+    return (v < 0 ? -1.f : 1.f) * (std::min)(scaled, 127.f) / 127.f;
+  };
+  auto axis_box = [&](float x, const wchar_t* label, int value, int inner, int outer, bool horizontal) {
+    const float y = box.Y + 16 * u, size = 46 * u;
+    Text(g, label, fn, RectF(box.X + x, box.Y, size, 14 * u), kMuted);
+    FillRound(g, RectF(box.X + x, y, size, size), 6 * u, Color(255, 35, 37, 43));
+    const float cx = box.X + x + size / 2, cy = y + size / 2, reach = size / 2 - 5 * u;
+    Pen ring(Color(255, 120, 128, 142), 1.f * u);
+    const float ri = reach * (std::min)((std::max)(inner, 0), 127) / 127.f;
+    if (ri > 1.f) g.DrawEllipse(&ring, cx - ri, cy - ri, ri * 2, ri * 2);
+    const float ro = reach * (std::max)(0, (std::min)(outer, 127)) / 127.f;
+    if (outer < 127) g.DrawEllipse(&ring, cx - ro, cy - ro, ro * 2, ro * 2);
+    const float t = remap(float((std::clamp)(value, -100, 100)) / 100.f, inner, outer);
+    const float limit = reach * (std::max)(0, (std::min)(outer, 127)) / 127.f;   // full scale is the outer ring
+    SolidBrush dot(Color(255, 237, 43, 56));
+    const float dx = horizontal ? t * limit : 0.f, dy = horizontal ? 0.f : -t * limit;
+    g.FillEllipse(&dot, cx + dx - 3.5f * u, cy + dy - 3.5f * u, 7 * u, 7 * u);
+  };
+  axis_box(0, L"LX", lx, dz(0), dz(1), true);
+  axis_box(58 * u, L"LY", ly, dz(0), dz(1), false);
+  axis_box(116 * u, L"RX", rx, dz(2), dz(3), true);
+  axis_box(174 * u, L"RY", ry, dz(2), dz(3), false);
+
+  auto bar = [&](float y, const wchar_t* label, int value, int inner, int outer) {
+    const RectF track(box.X + 30 * u, box.Y + y, 120 * u, 9 * u);
+    Text(g, label, fn, RectF(box.X, box.Y + y - 2 * u, 26 * u, 14 * u), kMuted);
+    FillRound(g, track, 4.5f * u, Color(255, 35, 37, 43));
+    SolidBrush tick(Color(255, 120, 128, 142));
+    for (int edge : {inner, outer}) {   // the two thresholds, so the sliders above and the bar line up
+      if (edge <= 0 || edge >= 127) continue;
+      const float tx = track.X + track.Width * float(edge) / 127.f;
+      g.FillRectangle(&tick, tx - 0.5f * u, track.Y - 2 * u, 1.f * u, track.Height + 4 * u);
+    }
+    const float t = remap(float((std::clamp)(value, 0, 100)) / 100.f, inner, outer);
+    if (t > 0.01f) FillRound(g, RectF(track.X, track.Y, track.Width * t, track.Height), 4.5f * u,
+                             Color(255, 237, 43, 56));
+  };
+  bar(78 * u, L"L2", lt, dz(4), dz(5));
+  bar(100 * u, L"R2", rt, dz(6), dz(7));
+
+  {   // d-pad: 3x3 grid with the pressed directions lit
+    const float cell = 15 * u;
+    const RectF pad(box.X, box.Y + 126 * u, cell * 3, cell * 3);
+    FillRound(g, pad, 4 * u, Color(255, 35, 37, 43));
+    auto lit = [&](int col, int row) {
+      FillRound(g, RectF(pad.X + col * cell + 1, pad.Y + row * cell + 1, cell - 2 * u, cell - 2 * u), 3 * u,
+                Color(255, 237, 43, 56));
+    };
+    if (buttons & 0x0001) lit(1, 0);
+    if (buttons & 0x0002) lit(1, 2);
+    if (buttons & 0x0004) lit(0, 1);
+    if (buttons & 0x0008) lit(2, 1);
+  }
+
+  const float bx = box.X + 60 * u;
+  auto pill = [&](float x, float y, bool on, const wchar_t* label) {
+    const float w = 34 * u, h = 18 * u;
+    FillRound(g, RectF(x, box.Y + y, w, h), h / 2, on ? Color(255, 237, 43, 56) : Color(255, 35, 37, 43));
+    Text(g, label, fn, RectF(x, box.Y + y, w, h), on ? kWhite : kMuted, StringAlignmentCenter);
+  };
+  const wchar_t* f1 = g_xbox_names ? L"A" : L"Cross";
+  const wchar_t* f2 = g_xbox_names ? L"B" : L"Circle";
+  const wchar_t* f3 = g_xbox_names ? L"X" : L"Square";
+  const wchar_t* f4 = g_xbox_names ? L"Y" : L"Triangle";
+  pill(bx, 126 * u, (buttons & 0x1000) != 0, f1);
+  pill(bx + 40 * u, 126 * u, (buttons & 0x2000) != 0, f2);
+  pill(bx + 80 * u, 126 * u, (buttons & 0x4000) != 0, f3);
+  pill(bx + 120 * u, 126 * u, (buttons & 0x8000) != 0, f4);
+  pill(bx, 148 * u, (buttons & 0x0100) != 0, L"L1");
+  pill(bx + 40 * u, 148 * u, (buttons & 0x0200) != 0, L"R1");
+  pill(bx + 80 * u, 148 * u, (buttons & 0x0040) != 0, L"L3");
+  pill(bx + 120 * u, 148 * u, (buttons & 0x0080) != 0, L"R3");
+  pill(bx, 170 * u, (buttons & 0x0010) != 0, g_xbox_names ? L"Menu" : L"OPT");
+  pill(bx + 40 * u, 170 * u, (buttons & 0x0020) != 0, g_xbox_names ? L"View" : L"Share");
+  pill(bx + 80 * u, 170 * u, lt > 40, L"LT");
+  pill(bx + 120 * u, 170 * u, rt > 40, L"RT");
+}
 void Paint(HDC hdc, int w, int h) {
+  // The monitor refreshes itself only while its page is on screen.
+  g_mon_ctl = -1;
+  if (g_hwnd) {
+    const bool want = g_tab == kTabDriving && g_subtab == kSubInput;
+    if (want && !g_mon_timer_on) { SetTimer(g_hwnd, kMonitorTimer, 16, nullptr); g_mon_timer_on = true; }
+    else if (!want && g_mon_timer_on) { KillTimer(g_hwnd, kMonitorTimer); g_mon_timer_on = false; }
+  }
   Graphics g(hdc);
   g.SetSmoothingMode(SmoothingModeAntiAlias);
   g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
@@ -2278,6 +3646,41 @@ void Paint(HDC hdc, int w, int h) {
         SolidBrush knob(kWhite);
         const float d = 16 * S;
         g.FillEllipse(&knob, track.X + track.Width * t - d / 2, ct.Y + ct.Height / 2 - d / 2, d, d);
+        continue;
+      }
+      if (c.kind == Kind::Binding) {
+        // The action, then two chips: the keyboard key on the left, the pad button on the right.
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
+        const bool pad_locked = BindPadLocked(c);   // an axis is read as an axis: nothing to remap
+        const float gap = 8 * S;
+        const float left_w = (row.Width - gap) * 0.5f;
+        const RectF kb(row.X, row.Y + 26 * S, left_w, 28 * S);
+        const RectF pd(row.X + left_w + gap, row.Y + 26 * S, left_w, 28 * S);
+        FillRound(g, kb, 8 * S, hot ? kTrackHover : kTrack);
+        FillRound(g, pd, 8 * S, hot ? kTrackHover : kTrack);
+        const std::wstring kb_text = c.items.empty() || c.items[0].empty() ? std::wstring(L"\u2014") : c.items[0];
+        Text(g, kb_text, fSeg, RectF(kb.X + 10 * S, kb.Y, kb.Width - 20 * S, kb.Height),
+             c.items.empty() || c.items[0].empty() ? kMuted : kText, StringAlignmentCenter);
+        const std::wstring pad_show =
+            (c.items.size() < 2 || c.items[1].empty()) ? std::wstring(L"\u2014")
+            : pad_locked              ? c.items[1]                                   // already a readable name
+            : PadShowName(c.items[1]) ? std::wstring(PadShowName(c.items[1]))
+                                      : c.items[1];
+        Text(g, pad_show, fSeg, RectF(pd.X + 10 * S, pd.Y, pd.Width - 20 * S, pd.Height),
+             (c.items.size() < 2 || c.items[1].empty() || pad_locked) ? kMuted : kText, StringAlignmentCenter);
+        continue;
+      }
+      if (c.kind == Kind::Info) {
+        if (!c.items.empty() && !c.items[0].empty())
+          Text(g, c.items[0], fSeg, RectF(row.X, row.Y + 4 * S, row.Width, row.Height - 8 * S),
+               c.sel ? kAccent : kText, StringAlignmentNear, StringAlignmentNear, true);   // red: the pad read
+        continue;
+      }
+      if (c.kind == Kind::Monitor) {
+        g_mon_row = row; g_mon_ctl = i; g_mon_S = S;
+        RowLabel(g, c, i, fLabel, RectF(row.X, row.Y + 2 * S, row.Width, 22 * S));
+        DrawMonitorRow(g, fHint, RectF(row.X, row.Y + 26 * S, row.Width, row.Height - 30 * S),
+                       c.items.empty() ? std::wstring() : c.items[0], S);
         continue;
       }
       if (c.kind == Kind::Button) {
@@ -3585,6 +4988,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         PollFfbCapture(h);
         return 0;
       }
+      if (w == kBindCaptureTimer) {
+        PollBindCapture(h);
+        return 0;
+      }
+      if (w == kMonitorTimer) {
+        RefreshMonitorRows(h);
+        return 0;
+      }
       break;
     }
     case WM_KEYDOWN: {
@@ -3662,12 +5073,69 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC dc = BeginPaint(h, &ps);
+      {
+        const RECT dirty = MonitorDirtyRect();
+        const RECT& want = ps.rcPaint;
+        const bool row_only = g_mon_ctl >= 0 && g_page_cache_dc && g_info_open < 0 && want.left >= dirty.left &&
+            want.top >= dirty.top && want.right <= dirty.right && want.bottom <= dirty.bottom;
+        if (row_only) {
+          // 60 Hz monitor tick: compose the row off-screen and put it on the window in one blit.
+          // Drawing straight to the window let the compositor show the erased row for a frame,
+          // which read as flicker.
+          const int rw = dirty.right - dirty.left, rh = dirty.bottom - dirty.top;
+          if (!g_mon_dc || g_mon_w != rw || g_mon_h != rh) {
+            if (g_mon_dc) DeleteDC(g_mon_dc);
+            if (g_mon_bmp) DeleteObject(g_mon_bmp);
+            g_mon_dc = CreateCompatibleDC(dc);
+            g_mon_bmp = CreateCompatibleBitmap(dc, rw, rh);
+            SelectObject(g_mon_dc, g_mon_bmp);
+            g_mon_w = rw;
+            g_mon_h = rh;
+          }
+          BitBlt(g_mon_dc, 0, 0, rw, rh, g_page_cache_dc, dirty.left, dirty.top, SRCCOPY);
+          {
+            Graphics g(g_mon_dc);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+            g.TranslateTransform((REAL)-dirty.left, (REAL)-dirty.top);
+            const FontFamily& fam = *UiFamily();
+            const float S = g_mon_S;
+            Font fLabel(&fam, 14 * S, FontStyleRegular, UnitPixel), fHint(&fam, 12.5f * S, FontStyleRegular, UnitPixel);
+            Ctl& c = g_c[g_mon_ctl];
+            RowLabel(g, c, g_mon_ctl, fLabel, RectF(g_mon_row.X, g_mon_row.Y + 2 * S, g_mon_row.Width, 22 * S));
+            DrawMonitorRow(g, fHint, RectF(g_mon_row.X, g_mon_row.Y + 26 * S, g_mon_row.Width, g_mon_row.Height - 30 * S),
+                           c.items.empty() ? std::wstring() : c.items[0], S);
+            g.Flush();
+          }
+          BitBlt(dc, dirty.left, dirty.top, rw, rh, g_mon_dc, 0, 0, SRCCOPY);
+          EndPaint(h, &ps);
+          return 0;
+        }
+      }
       RECT rc;
       GetClientRect(h, &rc);
       HDC mem = CreateCompatibleDC(dc);
       HBITMAP bmp = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
       HGDIOBJ old = SelectObject(mem, bmp);
       Paint(mem, rc.right, rc.bottom);
+      if (!g_page_cache_dc || g_page_cache_w != rc.right || g_page_cache_h != rc.bottom) {
+        if (g_page_cache_dc) DeleteDC(g_page_cache_dc);
+        if (g_page_cache) DeleteObject(g_page_cache);
+        g_page_cache_dc = CreateCompatibleDC(dc);
+        g_page_cache = CreateCompatibleBitmap(dc, rc.right, rc.bottom);
+        SelectObject(g_page_cache_dc, g_page_cache);
+        g_page_cache_w = rc.right;
+        g_page_cache_h = rc.bottom;
+      }
+      BitBlt(g_page_cache_dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);   // the static page, for the monitor row
+      if (g_mon_ctl >= 0 && g_info_open < 0) {
+        // The cached row must be empty: a tick puts the old frame back first, and anything left
+        // in it (a stick dot, a lit button) would show as a ghost under the new one.
+        const RECT mr = MonitorDirtyRect();
+        SolidBrush blank(kCard);
+        Graphics gc(g_page_cache_dc);
+        gc.FillRectangle(&blank, Rect(mr.left, mr.top, mr.right - mr.left, mr.bottom - mr.top));
+      }
       BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
       SelectObject(mem, old);
       DeleteObject(bmp);
@@ -3812,8 +5280,28 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       const int c = HitControl(x, y, &seg);
       if (c >= 0) {
         Ctl& ctl = g_c[c];
-        if (ctl.patches[0] == "@name" || ctl.patches[0] == "@onhost") {
-          StartNameEdit(h, ctl);
+        if (ctl.patches[0].rfind("@dev:", 0) == 0) {   // double-click: read that pad
+          const ULONGLONG now = GetTickCount64();
+          const bool again = g_dev_click_row == c && now - g_dev_click_at < 600;
+          g_dev_click_row = c;
+          g_dev_click_at = now;
+          if (again) {
+            g_read_slot = atoi(ctl.patches[0].c_str() + 5);
+            g_xbox_names = DetectXboxNaming();   // the pad's kind names the buttons and picks the template
+            // Double-click: read that pad and put its template in place (the pad half only).
+            const bool filled = WritePadTemplate();
+            if (filled) RefreshBindingChips();
+            SyncDevices(false);
+            g_status = L"Reading the pad in XInput slot " + std::to_wstring(g_read_slot + 1) + L".";
+            if (filled) g_status += g_xbox_names ? L" The Xbox pad template was filled in."
+                                                 : L" The PlayStation pad template was filled in.";
+            g_status_color = kOk;
+            g_status_sticky = true;
+          }
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        if (ctl.patches[0] == "@name" || ctl.patches[0] == "@onhost") {          StartNameEdit(h, ctl);
           return 0;
         }
         if (ctl.kind == Kind::Picker) {
@@ -3840,8 +5328,29 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
+        if (ctl.kind == Kind::Monitor) {
+          ctl.items[0] = MonitorText();
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        if (ctl.kind == Kind::Binding) {
+          const RectF ct = Scaled(ctl.ctl);
+          const bool right = x > ct.X + ct.Width * 0.55f;   // the right chip belongs to the pad
+          if (right && ctl.patches[0].size() > 3 &&
+              ctl.patches[0].compare(ctl.patches[0].size() - 3, 3, "@ro") == 0) {
+            g_status = L"That control is read as an axis and cannot be remapped.";
+            g_status_color = kMuted;
+            g_status_sticky = true;
+            InvalidateRect(h, nullptr, FALSE);
+            return 0;
+          }
+          StartBindCapture(h, c, right ? 1 : 0);
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
         if (ctl.kind == Kind::Button) {
           const RectF ct = Scaled(ctl.ctl);
+
           if (c == g_wheel_setup && y >= ct.Y && y <= ct.Y + ct.Height) OpenWheelSetup();
           if ((c == g_save_backup_row || c == g_save_restore_row) && y >= ct.Y && y <= ct.Y + ct.Height) {
             std::wstring message;
@@ -3869,6 +5378,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             if (!GpuBlocked() && g_status == g_gpu_problem) g_status.clear();
             else if (GpuBlocked()) { g_status = g_gpu_problem; g_status_color = kBad; }
           }
+          if (ctl.patches[0] == "@l3r3touch") {
+            g_l3r3_touchpad = ctl.sel != 0;
+            WriteL3R3Setting(g_l3r3_touchpad);
+          }
           g_changed = true;
           if (c == g_hdr) Relayout(h);  // its sliders show or hide
         } else if (seg >= 0) {
@@ -3893,6 +5406,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           }
           else if (c == g_ffb_preset) ApplyWheelPreset(seg);
           else if (c == g_drive_preset) ApplyDrivePreset(seg);
+
           if (c == g_ffb_model && seg == 1) {
             g_status = L"Original Physics is not recommended for wheels: it is the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip. Reworked Physics gives the feel of a racing sim.";
             g_status_color = kWarn;

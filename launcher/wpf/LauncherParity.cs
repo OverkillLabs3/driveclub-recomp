@@ -14,6 +14,7 @@ public partial class MainWindow
     private string availableUpdate = "";
     private int captureSettingId = -1;
     private string? wheelCaptureCommand;
+    private bool bindingCapture;
 
     private void InitializeParity()
     {
@@ -35,7 +36,7 @@ public partial class MainWindow
         {
             if (captureSettingId < 0) return;
             if (e.Key == Key.Escape) { wheelCaptureCommand = "cancel"; e.Handled = true; }
-            else if (e.Key is Key.Delete or Key.Back) { wheelCaptureCommand = "clear"; e.Handled = true; }
+            else if (!bindingCapture && e.Key is Key.Delete or Key.Back) { wheelCaptureCommand = "clear"; e.Handled = true; }
         };
     }
 
@@ -169,6 +170,23 @@ public partial class MainWindow
         menu.Items.Add(clear); button.ContextMenu = menu;
     }
 
+    // Double-click on a device name: read that pad for the binding buttons and the monitor.
+    private async Task ActivateDevice(Setting setting)
+    {
+        if (busy || !setting.Tag.StartsWith("@dev:")) return;
+        busy = true;
+        try
+        {
+            state.DeviceSlot = int.Parse(setting.Tag.Substring(5));
+            var response = await backend.Call("usedevice", state);
+            Adopt(response);   // the red name and the monitor follow the new pad
+            SetStatus(response.Message.Length == 0 ? "Input device switched." : response.Message);
+        }
+        catch (Exception ex) { SetStatus(ex.Message, true); }
+        finally { busy = false; state.DeviceSlot = -1; }
+    }
+
+
     private async Task ActivateNativeButton(Button button, Setting setting, bool clear = false)
     {
         bool gain = setting.Tag is "@ffbgainup" or "@ffbgaindown";
@@ -205,6 +223,39 @@ public partial class MainWindow
         {
             if (gain) { captureSettingId = -1; wheelCaptureCommand = null; state.CaptureClear = false; busy = false; }
             button.Content = originalContent; button.IsEnabled = true;
+        }
+    }
+
+    private async Task ActivateBinding(Button button, Setting setting, int side = 0)
+    {
+        if (busy) return;
+        var original = button.Content;
+        try
+        {
+            busy = true;
+            state.CaptureId = setting.Id;
+            state.CaptureSide = side;
+            captureSettingId = setting.Id;   // makes Esc write the cancel file at once
+            bindingCapture = true;
+            button.Content = side == 1 ? "Press a button…" : "Press a key…";
+            SetStatus(side == 1
+                ? "Press the controller button you want to use. Esc: cancel."
+                : "Press the key you want to use. Esc: cancel.");
+            var response = await backend.Call("capture", state, captureCommand: () => wheelCaptureCommand);
+            var changed = response.Controls.FirstOrDefault(c => c.Id == setting.Id);
+            if (changed != null) setting.Options = changed.Options;
+            SetStatus(response.Message.Length == 0 ? "Binding saved." : response.Message);
+            pages.Remove(currentPage); ShowPage(currentPage, false);
+        }
+        catch (Exception ex) { SetStatus(ex.Message, true); }
+        finally
+        {
+            state.CaptureId = 0;
+            captureSettingId = -1;
+            bindingCapture = false;
+            busy = false;
+            button.Content = original;
+            button.IsEnabled = true;
         }
     }
 }
