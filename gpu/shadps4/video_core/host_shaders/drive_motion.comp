@@ -50,8 +50,10 @@ void main() {
     // Stored by rows, read by columns: the matrix is transposed, so G * v is v * M.
     vec2 motion = MotionTo(clip_to_prev_clip, clip, eye_ndc, uv);
     // The player's car, the hands and the other cars keep their place on the screen far better than the world does:
-    // in VR they still move with the head.
-    if (use_stencil > 0.5 && (texelFetch(mask_tex, src, 0).r & 130u) != 0u) {
+    // in VR they still move with the head. Whatever is within reach is inside the car, stencil or not (the dials and
+    // the dash screen): the world's vectors, at the car's speed, are far out that close.
+    if (use_stencil > 0.5 && ((texelFetch(mask_tex, src, 0).r & 130u) != 0u ||
+                              (depth + eye_z22) * eye_inv_near > 1.0 / 1.2)) {
         motion = MotionTo(car_to_prev_clip, clip, eye_ndc, uv);
     }
     if (use_object > 0.5) {

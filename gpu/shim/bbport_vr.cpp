@@ -625,8 +625,7 @@ struct HookCall {
     float car[9]{};      // the frame the head turns in (the car body's axes as rows, world): the car's turn
     float forward[3]{};  // the camera's z axis (world): with the position it names the frame's camera
     float axes[9]{};     // the camera's axes as the hook set them (rows x, y, z; world)
-    float view[9]{};     // the view's rows (x right, y up, z back) in the axes of what the head rides on: CarView
-    float seat[3]{};     // the camera's position in those axes, from that thing's own point
+    float seat[3]{};     // the camera's position in the axes of `car`, from the car's own point: CarView
 };
 HookCall head_history[64];
 std::atomic<int> drawing_eye{-1}; // the eye the head hook set the camera up for last
@@ -825,13 +824,8 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k) call.car[i * 3 + k] = rest[i][k];
     const float* const body = camera + 0x2d0 / 4;
-    static const float view_sign[3] = {-1.0f, 1.0f, -1.0f}; // the hook's rows point left and forward, the view's right and back
-    for (int i = 0; i < 3; ++i) {
-        for (int k = 0; k < 3; ++k) {
-            call.view[i * 3 + k] = view_sign[i] * r[i][k];
-            call.seat[i] += (cam[12 + k] - body[12 + k]) * rest[i][k];
-        }
-    }
+    for (int i = 0; i < 3; ++i)
+        for (int k = 0; k < 3; ++k) call.seat[i] += (cam[12 + k] - body[12 + k]) * rest[i][k];
     hook_time_us = call.time_us;
 }
 
@@ -1133,12 +1127,8 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
             call.axes[k] = -w[k], call.axes[3 + k] = w[4 + k], call.axes[6 + k] = -w[8 + k];
             call.car[k] = -from[k], call.car[3 + k] = from[4 + k], call.car[6 + k] = -from[8 + k];
         }
-        for (int i = 0; i < 3; ++i) {
-            for (int k = 0; k < 3; ++k) {
-                call.view[i * 3 + k] = r[i][k];
-                call.seat[i] += (w[12 + k] - from[12 + k]) * from[i * 4 + k];
-            }
-        }
+        for (int i = 0; i < 3; ++i)
+            for (int k = 0; k < 3; ++k) call.seat[i] += (w[12 + k] - from[12 + k]) * call.car[i * 3 + k];
         vehicle_view_us = call.time_us;
     }
     XrFovf fov{};
@@ -1683,7 +1673,7 @@ struct FrameCamera {
     int eye = -1;
     XrPosef head{};
     float car[9]{};
-    float view[9]{}, seat[3]{}; // HookCall's: CarView
+    float view[9]{}, seat[3]{}; // CarView: the frame's own view, HookCall's seat
 };
 std::mutex camera_mutex;
 FrameCamera camera_now; // the frame being drawn
@@ -1988,8 +1978,18 @@ void NoteCameraConstants(const float* data) {
     }
     camera_now = {true, best->eye, best->head};
     std::memcpy(camera_now.car, best->car, sizeof best->car);
-    std::memcpy(camera_now.view, best->view, sizeof best->view);
     std::memcpy(camera_now.seat, best->seat, sizeof best->seat);
+    // The view's rows (x right, y up, z back) in the car's axes, for what is fixed in the car (CarView): the hook's
+    // axes point left and forward. The frame's own axes replace them below: the game turns the camera a little after
+    // the hook, and DLSS saw the cockpit swim by that turn (0.2-0.45 degrees) where its vectors left it out.
+    const auto view_in_car = [&](const float* axes, float* view) {
+        static const float sign[3] = {-1.0f, 1.0f, -1.0f};
+        for (int i = 0; i < 3; ++i)
+            for (int k = 0; k < 3; ++k)
+                view[i * 3 + k] = sign[i] * (axes[i * 3] * best->car[k * 3] + axes[i * 3 + 1] * best->car[k * 3 + 1] +
+                                             axes[i * 3 + 2] * best->car[k * 3 + 2]);
+    };
+    view_in_car(best->axes, camera_now.view);
     // The frame's own camera axes: its view-projection's rows x, y and w are P00 x + P20 z, P11 y + P21 z and z (the
     // view's rows, world); made orthonormal, each signed like the hook's. The turn from the hook's axes to them, in
     // the camera's own axes (the game turns the camera a little after the hook: 1-4 degrees seen), is put on the
@@ -2039,6 +2039,9 @@ void NoteCameraConstants(const float* data) {
                 const float n = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z + t.w * t.w);
                 t = {t.x / n, t.y / n, t.z / n, t.w / n};
                 frame_deg = 2.0f * std::acos(std::fmin(1.0f, std::fabs(t.w))) * 180.0f / Pi;
+                if (frame_deg < 10.0f) {
+                    view_in_car(b[0], camera_now.view);
+                }
                 if (settings.frame_pose && frame_deg < 10.0f) {
                     const Quat h = Mul(ToQuat(camera_now.head.orientation), t);
                     camera_now.head.orientation = {h.x, h.y, h.z, h.w};

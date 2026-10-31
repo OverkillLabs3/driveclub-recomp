@@ -148,8 +148,8 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
   little, most of all near objects while turning. Below about 90 game FPS (45 per eye) it feels laggy when you move
   your head. Without DLSS it can look grainy: the game's own temporal AA mixes the two eyes, so its FXAA pass (Detail
   tab) is the only other anti-aliasing that helps.
-- True stereo: a lower FPS than AFR, and DLSS has no vectors of the cars' own motion, so other cars can trail a little.
-  Your own car counts as still, so the cockpit can smear on a quick head turn. Menus stay flat.
+- True stereo: a lower FPS than AFR, and DLSS has no vectors of the other cars' own motion, so distant cars can swim a
+  little inside their outline. Menus stay flat.
 - DriveClub Recomp is heavy on the CPU: a lower headset picture helps little when the CPU is the limit.
 - DLSS per eye is experimental: softer, some ghosting, and no FPS gain where the CPU is the limit. No FSR, no frame
   generation.
