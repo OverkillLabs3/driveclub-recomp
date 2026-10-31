@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// FSR 3.1.5 (FidelityFX SDK 2.3) upscaling through the vendored Vulkan bridge: the SDK's
+// FSR 3.1.6 (SDK 2.4 upscaler with the SDK 2.3 backend) through the Vulkan bridge: the SDK's
 // scheduler owns the pipelines and its own internal images, the caller supplies the frame
 // images and the three shared temporal resources. The bridge creates temporary views on import
 // and restores each image's layout after a dispatch, so every image stays in General here.

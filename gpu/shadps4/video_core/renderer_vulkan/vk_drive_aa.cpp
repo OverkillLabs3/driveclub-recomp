@@ -198,7 +198,7 @@ void DriveAA::NextFrame() {
     BbSettings::Get().aa_effective = mode;
     if (mode != applied_mode) {
         if (BbSettings::Get().aa_mode == BbSettings::AaFsr411 && mode == BbSettings::AaFsr3) {
-            std::puts("Anti-aliasing: FSR 4.1.1 is unsupported on this GPU; using FSR 3.1.5");
+            std::puts("Anti-aliasing: FSR 4.1.2 is unsupported on this GPU; using FSR 3.1.6");
         }
         applied_mode = mode;
         reset = true;
@@ -455,45 +455,46 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss, bool fsr4
     if (!dlss) {
         if (fsr411_mode) {
             if (!instance.IsFsr411PortableSupported()) {
-                std::puts("Anti-aliasing: FSR 4.1.1 needs shaderInt8, shaderInt16 and "
+                std::puts("Anti-aliasing: FSR 4.1.2 needs shaderInt8, shaderInt16 and "
                           "shaderIntegerDotProduct; not available on this GPU");
                 return false;
             }
             // The game runs with the runtime folder as its working directory; the asset set may
-            // also sit in the install root next to it (or wherever BB_FSR411_DIR points).
+            // also sit in the install root next to it (or wherever BB_FSR412_DIR points).
             const auto has_assets = [](const std::filesystem::path& dir) {
                 return std::filesystem::exists(dir / "t1080_m0/initializer.bin") ||
                        std::filesystem::exists(dir / "t2160_m0/initializer.bin");
             };
             std::string dir;
-            if (const char* env = std::getenv("BB_FSR411_DIR"); env && env[0]) {
+            if (const char* env = std::getenv("BB_FSR412_DIR"); env && env[0]) {
                 dir = env;
             } else {
-                for (const char* candidate : {"fsr4_411", "../fsr4_411"}) {
+                for (const char* candidate : {"fsr4_412", "../fsr4_412"}) {
                     if (has_assets(candidate)) {
                         dir = candidate;
                         break;
                     }
                 }
                 if (dir.empty()) {
-                    dir = "fsr4_411";
+                    dir = "fsr4_412";
                 }
             }
             if (!has_assets(dir)) {
-                std::printf("Anti-aliasing: FSR 4.1.1 assets missing in %s (build fsr4_411 from "
-                            "a FSR 4.1.1 DLL with tools/fsr4cap)\n",
+                std::printf("Anti-aliasing: FSR 4.1.2 assets missing in %s (copy gpu/third_party/fsr412/assets "
+                            "to fsr4_412)\n",
                             dir.c_str());
                 return false;
             }
             fsr411 = std::make_unique<Fsr411::Upscaler>(
-                VkPhysicalDevice(instance.GetPhysicalDevice()), VkDevice(instance.GetDevice()), dir);
-            std::printf("FSR 4.1.1: replay from %s\n", dir.c_str());
+                VkPhysicalDevice(instance.GetPhysicalDevice()), VkDevice(instance.GetDevice()), dir,
+                instance.HasMixedFloatDotProduct());
+            std::printf("FSR 4.1.2: replay from %s\n", dir.c_str());
         } else {
             fsr315 = std::make_unique<Fsr315>(instance, scheduler);
             if (!fsr315->Create(w, h, ow, oh)) {
                 const std::string problem =
                     fsr315->Problem() ? fsr315->Problem() : "unknown reason";
-                std::printf("Anti-aliasing: FSR 3.1.5 creation failed (%s)\n", problem.c_str());
+                std::printf("Anti-aliasing: FSR 3.1.6 creation failed (%s)\n", problem.c_str());
                 fsr315.reset();
                 return false;
             }
@@ -536,9 +537,9 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss, bool fsr4
     ready = true;
     reset = true;
     if (ow == w && oh == h) {
-        std::printf("Anti-aliasing: %s %ux%u", dlss ? "DLAA" : fsr411_mode ? "FSR 4.1.1 native" : "FSR 3.1.5 native", w, h);
+        std::printf("Anti-aliasing: %s %ux%u", dlss ? "DLAA" : fsr411_mode ? "FSR 4.1.2 native" : "FSR 3.1.6 native", w, h);
     } else {
-        std::printf("Upscaling: %s %ux%u to %ux%u", dlss ? "DLSS" : fsr411_mode ? "FSR 4.1.1" : "FSR 3.1.5", w, h, ow, oh);
+        std::printf("Upscaling: %s %ux%u to %ux%u", dlss ? "DLSS" : fsr411_mode ? "FSR 4.1.2" : "FSR 3.1.6", w, h, ow, oh);
     }
     std::puts("");
     return true;
@@ -893,8 +894,14 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         frame.sharpen = settings.sharpen && sharpness > 0.0f;
         frame.reset = reset;
         frame.auto_exposure = true;
+        frame.color_format = VkFormat(color_format);
+        frame.depth_format = VkFormat(depth_format);
+        frame.frame_ms = frame_ms;
+        frame.near_plane = motion.Near();
+        frame.far_plane = motion.Far();
+        frame.vertical_fov = motion.VerticalFov();
         if (!fsr411->Record(frame)) {
-            std::printf("Anti-aliasing: FSR 4.1.1 failed (%s)\n", fsr411->Error().c_str());
+            std::printf("Anti-aliasing: FSR 4.1.2 failed (%s)\n", fsr411->Error().c_str());
             failed = true;
             BbSettings::Get().aa_failed = true;
             reset = true;
@@ -903,7 +910,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         fsr411_ticks.push_back(scheduler.CurrentTick());
         if (const std::string description = fsr411->Describe(); description != fsr411_described) {
             fsr411_described = description;
-            std::printf("FSR 4.1.1: %s\n", description.c_str());
+            std::printf("FSR 4.1.2: %s\n", description.c_str());
         }
         dispatched = true;
     } else if (fsr315) {
@@ -930,7 +937,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         frame.vertical_fov = motion.VerticalFov();
         if (!fsr315->Record(frame)) {
             const std::string problem = fsr315->Problem() ? fsr315->Problem() : "unknown reason";
-            std::printf("Anti-aliasing: FSR 3.1.5 failed (%s)\n", problem.c_str());
+            std::printf("Anti-aliasing: FSR 3.1.6 failed (%s)\n", problem.c_str());
             failed = true;
             BbSettings::Get().aa_failed = true;
             reset = true;

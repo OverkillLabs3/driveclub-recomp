@@ -739,7 +739,7 @@ void FpsCounter() {
                                   : (s.dlss_supported ? "F9 off, F10 FSR/DLSS" : "F9 off");
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
                         s.aa_effective == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA")
-                            : s.aa_effective == BbSettings::AaFsr411 ? "FSR 4.1.1" : "FSR 3.1.5",
+                            : s.aa_effective == BbSettings::AaFsr411 ? "FSR 4.1.2" : "FSR 3.1.6",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
                         s.aa_running ? " on" : s.aa_failed ? " failed (see the log)" : " waiting", *keys ? "  (" : "",
                         keys, *keys ? ")" : "");

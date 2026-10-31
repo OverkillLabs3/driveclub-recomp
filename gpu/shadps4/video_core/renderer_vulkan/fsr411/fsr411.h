@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: FSR 4.1.1 (AMD's INT8 model of the 4.1.1 upscaler DLL) on Vulkan, replaying what the DLL
-// does on D3D12 (docs/upscaler.md; tools/fsr4cap records it, tools/fsr4cap/extract.py builds
-// the asset sets: SPIR-V of every pass and the model weights).
+// FSR 4.1.2 on Vulkan: the native AMD runtime when supported, otherwise the captured INT8
+// shaders and weights in gpu/third_party/fsr412. The replay retains its Fsr411 namespace.
 //
 // Plain Vulkan (no renderer types) so that the game (vk_fsr4.cpp) and the benchmark
 // (tools/fsr4_bench.cpp) share it. Frames record into the caller's command buffer; the caller
@@ -38,12 +37,17 @@ struct Frame {
     bool sharpen = false;
     bool reset = false;
     bool auto_exposure = true;
+    VkFormat color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
+    float frame_ms = 16.6f;
+    float near_plane = 0.1f, far_plane = 3000.0f, vertical_fov = 1.0f;
 };
 
 class Upscaler {
 public:
     /// `dir`: the asset sets (t1080_m0 ... t2160_m1).
-    Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir);
+    Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir,
+             bool mixed_float_dot = false);
     ~Upscaler();
 
     /// Records one upscale; false with Error() set when it cannot (assets, device, sizes).

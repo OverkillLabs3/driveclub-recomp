@@ -26,6 +26,7 @@ appdir=${APPDIR:-$(cd -- "$(dirname -- "$self")" && pwd)}
 bindir=$appdir/usr/bin
 gpu=$appdir/usr/lib/driveclub-recomp/gpu
 share=$appdir/usr/share/driveclub-recomp
+export BB_FSR412_DIR="${BB_FSR412_DIR:-$share/fsr4_412}"
 launcher=$bindir/driveclub-launcher
 export LD_LIBRARY_PATH="$appdir/usr/lib:$gpu"
 

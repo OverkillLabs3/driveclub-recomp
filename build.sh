@@ -26,4 +26,9 @@ if ! ninja -C "$build" DriveClubGame > "$build-build.log" 2>&1; then
     exit 1
 fi
 cp "$build/DriveClubGame.exe" "$output"
+mkdir -p out/fsr4_412 "$build/fsr4_412"
+cp -r gpu/third_party/fsr412/assets/. out/fsr4_412/
+cp -r gpu/third_party/fsr412/assets/. "$build/fsr4_412/"
+cp gpu/third_party/fsr412/bin/*.dll out/
+cp gpu/third_party/fsr412/bin/*.dll "$build/"
 echo "Built $PWD/$output"

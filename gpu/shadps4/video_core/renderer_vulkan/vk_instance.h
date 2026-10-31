@@ -353,17 +353,18 @@ public:
                features.shaderStorageImageExtendedFormats;
     }
 
-    /// bbport: FSR 4.1.1 (INT8 model passes and VK_VALVE_shader_mixed_float_dot_product).
+    /// FSR 4.1.2: the portable prepass removes the optional VALVE mixed-dot requirement.
     bool IsFsr411Supported() const {
-        return IsFsr4Int8Supported() && mixed_float_dot_product;
+        return IsFsr4Int8Supported() && features.shaderStorageImageWriteWithoutFormat;
     }
 
-    /// bbport: the portable FSR 4.1.1 replay (assets built with FSR411_PORTABLE=1). The
-    /// shaders need Int8/Int16 and SPV_KHR_integer_dot_product, but not the Valve mixed-dot
-    /// extension, so NVIDIA and other Vulkan drivers can run them.
+    bool HasMixedFloatDotProduct() const {
+        return mixed_float_dot_product;
+    }
+
+    /// Both native AA and the temporal upscaler use the same shader feature contract.
     bool IsFsr411PortableSupported() const {
-        return vk12_features.shaderInt8 && features.shaderInt16 &&
-               vk13_features.shaderIntegerDotProduct;
+        return IsFsr411Supported();
     }
 
     /// VK_KHR_shader_clock is supported.
@@ -657,7 +658,7 @@ private:
     bool image_view_min_lod{};
     bool shader_clock{};
     bool compute_shader_derivatives{};
-    bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
+    bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.2)
     bool present_id{};              // VK_KHR_present_id (Reflex frame attribution)
     bool low_latency2{};            // VK_NV_low_latency2 (NVIDIA Reflex low-latency mode)
     PFN_vkSetLatencySleepModeNV set_latency_sleep_mode{};

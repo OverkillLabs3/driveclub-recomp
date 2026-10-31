@@ -1084,7 +1084,7 @@ void BuildModel() {
                  {L"Live", L"Static (faster)"}, {"@mirror", ""}, 0);
   g_aa = seg(L"Anti-aliasing",
              L"Replaces the game's own anti-aliasing with NVIDIA DLSS (GeForce RTX cards) or AMD FSR 3.1 (any graphics card) for a sharper, steadier picture, and makes the Upscaling choice below possible. The game's own is the default. Motion blur must stay enabled with FSR or DLSS; its exposure preset can still be changed.",
-             {L"Game", L"FSR 3.1.5", L"DLSS (RTX)", L"FSR 4.1.1"}, {"@aa", "", "", ""}, 0);
+             {L"Game", L"FSR 3.1.6", L"DLSS (RTX)", L"FSR 4.1.2"}, {"@aa", "", "", ""}, 0);
   g_up = seg(L"Upscaling",
              L"More FPS for nearly the same picture: the game is drawn at a lower resolution and DLSS (or FSR) rebuilds it at your screen's resolution. DLAA (Native with FSR) draws every pixel: the best picture, the lowest FPS. Quality is the best balance; Balanced, Performance and Ultra Perf. give more FPS each. Needs DLSS or FSR 3.1 above.",
              {L"DLAA", L"Quality", L"Balanced", L"Performance", L"Ultra Perf."}, {"@up", "", "", "", ""}, 0);
@@ -1752,12 +1752,12 @@ void OutputSize(int& w, int& h, int wide_choice = -1, int output_choice = -1) {
 bool FsrAssetsAvailable(int width, int height, bool ultra) {
   wchar_t configured[32768];
   std::vector<std::wstring> roots;
-  if (GetEnvironmentVariableW(L"BB_FSR411_DIR", configured, 32768) > 0) {
+  if (GetEnvironmentVariableW(L"BB_FSR412_DIR", configured, 32768) > 0) {
     std::wstring path = configured;
     if (path.size() < 2 || (path[1] != L':' && path[0] != L'\\' && path[0] != L'/')) path = g_runtime + L"\\" + path;
     roots.push_back(path);
   } else {
-    roots = {g_runtime + L"\\fsr4_411", g_home + L"\\fsr4_411"};
+    roots = {g_runtime + L"\\fsr4_412", g_home + L"\\fsr4_412"};
   }
   for (const auto& root : roots) {
     if (!Exists(root + L"\\t1080_m0\\initializer.bin") && !Exists(root + L"\\t2160_m0\\initializer.bin")) continue;
@@ -1772,7 +1772,7 @@ bool FsrAssetsAvailable(int width, int height, bool ultra) {
     WIN32_FILE_ATTRIBUTE_DATA data{};
     if (!GetFileAttributesExW((folder + L"initializer.bin").c_str(), GetFileExInfoStandard, &data) ||
         data.nFileSizeHigh || data.nFileSizeLow != 131072) return false;
-    for (const auto* name : {L"spd", L"prepass", L"pass0_post", L"postpass", L"rcas"}) {
+    for (const auto* name : {L"spd", L"prepass", L"prepass_portable", L"pass0_post", L"postpass", L"rcas"}) {
       if (!Exists(folder + name + L".spv")) return false;
     }
     for (int pass = 1; pass <= 12; ++pass) {
@@ -1805,7 +1805,7 @@ std::wstring ControlReason(int row, int choice) {
   if ((row == g_aa && choice == 3) || (g_aa >= 0 && g_c[g_aa].sel == 3 &&
       (row == g_outres || row == g_inres || row == g_wide || row == g_up))) {
     if (!g_graphics.checked && !unverified) return pending;
-    if (g_graphics.checked && !g_graphics.fsr411) return L"FSR 4.1.1 needs GPU support for 8-bit/16-bit shaders and integer dot products.";
+    if (g_graphics.checked && !g_graphics.fsr411) return L"FSR 4.1.2 needs GPU support for 8-bit/16-bit shaders and integer dot products.";
     int width, height;
     const int wide = row == g_wide && choice >= 0 ? choice : g_c[g_wide].sel;
     const int quality = row == g_up && choice >= 0 ? choice : g_c[g_up].sel;
@@ -1817,8 +1817,8 @@ std::wstring ControlReason(int row, int choice) {
       const int render = row == g_inres && choice >= 0 ? choice : g_c[g_inres].sel;
       OutputSize(width, height, 0, render > 0 ? render : 1);
     }
-    if (width > 3840 || height > 2160) return L"FSR 4.1.1 supports reconstruction up to 3840 x 2160. Choose a smaller size or another method.";
-    if (!FsrAssetsAvailable(width, height, quality == 4)) return L"The FSR 4.1.1 asset set for this size is missing or incomplete.";
+    if (width > 3840 || height > 2160) return L"FSR 4.1.2 supports reconstruction up to 3840 x 2160. Choose a smaller size or another method.";
+    if (!FsrAssetsAvailable(width, height, quality == 4)) return L"The FSR 4.1.2 asset set for this size is missing or incomplete.";
   }
   if (row == g_fgen && choice > 0) {
     if (blur) return L"Turn off the motion blur/depth-of-field patch first; frame generation needs its scene history.";

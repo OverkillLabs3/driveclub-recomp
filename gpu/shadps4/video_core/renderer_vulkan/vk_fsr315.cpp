@@ -27,7 +27,7 @@ Fsr315::~Fsr315() {
 
 void Fsr315::Fail(const char* what, int result) {
     problem = std::string{what} + " (" + std::to_string(result) + ")";
-    std::printf("FSR 3.1.5: %s\n", problem.c_str());
+    std::printf("FSR 3.1.6: %s\n", problem.c_str());
 }
 
 bool Fsr315::CreateShared(const FfxVkFsr3_3_1_5SharedResourceDescription& description,
@@ -97,7 +97,7 @@ bool Fsr315::Create(u32 render_width, u32 render_height, u32 out_width, u32 out_
         Destroy();
         return false;
     }
-    std::printf("FSR 3.1.5: %ux%u to %ux%u, shared %ux%u %ux%u %ux%u\n", render_width,
+    std::printf("FSR 3.1.6: %ux%u to %ux%u, shared %ux%u %ux%u %ux%u\n", render_width,
                 render_height, out_width, out_height, dilated_depth.width, dilated_depth.height,
                 dilated_motion.width, dilated_motion.height, previous_depth.width,
                 previous_depth.height);
@@ -231,7 +231,7 @@ bool Fsr315::Record(const Frame& frame) {
             for (auto& release : tokens) {
                 Release(release);
             }
-            problem = "a frame image could not be imported for FSR 3.1.5";
+            problem = "a frame image could not be imported for FSR 3.1.6";
             return false;
         }
     }

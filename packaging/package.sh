@@ -37,6 +37,8 @@ for f in "$WPF_OUT"/*; do
 done
 cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe
 cp out/DriveClubGame.exe "$OUT/runtime/"
+cp -r gpu/third_party/fsr412/assets "$OUT/runtime/fsr4_412"
+cp gpu/third_party/fsr412/bin/*.dll "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
 cp packaging/release/trophies.tsv "$OUT/runtime/"   # trophy banner texts: names, descriptions, grades
@@ -82,6 +84,9 @@ if [ -f "$DLSS_BIN/nvngx_dlssnr.dll" ]; then
   cp "$DLSS_BIN/nvngx_dlssnr.dll" "$OUT/runtime/"
 fi
 mkdir -p "$OUT/licenses"
+cp gpu/third_party/fsr412/LICENSE.txt "$OUT/licenses/AMD-FSR-SDK-LICENSE.txt"
+cp gpu/third_party/fsr412/MSVC-LICENSE.txt "$OUT/licenses/Microsoft-Visual-C-Runtime-LICENSE.txt"
+cp gpu/third_party/fsr412/NOTICE.txt "$OUT/licenses/FSR-4.1.2-NOTICE.txt"
 cp packaging/dlss/NVIDIA-DLSS-LICENSE.txt packaging/dlss/dlss_bridge-LICENSE.txt "$OUT/licenses/"
 # The community server is GPL-2.0 software: its licence and where its source is.
 [ -f "$SERVER_BIN/LICENSE" ] && cp "$SERVER_BIN/LICENSE" "$OUT/licenses/driveclub-server-LICENSE.txt"
@@ -96,7 +101,7 @@ done
 (cd "$OUT/runtime" && find . -type f ! -name files.txt | sed 's|^\./||' | sort > files.txt)
 # Nothing of the game, the console firmware or the player may end up in the package.
 leaks="$(find "$OUT" -type f \( -iname 'eboot.bin' -o -iname '*.sprx' -o -iname '*.prx' -o -iname '*.pkg' -o -iname '*.sfo' \
-  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.spv' -o -iname '*.dmp' \
+  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o \( -iname '*.spv' ! -path "$OUT/runtime/fsr4_412/*" \) -o -iname '*.dmp' \
   -o -iname 'launcher.ini' -o -path '*/data/*' -o -path '*/logs/*' -o -path '*/sce_sys/*' \) -print)"
 if [ -n "$leaks" ]; then
   echo "Package leak check failed, these files must not ship:" >&2

@@ -1,0 +1,19 @@
+Copyright (C) Advanced Micro Devices, Inc.
+
+AMD FSR SDK v2.4.0, commit 7539ae8b6568ad29ed78a753404351daf3b5cca7.
+The signed Vulkan loader and upscaler DLLs are unmodified.
+The portable INT8 shader programs and model weights were captured from the
+FSR SDK 2.4.0 DX12 upscaler (SHA256 aad4fccccb29084a655f9a4f9f613bd22c8c03fb4a0f8840148cc6543b4ccace),
+translated with dxil-spirv and assigned Vulkan descriptor bindings.
+The postpass store pattern is rewritten; the portable prepass expands the
+VALVE mixed float dot product into FP32 operations and is not bit-exact
+against AMD hardware. These are modified, unofficial assets.
+Source: https://github.com/Mob1K7105/beamng-fsr4-linux
+Commit: fc00541e49c390cf3b57903ab00968e89794d189
+The MIT exception for the upscaler DLL is included in LICENSE.txt.
+Native wrapper and portable replay: GPL-2.0-or-later, repository LICENSE.
+
+Microsoft Visual C++ Runtime 14.44.35112 x64: msvcp140.dll, vcruntime140.dll,
+vcruntime140_1.dll, distributed app-locally from the Visual Studio 2022
+Build Tools VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT directory.
+Copyright Microsoft Corporation. See MSVC-LICENSE.txt.

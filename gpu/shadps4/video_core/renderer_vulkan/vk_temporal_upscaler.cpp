@@ -1087,8 +1087,8 @@ void TemporalUpscaler::Run() {
         RecordTaa(cmdbuf, input_color_view, input_depth_view);
         dispatched = true;
     } else if (UseFsr4()) {
-        dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h},
-                                {input_depth, input_depth_view, w, h}, w, h, ow, oh, frame_ms);
+        dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h, color.info.pixel_format},
+                                {input_depth, input_depth_view, w, h, depth_format}, w, h, ow, oh, frame_ms);
     } else if (UseDlss()) {
         dispatched = RecordDlss(
             cmdbuf,
@@ -1630,8 +1630,8 @@ void TemporalUpscaler::RunScaled() {
                               source_width, source_height},
                              w, h, ow, oh, frame_ms, false);
         } else {
-            ok4 = RecordFsr4(cmdbuf, {color_image, color_view, source_width, source_height},
-                            {depth_image, depth_view, source_width, source_height}, w, h, ow,
+            ok4 = RecordFsr4(cmdbuf, {color_image, color_view, source_width, source_height, color.info.pixel_format},
+                            {depth_image, depth_view, source_width, source_height, depth_format}, w, h, ow,
                             oh, frame_ms);
         }
         if (ok4) {
