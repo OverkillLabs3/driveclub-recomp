@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "bbport_diagnostics.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "bbport_neural_settings.h"
 #include "bbport_settings.h"
@@ -66,6 +67,48 @@ void Barrier(vk::CommandBuffer cmd, vk::Image image,
         .image = image,
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
     cmd.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+}
+
+void DumpNeural(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer command,
+                vk::Image image, const char* name, u64 frame, u32 width, u32 height, u32 bytes_per_pixel = 8) {
+    const VkBufferCreateInfo buffer_ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0,
+                                       u64(width) * height * bytes_per_pixel, VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    const VmaAllocationCreateInfo allocation_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &allocation_ci, &buffer,
+                        &allocation, &info) != VK_SUCCESS) {
+        return;
+    }
+    Barrier(command, image);
+    command.copyImageToBuffer(image, vk::ImageLayout::eGeneral, buffer,
+        vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                            .imageExtent = {width, height, 1}});
+    const vk::MemoryBarrier2 to_host{
+        .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
+    };
+    command.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &to_host});
+    Barrier(command, image);
+    const char* directory = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/nr_%s_f%llu_%ux%u.raw",
+                  directory && *directory ? directory : "out/dump", name, frame, width, height);
+    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation,
+                                      info, size = buffer_ci.size, path = std::string{path}] {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+        if (FILE* file = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(info.pMappedData, 1, size, file);
+            std::fclose(file);
+        }
+        vmaDestroyBuffer(allocator, buffer, allocation);
+    });
 }
 
 void Copy(vk::CommandBuffer cmd, vk::Image src, vk::Image dst, u32 w, u32 h) {
@@ -429,7 +472,7 @@ bool NeuralRendering::Record(vk::CommandBuffer cmd, int stage, const Color &colo
     if (!config.enabled || s.failed || s.rebuild || !color.image)
         return false;
     std::vector<int> active;
-    // Nothing calls the before-the-upscale hook while the game keeps its own anti-aliasing, so a
+    // Nothing calls the upscale hooks while the game keeps its own anti-aliasing, so a
     // pass left on that stage would never run. Treat it as the present in that case only. This keys
     // on the setting rather than on frame order: the upscale hook fires during the game's rendering,
     // before this frame's serial advances, so a per-frame flag would fall back on the wrong frame
@@ -440,7 +483,7 @@ bool NeuralRendering::Record(vk::CommandBuffer cmd, int stage, const Color &colo
             continue;
         }
         const bool fallback = stage == BbNeural::Present && no_upscaler &&
-                              config.passes[i].stage == BbNeural::PreUpscale;
+                              config.passes[i].stage != BbNeural::Present;
         if (config.passes[i].stage == stage || fallback) {
             active.push_back(i);
         }
@@ -510,8 +553,16 @@ bool NeuralRendering::Record(vk::CommandBuffer cmd, int stage, const Color &colo
     static_assert(sizeof(Constants) == 52);
     s.MakePipeline(s.prepare, NEURAL_PREPARE_COMP, 3, 3, sizeof(Constants));
     s.MakePipeline(s.resolve, NEURAL_RESOLVE_COMP, 4, 1, sizeof(Constants));
+    const char* dump_trigger = BB_DIAGNOSTIC_ENV("BB_NR_DUMP_TRIGGER");
+    const bool dump = dump_trigger && std::remove(dump_trigger) == 0;
     for (int index : active) {
         auto &p = s.passes[index];
+        if (dump && index == active.front()) {
+            p.resolved.General(cmd);
+            Copy(cmd, working.image, p.resolved.image, color.width, color.height);
+            DumpNeural(s.instance, s.scheduler, cmd, p.resolved.image, "before",
+                       s.frame_serial, color.width, color.height);
+        }
         Barrier(cmd, working.image);
         p.input.General(cmd);
         p.motion.General(cmd);
@@ -546,6 +597,14 @@ bool NeuralRendering::Record(vk::CommandBuffer cmd, int stage, const Color &colo
                 vk::ImageLayout::eShaderReadOnlyOptimal);
         Barrier(cmd, p.depth.image, vk::ImageLayout::eGeneral,
                 vk::ImageLayout::eShaderReadOnlyOptimal);
+        if (dump && index == active.front()) {
+            Barrier(cmd, p.motion.image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                    vk::ImageLayout::eGeneral);
+            DumpNeural(s.instance, s.scheduler, cmd, p.motion.image, "motion",
+                       s.frame_serial, nw, nh, 4);
+            Barrier(cmd, p.motion.image, vk::ImageLayout::eGeneral,
+                    vk::ImageLayout::eShaderReadOnlyOptimal);
+        }
         const BbNrEvaluate eval{
             BridgeImage(p.input),
             BridgeImage(p.motion),
@@ -582,6 +641,12 @@ bool NeuralRendering::Record(vk::CommandBuffer cmd, int stage, const Color &colo
         s.Dispatch(cmd, s.resolve, resolve_views, 4, &pc, sizeof(pc), color.width, color.height);
         p.resolved.General(cmd);
         working = ImageColor(p.resolved, working.linear, working.hdr);
+    }
+    if (dump) {
+        DumpNeural(s.instance, s.scheduler, cmd, working.image, "after", s.frame_serial,
+                   color.width, color.height);
+        std::printf("Neural rendering: captured before/after RGBA16F, stage %s, guides %ux%u\n",
+                    BbNeural::StageName(stage), guide.width, guide.height);
     }
     if (stage == BbNeural::Present && protect)
         s.processed = working;

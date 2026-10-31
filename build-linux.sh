@@ -110,6 +110,8 @@ imgui=gpu/third_party/imgui
     "$imgui/backends/imgui_impl_sdl3.cpp" "$imgui/backends/imgui_impl_sdlrenderer3.cpp" \
     "${sdl_cflags[@]}" "${sdl_libs[@]}" -pthread -o out/driveclub-launcher
 
+mkdir -p out/fsr4_412
+cp -r gpu/third_party/fsr412/assets/. out/fsr4_412/
 echo "Built $PWD/out/driveclub-probe"
 echo "Built $PWD/out/driveclub-prepare"
 echo "Built $PWD/out/driveclub-launcher"

@@ -9,6 +9,7 @@
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
 #include "shader_recompiler/runtime_info.h"
+#include "video_core/amdgpu/regs.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -53,8 +54,8 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     // Pipeline selection limits the extra attachment and vertex stores to likely
     // animated draws. A setting or environment override can still disable the path.
-    if (!BbSettings::MotionVectorsOptIn() || !BbSettings::Get().object_motion ||
-        BbSettings::Get().upscaler == BbSettings::UpscalerOff) {
+    const auto& settings = BbSettings::Get();
+    if (!settings.object_motion) {
         std::puts("Object motion: off (enable in menu or BB_OBJECT_MOTION=1)");
         return;
     }
@@ -94,6 +95,9 @@ ObjectMotion::~ObjectMotion() {
 void ObjectMotion::OnFrameStart() {
     if (!enabled) {
         return;
+    }
+    if (diagnostic_frames) {
+        --diagnostic_frames;
     }
     if (BbStats::enabled && (frame % 600) == 0 && history.stats.draws) {
         const auto& s = history.stats;
@@ -139,27 +143,62 @@ void ObjectMotion::OnFrameStart() {
     });
 }
 
-u32 ObjectMotion::PrepareDraw(const DrawInfo& draw) {
-    if (!enabled || BbToggle::Disabled(1u << 29) || params_used >= ParamsPerFrame) {
-        return 0;
+bool ObjectMotion::IsCarDraw(const AmdGpu::Regs& regs) {
+    const auto marks_car = [](AmdGpu::StencilFunc op, const AmdGpu::StencilRefMask& ref) {
+        const u32 value = op == AmdGpu::StencilFunc::ReplaceTest ? ref.stencil_test_val :
+                          op == AmdGpu::StencilFunc::ReplaceOp ? ref.stencil_op_val : 0;
+        return (value & ref.stencil_write_mask & 130u) != 0;
+    };
+    return regs.depth_control.stencil_enable &&
+           (marks_car(regs.stencil_control.stencil_zpass_front, regs.stencil_ref_front) ||
+            (regs.depth_control.backface_enable &&
+             marks_car(regs.stencil_control.stencil_zpass_back, regs.stencil_ref_back)));
+}
+
+void ObjectMotion::CaptureHistory() {
+    const char* value = std::getenv("BB_MOTION_SELECT_LOG");
+    if (value && value[0] == '1') {
+        diagnostic_frames = 8;
     }
-    const auto allocation = history.Prepare(draw);
-    u32 flags = (allocation.store ? Shader::MotionVectors::FlagStore : 0) |
-                (allocation.load ? Shader::MotionVectors::FlagLoad : 0);
-    if (!flags) {
+}
+
+u32 ObjectMotion::PrepareDraw(const DrawInfo& draw, std::span<const u64> instances) {
+    const u32 count = instances.empty() ? 1u : u32(instances.size());
+    if (!enabled || BbToggle::Disabled(1u << 29) || count > ParamsPerFrame - params_used) {
         return 0;
     }
     const u32 slot = u32(frame % FrameSlots);
-    const u32 index = 1 + slot * ParamsPerFrame + params_used++;
-    u32* param = params_mapped + index * 8;
-    param[0] = allocation.store;
-    param[1] = allocation.load;
-    param[2] = allocation.vertices;
-    param[3] = flags;
-    param[4] = allocation.first_vertex;
-    param[5] = allocation.first_instance;
-    param[6] = allocation.instances;
-    param[7] = 0;
+    const u32 index = 1 + slot * ParamsPerFrame + params_used;
+    bool active = false;
+    for (u32 i = 0; i < count; ++i) {
+        const auto allocation = instances.empty() ? history.Prepare(draw)
+                                                 : history.PrepareInstance(draw, instances[i]);
+        if (diagnostic_frames) {
+            std::printf("Motion history: frame %llu vs %016llx geometry %016llx indices %llx topology %016llx count %u instances %u first_instance %u first_vertex %u vertices %u store %u load %u\n",
+                        (unsigned long long)frame, (unsigned long long)draw.shader,
+                        (unsigned long long)(instances.empty() ? draw.geometry : instances[i]),
+                        (unsigned long long)draw.indices, (unsigned long long)draw.topology,
+                        draw.index_count, instances.empty() ? draw.instances : 1u,
+                        instances.empty() ? draw.first_instance : 0u, draw.vertices.first,
+                        draw.vertices.count, allocation.store, allocation.load);
+        }
+        u32 flags = (allocation.store ? Shader::MotionVectors::FlagStore : 0) |
+                    (allocation.load ? Shader::MotionVectors::FlagLoad : 0);
+        active |= flags != 0;
+        u32* param = params_mapped + (index + i) * 8;
+        param[0] = allocation.store;
+        param[1] = allocation.load;
+        param[2] = allocation.vertices;
+        param[3] = flags;
+        param[4] = allocation.first_vertex;
+        param[5] = instances.empty() ? allocation.first_instance : draw.first_instance + i;
+        param[6] = allocation.instances;
+        param[7] = instances.empty() ? 0u : 1u;
+    }
+    params_used += count;
+    if (!active) {
+        return 0;
+    }
     params_ticks[slot] = scheduler.CurrentTick();
     return index;
 }
@@ -218,7 +257,7 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
         BbStats::motion_profile_ns[BbStats::MotionEnsureImageCreate]};
     target.image.Create(vk::ImageCreateInfo{
         .imageType = vk::ImageType::e2D,
-        .format = vk::Format::eR16G16B16A16Sfloat,
+        .format = vk::Format::eR32G32B32A32Sfloat,
         .extent = {width, height, 1},
         .mipLevels = 1,
         .arrayLayers = 1,
@@ -234,7 +273,7 @@ void ObjectMotion::EnsureImage(u32 width, u32 height) {
     target.view = Check(device.createImageViewUnique({
         .image = vk::Image(target.image),
         .viewType = vk::ImageViewType::e2D,
-        .format = vk::Format::eR16G16B16A16Sfloat,
+        .format = vk::Format::eR32G32B32A32Sfloat,
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     }));
     view_timer.Stop();
@@ -289,6 +328,8 @@ void ObjectMotion::Attach(RenderState& state, u32 width, u32 height) {
 
 vk::ImageView ObjectMotion::PrepareRead(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                         bool& valid) {
+    Shader::MotionVectors::render_size.store(u64(width) | (u64(height) << 32),
+                                             std::memory_order_relaxed);
     if (active_image >= images.size()) {
         EnsureImage(1, 1);
     }

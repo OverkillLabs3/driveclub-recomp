@@ -67,7 +67,7 @@ struct Fsr4Upscaler::Impl {
     bool fatal = false;
     u64 next_frame_id = 1;
     std::deque<std::pair<u64, u64>> in_flight; ///< provider frame id, scheduler tick
-    // bbport: FSR 4.1.1 (upscaler=fsr411): the replay of AMD's 4.1.1 DLL (fsr411/).
+    // FSR 4.1.2 (upscaler=fsr411): native AMD or the portable INT8 replay.
     std::unique_ptr<Fsr411::Upscaler> fsr411;
     std::deque<u64> fsr411_ticks; ///< scheduler ticks of its recent frames (constant ring)
     std::string fsr411_described;
@@ -233,13 +233,14 @@ struct Fsr4Upscaler::Impl {
 
     bool Record411(const Frame& f) {
         if (!instance.IsFsr411Supported()) {
-            Fail("FSR 4.1.1 needs INT8 dot products and VK_VALVE_shader_mixed_float_dot_product", true);
+            Fail("FSR 4.1.2 needs FP16/INT8/INT16, integer dot products and compute derivatives", true);
             return false;
         }
         if (!fsr411) {
-            const char* env = std::getenv("BB_FSR411_DIR");
+            const char* env = std::getenv("BB_FSR412_DIR");
             fsr411 = std::make_unique<Fsr411::Upscaler>(instance.GetPhysicalDevice(), instance.GetDevice(),
-                                                        env && env[0] ? env : "fsr4_411");
+                                                        env && env[0] ? env : "fsr4_412",
+                                                        instance.HasMixedFloatDotProduct());
         }
         // Its constant ring holds kFramesInFlight frames: the oldest must be done.
         while (fsr411_ticks.size() >= Fsr411::kFramesInFlight) {
@@ -261,15 +262,21 @@ struct Fsr4Upscaler::Impl {
         g.sharpen = f.sharpen && f.sharpness > 0.0f;
         g.reset = f.reset;
         g.auto_exposure = f.auto_exposure;
+        g.color_format = VkFormat(f.color.format);
+        g.depth_format = VkFormat(f.depth.format);
+        g.frame_ms = f.frame_ms;
+        g.near_plane = f.near_plane;
+        g.far_plane = f.far_plane;
+        g.vertical_fov = f.vertical_fov;
         if (!fsr411->Record(g)) {
             // Missing assets are permanent for this session; the menu shows the reason.
-            Fail("FSR 4.1.1: " + fsr411->Error(), fsr411->Error().starts_with("missing"));
+            Fail("FSR 4.1.2: " + fsr411->Error(), fsr411->Error().starts_with("missing"));
             return false;
         }
         fsr411_ticks.push_back(scheduler.CurrentTick());
         if (const std::string d = fsr411->Describe(); d != fsr411_described) {
             fsr411_described = d;
-            std::printf("Upscaler: FSR 4.1.1 replay, %s\n", d.c_str());
+            std::printf("Upscaler: FSR 4.1.2 replay, %s\n", d.c_str());
         }
         problem.clear();
         return true;

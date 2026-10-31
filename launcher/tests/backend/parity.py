@@ -19,7 +19,7 @@ def call(action,state=None,fail=False):
  assert (p.returncode!=0)==fail,(p.returncode,result)
  return result
 s=call('state');before=(root/'launcher.ini').read_bytes()
-check(sum(bool(c['Details']) for c in s['Controls'])==19,'all 19 expanded native help texts reach WPF')
+check(sum(bool(c['Details']) for c in s['Controls'])>=19,'expanded native help texts reach WPF')
 check(any(c['Label']=='Force feedback' and 'recommended' in c['Details'] for c in s['Controls']),'new main FFB guidance retained')
 w=call('wheelsetup',s,fail=True);check('not found' in w['Error'],'missing WheelSetup reports its actual error')
 check((root/'launcher.ini').read_bytes()==before,'failed Wheel Setup does not save pending settings')

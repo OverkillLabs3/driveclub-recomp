@@ -124,16 +124,26 @@ public:
     Value& operator[](const Key& key) {
         return Insert(key).first->value;
     }
+    Value& Get(const Key& key, size_t start) {
+        return Insert(key, start).first->value;
+    }
+    static size_t KeyStart(const Key& key) { return Start(key); }
     /// Inserts `value` when `key` is absent (like std::unordered_map::emplace).
     void emplace(const Key& key, const Value& value) {
-        const auto [slot, inserted] = Insert(key);
+        emplace(key, value, Start(key));
+    }
+    void emplace(const Key& key, const Value& value, size_t start) {
+        const auto [slot, inserted] = Insert(key, start);
         if (inserted) {
             slot->value = value;
         }
     }
     const Value* find(const Key& key) const {
+        return find(key, Start(key));
+    }
+    const Value* find(const Key& key, size_t start) const {
         const size_t mask = slots.size() - 1;
-        for (size_t i = Start(key) & mask;; i = (i + 1) & mask) {
+        for (size_t i = start & mask;; i = (i + 1) & mask) {
             const Slot& slot = slots[i];
             if (slot.generation != generation) {
                 return nullptr;
@@ -169,11 +179,14 @@ private:
         return size_t(h ^ (h >> 29));
     }
     std::pair<Slot*, bool> Insert(const Key& key) {
+        return Insert(key, Start(key));
+    }
+    std::pair<Slot*, bool> Insert(const Key& key, size_t start) {
         if ((size + 1) * 2 > slots.size()) {
             Grow();
         }
         const size_t mask = slots.size() - 1;
-        for (size_t i = Start(key) & mask;; i = (i + 1) & mask) {
+        for (size_t i = start & mask;; i = (i + 1) & mask) {
             Slot& slot = slots[i];
             if (slot.generation != generation) {
                 slot = {key, Value{}, generation};
@@ -264,14 +277,18 @@ public:
     Allocation Prepare(const Draw& draw) {
         ++stats.draws;
         Key key{draw, 0};
-        key.occurrence = occurrences[key]++;
+        size_t start = decltype(occurrences)::KeyStart(key);
+        key.occurrence = occurrences.Get(key, start)++;
+        if (key.occurrence) {
+            start = decltype(occurrences)::KeyStart(key);
+        }
         const uint64_t count = uint64_t(draw.vertices.count) * draw.instances;
         if (!count || uint64_t(draw.vertices.first) + draw.vertices.count - 1 > INT32_MAX ||
             uint64_t(draw.first_instance) + draw.instances > UINT32_MAX) {
             ++stats.invalid;
             return {};
         }
-        const auto* prev = previous.find(key);
+        const auto* prev = previous.find(key, start);
         Allocation result{0, 0, draw.vertices.count, draw.instances,
                           draw.vertices.first, draw.first_instance};
         if (prev) {
@@ -283,12 +300,19 @@ public:
         if (count <= capacity - used) {
             result.store = 1 + uint32_t(frame & 1) * capacity + used;
             used += uint32_t(count);
-            current.emplace(key, result.store);
+            current.emplace(key, result.store, start);
             ++stats.stored;
         } else {
             ++stats.exhausted;
         }
         return result;
+    }
+
+    Allocation PrepareInstance(Draw draw, uint64_t geometry) {
+        draw.geometry = geometry;
+        draw.instances = 1;
+        draw.first_instance = 0;
+        return Prepare(draw);
     }
 
     uint32_t Used() const { return used; }

@@ -64,10 +64,17 @@ Json UiState(const std::wstring& error=L"") {
     else if(int(i)==g_btrack){for(const auto& x:kBenchTracks)options.push_back(Narrow(std::wstring(x.name)+L" ("+x.group+L")"));selected=g_bench_track;}
     else if(int(i)==g_bcar){for(const auto& x:kBenchCars)options.push_back(Narrow(x.name));selected=g_bench_car;}
     else for(const auto& x:c.items)options.push_back(Narrow(x));
+    Json optionReasons=Json::array();
+    for(size_t choice=0;choice<options.size();++choice)optionReasons.push_back(Narrow(ControlReason(int(i),int(choice))));
+    const auto reason=ControlReason(int(i),c.kind==Kind::Toggle ? !c.sel : -1);
+    std::wstring hint=!reason.empty() ? reason : int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint;
+    if(!g_graphics.checked && (g_skip_gpu_check || GpuCompatibilityCheckBypassed()) &&
+       (int(i)==g_aa || int(i)==g_fgen || int(i)==g_fgen_x || int(i)==g_reflex_row || int(i)==g_neural_row))
+      hint += L" GPU compatibility is unverified because the hardware check is skipped.";
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
-    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint)},{"Kind",kind},{"Tag",c.patches[0]},
-      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
-      {"Options",options},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
+    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(hint)},{"Kind",kind},{"Tag",c.patches[0]},
+      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",reason.empty() && !BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
+      {"Options",options},{"OptionReasons",optionReasons},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
       {"Details",c.more?Narrow(c.more):""}});
   }
   // The native model owns category/card membership, reset scopes and Driving subpages.
@@ -76,7 +83,7 @@ Json UiState(const std::wstring& error=L"") {
       {"Controls",c.ctls},{"Note",c.note?Narrow(c.note):""}});
   }
 
-  return {{"Version",3},{"GameProcessId",g_started_game_process_id},{"Controls",controls},{"Cards",cards},{"UpdatePath",Narrow(g_folder[0].path)},{"BasePath",Narrow(g_folder[1].path)},
+  return {{"Version",3},{"GameProcessId",g_started_game_process_id},{"Controls",controls},{"Cards",cards},{"Graphics",{{"checked",g_graphics.checked},{"name",Narrow(g_graphics.name)},{"dlss",g_graphics.dlss},{"neural",g_graphics.neural},{"reflex",g_graphics.reflex},{"fsr411",g_graphics.fsr411},{"dlss_runtime",g_graphics.dlss_runtime},{"neural_runtime",g_graphics.neural_runtime},{"frame_multiplier_max",g_graphics.frame_multiplier_max}}},{"UpdatePath",Narrow(g_folder[0].path)},{"BasePath",Narrow(g_folder[1].path)},
     {"FoldersOk",FoldersOk()},{"FolderProblem",Narrow(!FolderProblem(0).empty()?FolderProblem(0):FolderProblem(1))},
     {"HardwareProblem",Narrow(g_gpu_problem)},{"RuntimeAvailable",Exists(GameExe())},{"StartupSignalSupported",GetRuntimeFeatures().startup},{"Error",Narrow(error)},
     {"QuickControls",{g_preset,g_fps,g_outres,g_aa}},{"PresetId",g_preset},
@@ -87,6 +94,14 @@ Json UiState(const std::wstring& error=L"") {
     {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required}};
 }
 void ImportUiState(const Json& input) {
+  if(input.contains("Graphics") && input["Graphics"].is_object()) {
+    const auto& graphics=input["Graphics"];
+    g_graphics.checked=graphics.value("checked",false);g_graphics.name=Widen(graphics.value("name",std::string()));
+    g_graphics.dlss=graphics.value("dlss",false);g_graphics.neural=graphics.value("neural",false);
+    g_graphics.reflex=graphics.value("reflex",false);g_graphics.fsr411=graphics.value("fsr411",false);
+    g_graphics.dlss_runtime=graphics.value("dlss_runtime",false);g_graphics.neural_runtime=graphics.value("neural_runtime",false);
+    g_graphics.frame_multiplier_max=graphics.value("frame_multiplier_max",0);
+  }
   g_folder[0].path=Widen(input.value("UpdatePath",Narrow(g_folder[0].path)));
   g_folder[1].path=Widen(input.value("BasePath",Narrow(g_folder[1].path)));
   for(const auto& item:input.at("Controls")){
@@ -120,6 +135,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
   try{
     if(command==L"--ui-state"){
       if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
+      g_graphics=g_skip_gpu_check?DisplayGraphicsCapabilities():GraphicsCapabilities();NormalizeGraphics();NameNativeUpscale();
     }else if(argc>=4){
       std::ifstream in(argv[2],std::ios::binary);const Json request=Json::parse(in);ImportUiState(request);
       if(command==L"--ui-reset-page"){
@@ -147,11 +163,13 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         const int changed=request.value("ChangedId",-1);
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_wide && g_c[g_wide].sel>0)g_c[g_outres].sel=g_c[g_inres].sel=0;
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
-          if(!g_skip_gpu_check && g_gpu_problem.empty())g_gpu_problem=CheckGpu();
+          if(g_skip_gpu_check && !g_graphics.checked)g_graphics=DisplayGraphicsCapabilities();
+          if(!g_skip_gpu_check && g_gpu_problem.empty()) {g_gpu_problem=CheckGpu();g_graphics=GraphicsCapabilities();}
         }
+        NormalizeGraphics();NameNativeUpscale();
+        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
       }
       else if(command==L"--ui-preset")ApplyPreset(g_c[g_preset].sel);
       else if(command==L"--ui-drive-preset"){if(g_c[g_drive_preset].sel>=0)ApplyDrivePreset(g_c[g_drive_preset].sel);}
@@ -214,11 +232,14 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         if(!g_ui_capture_cancelled && g_status_color.GetValue()!=kOk.GetValue())throw std::runtime_error(Narrow(g_status));
       }
       else if(command==L"--ui-apply"||command==L"--ui-run"||command==L"--ui-benchmark"){
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
+        if(command!=L"--ui-apply") {
+          if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
+          g_graphics=g_skip_gpu_check?DisplayGraphicsCapabilities():GraphicsCapabilities();NormalizeGraphics();
+        }
+        NormalizeGraphics();NameNativeUpscale();DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(!SaveSettings()) throw std::runtime_error(Narrow(g_settings_error));
         if(command!=L"--ui-apply"){
           if(!FoldersOk()){WriteJsonFile(output,UiState(L"Choose valid game folders on Play."));return 1;}
-          if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
           if(GpuBlocked()){WriteJsonFile(output,UiState(g_gpu_problem));return 1;}
           g_external_progress=output+L".progress";StartLauncherLog();
           if(command==L"--ui-benchmark")BenchWorker();
@@ -232,6 +253,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         }
       }else throw std::runtime_error("Unknown UI command");
     }else throw std::runtime_error("Missing UI request");
+    if(NormalizeGraphics()){NameNativeUpscale();DerivePreset();}
     WriteJsonFile(output,UiState());return 0;
   }catch(const std::exception& ex){
     try{WriteJsonFile(output,{{"Error",ex.what()}});}catch(...){}

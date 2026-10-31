@@ -1,0 +1,5 @@
+# FSR SDK v2.4.0 commit 7539ae8b6568ad29ed78a753404351daf3b5cca7
+8976d4741471790561d2d7ce73906ccff58076b92c2a4b93ae7ec6859b08334b  Kits/FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h
+f41aaf692b54a3e7e3c88affac628d31c7ce73c498601b7c29415ffc074b4e82  Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler.cpp
+95c82afcba485afc56753b5bb8630b60662707190ac8c952979acac9a280fefa  Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler_private.h
+2d6f878fd59444d767ff02214256ed93e8fd3a5b4b423bd1a90c9821b757b327  Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h

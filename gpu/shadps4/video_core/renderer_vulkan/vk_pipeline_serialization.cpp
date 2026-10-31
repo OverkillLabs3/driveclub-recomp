@@ -22,8 +22,8 @@ static const u32 ShaderBinaryVersion = [] {
     const char* lds = std::getenv("BB_LDS_BOUNDS");
     const char* wide = std::getenv("BB_WIDE_LOADS");
     const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
-    // Content-addressed metadata and immutable pipeline references.
-    return (78u << 16) + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u) +
+    // Include the upstream translator changes and per-instance history addressing.
+    return (79u << 16) + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u) +
            (motion_log && motion_log[0] == '1' ? 4u : 0u) +
            (lds && lds[0] == '0' ? 8u : 0u) + (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
            (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u); // WideLoads: on unless =0

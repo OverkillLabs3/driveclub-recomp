@@ -56,6 +56,10 @@ typedef struct FfxVkFsr3_3_1_5UpscalerCreateInfo {
     uint32_t maxUpscaleHeight;
     VkBool32 hdrColorInput;
     VkBool32 autoExposure;
+    /* The game renders reversed Z with an infinite far plane; the SDK needs both flags or its
+     * depth reconstruction treats near and far the wrong way round. */
+    VkBool32 depthInverted;
+    VkBool32 depthInfinite;
 } FfxVkFsr3_3_1_5UpscalerCreateInfo;
 
 typedef struct FfxVkFsr3_3_1_5UpscalerDispatchInfo {
@@ -122,6 +126,9 @@ typedef struct FfxVkFsr3_3_1_5ImportedImageDescription {
     VkImageLayout layout;
     uint32_t state;
     VkImageUsageFlags usage;
+    /* VK_TRUE for a shared temporal image whose contents are not yet valid (the SDK then
+     * initializes it instead of treating stale memory as history). */
+    VkBool32 undefinedContents;
 } FfxVkFsr3_3_1_5ImportedImageDescription;
 
 FfxVkFsr3_3_1_5Bridge* ffxVkFsr3_3_1_5CreateBridge(

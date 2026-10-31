@@ -37,6 +37,9 @@
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/buffer_cache/buffer.h"
+#include "video_core/renderer_vulkan/vk_presenter.h"
+
+extern std::unique_ptr<Vulkan::Presenter> presenter;
 
 extern "C" {
 // runtime_memory.c
@@ -427,6 +430,12 @@ extern "C" void bbgpu_note_device_lost(void) {
 
 extern "C" unsigned long long bbgpu_flip_count(void) {
     return Vulkan::FrameCapture::Flips();
+}
+
+extern "C" void bbgpu_reflex_input_sample(void) {
+    if (presenter) {
+        presenter->BeforeInput();
+    }
 }
 
 extern "C" unsigned bbgpu_symbol_count(void) {

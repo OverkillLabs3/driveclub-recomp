@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,8 @@ struct State {
     bool configured{};
     bool initialized{};
 } state;
+
+std::recursive_mutex ngx_mutex;
 
 template <typename... Args>
 void Log(int warning, const char* format, Args... args) {
@@ -169,6 +172,7 @@ int32_t DeviceExtensions(VkInstance instance, VkPhysicalDevice physical, uint32_
 int32_t Initialize(VkInstance instance, VkPhysicalDevice physical, VkDevice device,
                    PFN_vkGetInstanceProcAddr get_instance_proc,
                    PFN_vkGetDeviceProcAddr get_device_proc) {
+    std::scoped_lock lock{ngx_mutex};
     if (!state.configured || state.initialized)
         return 0;
     if (!Check("NGX initialization",
@@ -205,7 +209,7 @@ int32_t Initialize(VkInstance instance, VkPhysicalDevice physical, VkDevice devi
             state.capabilities, NVSDK_NGX_DLSSG_Parameter_MultiFrameCountMax, &fg_max)))
         fg_max = 1;
     if (state.fg_device_supported && fg_available) {
-        state.fg_max_count = static_cast<int32_t>(std::clamp(fg_max, 1u, 3u));
+        state.fg_max_count = static_cast<int32_t>(std::clamp(fg_max, 1u, 5u));
         Log(0, "Frame Generation available (up to %dx)", state.fg_max_count + 1);
     } else if (fg_needs_driver) {
         Log(1, "Frame Generation needs a newer NVIDIA driver");
@@ -214,6 +218,7 @@ int32_t Initialize(VkInstance instance, VkPhysicalDevice physical, VkDevice devi
 }
 
 void ReleaseFeature() {
+    std::scoped_lock lock{ngx_mutex};
     if (state.feature) {
         NVSDK_NGX_VULKAN_ReleaseFeature(state.feature);
         state.feature = nullptr;
@@ -225,6 +230,7 @@ void ReleaseFeature() {
 }
 
 int32_t CreateFeature(VkCommandBuffer command, const BbDlssFeature* desc) {
+    std::scoped_lock lock{ngx_mutex};
     if (!state.initialized || !state.capabilities || !desc)
         return 0;
     ReleaseFeature();
@@ -272,6 +278,7 @@ NVSDK_NGX_Resource_VK Wrap(const BbDlssImage& image, bool writable) {
 }
 
 int32_t Evaluate(VkCommandBuffer command, const BbDlssEvaluate* evaluate) {
+    std::scoped_lock lock{ngx_mutex};
     if (!state.feature || !state.parameters || !evaluate)
         return 0;
     auto color = Wrap(evaluate->color, false);
@@ -303,6 +310,7 @@ int32_t FrameGenMaxCount() {
 }
 
 void FrameGenRelease() {
+    std::scoped_lock lock{ngx_mutex};
     if (state.fg_feature) {
         NVSDK_NGX_VULKAN_ReleaseFeature(state.fg_feature);
         state.fg_feature = nullptr;
@@ -314,6 +322,7 @@ void FrameGenRelease() {
 }
 
 int32_t FrameGenCreate(VkCommandBuffer command, const BbDlssgFeature* desc) {
+    std::scoped_lock lock{ngx_mutex};
     if (!state.initialized || state.fg_max_count < 1 || !desc)
         return 0;
     FrameGenRelease();
@@ -328,6 +337,10 @@ int32_t FrameGenCreate(VkCommandBuffer command, const BbDlssgFeature* desc) {
     NVSDK_NGX_Parameter_SetUI(state.fg_parameters, NVSDK_NGX_DLSSG_Parameter_InternalHeight,
                               desc->render_height);
     NVSDK_NGX_Parameter_SetUI(state.fg_parameters, NVSDK_NGX_DLSSG_Parameter_DynamicResolution, 0);
+    NVSDK_NGX_Parameter_SetUI(state.fg_parameters, "DLSSG.UserInterfaceRecompositionEnabled",
+                              desc->preset == 2 ? 1u : 0u);
+    NVSDK_NGX_Parameter_SetUI(state.fg_parameters, "DLSSG.LiteCandidateBlendingEnabled",
+                              desc->preset == 3 ? 1u : 0u);
     NVSDK_NGX_DLSSG_Create_Params settings{};
     settings.Width = desc->width;
     settings.Height = desc->height;
@@ -341,8 +354,8 @@ int32_t FrameGenCreate(VkCommandBuffer command, const BbDlssgFeature* desc) {
         return 0;
     }
     state.fg_desc = *desc;
-    Log(0, "Frame Generation %ux%u (depth and motion %ux%u)", desc->width, desc->height,
-        desc->render_width, desc->render_height);
+    Log(0, "Frame Generation %ux%u (depth and motion %ux%u), requested preset %c",
+        desc->width, desc->height, desc->render_width, desc->render_height, 'A' + desc->preset - 1);
     return 1;
 }
 
@@ -374,6 +387,7 @@ void Identity(float (&m)[4][4]) {
 }
 
 int32_t FrameGenEvaluate(VkCommandBuffer command, const BbDlssgEvaluate* evaluate) {
+    std::scoped_lock lock{ngx_mutex};
     if (!state.fg_feature || !state.fg_parameters || !evaluate)
         return 0;
     auto backbuffer = Wrap(evaluate->backbuffer, false);
@@ -436,6 +450,7 @@ int32_t FrameGenEvaluate(VkCommandBuffer command, const BbDlssgEvaluate* evaluat
 }
 
 void Shutdown() {
+    std::scoped_lock lock{ngx_mutex};
     FrameGenRelease();
     ReleaseFeature();
     if (state.capabilities) {

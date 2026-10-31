@@ -261,7 +261,14 @@ private:
             outputs.emplace_back(AddOutput(model == spv::ExecutionModel::TessellationControl
                                                ? TypeArray(vec4_id, Int(4))
                                                : vec4_id));
-            Decorate(outputs.back(), spv::Decoration::Location, input.param_index);
+            Decorate(outputs.back(), spv::Decoration::Location,
+                     input.param_index + u32(fs_info.clip_distance_emulation));
+        }
+        if (fs_info.clip_distance_emulation) {
+            outputs.emplace_back(AddOutput(model == spv::ExecutionModel::TessellationControl
+                                               ? TypeArray(vec4_id, Int(4))
+                                               : vec4_id));
+            Decorate(outputs.back(), spv::Decoration::Location, 0);
         }
     }
 
@@ -283,7 +290,12 @@ private:
                 continue;
             }
             inputs.emplace_back(AddInput(float_arr));
-            Decorate(inputs.back(), spv::Decoration::Location, input.param_index);
+            Decorate(inputs.back(), spv::Decoration::Location,
+                     input.param_index + u32(fs_info.clip_distance_emulation));
+        }
+        if (fs_info.clip_distance_emulation) {
+            inputs.emplace_back(AddInput(float_arr));
+            Decorate(inputs.back(), spv::Decoration::Location, 0);
         }
     }
 

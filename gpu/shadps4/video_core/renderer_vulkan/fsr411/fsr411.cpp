@@ -1,11 +1,12 @@
 #include "../../../../shim/bbport_diagnostics.h"
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: FSR 4.1.1 replay on Vulkan (fsr411.h). The frame is the DLL's 29 dispatches: SPD auto
+// bbport: FSR 4.1.2 replay on Vulkan (fsr411.h). The frame is the DLL's 29 dispatches: SPD auto
 // exposure, prepass, pass0_post, model passes 1..12 each followed by its _post pass (tensor border
 // clears), postpass, RCAS. The rules for group counts, the tensor size table and the constants
 // are the ones tools/fsr4cap/extract.py checks against the recorded D3D12 frames.
 
 #include "fsr411.h"
+#include "native.h"
 
 #include <algorithm>
 #include <array>
@@ -213,6 +214,10 @@ struct Upscaler::Impl {
     uint32_t out_w = 0, out_h = 0;
     bool ready = false;
     bool uploaded = false;
+    bool mixed_float_dot = false;
+    std::unique_ptr<NativeUpscaler> native;
+    uint32_t native_width = 0, native_height = 0;
+    bool native_auto_exposure = false;
 
     struct Pass {
         Reflection refl;
@@ -247,8 +252,8 @@ struct Upscaler::Impl {
     std::array<double, kPassCount> profile_ms{};
     uint64_t profile_frames = 0;
 
-    Impl(VkPhysicalDevice p, VkDevice d, std::string dir_)
-        : physical{p}, device{d}, dir{std::move(dir_)} {
+    Impl(VkPhysicalDevice p, VkDevice d, std::string dir_, bool mixed)
+        : physical{p}, device{d}, dir{std::move(dir_)}, mixed_float_dot{mixed} {
         vkGetPhysicalDeviceMemoryProperties(physical, &memory);
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(physical, &props);
@@ -286,7 +291,7 @@ struct Upscaler::Impl {
         }
         double total = 0.0;
         for (double ms : profile_ms) total += ms;
-        std::printf("FSR 4.1.1 profile: %.3f ms/frame\n", total / 300.0);
+        std::printf("FSR 4.1.2 profile: %.3f ms/frame\n", total / 300.0);
         for (uint32_t p = 0; p < kPassCount; ++p) {
             if (profile_ms[p] > 0.0) {
                 std::printf("  %6.3f ms/frame  %s\n", profile_ms[p] / 300.0, kPasses[p]);
@@ -420,9 +425,10 @@ struct Upscaler::Impl {
 
     bool LoadPass(uint32_t index) {
         std::vector<uint8_t> bytes;
-        const std::string path = dir + "/" + set + "/" + kPasses[index] + ".spv";
+        const std::string name = index == 1 && !mixed_float_dot ? "prepass_portable" : kPasses[index];
+        const std::string path = dir + "/" + set + "/" + name + ".spv";
         if (!ReadFile(path, bytes) || bytes.size() % 4) {
-            error = "missing " + path + " (tools/fsr4cap: capture and extract the FSR 4.1.1 assets)";
+            error = "missing " + path + " (copy gpu/third_party/fsr412/assets to fsr4_412)";
             return false;
         }
         std::vector<uint32_t> words(bytes.size() / 4);
@@ -579,6 +585,19 @@ struct Upscaler::Impl {
                     std::to_string(ow) + "x" + std::to_string(oh);
             return false;
         }
+        if (!native || native_width != ow || native_height != oh ||
+            native_auto_exposure != f.auto_exposure) {
+            native = std::make_unique<NativeUpscaler>(physical, device, f);
+            native_width = ow;
+            native_height = oh;
+            native_auto_exposure = f.auto_exposure;
+        }
+        if (native->Ready()) {
+            set = "native AMD";
+            out_w = ow;
+            out_h = oh;
+            return native->Record(f, error);
+        }
         const bool tier2160 = ow > 1920 || oh > 1080;
         const std::string wanted = std::string(tier2160 ? "t2160" : "t1080") +
                                    (f.ultra_performance ? "_m1" : "_m0");
@@ -695,7 +714,11 @@ struct Upscaler::Impl {
                 };
                 const std::string& n = b.name;
                 if (b.type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-                    continue; // immutable
+                    // Immutable samplers must still be pushed before the shader uses them.
+                    images.push_back({linear_clamp, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED});
+                    w.pImageInfo = &images.back();
+                    writes.push_back(w);
+                    continue;
                 } else if (n == "r_input_color") image(f.color.view);
                 else if (n == "r_velocity") image(f.motion.view);
                 else if (n == "r_depth") image(f.depth.view);
@@ -710,13 +733,18 @@ struct Upscaler::Impl {
                 else if (n == "r_rcas_input") image(mlsr_output.view);
                 else if (n == "rw_rcas_output") image(final_output->view);
                 else if (n == "ScratchBuffer") buffer(scratch.buffer, 0, VK_WHOLE_SIZE);
-                else if (n == "InitializerBuffer") buffer(initializer.buffer, 0, VK_WHOLE_SIZE);
+                // dxil-spirv leaves one of the two InitializerBuffer declarations without a
+                // name; the binding is fixed in AMD's prepass.
+                else if (n == "InitializerBuffer" || (n.empty() && b.binding == 18))
+                    buffer(initializer.buffer, 0, VK_WHOLE_SIZE);
                 else if (n == "MLSR_Optimized_Constants") buffer(ubo.buffer, slot, sizeof(Mlsr));
                 else if (n == "AutoExposureSPDConstants") buffer(ubo.buffer, slot + ubo_align, sizeof(Spd));
                 else if (n == "cbRCAS") buffer(ubo.buffer, slot + 2 * ubo_align, sizeof(Rcas));
                 else if (n == "CsTensorSizes") buffer(tensor_ubo.buffer, 0, 272);
                 else {
-                    error = name + ": unknown resource " + n;
+                    error = name + ": unknown resource '" + n + "' (binding " +
+                            std::to_string(b.binding) + ", type " +
+                            std::to_string(int(b.type)) + ")";
                     return false;
                 }
                 writes.push_back(w);
@@ -766,8 +794,8 @@ struct Upscaler::Impl {
     }
 };
 
-Upscaler::Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir)
-    : impl{std::make_unique<Impl>(physical, device, std::move(dir))} {}
+Upscaler::Upscaler(VkPhysicalDevice physical, VkDevice device, std::string dir, bool mixed_float_dot)
+    : impl{std::make_unique<Impl>(physical, device, std::move(dir), mixed_float_dot)} {}
 
 Upscaler::~Upscaler() = default;
 
@@ -780,7 +808,8 @@ const std::string& Upscaler::Error() const noexcept {
 }
 
 std::string Upscaler::Describe() const {
-    return impl->set + " output " + std::to_string(impl->out_w) + "x" + std::to_string(impl->out_h);
+    return (impl->native && impl->native->Ready() ? "native AMD" : "portable INT8 " + impl->set) +
+           std::string(" output ") + std::to_string(impl->out_w) + "x" + std::to_string(impl->out_h);
 }
 
 } // namespace Fsr411

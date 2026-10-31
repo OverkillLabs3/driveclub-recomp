@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include <cmath>
 #include "common/bytes_equal.h"
 #include "bbport_cpu.h"
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <xxhash.h>
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_settings.h"
+#include "bbport_neural_settings.h"
 #include "bbport_frame_info.h"
 #include "bbport_motion_blur.h"
 extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
@@ -42,6 +44,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "bbport_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_swapchain.h"
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
@@ -51,12 +54,21 @@ namespace Vulkan {
 namespace {
 DriveMotion* g_drive_motion = nullptr;
 bool g_taa_noted = false; ///< BindBuffers noted the anti-aliasing camera last time (its threads, one at a time)
+constexpr u32 NativeTaaTableBytes = 64 * 192;
+bool IsNativeTaa(u64 hash) {
+    return hash == 0xfdd72cf1 || hash == 0x403f86d4;
+}
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
 // vectors from them.
 void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
+    if (g_drive_motion && IsNativeTaa(hash) && slot == 2 && data) {
+        g_drive_motion->OnTaaTransforms(static_cast<const float*>(data),
+                                        std::min(size, NativeTaaTableBytes) / sizeof(float));
+        return;
+    }
     // The anti-aliasing pass has several variants (by resolution): recognise its two constant
     // buffers by size and content. Slot 0: a 4x4 affine move, then matrices. Slot 1: the
-    // projection at dword 48 (reversed Z, infinite far plane).
+    // projection at dword 48 (reversed Z).
     if (!g_drive_motion || slot > 1 || !data) {
         return;
     }
@@ -144,6 +156,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     upscaler = std::make_unique<TemporalUpscaler>(instance, scheduler, texture_cache, runtime,
                                                   *camera_motion, *scene_targets);
     g_drive_motion = &upscaler->GetDriveMotion();
+    g_drive_motion->SetObjectMotion(object_motion.get());
     drive_aa = std::make_unique<DriveAA>(instance, scheduler, texture_cache, runtime,
                                          upscaler->GetDriveMotion(), *camera_motion);
     if (!EmulatorSettings.IsNullGPU()) {
@@ -320,6 +333,8 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
     const auto& key = pipeline->GetGraphicsKey();
     const auto& regs = Regs();
+    const u32 game_mrt_mask = key.mrt_mask &
+        ~(key.motion_vectors ? (1u << Shader::MotionVectors::Output) : 0u);
     if (regs.color_control.degamma_enable) {
         LOG_WARNING(Render_Vulkan, "Color buffers require gamma correction");
     }
@@ -361,14 +376,14 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     } else {
         db_desc.first = {};
     }
-    // bbport: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
+    // bbport: the G-buffer pass (three or more color targets) holds the scene depth, and its constants the
     // main camera (shadow passes bind the same layout with the light's camera).
     // DriveClub's scene G-buffer has three color targets. Ignore the optional motion output
     // at slot 7 when identifying those guest targets.
-    const u32 guest_color_targets = std::popcount(key.mrt_mask & 0x7f);
+    const u32 guest_color_targets = std::popcount(game_mrt_mask);
     gbuffer_draw = camera_motion->Enabled() && guest_color_targets >= 3 && db_desc.first;
     // HDR output: a 3D scene is drawn in this frame (its G-buffer: three or more targets and depth).
-    if (std::popcount(key.mrt_mask) >= 3 && db_desc.first &&
+    if (guest_color_targets >= 3 && db_desc.first &&
         BbSettings::Get().hdr_output.load(std::memory_order_relaxed)) {
         hdr_scene = true;
     }
@@ -378,17 +393,20 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // The overlay's Render size: the scene is the largest G-buffer pass (three color targets and a depth target),
     // also when it is as large as the output. Otherwise a half-size pass of the frame was shown for it whenever the
     // render size equals the output size and the game's own anti-aliasing is on.
-    if (std::popcount(key.mrt_mask) == 3 && db_desc.first && cb_descs[0].first) {
+    if (guest_color_targets == 3 && db_desc.first && cb_descs[0].first) {
         const auto& scene_size = texture_cache.GetImage(db_desc.first).info.size;
         BbFrame::NoteScene(scene_size.width, scene_size.height);
     }
     // Frame generation: the G-buffer pass (three color targets and a depth target) holds the scene depth.
-    if ((BbSettings::Get().frame_gen != BbSettings::FrameGenOff || drive_aa->Active()) &&
+    if ((BbSettings::Get().frame_gen != BbSettings::FrameGenOff || drive_aa->Active() ||
+         BbNeural::Snapshot().enabled) &&
         guest_color_targets == 3 &&
         db_desc.first && cb_descs[0].first) {
+        if (fg_depth_candidates.empty() || fg_depth_candidates.back() != db_desc.first)
+            fg_depth_candidates.push_back(db_desc.first);
         // The biggest one of the frame: the mirror and reflection probe scenes use the same layout.
         const auto& size = texture_cache.GetImage(db_desc.first).info.size;
-        if (u64(size.width) * size.height >= fg_depth_area) {
+        if (!fg_depth_selected && u64(size.width) * size.height >= fg_depth_area) {
             fg_depth = db_desc.first;
             fg_depth_area = u64(size.width) * size.height;
         }
@@ -634,6 +652,12 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
             }
         }
     }
+    const bool model_motion = stage.sw_stage == Shader::SwStage::Vertex &&
+        !stage.buffers.empty() && !stage.buffers[0].IsSpecial() &&
+        (prepared_stage ? prepared_stage->buffer_sharps[0]
+                        : stage.buffers[0].GetSharp(stage)).GetStride() == 144 &&
+        (BbSettings::Get().aa_mode != BbSettings::AaOff ||
+         BbSettings::Get().frame_gen != BbSettings::FrameGenOff || BbNeural::Snapshot().enabled);
     const u64 alignment = std::max<u64>(instance.StorageMinAlignment(),
                                         instance.UniformMinAlignment());
     const auto copy = [&](u32 index, const void* source, VAddr address, u64 size) {
@@ -643,13 +667,18 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         }
         u8* dst = constant_ring->Data(*offset);
         const bool motion_blur = MotionBlurConstants(stage, index, size);
+        const bool motion_data = model_motion && !stage.buffers[index].IsSpecial() &&
+            (index == 0 || ((size == 16 || size == 512) &&
+                (prepared_stage ? prepared_stage->buffer_sharps[index]
+                                : stage.buffers[index].GetSharp(stage)).GetStride() == 16));
         // bbport: the bindings the CPU reads again (the anti-aliasing camera check's 416/512-byte slots 0 and 1, the
         // 864-byte camera motion constants, the cube prefilter's LOD, the motion-blur correction) are written to the
         // ring's cached copy first when the ring is VRAM: reading write-combined memory back over PCIe cost ~1.5 ms a
         // frame on the draw recording thread with DLAA/DLSS/FSR or frame generation on (the camera check runs then).
         const bool host_read =
             constant_ring->HasHostCopy() &&
-            (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+            (motion_blur || motion_data || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+             (index == 2 && IsNativeTaa(stage.pgm_hash)) ||
              (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
         u8* write = host_read ? constant_ring->HostCopy(*offset) : dst;
         if (source) {
@@ -894,6 +923,18 @@ bool Rasterizer::RunInOrder(OrderedTask task, const void* data, u32 size, u64 to
         last_memory_task = draw_pipe->Head();
     }
     return true;
+}
+
+void Rasterizer::BeginLatencyFrame(u64 id) {
+    if (id == queued_latency_id) {
+        return;
+    }
+    queued_latency_id = id;
+    RunInOrder([](Rasterizer& self, const u8* data) {
+        const u64 id = *reinterpret_cast<const u64*>(data);
+        self.scheduler.SetLatencyFrameId(id);
+        self.latency_swapchain->MarkLatency(id, VK_LATENCY_MARKER_RENDERSUBMIT_START_NV);
+    }, &id, sizeof(id));
 }
 
 void Rasterizer::WaitQueuedMemoryWrites() {
@@ -1277,9 +1318,11 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         // before the UI is the display buffer once it is done, at the start of the second.
         if (!fg_in_display) {
             fg_display_draws = 0;
+            drive_aa->NextFrame();
         }
         ++fg_display_draws;
-        if (fg_display_draws == 2 && BbSettings::Get().frame_gen != BbSettings::FrameGenOff) {
+        if (fg_display_draws == 2 && (BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
+                                     BbNeural::Snapshot().enabled)) {
             fg_capture_pending = true;
         }
         // HDR output: the first display draw after a 3D scene is its composite; the next one
@@ -1307,7 +1350,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (frame_display) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
         NoteFrameStart();
-        drive_aa->NextFrame();
         if (camera_motion->Enabled()) {
             scene_started = false;
             camera_motion->OnDisplayPass(cb_descs[0].first);
@@ -1323,7 +1365,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
+    motion_model_identity = false;
     motion_geometry = 0;
+    motion_instances.clear();
 
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
@@ -1404,7 +1448,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
             return value && value[0] == '1';
         }();
-        bool gated = !all_motion;
+        bool gated = !all_motion && !ObjectMotion::IsCarDraw(regs) && !motion_model_identity;
         u64 palette = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;
@@ -1468,7 +1512,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 .instances = regs.num_instances.NumInstances(),
                 .first_instance = first_instance,
                 .vertices = range,
-            });
+            }, motion_instances);
         }
     }
     pipeline->BindResources(set_writes, push_data);
@@ -1478,9 +1522,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth() &&
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
+    } else if (drive_aa->Active() && db_desc.first &&
                (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
-        draw_jitter = drive_aa->Jitter();
+        const auto& size = texture_cache.GetImage(db_desc.first).info.size;
+        draw_jitter = drive_aa->JitterForExtent(size.width, size.height);
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -1517,10 +1562,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
         FrameCapture::Draw(vs_info.pgm_hash, ps ? ps->pgm_hash : 0, num_indices, num_instances);
         {
-            std::string line = fmt::format("\n  draw vs {:08x} ps {:08x} idx {} inst {} z {}{} attrs",
+            std::string line = fmt::format("\n  draw vs {:08x} ps {:08x} idx {} inst {} z {}{} jitter {},{} attrs",
                                            u32(vs_info.pgm_hash), u32(ps ? ps->pgm_hash : 0), num_indices,
                                            num_instances, u32(regs.depth_control.depth_enable),
-                                           u32(regs.depth_control.depth_write_enable));
+                                           u32(regs.depth_control.depth_write_enable), draw_jitter[0], draw_jitter[1]);
             if (fetch_shader) {
                 for (const auto& at : fetch_shader->attributes) {
                     line += fmt::format(" [s{} n{} df{} nf{} i{}]", at.semantic, at.num_elements, at.data_format,
@@ -1835,7 +1880,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
 
     // Indirect arguments may be GPU-written: leave these draws on camera fallback.
     motion_draw = false;
+    motion_model_identity = false;
     motion_geometry = 0;
+    motion_instances.clear();
     PrepareRenderState(pipeline);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
@@ -1877,8 +1924,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     draw_jitter = {};
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
-        draw_jitter = drive_aa->Jitter();
+    } else if (drive_aa->Active() && db_desc.first) {
+        const auto& size = texture_cache.GetImage(db_desc.first).info.size;
+        draw_jitter = drive_aa->JitterForExtent(size.width, size.height);
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -2019,6 +2067,9 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     }
 
+    if (IsNativeTaa(cs.pgm_hash)) {
+        g_drive_motion->BeginNativeTaa();
+    }
     if (!BindResources(pipeline)) {
         return;
     }
@@ -2055,7 +2106,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     DebugState.IncDispatch();
 
     // The game's temporal anti-aliasing pass: FSR or DLSS replaces its result.
-    if (drive_aa->Active() && fg_depth) {
+    if ((drive_aa->Active() || BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
+         BbNeural::Snapshot().enabled) && fg_depth) {
         const auto format = [&](u32 i) {
             return texture_cache.GetImage(bound_images[i]).info.pixel_format;
         };
@@ -2080,7 +2132,24 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
             const u32 out = two_masks ? 5 : one_mask ? 4 :
                 cs.images[3].is_written ? 3 : cs.images[4].is_written ? 4 : 0;
             if (valid_mask && out && cs.images[out].is_written && format(out) == hdr) {
-                drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out]);
+                const auto& color = texture_cache.GetImage(bound_images[0]).info.size;
+                VideoCore::ImageId matching_depth{};
+                for (auto it = fg_depth_candidates.rbegin(); it != fg_depth_candidates.rend(); ++it) {
+                    const auto& size = texture_cache.GetImage(*it).info.size;
+                    if (size.width == color.width && size.height == color.height) {
+                        matching_depth = *it;
+                        break;
+                    }
+                }
+                if (matching_depth) {
+                    fg_depth = matching_depth;
+                    fg_depth_selected = true;
+                    const bool native = IsNativeTaa(cs.pgm_hash);
+                    drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out],
+                                    native ? bound_images[1] : VideoCore::ImageId{},
+                                    native ? bound_images[2] : VideoCore::ImageId{},
+                                    native && one_mask ? bound_images[3] : VideoCore::ImageId{});
+                }
             }
         }
     }
@@ -2164,6 +2233,16 @@ void Rasterizer::OnSubmit() {
     texture_cache.ProcessDownloadImages();
     texture_cache.RunGarbageCollector();
     runtime.TickFrame();
+}
+
+void Rasterizer::EndFrame() {
+    object_motion->OnFrameStart();
+    g_drive_motion->EndFrame();
+    drive_aa->EndFrame();
+    fg_depth = {};
+    fg_depth_area = 0;
+    fg_depth_candidates.clear();
+    fg_depth_selected = false;
 }
 
 const PreparedStage* Rasterizer::FindPreparedStage(const Shader::Info& stage) const {
@@ -2251,6 +2330,7 @@ bool Rasterizer::TexturesBindableOnHelper(const Shader::Info& stage,
         }
         if (image->binding.needs_rebind || !texture_cache.IsUpToDate(image_id) ||
             scene_targets->Tracks(image->image_uid) ||
+            drive_aa->Redirects(image_id) ||
             (upscaler->Enabled() && upscaler->RedirectsSampled(image_id))) {
             return false;
         }
@@ -2293,9 +2373,14 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     // size; the temporal upscaler restores the detail of the output's mip level (FSR guide:
     // log2(render / output)). Shadows, post-processing and UI keep the guest's bias.
     sampler_lod_bias = 0.0f;
+    u32 game_mrt_mask = 0;
+    if (!pipeline->IsCompute()) {
+        const auto& key = static_cast<const GraphicsPipeline*>(pipeline)->GetGraphicsKey();
+        game_mrt_mask = key.mrt_mask &
+            ~(key.motion_vectors ? (1u << Shader::MotionVectors::Output) : 0u);
+    }
     if (!pipeline->IsCompute() && !BbToggle::Disabled(BbToggle::SceneMipBias) &&
-        std::popcount(static_cast<const GraphicsPipeline*>(pipeline)->GetGraphicsKey().mrt_mask &
-                      0xff) >= 5) {
+        std::popcount(game_mrt_mask) >= 5) {
         sampler_lod_bias = upscaler->SceneMipBias();
         static float reported = 0.0f;
         if (sampler_lod_bias != reported) {
@@ -2303,8 +2388,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
             std::printf("Upscaler: scene texture LOD bias %.2f\n", sampler_lod_bias);
         }
     } else if (!pipeline->IsCompute() && drive_aa->Upscaling() &&
-               std::popcount(static_cast<const GraphicsPipeline*>(pipeline)->GetGraphicsKey().mrt_mask &
-                             0xff) == 3) {
+               std::popcount(game_mrt_mask) == 3) {
         // The G-buffer passes: material textures at the output size's detail.
         sampler_lod_bias = drive_aa->MipBias();
     }
@@ -2460,7 +2544,9 @@ void Rasterizer::EmitVertexBuffers() {
 void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                                       const PreparedDraw* prepared) {
     const auto& regs = Regs();
+    motion_model_identity = false;
     auto& v = vertex_binds;
+    motion_instances.clear();
     v.num_buffers = 0;
     v.host_buffers.clear();
     v.host_offsets.clear();
@@ -2499,6 +2585,125 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
         motion_geometry = ready ? ready->buffers_hash
                                 : XXH3_64bits(guest_buffers.data(),
                                               guest_buffers.size() * sizeof(AmdGpu::Buffer));
+    }
+    if (motion_draw && motion_geometry && !ObjectMotion::IsCarDraw(regs)) {
+        const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
+        const PreparedStage* prepared_stage = nullptr;
+        if (prepared && !BbToggle::Disabled(BbToggle::PreparedResources)) {
+            for (u32 i = 0; i < prepared->num_stages; ++i) {
+                const auto& candidate = prepared->stages[i];
+                if (&candidate.program->info == &vs && candidate.num_buffers == vs.buffers.size()) {
+                    prepared_stage = &candidate;
+                    break;
+                }
+            }
+        }
+        const auto sharp = [&](u32 slot) {
+            return prepared_stage ? prepared_stage->buffer_sharps[slot]
+                                  : vs.buffers[slot].GetSharp(vs);
+        };
+        const auto data = [&](u32 slot, u64 offset, u64 bytes) -> const u8* {
+            const auto buffer = sharp(slot);
+            const VAddr address = buffer.base_address + offset;
+            if (vs.buffers[slot].is_written || !buffer.base_address ||
+                offset + bytes > buffer.GetSize()) {
+                return nullptr;
+            }
+            if (const auto* ring = num_ring_stages ? FindRingBinding(vs, slot) : nullptr) {
+                return ring->address == buffer.base_address && offset + bytes <= ring->size
+                           ? (ring->host_copy ? constant_ring->HostCopy(ring->offset + offset)
+                                              : constant_ring->Data(ring->offset + offset))
+                           : nullptr;
+            }
+            if (!memory->IsValidGpuMapping(address, 0) ||
+                memory->ClampRangeSize(address, bytes) != bytes ||
+                buffer_cache.IsRegionGpuModified(address, bytes)) {
+                return nullptr;
+            }
+            return reinterpret_cast<const u8*>(address);
+        };
+        if (!vs.buffers.empty() && !vs.buffers[0].IsSpecial() && sharp(0).GetStride() == 144) {
+            std::array<float, 3> origin{}, offset{};
+            bool scene_found = false, offset_found = false, readable = true;
+            for (u32 slot = 1; slot < vs.buffers.size(); ++slot) {
+                if (vs.buffers[slot].IsSpecial() || sharp(slot).GetStride() != 16) continue;
+                const u32 size = sharp(slot).GetSize();
+                if (size != 512 && size != 16) continue;
+                const auto* source = data(slot, 0, size);
+                if (!source) {
+                    readable = false;
+                    break;
+                }
+                std::array<float, 128> constants{};
+                std::memcpy(constants.data(), source, size);
+                if (size == 512 && constants[48] > 0.1f && constants[53] > 0.1f &&
+                    constants[59] == -1.0f && constants[62] > 0.0f && constants[62] < 1.0f &&
+                    std::isfinite(constants[108]) && std::isfinite(constants[109]) &&
+                    std::isfinite(constants[110])) {
+                    if (scene_found) {
+                        readable = false;
+                        break;
+                    }
+                    std::copy_n(constants.data() + 108, origin.size(), origin.data());
+                    scene_found = true;
+                } else if (size == 16 && constants[3] == 0.0f &&
+                           std::isfinite(constants[0]) && std::isfinite(constants[1]) &&
+                           std::isfinite(constants[2])) {
+                    if (offset_found) {
+                        readable = false;
+                        break;
+                    }
+                    std::copy_n(constants.data(), offset.size(), offset.data());
+                    offset_found = true;
+                }
+            }
+            const u32 first_instance = GetDrawOffsets(regs, vs, fetch).second;
+            const u32 count = regs.num_instances.NumInstances();
+            const auto* models = sharp(0).GetSize() % 144 == 0
+                ? data(0, u64(first_instance) * 144, u64(count) * 144) : nullptr;
+            motion_model_identity = models && readable && scene_found && offset_found;
+            u64 geometry = motion_geometry;
+            const u64 streams = motion_geometry;
+            std::string model_trace;
+            const u64 capture_frame = object_motion->CaptureFrame();
+            for (u32 j = 0; j < origin.size(); ++j) origin[j] += offset[j];
+            motion_model_identity &=
+                std::ranges::all_of(origin, [](float value) { return std::isfinite(value); });
+            // Model records contain a vec4 and two affine matrices. World-space records
+            // use offset=-origin; camera-relative records use offset=0. Hash their complete
+            // ordered world identities so culling reorders invalidate history, not wind.
+            for (u32 i = 0; motion_model_identity && i < count; ++i) {
+                std::array<float, 36> record{};
+                std::memcpy(record.data(), models + u64(i) * sizeof(record), sizeof(record));
+                motion_model_identity =
+                    std::ranges::all_of(record, [](float value) { return std::isfinite(value); }) &&
+                    record[7] == 0.0f && record[11] == 0.0f && record[15] == 0.0f &&
+                    record[23] == 0.0f && record[27] == 0.0f && record[31] == 0.0f &&
+                    record[19] == 1.0f && record[35] == 1.0f;
+                for (u32 j = 0; j < origin.size(); ++j) {
+                    record[16 + j] += origin[j];
+                    record[32 + j] += origin[j];
+                }
+                if (capture_frame) {
+                    model_trace += fmt::format(" [{:016x} {},{},{} {},{},{}]",
+                        XXH3_64bits(record.data(), sizeof(record)),
+                        record[16], record[17], record[18], record[32], record[33], record[34]);
+                }
+                if (capture_frame) {
+                    geometry = XXH3_64bits_withSeed(record.data(), sizeof(record), geometry);
+                }
+                motion_instances.push_back(XXH3_64bits_withSeed(record.data(), sizeof(record), streams));
+            }
+            // Unreadable or unqualified model data must use native/camera reprojection.
+            motion_geometry = motion_model_identity ? geometry : 0;
+            if (!motion_model_identity) motion_instances.clear();
+            if (capture_frame) {
+                std::printf("Motion models: frame %llu vs %016llx streams %016llx qualified %d instances %u geometry %016llx%s\n",
+                    (unsigned long long)capture_frame, (unsigned long long)vs.pgm_hash,
+                    (unsigned long long)(ready ? ready->buffers_hash : XXH3_64bits(guest_buffers.data(), guest_buffers.size() * sizeof(AmdGpu::Buffer))),
+                    int(motion_model_identity), count, (unsigned long long)motion_geometry, model_trace.c_str());
+            }
+        }
     }
     // Object motion research: vertex streams of G-buffer draws.
     if (FrameCapture::Active() && gbuffer_draw) {
@@ -2820,7 +3025,7 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         return env && env[0] == '1';
     }();
     const bool note_taa = sniff_always || BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
-                          drive_aa->Active();
+                          drive_aa->Active() || BbNeural::Snapshot().enabled;
     // While neither consumer runs the camera is not refreshed: its readiness is dropped when they go off, so one
     // switched back on waits for both constant buffers again instead of an old camera.
     if (g_taa_noted && !note_taa && g_drive_motion) {
@@ -2898,9 +3103,13 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else {
             const auto vsharp =
                 prepared ? prepared->buffer_sharps[buffer_index] : desc.GetSharp(stage);
-            if (note_taa && vsharp.base_address != 0 && memory->IsValidGpuMapping(vsharp.base_address, 0)) {
-                NoteTaaBuffer(stage.pgm_hash, buffer_index, reinterpret_cast<const void*>(vsharp.base_address),
-                              vsharp.GetSize());
+            if (note_taa && vsharp.base_address != 0 && memory->IsValidGpuMapping(vsharp.base_address, 0) &&
+                (!IsNativeTaa(stage.pgm_hash) || buffer_index > 2 ||
+                 memory->ClampRangeSize(vsharp.base_address,
+                     std::min(vsharp.GetSize(), NativeTaaTableBytes)) ==
+                         std::min(vsharp.GetSize(), NativeTaaTableBytes))) {
+                NoteTaaBuffer(stage.pgm_hash, buffer_index,
+                              reinterpret_cast<const void*>(vsharp.base_address), vsharp.GetSize());
             }
             if (vsharp.GetSize() == 864 && gbuffer_draw &&
                 memory->IsValidGpuMapping(vsharp.base_address, 0)) {
@@ -3538,6 +3747,16 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
             if (drive_redirect && binding_proxy_ok[binding_index] && !is_storage &&
                 !binding.force_general && !binding.is_target && drive_aa->Redirects(image_id)) {
+                static const bool aa_debug = BB_DIAGNOSTIC_ENV("BB_AA_DEBUG") != nullptr;
+                if (aa_debug) {
+                    static int debug_count = 0;
+                    if (debug_count++ < 8) {
+                        const auto& m = desc.view_info.mapping;
+                        std::printf("AA redirect: image fmt %d view fmt %d mapping %d,%d,%d,%d\n",
+                                    int(image.info.pixel_format), int(desc.view_info.format),
+                                    int(m.r), int(m.g), int(m.b), int(m.a));
+                    }
+                }
                 vk::ImageView redirected;
                 vk::ImageLayout redirected_layout;
                 drive_aa->Redirect(image_view.info.mapping, redirected, redirected_layout);
@@ -3790,6 +4009,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
                                !scene_targets->ProxyCurrent(image, entry.range.base.level,
                                                             entry.range.extent.levels)
                          : image.scene_proxy && proxies_on) ||
+            drive_aa->Redirects(entry.id) ||
             (upscaler->Enabled() && upscaler->RedirectsSampled(entry.id))) {
             ++texture_set_why[2];
             ++texture_set_misses;

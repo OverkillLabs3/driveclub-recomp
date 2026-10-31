@@ -53,11 +53,13 @@ FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 h
     return out;
 }
 
+} // namespace
+
 /// bbport: BB_DUMP_TRIGGER=<file> BB_DUMP_DIR=<dir> (default out/dump): creating the file dumps
 /// the upscaler's images of the next BB_DUMP_FRAMES (8) frames as raw files
 /// <dir>/fNNN_<name>_<w>x<h>_<format>.raw, for checking temporal stability offline.
 /// Returns the frame number to dump, or -1.
-int DumpFrame() {
+int FrameCapture::DumpFrame() {
     static const char* trigger = BB_DIAGNOSTIC_ENV("BB_DUMP_TRIGGER");
     static int remaining = 0, index = 0, polls = 0;
     if (!trigger) {
@@ -75,17 +77,9 @@ int DumpFrame() {
     return index++;
 }
 
-struct DumpImage {
-    vk::Image image; ///< in layout General
-    u32 width, height, bytes_per_pixel;
-    const char* name;
-    const char* format;
-    vk::ImageAspectFlagBits aspect = vk::ImageAspectFlagBits::eColor;
-};
-
 /// Copies `images` into host buffers after the commands recorded so far and writes them to
 /// files once the GPU is done.
-void DumpImages(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
+void FrameCapture::DumpImages(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
                 int frame, std::initializer_list<DumpImage> images) {
     static const std::string dir = [] {
         const char* env = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
@@ -139,13 +133,15 @@ void DumpImages(const Instance& instance, Scheduler& scheduler, vk::CommandBuffe
     }
     const vk::MemoryBarrier2 after{
         .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
-        .srcAccessMask = vk::AccessFlagBits2::eNone,
-        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
-        .dstAccessMask = vk::AccessFlagBits2::eNone,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands | vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead,
     };
     cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
     std::printf("Dump: frame %d -> %s\n", frame, dir.c_str());
 }
+
+namespace {
 
 void PrintIssues(const char* what, u64 issues) {
     std::printf("Upscaler: %s invalid:", what);
@@ -164,7 +160,7 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
                                    CameraMotion& camera_motion_, SceneTargets& scene_targets_)
     : instance{instance_}, scheduler{scheduler_}, texture_cache{texture_cache_},
       runtime{runtime_}, camera_motion{camera_motion_}, scene_targets{scene_targets_} {
-    drive_motion = std::make_unique<DriveMotion>(instance);
+    drive_motion = std::make_unique<DriveMotion>(instance, scheduler);
     // Reject unsupported shaders before allocating resources or recording a frame.
     BbSettings::ConfigureUpscalerSupport(instance.IsFsr4Int8Supported(),
                                          instance.IsFsr411Supported());
@@ -1091,8 +1087,8 @@ void TemporalUpscaler::Run() {
         RecordTaa(cmdbuf, input_color_view, input_depth_view);
         dispatched = true;
     } else if (UseFsr4()) {
-        dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h},
-                                {input_depth, input_depth_view, w, h}, w, h, ow, oh, frame_ms);
+        dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h, color.info.pixel_format},
+                                {input_depth, input_depth_view, w, h, depth_format}, w, h, ow, oh, frame_ms);
     } else if (UseDlss()) {
         dispatched = RecordDlss(
             cmdbuf,
@@ -1634,8 +1630,8 @@ void TemporalUpscaler::RunScaled() {
                               source_width, source_height},
                              w, h, ow, oh, frame_ms, false);
         } else {
-            ok4 = RecordFsr4(cmdbuf, {color_image, color_view, source_width, source_height},
-                            {depth_image, depth_view, source_width, source_height}, w, h, ow,
+            ok4 = RecordFsr4(cmdbuf, {color_image, color_view, source_width, source_height, color.info.pixel_format},
+                            {depth_image, depth_view, source_width, source_height, depth_format}, w, h, ow,
                             oh, frame_ms);
         }
         if (ok4) {
@@ -1665,17 +1661,17 @@ void TemporalUpscaler::RunScaled() {
                     vk::PipelineStageFlagBits2::eColorAttachmentOutput, color_access);
             reset = false;
             dispatched_last_frame = true;
-            if (const int dump = DumpFrame(); dump >= 0) {
-                DumpImages(instance, scheduler, cmdbuf, dump,
+            if (const int dump = FrameCapture::DumpFrame(); dump >= 0) {
+                FrameCapture::DumpImages(instance, scheduler, cmdbuf, dump,
                            {{color_image, source_width, source_height, 4, "input", "rgba"},
                             {vk::Image(motion_image), w, h, 4, "motion", "rg16f"},
                             {vk::Image(output_image), ow, oh, 8, "output", "rgba16f"}});
-                DumpImages(instance, scheduler, cmdbuf, dump,
+                FrameCapture::DumpImages(instance, scheduler, cmdbuf, dump,
                            {{depth_image, source_width, source_height, 4, "depth", "f32",
                              vk::ImageAspectFlagBits::eDepth}});
                 if (BbSettings::Get().upscaler == BbSettings::UpscalerTaa &&
                     std::getenv("BB_TAA_DIAGNOSTICS")) {
-                    DumpImages(instance, scheduler, cmdbuf, dump,
+                    FrameCapture::DumpImages(instance, scheduler, cmdbuf, dump,
                                {{vk::Image(taa_history[taa_next]),ow,oh,16,
                                  "previous_history","rgba32f"},
                                 {vk::Image(opaque_image),ow,oh,8,"history_sample","rgba16f"}});
@@ -1683,7 +1679,7 @@ void TemporalUpscaler::RunScaled() {
                 // ObjectMotion's attachment can be in a different resolution from the FSR
                 // inputs: only dump it when it matches, to avoid an out-of-bounds GPU copy.
                 if (const auto object = camera_motion.ObjectMotionImage(w, h); object) {
-                    DumpImages(instance, scheduler, cmdbuf, dump,
+                    FrameCapture::DumpImages(instance, scheduler, cmdbuf, dump,
                                {{object, w, h, 16, "objects", "rgba32f"}});
                 }
             }
@@ -1917,7 +1913,7 @@ bool TemporalUpscaler::DisplayOverride(VAddr address, Display& display) {
         scheduler.EndRendering();
         const bool bgra = display.format == vk::Format::eB8G8R8A8Unorm ||
                           display.format == vk::Format::eB8G8R8A8Srgb;
-        DumpImages(instance, scheduler, scheduler.CommandBuffer(), dump_index++,
+        FrameCapture::DumpImages(instance, scheduler, scheduler.CommandBuffer(), dump_index++,
                    {{display.image, display.width, display.height, 4, "present",
                      bgra ? "bgra" : "rgba"}});
     }
@@ -2058,18 +2054,19 @@ void TemporalUpscaler::CaptureFrameGen(VideoCore::ImageId depth_id, u64 address)
         camera.vertical_fov = 0.9f;
         const bool dlss = BbSettings::Get().frame_gen == BbSettings::FrameGenDlss;
         const bool have_camera = drive_motion->Ready();
+        std::array<float, 2> jitter{};
         if (have_camera) {
             // DLSS takes screen fractions (its scale is 1), FSR takes pixels.
-            // FSR 3.1 finds the motion itself and was cleaner (no ghosts on the cars) with no
-            // vectors from the game than with the camera's (BB_FG_CAMERA_MV=1: the camera's).
-            static const bool camera_vectors = std::getenv("BB_FG_CAMERA_MV") != nullptr;
-            if (dlss || camera_vectors) {
-                const auto size = frame_generator->InputSize();
-                drive_motion->Record(cmdbuf, depth_view, stencil_view, motion, size[0], size[1], w, h, dlss);
-            } else {
-                frame_generator->ZeroMotion(cmdbuf);
-            }
+            const auto size = frame_generator->InputSize();
+            drive_motion->Record(cmdbuf, depth_view, stencil_view, motion, size[0], size[1], w, h, dlss);
+            const auto source_jitter = drive_motion->Jitter();
+            // NGX FG uses clip-space offsets; FSR FG uses its input image's pixel offsets.
+            jitter = dlss ? std::array<float, 2>{2.0f * source_jitter[0] / float(w),
+                                                -2.0f * source_jitter[1] / float(h)}
+                          : std::array<float, 2>{source_jitter[0] * float(size[0]) / float(w),
+                                                source_jitter[1] * float(size[1]) / float(h)};
             camera.near_plane = drive_motion->Near();
+            camera.far_plane = drive_motion->Far();
             camera.vertical_fov = drive_motion->VerticalFov();
             drive_motion->ClipTransforms(camera.view_to_clip, camera.clip_to_prev_clip,
                                          camera.prev_clip_to_clip);
@@ -2084,7 +2081,7 @@ void TemporalUpscaler::CaptureFrameGen(VideoCore::ImageId depth_id, u64 address)
             std::printf("Frame generation: motion vectors from the game camera, fov %.1f deg", camera.vertical_fov * 57.2958f);
             std::puts("");
         }
-        frame_generator->EndCapture(cmdbuf, {}, true, camera);
+        frame_generator->EndCapture(cmdbuf, jitter, have_camera, camera);
     }
 }
 
@@ -2110,6 +2107,7 @@ void TemporalUpscaler::CaptureHudless(VideoCore::ImageId color, u64 address) {
     if (!Rgba8(image.info.pixel_format)) {
         return;
     }
+    const auto previous_state = image.backing->state;
     scheduler.EndRendering();
     runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
                     vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead);
@@ -2117,6 +2115,9 @@ void TemporalUpscaler::CaptureHudless(VideoCore::ImageId color, u64 address) {
     frame_generator->CaptureHudless(scheduler.CommandBuffer(), image.GetImage(),
                                     image.info.pixel_format, image.info.size.width,
                                     image.info.size.height, address);
+    runtime.Transit(&image, previous_state.layout, previous_state.pl_stage,
+                    previous_state.access_mask);
+    runtime.FlushBarriers();
 }
 
 } // namespace Vulkan

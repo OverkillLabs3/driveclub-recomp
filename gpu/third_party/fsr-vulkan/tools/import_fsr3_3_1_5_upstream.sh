@@ -2,8 +2,8 @@
 # Copyright (c) 2026 Q2RTX FSR Vulkan contributors
 # SPDX-License-Identifier: MIT
 
-# Import the public SDK 2.3.0 FSR3 closure: the 3.1.5 upscaler and the newer
-# 3.1.6 analytical frame-interpolation/optical-flow sources. This is
+# Import the SDK 2.3 backend closure with the SDK 2.4 FSR 3.1.6 upscaler overlay
+# and 3.1.6 analytical frame-interpolation/optical-flow sources. This is
 # deliberately separate from the proven 1.1.4 implementation: SDK 2.3 has a
 # different backend ABI and must not be mixed with the older Vulkan backend.
 
@@ -65,7 +65,7 @@ while IFS= read -r path; do
             current_manifest="$destination/CURRENT_SHA256SUMS"
             expected_current=
             if [[ -f $current_manifest ]]; then
-                expected_current=$(awk -v path="$path" '$2 == path { print $1; exit }' "$current_manifest")
+                expected_current=$(awk -v path="$path" '{ sub(/^\*/, "", $2) } $2 == path { print $1; exit }' "$current_manifest")
             fi
             actual_sha256=$(sha256sum -- "$target")
             actual_sha256=${actual_sha256%% *}
@@ -96,13 +96,44 @@ git -C "$sdk_repo" archive --format=tar "$revision" -- "${paths[@]}" |
 # destination: the latter intentionally contains the documented Linux patches.
 staging=$(mktemp -d)
 trap 'find -- "$staging" -depth -delete; rmdir -- "$staging" 2>/dev/null || true' EXIT
-git -C "$sdk_repo" archive --format=tar "$revision" -- "${paths[@]}" |
-    tar -x -C "$staging"
-(
-    cd "$staging"
-    find Kits -type f -print0 | sort -z | xargs -0 sha256sum > ORIGINAL_SHA256SUMS
-)
+python3 - "$sdk_repo" "$revision" "$staging/ORIGINAL_SHA256SUMS" "${paths[@]}" <<'PY'
+import hashlib, pathlib, subprocess, sys
+repo, revision, output, *paths = sys.argv[1:]
+files = subprocess.check_output(['git', '-C', repo, 'ls-tree', '-r', '--name-only', revision, '--', *paths], text=True).splitlines()
+lines = []
+for path in files:
+    data = subprocess.check_output(['git', '-C', repo, 'show', revision + ':' + path])
+    lines.append(hashlib.sha256(data).hexdigest() + '  ' + path)
+pathlib.Path(output).write_text('\n'.join(lines) + '\n', encoding='utf-8', newline='\n')
+PY
 mv -- "$staging/ORIGINAL_SHA256SUMS" "$destination/ORIGINAL_SHA256SUMS"
+
+# Keep the existing backend ABI; SDK 2.4's upscaler host is compatible with it.
+upscale_revision=v2.4.0
+upscale_commit=7539ae8b6568ad29ed78a753404351daf3b5cca7
+[[ $(git -C "$sdk_repo" rev-parse "$upscale_revision^{commit}") == "$upscale_commit" ]] || {
+    printf 'unexpected SDK 2.4 commit\n' >&2; exit 1;
+}
+upscale_paths=(
+    Kits/FidelityFX/upscalers/fsr3/include/ffx_fsr3upscaler.h
+    Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler.cpp
+    Kits/FidelityFX/upscalers/fsr3/internal/ffx_fsr3upscaler_private.h
+    Kits/FidelityFX/upscalers/fsr3/include/gpu/fsr3upscaler/ffx_fsr3upscaler_reproject.h
+)
+printf '# FSR SDK v2.4.0 commit %s\n' "$upscale_commit" > "$destination/FSR3_3_1_6_SHA256SUMS"
+for path in "${upscale_paths[@]}"; do
+    source_file="$staging/upscale-source"
+    git -C "$sdk_repo" show "$upscale_revision:$path" > "$source_file"
+    rg 'Permission is hereby granted' "$source_file" >/dev/null || exit 1
+    digest=$(sha256sum "$source_file"); digest=${digest%% *}
+    printf '%s  %s\n' "$digest" "$path" >> "$destination/FSR3_3_1_6_SHA256SUMS"
+    if [[ $path == */internal/ffx_fsr3upscaler.cpp ]]; then
+        sed 's/#if !defined(_GAMING_XBOX)/#if !defined(_GAMING_XBOX) \&\& !defined(FFX_VK_PORTABLE_NO_WATERMARK)/' \
+            "$source_file" > "$destination/$path"
+    else
+        cp "$source_file" "$destination/$path"
+    fi
+done
 
 # CURRENT records the exact working tree accepted on a later import.  It is
 # intentionally separate from ORIGINAL because the portable source overlay
@@ -111,7 +142,7 @@ mv -- "$staging/ORIGINAL_SHA256SUMS" "$destination/ORIGINAL_SHA256SUMS"
 # before this refresh can bless any newly imported source.
 (
     cd "$destination"
-    find Kits -type f -print0 | sort -z | xargs -0 sha256sum > CURRENT_SHA256SUMS
+    find Kits -type f -print0 | sort -z | xargs -0 sha256sum | sed 's/ \*/  /' > CURRENT_SHA256SUMS
 )
 
 printf 'Imported %s public SDK 2.3 FSR source/header files from %s (%s).\n' \

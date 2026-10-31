@@ -5,8 +5,17 @@
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/ir/debug_print.h"
 #include "shader_recompiler/ir/microinstruction.h"
+#include <cstdlib>
 
 namespace Shader::Backend::SPIRV {
+
+static bool MotionProducerTags() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("BB_MOTION_SELECT_LOG");
+        return value && value[0] == '1';
+    }();
+    return enabled;
+}
 
 void EmitPrologue(EmitContext& ctx) {
     if (ctx.hw_stage == HwStage::Fragment) {
@@ -76,7 +85,7 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id param_ptr = ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant, u32_type),
                                            ctx.push_data_block,
                                            ctx.ConstU32(PushData::MotionParamIndex));
-    const Id param_index = ctx.OpLoad(u32_type, param_ptr);
+    const Id base_param_index = ctx.OpLoad(u32_type, param_ptr);
     const auto address = [&](u64 base, Id index, u32 stride) {
         return ctx.OpIAdd(ctx.U64, ctx.Constant(ctx.U64, base),
                           ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, index),
@@ -84,6 +93,15 @@ static void EmitVertexMotion(EmitContext& ctx) {
     };
     const Id u32x4_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, ctx.U32[4]);
     const Id f32x4_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, ctx.F32[4]);
+    const Id base_offsets = ctx.OpLoad(ctx.U32[4], ctx.OpConvertUToPtr(u32x4_ptr,
+        address(MotionVectors::params_address + 16, base_param_index, 32)),
+        spv::MemoryAccessMask::Aligned, 16u);
+    const Id per_instance = ctx.OpINotEqual(ctx.U1[1],
+        ctx.OpCompositeExtract(u32_type, base_offsets, 3u), ctx.u32_zero_value);
+    const Id instance_offset = ctx.OpISub(u32_type, ctx.OpLoad(u32_type, ctx.instance_id),
+        ctx.OpCompositeExtract(u32_type, base_offsets, 1u));
+    const Id param_index = ctx.OpIAdd(u32_type, base_param_index,
+        ctx.OpSelect(u32_type, per_instance, instance_offset, ctx.u32_zero_value));
     const Id params = ctx.OpLoad(
         ctx.U32[4],
         ctx.OpConvertUToPtr(u32x4_ptr, address(MotionVectors::params_address, param_index, 32)),
@@ -147,7 +165,13 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id valid = ctx.OpSelect(ctx.F32[1], do_load, ctx.Constant(ctx.F32[1], 1.0f),
                                   ctx.Constant(ctx.F32[1], 0.0f));
     previous = ctx.OpCompositeInsert(ctx.F32[4], valid, previous, 2u);
-    ctx.OpStore(ctx.motion_out_cur, position);
+    Id current = position;
+    if (MotionProducerTags()) {
+        // The separate current varying's z is unused by reprojection; keep stored clip positions intact.
+        const float tag = float((ctx.info.pgm_hash & 0xffffu) + 1u) * 16.0f;
+        current = ctx.OpCompositeInsert(ctx.F32[4], ctx.Constant(ctx.F32[1], tag), current, 2u);
+    }
+    ctx.OpStore(ctx.motion_out_cur, current);
     ctx.OpStore(ctx.motion_out_prev, previous);
 }
 
@@ -174,8 +198,14 @@ static void EmitFragmentMotion(EmitContext& ctx) {
     const Id front = ctx.OpLogicalAnd(ctx.U1[1],
         ctx.OpFOrdGreaterThan(ctx.U1[1], ctx.OpCompositeExtract(f32_type, previous, 3u), epsilon),
         ctx.OpFOrdGreaterThan(ctx.U1[1], ctx.OpCompositeExtract(f32_type, current, 3u), epsilon));
-    const Id valid = ctx.OpSelect(f32_type, front,
+    Id valid = ctx.OpSelect(f32_type, front,
                                   ctx.OpCompositeExtract(f32_type, previous, 2u), zero);
+    if (MotionProducerTags()) {
+        const Id tag = ctx.OpCompositeExtract(f32_type, current, 2u);
+        const Id matched = ctx.OpFOrdGreaterThan(ctx.U1[1], valid, ctx.Constant(f32_type, 0.99f));
+        const Id signed_tag = ctx.OpSelect(f32_type, matched, tag, ctx.OpFNegate(f32_type, tag));
+        valid = ctx.OpSelect(f32_type, front, signed_tag, zero);
+    }
     // Uninstrumented draws can overwrite the final scene depth after this pixel was
     // written. Preserve depth so the compose pass can reject an occluded vector.
     const Id depth = ctx.OpCompositeExtract(f32_type,

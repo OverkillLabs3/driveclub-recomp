@@ -4,6 +4,7 @@
 
 #include "bbport_frame_info.h"
 #include "bbport_cpu.h"
+#include "bbport_settings.h"
 #include <thread>
 #include <algorithm>
 #include <cstdio>
@@ -35,6 +36,7 @@ bool FewerBarriers(); // texture_cache/image.cpp
 namespace Vulkan {
 
 std::mutex Scheduler::submit_mutex;
+std::mutex Scheduler::present_mutex;
 
 Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
     : instance{instance}, work_semaphore{instance}, command_pool{instance, &work_semaphore} {
@@ -449,8 +451,18 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 #endif
 }
 
+std::mutex& Scheduler::SubmitMutex() const {
+    return latency_presentation && instance.GetPresentQueue() != instance.GetGraphicsQueue()
+               ? present_mutex : submit_mutex;
+}
+
+vk::Result Scheduler::WaitDeviceIdle(const Instance& instance) {
+    std::scoped_lock lock{submit_mutex, present_mutex};
+    return instance.GetDevice().waitIdle();
+}
+
 void Scheduler::SubmitExecution(SubmitInfo& info) {
-    std::scoped_lock lk{submit_mutex};
+    std::scoped_lock lk{SubmitMutex()};
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED
@@ -492,10 +504,16 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
 
     static constexpr std::array<vk::PipelineStageFlags, 2> wait_stage_masks = {
         vk::PipelineStageFlagBits::eAllCommands,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eAllCommands,
     };
 
+    const bool reflex = instance.HasLowLatency2();
+    const bool latency_render = reflex && !latency_presentation && latency_frame_id;
+    const vk::LatencySubmissionPresentIdNV latency_id{
+        .presentID = latency_frame_id,
+    };
     const vk::TimelineSemaphoreSubmitInfo timeline_si = {
+        .pNext = latency_render ? &latency_id : nullptr,
         .waitSemaphoreValueCount = info.num_wait_semas,
         .pWaitSemaphoreValues = info.wait_ticks.data(),
         .signalSemaphoreValueCount = info.num_signal_semas,
@@ -514,7 +532,16 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     };
 
     ImGui::Core::TextureManager::Submit();
-    auto submit_result = instance.GetGraphicsQueue().submit(submit_info, info.fence);
+    if (reflex && instance.GetPresentQueue() == instance.GetGraphicsQueue()) {
+        const VkOutOfBandQueueTypeInfoNV type{
+            .sType = VK_STRUCTURE_TYPE_OUT_OF_BAND_QUEUE_TYPE_INFO_NV,
+            .queueType = latency_render ? VK_OUT_OF_BAND_QUEUE_TYPE_RENDER_NV
+                                        : VK_OUT_OF_BAND_QUEUE_TYPE_PRESENT_NV,
+        };
+        instance.QueueNotifyOutOfBandFn()(VkQueue(instance.GetGraphicsQueue()), &type);
+    }
+    const auto queue = latency_presentation ? instance.GetPresentQueue() : instance.GetGraphicsQueue();
+    auto submit_result = queue.submit(submit_info, info.fence);
     if (submit_result == vk::Result::eErrorDeviceLost) {
         instance.LogDeviceLost();
     }

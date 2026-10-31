@@ -10,6 +10,8 @@
 
 #include <array>
 #include <chrono>
+#include <deque>
+#include <string>
 #include <memory>
 
 #include "common/types.h"
@@ -17,7 +19,7 @@
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/texture_cache/image.h"
 
-struct FfxVkPortableUpscaleContext;
+namespace Fsr411 { class Upscaler; }
 
 namespace VideoCore {
 class TextureCache;
@@ -29,6 +31,7 @@ class Instance;
 class Scheduler;
 class Runtime;
 class DriveMotion;
+class Fsr315;
 class CameraMotion;
 
 class DriveAA {
@@ -39,10 +42,14 @@ public:
 
     /// FSR or DLSS anti-aliasing is switched on and has not failed.
     [[nodiscard]] bool Active() const;
+    [[nodiscard]] int EffectiveMode() const;
 
     /// Sub-pixel shift of this frame's scene geometry in render pixels (x right, y down).
     [[nodiscard]] std::array<float, 2> Jitter() const {
         return Active() ? jitter : std::array<float, 2>{};
+    }
+    [[nodiscard]] std::array<float, 2> JitterForExtent(u32 w, u32 h) const {
+        return Active() && jitter_width == w && jitter_height == h ? geometry_jitter : std::array<float, 2>{};
     }
 
     /// Upscaling (render size below the output size) is on.
@@ -59,12 +66,25 @@ public:
     /// select), which the upscaled picture is read with too.
     void Redirect(const vk::ComponentMapping& mapping, vk::ImageView& view, vk::ImageLayout& layout);
 
+    [[nodiscard]] NeuralRendering::Guides FrameGuides();
+    void EndFrame() {
+        frame_guides = {};
+        frame_depth = {};
+        frame_depth_uid = 0;
+        previous_jitter = applied_jitter;
+        applied_jitter = {};
+        jitter_width = width;
+        jitter_height = height;
+        geometry_jitter = jitter;
+    }
+
     /// The display pass: the next frame's jitter.
     void NextFrame();
 
     /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
     /// scene depth and `output` the image it wrote.
-    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output);
+    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output, VideoCore::ImageId gbuffer = {},
+               VideoCore::ImageId native_depth = {}, VideoCore::ImageId previous_ids = {});
 
     /// Upscaling: OnTaa left the picture for the pass that scales it into the display buffer, and
     /// `image` (sampled by the first draw into the display buffer) is that picture.
@@ -98,7 +118,10 @@ private:
     };
     vk::ImageView View(const VideoCore::Image& image, vk::Format format,
                        vk::ImageAspectFlags aspect);
-    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss);
+    void EnsureMotionResources(u32 width, u32 height);
+    void RecordGuides(VideoCore::ImageId depth, std::array<float, 2> frame_jitter,
+                      vk::ImageView color_view = {});
+    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss, bool fsr411_mode);
     /// FSR or DLSS on `color` (jittered by `frame_jitter`): at the render size into `output`,
     /// or upscaled to the output size and sampled in place of `color` (Redirect).
     void Reconstruct(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
@@ -127,15 +150,24 @@ private:
     float scale = 1.0f;
     bool ready = false;
     bool failed = false;
+    bool dlss_failed = false;
     std::chrono::steady_clock::time_point last_run{};
     bool reset = true;
     int applied_mode = -1;
     u32 frame_id = 0;
     u32 jitter_index = 0;
-    std::array<float, 2> jitter{};
+    u32 jitter_width = 0, jitter_height = 0;
+    std::array<float, 2> jitter{}, previous_jitter{}, applied_jitter{}, geometry_jitter{};
     std::chrono::steady_clock::time_point last_frame{};
 
-    FfxVkPortableUpscaleContext* context = nullptr;
+    std::unique_ptr<Fsr315> fsr315;
+    std::unique_ptr<Fsr411::Upscaler> fsr411;
+    std::deque<u64> fsr411_ticks;
+    std::string fsr411_described;
+    NeuralRendering::Guides frame_guides{};
+    VideoCore::ImageId frame_depth{};
+    u64 frame_depth_uid = 0;
+    u32 motion_width = 0, motion_height = 0;
     VideoCore::UniqueImage motion_image, result_image;
     vk::UniqueImageView motion_view, result_view;
     /// DLSS writes here when the result is sharpened into result_image afterwards.

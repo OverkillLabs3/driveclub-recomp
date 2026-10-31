@@ -91,12 +91,17 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "gamma") {
         // hundredths, or a plain 2.4
         v.picture_gamma = std::clamp(f < 10.0f ? int(std::lround(f * 100.0f)) : i, 180, 280);
+    } else if (key == "reflex") {
+        v.reflex = value == "boost" || value == "2" ? ReflexBoost
+                   : value == "on" || value == "1" ? ReflexOn : ReflexOff;
+    } else if (key == "frame_gen_preset") {
+        v.frame_gen_preset = value == "b" || value == "B" || value == "2" ? 2 : 3;
     } else if (key == "dlss_model") {
         // auto, or the preset's letter
-        v.dlss_model = value == "k" || value == "K" ? 11 : value == "l" || value == "L" ? 12
+        v.dlss_model = value == "j" || value == "J" ? 10 : value == "k" || value == "K" ? 11 : value == "l" || value == "L" ? 12
                      : value == "m" || value == "M" ? 13 : 0;
     } else if (key == "frame_gen_multiplier") {
-        v.frame_gen_multiplier = std::clamp(i, 2, 4);
+        v.frame_gen_multiplier = std::clamp(i, 2, 6);
     } else if (key == "frame_gen_fit_display") {
         v.frame_gen_fit_display = i != 0;
     } else if (key == "motion_blur_reference") {
@@ -196,6 +201,7 @@ void Load() {
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_AA", "aa"},                            {"BB_AA_SCALE", "aa_scale"},                            {"BB_FRAME_GEN", "frame_gen"},              {"BB_FRAME_GEN_MULTIPLIER", "frame_gen_multiplier"},
         {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
+        {"BB_REFLEX", "reflex"}, {"BB_FRAME_GEN_PRESET", "frame_gen_preset"},
         {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
         {"BB_BRIGHTNESS", "brightness"},              {"BB_CONTRAST", "contrast"},
@@ -291,6 +297,10 @@ void Save() {
     std::fprintf(file, "frame_gen=%s\nframe_gen_multiplier=%d\nframe_gen_fit_display=%d\n",
                  FrameGenName(v.frame_gen), v.frame_gen_multiplier.load(),
                  int(v.frame_gen_fit_display.load()));
+    const int model = v.dlss_model.load();
+    const char* model_name = model == 10 ? "j" : model == 11 ? "k" : model == 12 ? "l" : model == 13 ? "m" : "auto";
+    std::fprintf(file, "reflex=%d\nframe_gen_preset=%d\ndlss_model=%s\n",
+                 v.reflex.load(), v.frame_gen_preset.load(), model_name);
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -320,7 +330,7 @@ const char* FrameGenName(int frame_gen) {
 }
 
 const char* AaName(int aa) {
-    static constexpr const char* names[AaCount] = {"off", "fsr3", "dlss"};
+    static constexpr const char* names[AaCount] = {"off", "fsr3", "dlss", "fsr411"};
     return names[std::clamp(aa, 0, AaCount - 1)];
 }
 

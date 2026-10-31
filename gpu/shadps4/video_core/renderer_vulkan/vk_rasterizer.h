@@ -34,6 +34,7 @@ namespace Vulkan {
 
 class GraphicsPipeline;
 class Runtime;
+class Swapchain;
 
 class Rasterizer {
 public:
@@ -49,6 +50,7 @@ public:
         return buffer_cache;
     }
 
+    [[nodiscard]] NeuralRendering::Guides NeuralGuides() { return drive_aa->FrameGuides(); }
     [[nodiscard]] TemporalUpscaler& GetUpscaler() noexcept {
         return *upscaler;
     }
@@ -120,6 +122,10 @@ public:
     /// pipeline selection waits for it (WaitQueuedMemoryWrites); a flip signal or a DMA into GDS does not.
     bool RunInOrder(OrderedTask task, const void* data, u32 size,
                     u64 toggle = BbToggle::PipelinedTasks, bool writes_guest_memory = true);
+    void SetLatencySwapchain(Swapchain* swapchain) {
+        latency_swapchain = swapchain;
+    }
+    void BeginLatencyFrame(u64 id);
     /// bbport: stage A, before a pipeline selection: WriteData/DMA queued for stage B may write the
     /// descriptor tables the selection walks; wait until stage B has run the last one.
     void WaitQueuedMemoryWrites();
@@ -189,6 +195,7 @@ public:
     u64 Flush();
     void Finish();
     void OnSubmit();
+    void EndFrame();
 
     PipelineCache& GetPipelineCache() {
         return pipeline_cache;
@@ -404,12 +411,16 @@ private:
     std::unique_ptr<ObjectMotion> object_motion;
     std::unique_ptr<VideoCore::Buffer> crumb_buffer; ///< AMD buffer marker target (see BbRecent::crumb)
     bool motion_draw = false;
+    bool motion_model_identity = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
+    std::vector<u64> motion_instances;
     bool gbuffer_draw = false;
     /// Frame generation: the scene depth (the G-buffer pass), the first draw into the display buffer
     /// since other work (the UI starts: the picture before it is the HUD-less frame).
     VideoCore::ImageId fg_depth{};
+    std::vector<VideoCore::ImageId> fg_depth_candidates;
     u64 fg_depth_area = 0;
+    bool fg_depth_selected = false;
     /// HDR output: a 3D scene since the last display draw; the next display draw (the UI's first)
     /// copies the display buffer first; the copies, one per display buffer.
     bool hdr_scene = false, hdr_capture_next = false, hdr_capture_pending = false;
@@ -627,6 +638,8 @@ private:
     /// Submissions (prepared draws) kept alive until stage B reaches the position.
     std::deque<std::pair<u64, std::shared_ptr<const void>>> pipe_keepalive;
     std::unique_ptr<DrawPipe> draw_pipe;
+    Swapchain* latency_swapchain{};
+    u64 queued_latency_id{};
 };
 
 } // namespace Vulkan

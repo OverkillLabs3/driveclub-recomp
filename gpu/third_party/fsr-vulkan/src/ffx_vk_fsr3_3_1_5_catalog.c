@@ -1,7 +1,7 @@
 /* Copyright (c) 2026 Q2RTX FSR Vulkan contributors SPDX-License-Identifier: MIT */
 #include "ffx_vk_fsr3_3_1_5_catalog.h"
 
-enum { LANCZOS = 1u, HDR = 2u, LOW_RES_MV = 4u, SHARPEN = 32u };
+enum { LANCZOS = 1u, HDR = 2u, LOW_RES_MV = 4u, DEPTH_INVERTED = 16u, SHARPEN = 32u };
 enum { BASE = LANCZOS | HDR | LOW_RES_MV };
 
 FfxVkPortableResult ffxVkFsr3_3_1_5GetModule(
@@ -15,13 +15,21 @@ FfxVkPortableResult ffxVkFsr3_3_1_5GetModule(
         "fsr3_3_1_5_rcas.spv", "fsr3_3_1_5_debug_view.spv",
         "fsr3_3_1_5_autogen_reactive.spv"
     };
+    static const char* const inverted_modules[] = {
+        "fsr3_3_1_5_prepare_inputs_inverted.spv", "fsr3_3_1_5_luma_pyramid_inverted.spv",
+        "fsr3_3_1_5_shading_change_pyramid_inverted.spv", "fsr3_3_1_5_shading_change_inverted.spv",
+        "fsr3_3_1_5_prepare_reactivity_inverted.spv", "fsr3_3_1_5_luma_instability_inverted.spv",
+        "fsr3_3_1_5_accumulate_inverted.spv", "fsr3_3_1_5_accumulate_sharpen_inverted.spv",
+        "fsr3_3_1_5_rcas_inverted.spv", "fsr3_3_1_5_debug_view_inverted.spv",
+        "fsr3_3_1_5_autogen_reactive_inverted.spv"
+    };
     if (!outModule)
         return FFX_VK_PORTABLE_ERROR_INVALID_POINTER;
     if (pass >= sizeof(modules) / sizeof(modules[0]))
         return FFX_VK_PORTABLE_ERROR_UNSUPPORTED;
-    if (permutation != (pass == 7u ? BASE | SHARPEN : BASE))
+    if ((permutation & ~DEPTH_INVERTED) != (pass == 7u ? BASE | SHARPEN : BASE))
         return FFX_VK_PORTABLE_ERROR_UNSUPPORTED;
-    outModule->filename = modules[pass];
+    outModule->filename = (permutation & DEPTH_INVERTED) ? inverted_modules[pass] : modules[pass];
     outModule->expectedPermutation = permutation;
     return FFX_VK_PORTABLE_OK;
 }

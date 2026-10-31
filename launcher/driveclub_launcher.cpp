@@ -377,7 +377,6 @@ constexpr const char* kPictureKey[3] = {"brightness=", "contrast=", "gamma="};
 int hdr_saved = -1, hdr_paper_saved = -1, hdr_peak_saved = -1;
 void NameNativeUpscale();
 int aa_saved = 0;     // "Anti-aliasing" choice, from launcher.ini
-int fgen_saved = 0;   // "Frame generation" choice, from launcher.ini
 int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.ini
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
@@ -387,6 +386,12 @@ int g_profile_row = -1, g_save_backup_row = -1, g_save_restore_row = -1;  // "Sa
 int profile_saved = 0;  // "Save profile" choice, from "profile=" in launcher.ini
 int online_saved = 0;             // "Online play" choice, from "online=" in launcher.ini
 int g_inres = -1, g_wide = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
+int g_fgen_x = -1, g_fgen_preset_row = -1, g_sr_preset_row = -1, g_reflex_row = -1;
+int g_neural_row = -1, g_neural_preset_row = -1, g_nr_intensity = -1, g_nr_tone = -1, g_nr_structure = -1;
+GpuCapabilities g_graphics;
+std::wstring ControlReason(int row, int choice = -1);
+bool NormalizeGraphics();
+
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
               kGfxHaze, kGfxFxaa, kGfxRows };
@@ -533,7 +538,7 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 // overrides (BB_FPS_LIMIT=40, ...). Only these are left alone; the launcher's own values are replaced each time.
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
-  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER",
+  for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER", L"BB_FRAME_GEN_PRESET", L"BB_REFLEX", L"BB_DLSS_MODEL", L"BB_NEURAL", L"BB_NR_CONFIG", L"BB_FSR_SHARPNESS", L"BB_HDR",
                              L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
@@ -569,6 +574,10 @@ bool BlurRowLocked(const Ctl& c) {
 bool RowHidden(const Ctl& c) {
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
+  if (g_sr_preset_row >= 0 && &c == &g_c[g_sr_preset_row]) return g_c[g_aa].sel != 2;
+  if (g_fgen_x >= 0 && &c == &g_c[g_fgen_x]) return g_c[g_fgen].sel == 0;
+  if (g_fgen_preset_row >= 0 && &c == &g_c[g_fgen_preset_row]) return g_c[g_fgen].sel != 2;
+  if (c.patches[0].rfind("@nr_", 0) == 0) return g_c[g_neural_row].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap]) return g_fps >= 0 && g_c[g_fps].sel != 3;
   if (g_online_host_row >= 0 && &c == &g_c[g_online_host_row]) return g_online_row >= 0 && g_c[g_online_row].sel != 2;
@@ -1075,7 +1084,7 @@ void BuildModel() {
                  {L"Live", L"Static (faster)"}, {"@mirror", ""}, 0);
   g_aa = seg(L"Anti-aliasing",
              L"Replaces the game's own anti-aliasing with NVIDIA DLSS (GeForce RTX cards) or AMD FSR 3.1 (any graphics card) for a sharper, steadier picture, and makes the Upscaling choice below possible. The game's own is the default. Motion blur must stay enabled with FSR or DLSS; its exposure preset can still be changed.",
-             {L"Game", L"FSR 3.1", L"DLSS (RTX)"}, {"@aa", "", ""}, 0);
+             {L"Game", L"FSR 3.1.6", L"DLSS (RTX)", L"FSR 4.1.2"}, {"@aa", "", "", ""}, 0);
   g_up = seg(L"Upscaling",
              L"More FPS for nearly the same picture: the game is drawn at a lower resolution and DLSS (or FSR) rebuilds it at your screen's resolution. DLAA (Native with FSR) draws every pixel: the best picture, the lowest FPS. Quality is the best balance; Balanced, Performance and Ultra Perf. give more FPS each. Needs DLSS or FSR 3.1 above.",
              {L"DLAA", L"Quality", L"Balanced", L"Performance", L"Ultra Perf."}, {"@up", "", "", "", ""}, 0);
@@ -1090,10 +1099,30 @@ void BuildModel() {
   g_aniso = seg(L"Anisotropic filtering",
                 L"Keeps textures on roads and terrain sharp at a shallow angle. Automatic is 16x (4x on integrated graphics). Off uses only what the game asks for. It costs little on any graphics card.",
                 {L"Automatic", L"Off", L"2x", L"4x", L"8x", L"16x"}, {"@aniso", "", "", "", "", ""}, 0);
-  g_fgen = seg(L"Frame generation (experimental)",
-               L"Adds a made-up frame between each two real ones (FSR 3.1 works on any graphics card; DLSS needs a GeForce RTX 40 series for 2x, RTX 50 series for 3x and 4x), so the picture looks two to four times as smooth. It adds a little delay and can smear fast motion. Best when the game already runs at 45 FPS or more; turn on the Unlocked frame rate as well.",
-               {L"Off", L"FSR 3.1 (2x)", L"DLSS (2x)", L"DLSS (3x)", L"DLSS (4x)"}, {"@fgen", "", "", "", ""}, 0);
-  g_fgen = -1;  // frame generation is not offered in this release
+  g_sr_preset_row = seg(L"DLSS Super Resolution preset", L"",
+                          {L"Auto", L"J", L"K", L"L", L"M"}, {"@sr_preset", "", "", "", ""}, 0);
+  g_c[g_sr_preset_row].more = L"Auto lets NVIDIA choose for the quality mode. J uses the original transformer model. K is the DLSS 4 transformer. L is the second-generation transformer optimized for Ultra Performance. M is the faster second-generation transformer for Performance, especially on RTX 20/30. NVIDIA app model overrides take precedence.";
+  g_fgen = seg(L"Frame generation technology",
+               L"FSR 3.1 adds one frame per game frame on any GPU. DLSS supports 2x on RTX 40, and up to 6x on RTX 50. Best with at least 45 real FPS. Select the multiplier separately.",
+               {L"Off", L"FSR 3.1", L"DLSS"}, {"@fgen_method", "", ""}, 0);
+  g_fgen_x = seg(L"Frame multiplier", L"Total displayed frames per real frame. More generated frames increase smoothness; they do not increase the game's simulation rate.",
+                 {L"2x", L"3x", L"4x", L"5x", L"6x"}, {"@fgen_x", "", "", "", ""}, 4);
+  g_fgen_preset_row = seg(L"DLSS Frame Generation preset", L"",
+                          {L"B - Quality", L"C - Performance"}, {"@fg_preset", ""}, 1);
+  g_c[g_fgen_preset_row].more = L"B improves UI detail and quality with UI recomposition. C uses faster candidate blending and is the default. NVIDIA app model overrides take precedence; Recommended can select a different model.";
+  g_reflex_row = seg(L"NVIDIA Reflex", L"Paces rendering before controller input to reduce latency. On + Boost also keeps GPU clocks higher. Works independently of frame generation.",
+                     {L"Off", L"On", L"On + Boost"}, {"@reflex", "", ""}, 0);
+  g_neural_row = seg(L"DLSS 5 Neural Rendering", L"Enhances scene shading and detail. Advanced stages, styles and additional passes are configured in bbport.ini.",
+                     {L"Off", L"On"}, {"@nr", ""}, 0);
+  g_neural_preset_row = seg(L"Neural Rendering model preset", L"",
+                            {L"A - Original", L"B - Optimized"}, {"@nr_preset", ""}, 1);
+  g_c[g_neural_preset_row].more = L"A uses the original Neural Rendering model. B uses the faster Optimized model and requires runtime 310.9.16 or newer. These presets are independent of Super Resolution and Frame Generation.";
+  g_nr_intensity = seg(L"Intensity", L"Strength of the first Neural Rendering pass; 0% bypasses its effect.",
+                       {L"0%", L"25%", L"50%", L"75%", L"100%"}, {"@nr_intensity", "", "", "", ""}, 2);
+  g_nr_tone = seg(L"Local tone", L"Local tone enhancement in the first Neural Rendering pass.",
+                  {L"0%", L"25%", L"50%", L"75%", L"100%"}, {"@nr_tone", "", "", "", ""}, 2);
+  g_nr_structure = seg(L"Structure", L"Surface detail enhancement in the first Neural Rendering pass.",
+                       {L"0%", L"25%", L"50%", L"75%", L"100%"}, {"@nr_structure", "", "", "", ""}, 2);
   const int skipgpu = toggle(L"Skip the hardware check",
                              L"The launcher checks that your processor and graphics card can run the game (Vulkan 1.3). If it refuses hardware that does work, turn this on to start anyway.",
                              "@skipgpu", false);
@@ -1322,9 +1351,10 @@ void BuildModel() {
   NameFfbGainRows();
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
   g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap}, 0, kTabGraphics});
-  if (g_fgen >= 0) g_cards.back().ctls.push_back(g_fgen);
   g_cards.push_back({L"RESOLUTION AND WINDOW", {outres, inres, wide, g_gfx[kGfxDynres], full}, 0, kTabGraphics});
-  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sharp, g_aniso}, 0, kTabGraphics});
+  g_cards.push_back({L"ANTI-ALIASING", {g_aa, g_up, g_sr_preset_row, g_sharp, g_aniso}, 0, kTabGraphics});
+  g_cards.push_back({L"FRAME GENERATION AND LATENCY", {g_fgen, g_fgen_x, g_fgen_preset_row, g_reflex_row}, 0, kTabGraphics});
+  g_cards.push_back({L"DLSS 5 NEURAL RENDERING", {g_neural_row, g_neural_preset_row, g_nr_intensity, g_nr_tone, g_nr_structure}, 0, kTabGraphics});
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"PICTURE", {g_picture[0], g_picture[1], g_picture[2]}, 0, kTabGraphics,
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
@@ -1464,6 +1494,8 @@ bool ReadOptimizationMask(uint64_t& mask) {
   in>>std::ws; return in.eof();
 }
 void LoadSettings() {
+  for (int row : {g_fgen, g_fgen_x, g_fgen_preset_row, g_sr_preset_row, g_reflex_row, g_neural_row, g_neural_preset_row, g_nr_intensity, g_nr_tone, g_nr_structure})
+    g_c[row].sel = g_c[row].def;
   g_two_thread = !PrimaryGpuIsAmd();  // the saved choice (draw_threads=) replaces it below
   for (const auto& line : ReadLines(IniPath())) {
     if (line.rfind("update=", 0) == 0) g_folder[0].path = Widen(line.substr(7));
@@ -1481,7 +1513,13 @@ void LoadSettings() {
     if (line.rfind("sharpness=", 0) == 0) sharp_saved = atoi(line.substr(10).c_str());
     if (line.rfind("fps_cap=", 0) == 0) fps_cap_saved = atoi(line.substr(8).c_str());
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
-    if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
+    for (int row : {g_fgen, g_fgen_x, g_fgen_preset_row, g_sr_preset_row, g_reflex_row, g_neural_row, g_neural_preset_row, g_nr_intensity, g_nr_tone, g_nr_structure}) {
+      const std::string key = g_c[row].patches[0].substr(1) + "=";
+      if (line.rfind(key, 0) == 0) {
+        const int value = atoi(line.substr(key.size()).c_str()) - (row == g_fgen_x ? 2 : 0);
+        g_c[row].sel = (std::clamp)(value, 0, int(g_c[row].items.size()) - 1);
+      }
+    }
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = atoi(line.substr(9).c_str());
     if (line.rfind("camera_patch=",0)==0) { g_camera_patch=line.substr(13)=="1";g_camera_patch_saved=true; }
     if (line.rfind("lock_horizon=", 0) == 0) g_lock_horizon = (std::clamp)(atoi(line.substr(13).c_str()), 0, 2);
@@ -1584,6 +1622,10 @@ void LoadSettings() {
       c.sel = unlock_all_cars ? 1 : 0;
       continue;
     }
+    if (c.patches[0] == "@fgen_method" || c.patches[0] == "@fgen_x" ||
+        c.patches[0] == "@fg_preset" || c.patches[0] == "@sr_preset" ||
+        c.patches[0] == "@reflex" || c.patches[0] == "@nr" ||
+        c.patches[0].rfind("@nr_", 0) == 0) continue;
     if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
@@ -1628,8 +1670,8 @@ void LoadSettings() {
         }
     for (int p : g_picture) if (p >= 0) g_c[p].loaded = g_c[p].sel;
   }
-  if (g_aa >= 0 && aa_saved >= 1 && aa_saved <= 2) g_c[g_aa].sel = aa_saved;
-  if (g_fgen >= 0 && fgen_saved >= 1 && fgen_saved <= 4) g_c[g_fgen].sel = fgen_saved;
+  if (g_aa >= 0 && aa_saved >= 1 && aa_saved <= 3) g_c[g_aa].sel = aa_saved;
+
   for (int k = 0; k < kGfxRows; ++k) {
     if (g_gfx[k] < 0) continue;
     Ctl& c = g_c[g_gfx[k]];
@@ -1691,6 +1733,148 @@ int RenderMemoryTier() {
 int MemoryTier() { return (std::max)(RenderMemoryTier(), OutputMemoryTier()); }
 
 // Output / render choices per preset: indices into the "Output resolution" and "Render resolution" rows.
+void OutputSize(int& w, int& h, int wide_choice = -1, int output_choice = -1) {
+  static const int kWide[7][2] = {{0, 0}, {2560, 1080}, {3440, 1080}, {3840, 1080},
+                                  {3440, 1440}, {5120, 1440}, {5120, 2160}};
+  static const int kOut[7][2] = {{1920, 1080}, {1280, 720}, {2560, 1440}, {3200, 1800},
+                                 {3840, 2160}, {5120, 2880}, {7680, 4320}};
+  const int wide = wide_choice >= 0 ? wide_choice : g_wide >= 0 ? g_c[g_wide].sel : 0;
+  if (wide > 0 && wide <= 6) {
+    w = kWide[wide][0];
+    h = kWide[wide][1];
+    return;
+  }
+  const int o = output_choice >= 0 ? output_choice : g_outres >= 0 ? g_c[g_outres].sel : 0;
+  w = kOut[o][0];
+  h = kOut[o][1];
+}
+
+bool FsrAssetsAvailable(int width, int height, bool ultra) {
+  wchar_t configured[32768];
+  std::vector<std::wstring> roots;
+  if (GetEnvironmentVariableW(L"BB_FSR412_DIR", configured, 32768) > 0) {
+    std::wstring path = configured;
+    if (path.size() < 2 || (path[1] != L':' && path[0] != L'\\' && path[0] != L'/')) path = g_runtime + L"\\" + path;
+    roots.push_back(path);
+  } else {
+    roots = {g_runtime + L"\\fsr4_412", g_home + L"\\fsr4_412"};
+  }
+  for (const auto& root : roots) {
+    if (!Exists(root + L"\\t1080_m0\\initializer.bin") && !Exists(root + L"\\t2160_m0\\initializer.bin")) continue;
+    const auto folder = root + (width > 1920 || height > 1080 ? L"\\t2160" : L"\\t1080") + (ultra ? L"_m1\\" : L"_m0\\");
+    struct AssetCache { std::wstring folder; FILETIME changed{}; bool complete = false; };
+    static AssetCache cache[2];
+    auto& cached = cache[width > 1920 || height > 1080 ? 1 : 0];
+    WIN32_FILE_ATTRIBUTE_DATA directory{};
+    if (!GetFileAttributesExW(folder.c_str(), GetFileExInfoStandard, &directory)) return false;
+    if (cached.folder == folder && CompareFileTime(&cached.changed, &directory.ftLastWriteTime) == 0) return cached.complete;
+    cached = {folder, directory.ftLastWriteTime, false};
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW((folder + L"initializer.bin").c_str(), GetFileExInfoStandard, &data) ||
+        data.nFileSizeHigh || data.nFileSizeLow != 131072) return false;
+    for (const auto* name : {L"spd", L"prepass", L"prepass_portable", L"pass0_post", L"postpass", L"rcas"}) {
+      if (!Exists(folder + name + L".spv")) return false;
+    }
+    for (int pass = 1; pass <= 12; ++pass) {
+      const auto name = folder + L"pass" + std::to_wstring(pass);
+      if (!Exists(name + L".spv") || !Exists(name + L"_post.spv")) return false;
+    }
+    cached.complete = true;
+    return true;
+  }
+  return false;
+}
+
+std::wstring ControlReason(int row, int choice) {
+  if (row < 0) return L"";
+  const auto& control = g_c[row];
+  const bool blur = g_blur_patch >= 0 && g_c[g_blur_patch].sel;
+  const bool external_aa = g_aa >= 0 && g_c[g_aa].sel > 0;
+  const bool frame_gen = g_fgen >= 0 && g_c[g_fgen].sel > 0;
+  const bool neural = g_neural_row >= 0 && g_c[g_neural_row].sel;
+  const auto pending = L"The GPU model could not be identified. Check your driver and restart the launcher.";
+  const bool unverified = !g_graphics.checked && (g_skip_gpu_check || GpuCompatibilityCheckBypassed());
+  if (row == g_sr_preset_row && g_c[g_aa].sel != 2)
+    return L"Choose DLSS anti-aliasing to select its Super Resolution model preset.";
+  if (row == g_aa && choice > 0 && blur) return L"Turn off the motion blur/depth-of-field patch first; reconstruction needs that scene pass.";
+  if (row == g_aa && choice == 2) {
+    if (!g_graphics.checked && !unverified) return pending;
+    if (!g_graphics.dlss_runtime) return L"DLSS runtime files are missing from the runtime folder.";
+    if (g_graphics.checked && !g_graphics.dlss) return L"DLSS Super Resolution is unavailable on this GPU or driver.";
+  }
+  if ((row == g_aa && choice == 3) || (g_aa >= 0 && g_c[g_aa].sel == 3 &&
+      (row == g_outres || row == g_inres || row == g_wide || row == g_up))) {
+    if (!g_graphics.checked && !unverified) return pending;
+    if (g_graphics.checked && !g_graphics.fsr411) return L"FSR 4.1.2 needs GPU support for 8-bit/16-bit shaders and integer dot products.";
+    int width, height;
+    const int wide = row == g_wide && choice >= 0 ? choice : g_c[g_wide].sel;
+    const int quality = row == g_up && choice >= 0 ? choice : g_c[g_up].sel;
+    if (quality > 0) {
+      OutputSize(width, height, wide, row == g_outres ? choice : -1);
+    } else if (wide > 0) {
+      OutputSize(width, height, wide);
+    } else {
+      const int render = row == g_inres && choice >= 0 ? choice : g_c[g_inres].sel;
+      OutputSize(width, height, 0, render > 0 ? render : 1);
+    }
+    if (width > 3840 || height > 2160) return L"FSR 4.1.2 supports reconstruction up to 3840 x 2160. Choose a smaller size or another method.";
+    if (!FsrAssetsAvailable(width, height, quality == 4)) return L"The FSR 4.1.2 asset set for this size is missing or incomplete.";
+  }
+  if (row == g_fgen && choice > 0) {
+    if (blur) return L"Turn off the motion blur/depth-of-field patch first; frame generation needs its scene history.";
+    if (choice == 2) {
+      if (!g_graphics.checked && !unverified) return pending;
+      if ((g_graphics.checked && g_graphics.frame_multiplier_max < 2) ||
+          (unverified && (!g_graphics.dlss_runtime || !Exists(g_runtime + L"\\nvngx_dlssg.dll"))))
+        return L"DLSS Frame Generation needs an RTX 40 or RTX 50 GPU and its runtime files.";
+    }
+  }
+  if (row == g_fgen_x) {
+    const int method = g_c[g_fgen].sel;
+    if (method == 0) return L"Choose a frame generation technology to enable the multiplier.";
+    if (method == 1 && choice != 0) return L"FSR 3.1 frame generation uses a fixed 2x multiplier.";
+    if (method == 2 && g_graphics.checked && choice >= 0 && choice + 2 > g_graphics.frame_multiplier_max)
+      return L"This GPU supports DLSS frame generation up to " + std::to_wstring(g_graphics.frame_multiplier_max) + L"x.";
+  }
+  if (row == g_fgen_preset_row && g_c[g_fgen].sel != 2)
+    return L"Choose DLSS Frame Generation to select its model preset.";
+  if (row == g_reflex_row && choice > 0) {
+    if (!g_graphics.checked && !unverified) return pending;
+    if (g_graphics.checked && !g_graphics.reflex) return L"Reflex needs NVIDIA Vulkan low-latency support and a current driver.";
+  }
+  if (row == g_neural_row && choice > 0) {
+    if (blur) return L"Turn off the motion blur/depth-of-field patch first; Neural Rendering needs its scene guides.";
+    if (!g_graphics.checked && !unverified) return pending;
+    if (!g_graphics.neural_runtime) return L"The DLSS 5 Neural Rendering runtime is missing.";
+    if (g_graphics.checked && !g_graphics.neural) return L"DLSS 5 Neural Rendering is unavailable on this GPU or driver.";
+  }
+  if (control.patches[0].rfind("@nr_", 0) == 0 && !neural) return L"Enable DLSS 5 Neural Rendering to adjust this setting.";
+  if (row == g_up && !external_aa) return L"Choose FSR or DLSS anti-aliasing to enable super resolution.";
+  if ((row == g_inres || row == g_outres) && g_c[g_wide].sel > 0) return L"Widescreen sets both resolutions. Turn it off to choose these separately.";
+  if (row == g_inres && UpscaleActive()) return L"Super resolution sets the render size from the output size and quality.";
+  if (row == g_blur_patch && choice != 0 && (external_aa || frame_gen || neural)) return L"Reconstruction, frame generation and Neural Rendering need this scene pass. Turn them off first.";
+  return L"";
+}
+
+bool NormalizeGraphics() {
+  if (!g_graphics.checked && !(g_skip_gpu_check || GpuCompatibilityCheckBypassed())) return false;
+  bool changed = false;
+  for (int row : {g_aa, g_fgen, g_reflex_row, g_neural_row}) {
+    if (row < 0 || ControlReason(row, g_c[row].sel).empty()) continue;
+    g_c[row].sel = 0;
+    changed = true;
+  }
+  const int method = g_c[g_fgen].sel;
+  const int multiplier = method == 1 ? 0 : method == 2 && g_graphics.checked
+      ? std::clamp(g_c[g_fgen_x].sel, 0, (std::max)(0, g_graphics.frame_multiplier_max - 2))
+      : g_c[g_fgen_x].sel;
+  if (multiplier != g_c[g_fgen_x].sel) {
+    g_c[g_fgen_x].sel = multiplier;
+    changed = true;
+  }
+  return changed;
+}
+
 void ApplyPreset(int preset) {
   if(preset==kPs4Preset) {
     for(const auto& [id,value]:Ps4Profile()) if(id>=0) g_c[id].sel=value;
@@ -1730,6 +1914,7 @@ bool SaveIniValue(const std::wstring& path,const std::string& key,const std::str
   return SaveTextAtomically(path,PreserveUnmanagedIni(ReadLines(path),key+"="+value+"\r\n"));
 }
 bool SaveSettings() {
+  NormalizeGraphics();
   MakeDirs(g_data + L"\\user");
   g_settings_error.clear();
   uint64_t saved_mask=2199023792128ull;
@@ -1756,7 +1941,7 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -1788,6 +1973,8 @@ bool SaveSettings() {
     if (g_fov >= 0 && (g_c[g_fov].sel != 100 || Exists(CameraIniPath()))) {
       if(!SaveIniValue(CameraIniPath(),"fov",std::to_string(g_c[g_fov].sel))) return false;
     }
+    for (int row : {g_fgen, g_fgen_x, g_fgen_preset_row, g_sr_preset_row, g_reflex_row, g_neural_row, g_neural_preset_row, g_nr_intensity, g_nr_tone, g_nr_structure})
+      ini << g_c[row].patches[0].substr(1) << "=" << g_c[row].sel + (row == g_fgen_x ? 2 : 0) << "\r\n";
     ini << SaveWheel();  // into default.ini; before the game has made it, kept here
     if(!g_settings_error.empty()) return false;
     if(!SaveTextAtomically(IniPath(),PreserveUnmanagedIni(old_ini,ini.str(),true))) return false;
@@ -2342,8 +2529,9 @@ void Paint(HDC hdc, int w, int h) {
         for (size_t k = 0; k < c.items.size(); ++k) {
           RectF seg(ct.X + sw * k + 3 * S, ct.Y + 3 * S, sw - 6 * S, ct.Height - 6 * S);
           const bool sel = int(k) == c.sel;
-          const bool over = hot && g_hover_seg == int(k);
-          if (sel) FillRound(g, seg, 7 * S, over ? kAccentHover : kAccent);
+          const bool available = ControlReason(i, int(k)).empty();
+          const bool over = hot && available && g_hover_seg == int(k);
+          if (sel) FillRound(g, seg, 7 * S, !available ? kOff : over ? kAccentHover : kAccent);
           else if (over) FillRound(g, seg, 7 * S, kTrackHover);
           float px = 13.f;
           StringFormat mf;
@@ -2355,7 +2543,7 @@ void Paint(HDC hdc, int w, int h) {
             if (bx.Width <= seg.Width - 8 * S) break;
           }
           Font fit(&fam, px * S, sel ? FontStyleBold : FontStyleRegular, UnitPixel);
-          Text(g, c.items[k], fit, seg, sel ? kWhite : kMuted, StringAlignmentCenter);
+          Text(g, c.items[k], fit, seg, !available ? Color(255, 82, 90, 104) : sel ? kWhite : kMuted, StringAlignmentCenter);
         }
       }
     }
@@ -3037,14 +3225,26 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   }
   if (g_aa >= 0 && !UserEnv(L"BB_AA")) {
     const int a = g_c[g_aa].sel;
-    SetEnvironmentVariableW(L"BB_AA", a == 0 ? L"off" : a == 1 ? L"fsr3" : L"dlss");
+    SetEnvironmentVariableW(L"BB_AA", a == 0 ? L"off" : a == 1 ? L"fsr3" : a == 3 ? L"fsr411" : L"dlss");
   }
   if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
   if (g_fgen >= 0 && !UserEnv(L"BB_FRAME_GEN")) {
     const int f = g_c[g_fgen].sel;
     SetEnvironmentVariableW(L"BB_FRAME_GEN", f == 0 ? L"off" : f == 1 ? L"fsr3" : L"dlss");
-    if (!UserEnv(L"BB_FRAME_GEN_MULTIPLIER"))
-      SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", f == 2 ? L"2" : f == 3 ? L"3" : f == 4 ? L"4" : nullptr);
+  }
+  if (!UserEnv(L"BB_FRAME_GEN_MULTIPLIER"))
+    SetEnvironmentVariableW(L"BB_FRAME_GEN_MULTIPLIER", std::to_wstring(g_c[g_fgen].sel == 1 ? 2 : g_c[g_fgen_x].sel + 2).c_str());
+  if (!UserEnv(L"BB_FRAME_GEN_PRESET")) SetEnvironmentVariableW(L"BB_FRAME_GEN_PRESET", g_c[g_fgen_preset_row].sel == 0 ? L"b" : L"c");
+  if (!UserEnv(L"BB_REFLEX")) SetEnvironmentVariableW(L"BB_REFLEX", std::to_wstring(g_c[g_reflex_row].sel).c_str());
+  static const wchar_t* sr_models[] = {L"auto", L"j", L"k", L"l", L"m"};
+  if (!UserEnv(L"BB_DLSS_MODEL")) SetEnvironmentVariableW(L"BB_DLSS_MODEL", sr_models[g_c[g_sr_preset_row].sel]);
+  if (!UserEnv(L"BB_NEURAL")) SetEnvironmentVariableW(L"BB_NEURAL", g_c[g_neural_row].sel ? L"1" : L"0");
+  if (!UserEnv(L"BB_NR_CONFIG")) {
+    const std::wstring config = L"nr_preset=" + std::to_wstring(g_c[g_neural_preset_row].sel + 1) +
+      L";nr_pass1_intensity=" + std::to_wstring(g_c[g_nr_intensity].sel * 0.25) +
+      L";nr_pass1_tone=" + std::to_wstring(g_c[g_nr_tone].sel * 0.25) +
+      L";nr_pass1_structure=" + std::to_wstring(g_c[g_nr_structure].sel * 0.25);
+    SetEnvironmentVariableW(L"BB_NR_CONFIG", config.c_str());
   }
 
   // Disable VK_LAYER_AMD_switchable_graphics_1 (from old AMD drivers) which hangs Vulkan init on hybrid laptops
@@ -3744,7 +3944,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       return 0;
     case WM_SETCURSOR:
       if (g_hover_discord && LOWORD(l) == HTCLIENT) {
-        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32649)));
         return TRUE;
       }
       break;
@@ -3861,11 +4061,20 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           InvalidateRect(h, nullptr, FALSE);
           return 0;
         }
+        if (const auto reason = ControlReason(c, ctl.kind == Kind::Toggle ? !ctl.sel : seg); !reason.empty()) {
+          g_status = reason;
+          g_status_color = kWarn;
+          g_status_sticky = true;
+          InvalidateRect(h, nullptr, FALSE);
+          return 0;
+        }
+        g_status_sticky = false;
         if (BlurRowLocked(ctl)) return 0;  // FSR or DLSS is on: the blur stays as the game has it
         if (ctl.kind == Kind::Toggle) {
           ctl.sel = !ctl.sel;
           if (ctl.patches[0] == "@skipgpu") {
             g_skip_gpu_check = ctl.sel != 0;
+            if (g_skip_gpu_check && !g_graphics.checked) g_graphics = DisplayGraphicsCapabilities();
             if (!GpuBlocked() && g_status == g_gpu_problem) g_status.clear();
             else if (GpuBlocked()) { g_status = g_gpu_problem; g_status_color = kBad; }
           }
@@ -3873,7 +4082,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           if (c == g_hdr) Relayout(h);  // its sliders show or hide
         } else if (seg >= 0) {
           // choices that show or hide other rows (RowHidden)
-          const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
+          const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps || c == g_fgen || c == g_neural_row) && ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_fps && model_changed) ApplyFrameModeCameraDefault();
           if (c == g_preset) ApplyPreset(seg);
@@ -3900,6 +4109,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
           }
           if (IsDriveRow(ctl)) DeriveDrivePreset();
           if (c == g_aa) NameNativeUpscale();
+          NormalizeGraphics();
           g_changed = true;
           if (model_changed) Relayout(h);  // rows show or hide
         }
@@ -3992,7 +4202,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   if (!g_skip_gpu_check) {
     g_gpu_problem = CheckCpu();
     if (g_gpu_problem.empty()) g_gpu_problem = CheckGpu();
-  }
+    g_graphics = GraphicsCapabilities();
+  } else g_graphics = DisplayGraphicsCapabilities();
+  NormalizeGraphics();
   LauncherLog(g_skip_gpu_check ? std::string("hardware check: skipped by the player") : g_gpu_problem.empty() ? std::string("hardware check: passed") : "hardware check: " + Narrow(g_gpu_problem));
   if (GpuBlocked()) {
     g_status = g_gpu_problem;

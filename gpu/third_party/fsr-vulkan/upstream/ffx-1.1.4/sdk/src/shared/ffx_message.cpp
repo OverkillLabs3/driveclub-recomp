@@ -28,7 +28,16 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>  // required for OutputDebugString()
+#include <cwchar>     // swprintf (MinGW does not pull this in transitively)
 #endif                // #ifdef _WIN32
+
+#if defined(_WIN32) && !defined(_MSC_VER)
+// MinGW does not declare the MSVC-only swprintf_s; plain swprintf with an
+// explicit buffer size is equivalent for these fixed-size formats.
+#define FFX_SWPRINTF_S swprintf
+#else
+#define FFX_SWPRINTF_S swprintf_s
+#endif
 
 static ffxMessageCallback s_messageCallback;
 static uint32_t s_debugLevel;
@@ -48,10 +57,10 @@ void ffxPrintMessage(uint32_t type, const wchar_t* message)
         // Format the message string
         wchar_t buffer[512];
         if (type == FFX_MESSAGE_TYPE_ERROR) {
-            swprintf_s(buffer, 512, L"FSR_API_DEBUG_ERROR: %ls\n", message);
+            FFX_SWPRINTF_S(buffer, 512, L"FSR_API_DEBUG_ERROR: %ls\n", message);
         }
         else if (type == FFX_MESSAGE_TYPE_WARNING) {
-            swprintf_s(buffer, 512, L"FSR_API_DEBUG_WARNING: %ls\n", message);
+            FFX_SWPRINTF_S(buffer, 512, L"FSR_API_DEBUG_WARNING: %ls\n", message);
         }
         OutputDebugStringW(buffer);
     } else {

@@ -971,7 +971,7 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
     fclose(f);
     printf("Patches: %" PRIu64 " writes, %" PRIu64 " bytes applied, %" PRIu64 " pointers rebased\n",count,bytes,rebased);
 }
-/* Upscaling (BB_AA = dlss or fsr3 with BB_AA_SCALE = quality, balanced, performance or ultra_performance): the game
+/* Upscaling (BB_AA = dlss, fsr3 or fsr411 with BB_AA_SCALE = quality, balanced, performance or ultra_performance): the game
  * renders its scene at the output size over the scale and FSR or DLSS brings it back to the output size
  * (gpu/shadps4/video_core/renderer_vulkan/vk_drive_aa.cpp). DriveClub 1.28 keeps its output size in the code (the
  * immediates of mov r8d / mov r9d at +0x754c19 / +0x754c1f, which the resolution patches change) and its render size
@@ -981,7 +981,7 @@ static void apply_upscale_render_size(unsigned char *image, uint64_t size) {
     static const struct { const char *name; float scale; } scales[] = {
         {"quality", 1.5f}, {"balanced", 1.7f}, {"performance", 2.0f}, {"ultra_performance", 3.0f}};
     const char *aa=getenv("BB_AA"), *want=getenv("BB_AA_SCALE");
-    if (!aa || (strcmp(aa,"dlss") && strcmp(aa,"fsr3")) || !want) return;
+    if (!aa || (strcmp(aa,"dlss") && strcmp(aa,"fsr3") && strcmp(aa,"fsr411")) || !want) return;
     float scale=0.0f;
     for (size_t i=0;i<sizeof scales/sizeof *scales;++i) if (!strcmp(want,scales[i].name)) scale=scales[i].scale;
     if (scale<=0.0f || size<0x12d0558) return;
