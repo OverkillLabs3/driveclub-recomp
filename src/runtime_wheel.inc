@@ -17,8 +17,16 @@ static struct { int axis, invert; } wheel_axis[WAX_COUNT]={{0,WINV_NO},{1,WINV_A
 static char wheel_device[64]="auto";       /* auto, off, or part of the wheel's name */
 static int wheel_rotation=900;              /* degrees lock to lock */
 static bool wheel_as_stick, wheel_hat_dpad=true;
-static struct { int index; uint8_t out_kind; uint32_t button; int touch_side; } wheel_buttons[32];
+/* dev: 0 the wheel, else a slot of button_devs (a third field naming another controller) */
+static struct { int index; uint8_t out_kind; uint32_t button; int touch_side; int dev; } wheel_buttons[32];
 static int wheel_button_count;
+/* wheel_button = <n>, <action>, <part of a controller's name>[ @<which>]: a button of another controller (a button box,
+ * a second controller, a Stream Deck that is a game controller), looked for once a second while the wheel is
+ * connected (button_device). Slot 0 is unused: dev 0 is the wheel. */
+#define BUTTON_DEVICES 4
+typedef struct { char name[64]; SDL_Joystick *j; uint64_t last_scan, last_buttons; bool listed; } ButtonDevice;
+static ButtonDevice button_devs[BUTTON_DEVICES+1];
+static int button_dev_count;
 static bool ffb_enabled=true, ffb_invert;  /* force feedback (runtime_logiwheel.inc) */
 static int ffb_gain=100, ffb_vibration=100;   /* percent; the strongest forces clip at the wheel's maximum */
 static int ffb_damper=-1;                      /* percent of the game's damper; -1: it follows ffb_gain, as before */
@@ -74,8 +82,9 @@ static bool ffb_ph_centre=true;
  * the game's forces as they come, step by step. */
 static bool ffb_ph_relax=true;
 /* wheel_button = <n>, ffb_gain_up / ffb_gain_down: wheel buttons that make the physics model's force for the car being
- * driven 5% stronger or weaker, kept for each car (runtime_logiwheel.inc, ffb_cars.ini); -1: not bound */
-static int ffb_gain_button[2]={-1,-1};
+ * driven 5% stronger or weaker, kept for each car (runtime_logiwheel.inc, ffb_cars.ini); -1: not bound. ffb_gain_dev:
+ * the controller, as wheel_buttons' dev. Keys too: ffb_gain_up = <key> (runtime_input.inc). */
+static int ffb_gain_button[2]={-1,-1}, ffb_gain_dev[2];
 
 static SDL_Joystick *wheel;
 static SDL_JoystickID wheel_id;
@@ -238,13 +247,24 @@ static void wheel_parse(const char *lhs, char *rhs) {
         return;
     }
     if (!strcmp(key,"button")) {
-        /* <wheel button number>, <PS4 button> */
-        int index=-1; char name[32]="";
-        if (sscanf(rhs," %d , %31s",&index,name)!=2 || index<0 || wheel_button_count>=(int)(sizeof wheel_buttons/sizeof *wheel_buttons)) return;
-        lower(name);
-        if (!strcmp(name,"ffb_gain_up") || !strcmp(name,"ffb_gain_down")) { ffb_gain_button[name[9]=='d']=index; return; }
+        /* <button number>, <PS4 button>[, <another controller's name>] */
+        int index=-1; char name[32]="", devname[64]="";
+        const int got=sscanf(rhs," %d , %31[^,] , %63[^\n]",&index,name,devname);
+        if (got<2 || index<0 || wheel_button_count>=(int)(sizeof wheel_buttons/sizeof *wheel_buttons)) return;
+        trim(name); lower(name); trim(devname);
+        int dev=0;
+        if (got==3 && *devname && SDL_strcasecmp(devname,"wheel")) {
+            for (int k=1;k<=button_dev_count && !dev;++k) if (!SDL_strcasecmp(button_devs[k].name,devname)) dev=k;
+            if (!dev && button_dev_count<BUTTON_DEVICES) {
+                dev=++button_dev_count;
+                snprintf(button_devs[dev].name,sizeof button_devs[dev].name,"%s",devname);
+            }
+            if (!dev) return;
+        }
+        if (!strcmp(name,"ffb_gain_up") || !strcmp(name,"ffb_gain_down")) { ffb_gain_button[name[9]=='d']=index; ffb_gain_dev[name[9]=='d']=dev; return; }
         int slot=wheel_button_count;
         wheel_buttons[slot].index=index;
+        wheel_buttons[slot].dev=dev;
         if (!strcmp(name,"touchpad") || !strcmp(name,"touchpad_left") || !strcmp(name,"touchpad_right") || !strcmp(name,"touchpad_center")) {
             wheel_buttons[slot].out_kind=OUT_TOUCH;
             wheel_buttons[slot].touch_side=!strcmp(name,"touchpad_right") ? 2 : !strcmp(name,"touchpad_center") ? 1 : 0;
@@ -287,6 +307,8 @@ static const char wheel_default_config[]=
     "# pad_up, touchpad_left...). The paddles are usually the first two: shift down is l1, shift up is r1.\n"
     "# ffb_gain_up and ffb_gain_down in place of a PS4 button: the force feedback of the car being driven 5% stronger\n"
     "# or weaker (Reworked Physics), kept for each car in ffb_cars.ini (WheelSetup has them as FFB gain + and -).\n"
+    "# A button of another controller (a button box): wheel_button = <button number>, <PS4 button>, <part of its name>.\n"
+    "# Keys (a Stream Deck's too): <PS4 button> = <key> as in the keyboard bindings above, ffb_gain_up = <key> likewise.\n"
     "wheel_button = 0, r1\n"
     "wheel_button = 1, l1\n"
     "# The wheel's hat switch works as the d-pad.\n"
@@ -384,13 +406,16 @@ static bool pedals_name_matches(const char *name) {
 /* wheel_device in lower case without its " @<which>" (not '#': that starts a comment in default.ini), for wheels that are several controllers of one name (a Fanatec
  * base is two "FANATEC Wheel"): which is part of the controller's device path (col01: the HID collection, which stays
  * the same from start to start, unlike the order Windows lists them in) or a number, the n-th of that name. */
-static void wheel_device_want(char *want, size_t size, char *which, size_t which_size) {
-    snprintf(want,size,"%s",wheel_device); lower(want); trim(want);
+static void device_want(const char *setting, char *want, size_t size, char *which, size_t which_size) {
+    snprintf(want,size,"%s",setting); lower(want); trim(want);
     which[0]=0;
     char *at=strrchr(want,'@');
     if (!at || at==want || at[-1]!=' ' || !at[1]) return;
     snprintf(which,which_size,"%s",at+1); trim(which);
     *at=0; trim(want);
+}
+static void wheel_device_want(char *want, size_t size, char *which, size_t which_size) {
+    device_want(wheel_device,want,size,which,which_size);
 }
 static bool wheel_which_matches(SDL_JoystickID id, const char *which, int *matched) {
     if (!*which) return true;
@@ -568,6 +593,41 @@ static SDL_Joystick *current_handbrake(void) {
     SDL_free(ids);
     return handbrake;
 }
+/* The controller of wheel_button lines that name one (button_devs slot k), looked for once a second while the wheel
+ * is connected; slot 0: the wheel. Called under lock. */
+static SDL_Joystick *button_device(int k) {
+    if (k<=0 || k>button_dev_count) return wheel;
+    if (!wheel) return NULL;
+    ButtonDevice *d=&button_devs[k];
+    if (d->j && !SDL_JoystickConnected(d->j)) { printf("Runtime: button controller \"%s\" disconnected\n",d->name); SDL_CloseJoystick(d->j); d->j=NULL; }
+    if (d->j) return d->j;
+    const uint64_t now=now_us();
+    if (d->last_scan && now-d->last_scan<1000000) return NULL;
+    d->last_scan=now;
+    char want[64], which[32]; device_want(d->name,want,sizeof want,which,sizeof which);
+    int count=0, matched=0;
+    SDL_JoystickID *ids=SDL_GetJoysticks(&count);
+    for (int i=0;ids && i<count && !d->j;++i) {
+        if (ids[i]==wheel_id) continue;   /* the wheel's own buttons are lines without a controller name */
+        char n[128]; snprintf(n,sizeof n,"%s",SDL_GetJoystickNameForID(ids[i]) ? SDL_GetJoystickNameForID(ids[i]) : ""); lower(n);
+        if (!*want || !strstr(n,want) || !wheel_which_matches(ids[i],which,&matched) || !(d->j=SDL_OpenJoystick(ids[i]))) continue;
+        printf("Runtime: button controller connected: %s (%d buttons) for the wheel_button lines naming \"%s\"\n",
+               SDL_GetJoystickName(d->j),SDL_GetNumJoystickButtons(d->j),d->name);
+    }
+    if (!d->j && !d->listed) {
+        d->listed=true;
+        printf("Runtime: no controller named \"%s\" (wheel_button) among the game controllers:",d->name);
+        for (int i=0;ids && i<count;++i) printf(" \"%s\"",SDL_GetJoystickNameForID(ids[i]) ? SDL_GetJoystickNameForID(ids[i]) : "?");
+        printf("\n");
+    }
+    SDL_free(ids);
+    return d->j;
+}
+/* A wheel_button binding's button: on the wheel, or on the controller its line names. Under lock. */
+static bool wheel_button_down(int dev, int index) {
+    SDL_Joystick *j=button_device(dev);
+    return j && index>=0 && index<SDL_GetNumJoystickButtons(j) && SDL_GetJoystickButton(j,index);
+}
 static uint8_t shifter_gear(SDL_Joystick *w) {
     SDL_Joystick *s=current_shifter();
     char want[16]; snprintf(want,sizeof want,"%s",shifter_device); lower(want); trim(want);
@@ -628,9 +688,19 @@ static void wheel_sample(PadData *d, bool neutral) {
         w.gear=shifter_gear(j);
         { static uint8_t last_gear; if (w.gear!=last_gear) { static unsigned n; if (n++<60) printf("Runtime: shifter gear %s\n",w.gear==0x80 ? "R" : !w.gear ? "N" : w.gear==1 ? "1" : w.gear==2 ? "2" : w.gear==4 ? "3" : w.gear==8 ? "4" : w.gear==16 ? "5" : "6"); last_gear=w.gear; } }
         for (int i=0;i<wheel_button_count;++i) {
-            if (!SDL_GetJoystickButton(j,wheel_buttons[i].index)) continue;
+            if (!wheel_button_down(wheel_buttons[i].dev,wheel_buttons[i].index)) continue;
             if (wheel_buttons[i].out_kind==OUT_BUTTON) d->buttons|=wheel_buttons[i].button;
             else touch_click(d,wheel_buttons[i].touch_side==2);
+        }
+        /* For the wheel_button settings: which buttons of the other controllers the player presses. */
+        for (int k=1;k<=button_dev_count;++k) {
+            static unsigned logged_other;
+            SDL_Joystick *b=button_device(k);
+            if (!b || logged_other>=300) continue;
+            uint64_t now=0;
+            for (int i=0;i<SDL_GetNumJoystickButtons(b) && i<64;++i) if (SDL_GetJoystickButton(b,i)) now|=UINT64_C(1)<<i;
+            for (int i=0;i<64;++i) if ((now & ~button_devs[k].last_buttons)>>i & 1) { printf("Runtime: \"%s\" button %d\n",button_devs[k].name,i); ++logged_other; }
+            button_devs[k].last_buttons=now;
         }
         if (wheel_hat_dpad && SDL_GetNumJoystickHats(j)>0) {
             const uint8_t hat=SDL_GetJoystickHat(j,0);
