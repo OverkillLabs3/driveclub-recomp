@@ -178,7 +178,7 @@ void HdrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView frame, vk::ImageVie
                                        .imageView = view,
                                        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal};
     };
-    params.has_scene = hudless && scene ? 1.0f : 0.0f;
+    params.has_scene = 0.0f;
     if (params.has_scene > 0.5f) {
         // How bright the scene is against the SDR picture, from the picture before the UI.
         state_ready(vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryWrite,
