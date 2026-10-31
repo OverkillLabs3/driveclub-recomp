@@ -19,6 +19,7 @@ layout(push_constant) uniform Constants {
     vec2 scale;             // output scale: 1 for pixels, 1 / size for screen fractions
     float use_stencil;      // 1: the stencil view is real
     float use_object;       // 1: fuse Driveclub object vectors and highlight-aware camera flow
+    vec2 jitter;            // this frame's viewport shift in pixels (x right, y down)
 };
 
 void main() {
@@ -28,7 +29,9 @@ void main() {
     }
     const ivec2 src = ivec2(min((vec2(pixel) + 0.5) / size * src_size, src_size - 1.0));
     const float depth = max(texelFetch(depth_tex, src, 0).r, 1e-7);
-    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    // Depth was rasterised through a shifted viewport: the unjittered position, and no jitter
+    // in the motion vectors.
+    const vec2 uv = (vec2(pixel) + 0.5) / size - jitter / size;
     const vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     // Stored by rows, read by columns: the matrix is transposed, so G * v is v * M.
     const vec4 prev = clip_to_prev_clip * clip;
@@ -38,10 +41,7 @@ void main() {
         const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
         motion = (prev_uv - uv) * size;
     }
-    // The player's car, the hands and the other cars keep their place on the screen far better than the world does.
-    if (use_stencil > 0.5 && (texelFetch(mask_tex, src, 0).r & 130u) != 0u) {
-        motion = vec2(0.0);
-    }
+
     if (use_object > 0.5) {
         const vec4 object_motion = texelFetch(object_tex, pixel, 0);
         const float depth_tolerance = max(2.0e-7, abs(depth) * 0.01);

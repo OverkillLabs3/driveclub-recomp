@@ -25,6 +25,7 @@ struct Push {
     std::array<float, 2> scale;
     float use_stencil;
     float use_object;
+    std::array<float, 2> jitter;
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -162,7 +163,7 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
                          u32 src_height, bool normalized, vk::ImageView object_view,
-                         vk::ImageView color_view) {
+                         vk::ImageView color_view, std::array<float, 2> jitter) {
     Push push{};
     ClipToPrevious(push.clip_to_prev_clip);
     push.size = {float(width), float(height)};
@@ -170,6 +171,7 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
     // DLSS Frame Generation takes screen fractions (its scale is 1); FSR takes pixels.
     push.scale = normalized ? std::array<float, 2>{1.0f / float(width), 1.0f / float(height)}
                             : std::array<float, 2>{1.0f, 1.0f};
+    push.jitter = jitter;
     const vk::DescriptorImageInfo depth_info{.imageView = depth_view,
                                              .imageLayout = vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo motion_info{.imageView = motion_view,

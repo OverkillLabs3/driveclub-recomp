@@ -16,6 +16,11 @@ void main() {
     if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
         return;
     }
-    const vec3 c = max(imageLoad(src_img, pixel).rgb, vec3(0.0));
-    imageStore(dst_img, pixel, vec4(c, 1.0));
+    const vec3 color = imageLoad(src_img, pixel).rgb;
+    // B10G11R11_UFLOAT: R & G (11-bit) max is 65024.0; B (10-bit) max is 64512.0.
+    // Writing 65024.0 to 10-bit Blue overflows to +infinity/NaN, creating white speckles.
+    const vec3 max_val = vec3(65024.0, 65024.0, 64512.0);
+    const bool valid = !any(isnan(color)) && !any(isinf(color));
+    const vec3 stored = valid ? clamp(color, vec3(0.0), max_val) : vec3(0.0);
+    imageStore(dst_img, pixel, vec4(stored, 1.0));
 }

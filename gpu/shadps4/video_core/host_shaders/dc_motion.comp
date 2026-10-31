@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Driveclub: motion vectors for the temporal upscaler, by the reprojection of the game's own TAA
+// resolve (compute shader 0x403f86d4): the view position from the depth and the frame's view
+// ray, through the current -> previous transform of the pixel's object (the world or a car),
+// projected with the previous frame's camera. Pixels, previous - current, like camera_motion.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The TAA resolve's buffers: frame constants, camera constants, and the object transforms
+// (48 dwords per object; rows 16, 20, 24, 28 map view x, y, z and 1 to the previous clip).
+layout(binding = 0, std430) readonly buffer Frame { uint frame_data[]; };
+layout(binding = 1, std430) readonly buffer Camera { uint camera_data[]; };
+layout(binding = 2, std430) readonly buffer Objects { uint object_data[]; };
+layout(binding = 3) uniform texture2D gbuffer_tex; // RGBA8; alpha * 255, low 6 bits: object
+layout(binding = 4) uniform texture2D depth_tex;   // D32, reversed (1 = near)
+layout(binding = 5, rg16f) uniform writeonly image2D motion_img;
+// The depth as it is now, for frame generation (the game may reuse its target).
+layout(binding = 6, r32f) uniform writeonly image2D depth_copy_img;
+
+layout(push_constant) uniform Constants {
+    vec2 size;      // pixels
+    vec2 jitter;    // this frame's viewport shift in pixels (x right, y down)
+    uvec4 offsets;  // dwords from each binding's (aligned) start to the game's buffer
+};
+
+float F(uint v) {
+    return uintBitsToFloat(v);
+}
+
+float Fr(uint i) { return F(frame_data[offsets.x + i]); }
+float Ca(uint i) { return F(camera_data[offsets.y + i]); }
+
+vec4 Row(uint base) {
+    base += offsets.z;
+    return vec4(F(object_data[base]), F(object_data[base + 1u]), F(object_data[base + 2u]),
+                F(object_data[base + 3u]));
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
+        return;
+    }
+    // Depth was rasterised through a shifted viewport: the unjittered position, and no jitter
+    // in the motion vectors.
+    const vec2 uv = (vec2(pixel) + 0.5) / size - jitter / size;
+    const float depth = texelFetch(depth_tex, pixel, 0).r;
+    // Frame generation takes 0 at the near plane: with the infinite far plane, 1 - depth.
+    imageStore(depth_copy_img, pixel, vec4(1.0 - depth));
+    const uint object = uint(texelFetch(gbuffer_tex, pixel, 0).a * 255.0 + 0.5) & 63u;
+
+    const float ray_x = (Fr(76u) * uv.x + Fr(78u)) * Fr(94u) + Fr(92u);
+    const float ray_y = (Fr(77u) * uv.y + Fr(79u)) * Fr(95u) + Fr(93u);
+
+    // Reversed infinite depth: depth <= 1e-6 is the sky at infinity.
+    // Infinite direction rotates with the camera, without translation (view_w = 0).
+    // Using z = 1.0 for sky preserves full 32-bit floating-point precision and eliminates
+    // numerical jitter/noise around sunlight.
+    const bool sky = depth <= 1e-6;
+    const float denom = max(-(Ca(118u) * depth + Ca(119u)), 1e-7);
+    const float z = sky ? 1.0 : (1.0 / denom);
+    const float view_x = z * ray_x;
+    const float view_y = z * ray_y;
+    const float view_w = sky ? 0.0 : 1.0;
+
+    // Camera / static world motion (object 0)
+    const vec4 cam_col_x = Row(16u), cam_col_y = Row(20u), cam_col_z = Row(24u),
+               cam_col_w = Row(28u);
+    const vec4 cam_clip = view_x * cam_col_x + view_y * cam_col_y - z * cam_col_z + view_w * cam_col_w;
+    vec2 cam_motion = vec2(0.0);
+    if (cam_clip.w > 1e-5) {
+        const vec2 prev_cam_uv =
+            vec2(Ca(100u), Ca(101u)) * cam_clip.xy / cam_clip.w + vec2(Ca(102u), Ca(103u));
+        cam_motion = (prev_cam_uv - uv) * size;
+    }
+
+    vec2 motion = cam_motion;
+    if (object > 0u && !sky) {
+        const uint base = object * 48u;
+        const vec4 col_x = Row(base + 16u), col_y = Row(base + 20u), col_z = Row(base + 24u),
+                   col_w = Row(base + 28u);
+        const vec4 prev_clip = view_x * col_x + view_y * col_y - z * col_z + col_w;
+        if (prev_clip.w > 1e-5) {
+            const vec2 prev_uv =
+                vec2(Ca(100u), Ca(101u)) * prev_clip.xy / prev_clip.w + vec2(Ca(102u), Ca(103u));
+            motion = (prev_uv - uv) * size;
+        } else {
+            motion = vec2(0.0);
+        }
+    }
+
+    if (any(isnan(motion)) || any(isinf(motion))) {
+        motion = vec2(0.0);
+    }
+    motion = clamp(motion, -size, size);
+    imageStore(motion_img, pixel, vec4(motion, 0.0, 0.0));
+}
