@@ -190,8 +190,6 @@ bool g_vr = false;  // "VR headset (experimental)" (vr= in launcher.ini): BB_VR 
 bool g_vr_stereo = false;  // "Stereo mode" (vr_stereo= in launcher.ini): with VR, BB_VR_STEREO=mv for the game
 bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
 bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
-// A VR build: the official releases have no VR, so it neither offers them nor shows the switch.
-constexpr bool kOfficialUpdates = false;
 std::atomic<bool> g_update_ready{false};  // a newer release was found (g_update)
 Updater::Release g_update;
 RectF g_update_btn;  // the Update button, left of Reset to defaults (drawn while g_update_ready)
@@ -1121,7 +1119,7 @@ void BuildModel() {
   const int autoplay = toggle(L"Start the game without this window",
                               L"Double-clicking DriveClub.exe goes straight to the game. When it cannot start, "
                               L"this window opens anyway with the reason.", "@autoplay", false);
-  [[maybe_unused]] const int updatecheck = toggle(L"Check for new versions",
+  const int updatecheck = toggle(L"Check for new versions",
                                  L"When the launcher starts it asks the Releases page once whether a newer version exists "
                                  L"and offers to install it. Your saves, settings and game folders stay as they are.",
                                  "@updatecheck", true);
@@ -1383,7 +1381,7 @@ void BuildModel() {
                      L"Private multiplayer with friends. Everyone needs the same version of the game."});
   g_cards.push_back({L"CONTENT", {unlock, unlock_all}, 0, kTabGameplay});
   g_cards.push_back({L"SAVES", {g_profile_row, g_save_backup_row, g_save_restore_row}, 0, kTabGameplay});
-  g_cards.push_back({L"STARTUP AND OVERLAYS", {showfps, showpedals, overlays, autoplay}, 0, kTabGameplay});
+  g_cards.push_back({L"STARTUP AND OVERLAYS", {showfps, showpedals, overlays, autoplay, updatecheck}, 0, kTabGameplay});
   g_cards.push_back({L"VIEW AND KEYS", {g_fov, lock_horizon, g_camera_shake}, 0, kTabDriving,
                      L"F2: pedal inputs. F5 / F6: field of view. F7: mouse look. F9 / F10: anti-aliasing. F12: performance overlay. Page Up / Page Down: HDR brightness."});
   g_cards.back().sub = kSubAssists;
@@ -4083,7 +4081,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   const bool asked = wcsstr(GetCommandLineW(), L"--play") != nullptr;
   const bool play_now = asked || g_auto_play;  // the row that starts the game straight away
   Updater::CleanUp(g_home);
-  if (kOfficialUpdates && g_check_updates && !play_now && !wcsstr(GetCommandLineW(), L"--snapshot")) StartUpdateCheck();
+  if (g_check_updates && !play_now && !wcsstr(GetCommandLineW(), L"--snapshot")) StartUpdateCheck();
   if (play_now) {
     const std::wstring stop = [] {
       if (!FoldersOk()) return std::wstring(L"Open DriveClub.exe once and choose the game folders.");
