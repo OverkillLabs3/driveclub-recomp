@@ -125,6 +125,9 @@ void MemoryManager::SetRasterizer(Vulkan::Rasterizer* rasterizer_) {
 void MemoryManager::InvalidateMemory(VAddr address, u64 size) {
     if (rasterizer) rasterizer->InvalidateMemory(address, size);
 }
+bool MemoryManager::IsValidMapping(VAddr virtual_addr, u64 size) {
+    return runtime_memory_is_mapped(virtual_addr, size) != 0;
+}
 u64 MemoryManager::ClampRangeSize(VAddr virtual_addr, u64 size) {
     return runtime_memory_clamp(virtual_addr, size);
 }

@@ -392,6 +392,8 @@ enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles
               kGfxHaze, kGfxFxaa, kGfxRows };
 int g_gfx[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 int g_motion_blur = -1;
+int g_prompts = -1, g_xbox_buttons = -1, g_ps_buttons = -1;
+int prompts_saved = 0, xbox_buttons_saved = 0, ps_buttons_saved = 0;
 int g_camera_patch_row = -1;
 bool g_camera_patch = true;
 bool g_camera_patch_saved = false;
@@ -1252,6 +1254,15 @@ void BuildModel() {
     g_fov = int(g_c.size());
     g_c.push_back(std::move(c));
   }
+  g_prompts = seg(L"Prompts",
+      L"Which button icons to display. Auto follows the controller in use; PlayStation and Xbox keep one kind.",
+      {L"Auto", L"PlayStation", L"Xbox"}, {"@button_prompts", "", ""}, 0);
+  g_xbox_buttons = seg(L"Xbox",
+      L"The look of Xbox prompts: Xbox One flat buttons with View icon, or Xbox 360 glossy gems with Back pill.",
+      {L"Xbox One", L"Xbox 360"}, {"@xbox_buttons", ""}, 0);
+  g_ps_buttons = seg(L"PlayStation",
+      L"The look of PlayStation prompts: the game's original PS4 symbols, or modern PS5 DualSense style prompts.",
+      {L"PS4", L"PS5"}, {"@playstation_buttons", ""}, 0);
   const int lock_horizon = seg(L"Lock to horizon",
                                L"Keeps the horizon level when the car leans in corners and dips under braking, as in Assetto Corsa.\n"
                                L"\x2022 Off: the view moves with the car's body, as on PS4.\n"
@@ -1344,6 +1355,9 @@ void BuildModel() {
   g_cards.push_back({L"ASSISTS", {g_drive_preset, g_drive[0].row, g_drive[1].row, g_drive[2].row, g_drive[3].row}, 0, kTabDriving,
                      L"In-game leaves the setting to the game's Options menu. Other choices are applied when the game starts."});
   g_cards.back().sub = kSubAssists;
+  g_cards.push_back({L"CONTROLLER BUTTONS", {g_prompts, g_xbox_buttons, g_ps_buttons}, 0, kTabDriving,
+                     L"The game's button icons. Auto follows the controller in use; Xbox and PlayStation keep one kind. Xbox 360 and Xbox One are drawn by the runtime, PS4 is the game's own and PS5 is drawn in the DualSense style."});
+  g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"CAMERA", {camera_patch}, 0, kTabPatches,
                      L"Reduces camera and replay shake at high frame rates. Not needed at 30 FPS."});
   g_cards.push_back({L"DISPLAY COMPATIBILITY", {fov}, 0, kTabPatches});
@@ -1355,7 +1369,9 @@ void BuildModel() {
   g_cards.push_back({L"BENCHMARK RUN AND RESULT", {g_brun}, 0, kTabBench});
   // The details each (i) opens, after the row's hint.
   const struct { const wchar_t* label; const wchar_t* more; } kMore[] = {
+      {L"Controller buttons", L"With an Xbox controller, the game's PlayStation button icons become Xbox buttons, in the Xbox One look (flat A/B/X/Y, View button) or the Xbox 360 look (glossy A/B/X/Y, Back pill). With a PlayStation controller they stay the game's own PS4 symbols, or take a PS5 DualSense style. Auto follows the controller in use."},
       {L"Widescreen (render and output)", L"Leave Output resolution and Render resolution on Default when you use a widescreen size: the widescreen size sets both, and other sizes there crop the picture. Choosing a widescreen size puts them back on Default for you."},
+)
       {L"Force feedback", L"Reworked Physics is recommended for every wheel. The wheel gets heavier in fast corners, goes light when the front tyres lose grip (the car runs wide), and turns itself the right way when the back of the car slides, like in Assetto Corsa. It learns each car as you drive. Original Physics gives the forces the PS4 game made for Logitech wheels in 2014: a spring that follows the car, without the tyres' grip. It is not recommended for wheels."},
       {L"Preset", L"Direct drive: wheels with the motor on the steering shaft (for example Fanatec DD, Moza, Simagic, Simucube). Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels. A preset only moves the sliders below."},
       {L"Gain", L"Too weak and the car feels vague; too strong and the wheel hits its limit in fast corners, where it feels flat and you lose the detail. Start at 100 on a strong wheel; weaker wheels may want 150 to 200."},
@@ -1483,6 +1499,18 @@ void LoadSettings() {
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = atoi(line.substr(9).c_str());
+    if (line.rfind("button_prompts=", 0) == 0) {
+      const std::string v = line.substr(15);
+      prompts_saved = v == "playstation" ? 1 : v == "xbox" ? 2 : 0;
+    }
+    if (line.rfind("xbox_buttons=", 0) == 0) {
+      const std::string v = line.substr(13);
+      xbox_buttons_saved = v == "360" ? 1 : 0;
+    }
+    if (line.rfind("playstation_buttons=", 0) == 0) {
+      const std::string v = line.substr(20);
+      ps_buttons_saved = v == "ps5" ? 1 : 0;
+    }
     if (line.rfind("camera_patch=",0)==0) { g_camera_patch=line.substr(13)=="1";g_camera_patch_saved=true; }
     if (line.rfind("lock_horizon=", 0) == 0) g_lock_horizon = (std::clamp)(atoi(line.substr(13).c_str()), 0, 2);
     if (line.rfind("camera_shake=", 0) == 0) camera_shake_saved = atoi(line.substr(13).c_str());
@@ -1522,6 +1550,20 @@ void LoadSettings() {
   }
   uint64_t existing_mask=0;
   if(ReadOptimizationMask(existing_mask)) g_two_thread=(existing_mask & (1ull<<37))==0;
+  for (const auto& line : ReadLines(g_data + L"\\user\\driveclub.ini")) {
+    if (line.rfind("button_prompts=", 0) == 0) {
+      const std::string v = line.substr(15);
+      prompts_saved = v == "playstation" ? 1 : v == "xbox" ? 2 : 0;
+    }
+    if (line.rfind("xbox_buttons=", 0) == 0) {
+      const std::string v = line.substr(13);
+      xbox_buttons_saved = v == "360" ? 1 : 0;
+    }
+    if (line.rfind("playstation_buttons=", 0) == 0) {
+      const std::string v = line.substr(20);
+      ps_buttons_saved = v == "ps5" ? 1 : 0;
+    }
+  }
   ShowBenchChoices();
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
   if (g_online_row >= 0 && online_saved >= 0 && online_saved < 3) g_c[g_online_row].sel = online_saved;
@@ -1637,6 +1679,9 @@ void LoadSettings() {
     c.sel = gfx_saved[k] >= 0 && gfx_saved[k] < choices ? gfx_saved[k] : c.def;
   }
   if (g_motion_blur >= 0) g_c[g_motion_blur].sel = motion_blur_saved;
+  if (g_prompts >= 0) g_c[g_prompts].sel = (std::clamp)(prompts_saved, 0, 2);
+  if (g_xbox_buttons >= 0) g_c[g_xbox_buttons].sel = (std::clamp)(xbox_buttons_saved, 0, 1);
+  if (g_ps_buttons >= 0) g_c[g_ps_buttons].sel = (std::clamp)(ps_buttons_saved, 0, 1);
   // Unlocked is deltatime with the launcher's own cap and present mode
   if (g_fps >= 0 && unlocked_saved >= 1 && unlocked_saved <= 2 && g_c[g_fps].sel == 1) g_c[g_fps].sel = 2 + unlocked_saved;
   NameNativeUpscale();
@@ -1761,6 +1806,9 @@ bool SaveSettings() {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
+    ini << "button_prompts=" << (g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto") << "\r\n";
+    ini << "xbox_buttons=" << (g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? "360" : "one") << "\r\n";
+    ini << "playstation_buttons=" << (g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? "ps5" : "ps4") << "\r\n";
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "lock_horizon=" << g_lock_horizon << "\r\n";
     ini << "camera_shake=" << (g_camera_shake >= 0 ? g_c[g_camera_shake].sel : 100) << "\r\n";
@@ -1796,6 +1844,9 @@ bool SaveSettings() {
     if(!SaveTextAtomically(toggles,std::to_string(mask))) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_fps",fps_on ? "1" : "0")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_pedals",pedals_on ? "1" : "0")) return false;
+    if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","button_prompts",g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto")) return false;
+    if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","xbox_buttons",g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? "360" : "one")) return false;
+    if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","playstation_buttons",g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? "ps5" : "ps4")) return false;
   }
   std::ostringstream out;
   for (const auto& c : g_c) {
@@ -2980,6 +3031,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
                      L"\\content.bin\" --patches \"" + prep + L"\\patches.bin\" --app0 \"" + g_folder[0].path +
                      L"\" --app0-base \"" + g_folder[1].path + L"\" --user \"" + user + L"\" --mods \"" + g_home + L"\\mods\"" +
                      unlock_arg + graphics_arg + L" --stub-unresolved";
+  SetEnvironmentVariableW(L"BB_BUTTON_PROMPTS", g_prompts >= 0 && g_c[g_prompts].sel == 1 ? L"playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? L"xbox" : L"auto");
+  SetEnvironmentVariableW(L"BB_XBOX_BUTTONS", g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? L"360" : L"one");
+  SetEnvironmentVariableW(L"BB_PLAYSTATION_BUTTONS", g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? L"ps5" : L"ps4");
   SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel ? L"1" : L"0");
   SetLockHorizonEnvironment();
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
