@@ -146,7 +146,10 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-validate"){
         const int changed=request.value("ChangedId",-1);
         if(changed==g_fps)ApplyFrameModeCameraDefault();
-        if(changed==g_wide && g_c[g_wide].sel>0)g_c[g_outres].sel=g_c[g_inres].sel=0;
+        if(changed==g_aspect && g_c[g_aspect].sel>0){g_c[g_outres].sel=g_c[g_inres].sel=0;}
+        if((changed==g_outres || changed==g_inres) && (g_c[g_outres].sel>0 || g_c[g_inres].sel>0)){
+          if(g_aspect>=0)g_c[g_aspect].sel=0;
+        }
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
