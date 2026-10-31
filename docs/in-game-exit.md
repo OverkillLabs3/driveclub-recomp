@@ -132,3 +132,31 @@ On Windows/DRIVECLUB 1.28, the 0.4.0 event -> pause -> Quit event -> Home ->
 confirmed Exit path reproduced stack exhaustion at native +0xe7eb40, reached
 from cached Lua stream teardown. The guarded path returned from game main with
 status 0 and completed host GPU shutdown. No timeout termination is used.
+
+## Debug-exception shutdown order
+
+A separate user dump from the 0.4.0 preview showed main waiting for the swap
+thread in `StopPresenting()`, while `bb:Present` spun in `BbCopy::WaitAsync()`.
+The copy pool already had `stop=true`, no workers, no pending copies and zero
+epochs: its static destructor had run before the GPU's older atexit callback.
+`WaitAll()` requires one open epoch, so using that destroyed pool cannot finish.
+
+The guest debug-exception handler now calls the idempotent `bbgpu_shutdown()`
+before `exit(23)`, while host statics are still alive. This retains status 23 and
+the existing fatal-exception behavior. It does not resume guest execution,
+skip pending copies, detach threads or introduce a forced-exit timeout.
+
+The subprocess regression uses the real handler and a C++ static-resource
+fixture with production registration order (GPU atexit before pool creation):
+
+```
+clang -O1 -std=c11 -I. -c tools/exit_exception_order_test.c -o out/exit_exception_order_test.o
+clang++ -O1 -std=c++20 tools/exit_exception_order_fixture.cpp out/exit_exception_order_test.o -lwinpthread -o out/exit_exception_order_test.exe
+out/exit_exception_order_test.exe
+```
+
+Expected status: **23**, with `GPU_STOPPED_WITH_POOL_ALIVE` followed by
+`POOL_DESTROYED_AFTER_GPU`. Restoring the old handler fails with status 91
+(`pool destroyed before presentation stopped`). The fixture checks ordering;
+the affected user has confirmed that the follow-up resolves the hang on their
+graphics configuration.

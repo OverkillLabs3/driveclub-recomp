@@ -4,6 +4,7 @@
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "guest_cpu.h"
+#include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -186,6 +187,11 @@ static ABI __attribute__((noreturn)) void hard_exit(int status) {
 static ABI __attribute__((noreturn)) void raise_exception(uint32_t code,uint64_t argument) {
     fprintf(stderr,"STOP: guest raised debug exception code=0x%x argument=0x%llx\n",code,(unsigned long long)argument);
     runtime_report();
+    /* exit() runs host static destructors in reverse registration order. The
+       copy pool is registered after the GPU's atexit fallback and would be
+       destroyed first, while presentation can still submit a final blank frame.
+       Join the GPU users while those shared resources are still alive. */
+    bbgpu_shutdown();
     exit(23);
 }
 static ABI int32_t print_backtrace(void) {
