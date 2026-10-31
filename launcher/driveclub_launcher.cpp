@@ -1135,7 +1135,7 @@ void BuildModel() {
                             L"How the VR headset gets its two eyes.\n"
                             L"\x2022 AFR: one eye per frame, in turn. The higher FPS, but each eye gets half of it.\n"
                             L"\x2022 True stereo (experimental): both eyes in every frame. Sharper and steadier, at a lower "
-                            L"FPS. Set Anti-aliasing to Game: DLSS does not work with it yet.",
+                            L"FPS. Anti-aliasing: Game or DLSS, FSR 3.1 reads one eye only.",
                             {L"AFR", L"True stereo"}, {"@vrstereo", ""}, 0);
   g_vrsize = seg(L"Headset picture (pixels per eye)",
                  L"The size the game draws each eye at, in the shape of a headset eye; the menus and the HUD keep "
