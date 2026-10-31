@@ -173,11 +173,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         const auto current=UiInstalledVersion();
         const bool enabled=std::any_of(g_c.begin(),g_c.end(),[](const Ctl& c){return c.patches[0]=="@updatecheck" && c.sel!=0;});
         if(command==L"--ui-check-update")Updater::CleanUp(g_home);
-        if(!kOfficialUpdates) {
-          // A VR build: the official releases have no VR, so it never offers them.
-          g_ui_update_note=L"A VR build: updates come from the VR releases page, not the official one.";
-          if(command==L"--ui-install-update")throw std::runtime_error(Narrow(g_ui_update_note));
-        } else if(!UiReleaseVersion(current)) {
+        if(!UiReleaseVersion(current)) {
           g_ui_update_note=current.empty()?L"The installed version is unknown; automatic release updates are unavailable.":
             L"Development build ("+current+L"). Automatic replacement with a release is disabled.";
           if(command==L"--ui-install-update")throw std::runtime_error(Narrow(g_ui_update_note));
