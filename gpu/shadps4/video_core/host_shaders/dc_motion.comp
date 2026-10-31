@@ -53,17 +53,47 @@ void main() {
 
     const float ray_x = (Fr(76u) * uv.x + Fr(78u)) * Fr(94u) + Fr(92u);
     const float ray_y = (Fr(77u) * uv.y + Fr(79u)) * Fr(95u) + Fr(93u);
-    const float denom = -(Ca(118u) * depth + Ca(119u));
-    const float z = 1.0 / (abs(denom) > 1e-7 ? denom : 1e-7);
+
+    // Reversed infinite depth: depth <= 1e-6 is the sky at infinity.
+    // Infinite direction rotates with the camera, without translation (view_w = 0).
+    // Using z = 1.0 for sky preserves full 32-bit floating-point precision and eliminates
+    // numerical jitter/noise around sunlight.
+    const bool sky = depth <= 1e-6;
+    const float denom = max(-(Ca(118u) * depth + Ca(119u)), 1e-7);
+    const float z = sky ? 1.0 : (1.0 / denom);
     const float view_x = z * ray_x;
     const float view_y = z * ray_y;
+    const float view_w = sky ? 0.0 : 1.0;
 
-    const uint base = object * 48u;
-    const vec4 col_x = Row(base + 16u), col_y = Row(base + 20u), col_z = Row(base + 24u),
-               col_w = Row(base + 28u);
-    const vec4 prev_clip = view_x * col_x + view_y * col_y - z * col_z + col_w;
-    const float w = abs(prev_clip.w) > 1e-7 ? prev_clip.w : 1e-7;
-    const vec2 prev_uv =
-        vec2(Ca(100u), Ca(101u)) * prev_clip.xy / w + vec2(Ca(102u), Ca(103u));
-    imageStore(motion_img, pixel, vec4((prev_uv - uv) * size, 0.0, 0.0));
+    // Camera / static world motion (object 0)
+    const vec4 cam_col_x = Row(16u), cam_col_y = Row(20u), cam_col_z = Row(24u),
+               cam_col_w = Row(28u);
+    const vec4 cam_clip = view_x * cam_col_x + view_y * cam_col_y - z * cam_col_z + view_w * cam_col_w;
+    vec2 cam_motion = vec2(0.0);
+    if (cam_clip.w > 1e-5) {
+        const vec2 prev_cam_uv =
+            vec2(Ca(100u), Ca(101u)) * cam_clip.xy / cam_clip.w + vec2(Ca(102u), Ca(103u));
+        cam_motion = (prev_cam_uv - uv) * size;
+    }
+
+    vec2 motion = cam_motion;
+    if (object > 0u && !sky) {
+        const uint base = object * 48u;
+        const vec4 col_x = Row(base + 16u), col_y = Row(base + 20u), col_z = Row(base + 24u),
+                   col_w = Row(base + 28u);
+        const vec4 prev_clip = view_x * col_x + view_y * col_y - z * col_z + col_w;
+        if (prev_clip.w > 1e-5) {
+            const vec2 prev_uv =
+                vec2(Ca(100u), Ca(101u)) * prev_clip.xy / prev_clip.w + vec2(Ca(102u), Ca(103u));
+            motion = (prev_uv - uv) * size;
+        } else {
+            motion = vec2(0.0);
+        }
+    }
+
+    if (any(isnan(motion)) || any(isinf(motion))) {
+        motion = vec2(0.0);
+    }
+    motion = clamp(motion, -size, size);
+    imageStore(motion_img, pixel, vec4(motion, 0.0, 0.0));
 }

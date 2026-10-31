@@ -6,17 +6,30 @@
 #extension GL_GOOGLE_include_directive : require
 layout(local_size_x = 8, local_size_y = 8) in;
 #ifdef HALF_INPUT
+#extension GL_EXT_samplerless_texture_functions : enable
 // DriveClub's DLSS result (vk_drive_aa.cpp): DLSS has no sharpening of its own any more.
 layout(binding = 0, rgba16f) uniform readonly image2D resolved_img;
+layout(binding = 2) uniform texture2D input_color_tex;
+layout(binding = 3) uniform texture2D gbuffer_tex;
+const vec3 max_float = vec3(128.0);
 #else
 layout(binding = 0, rgba32f) uniform readonly image2D resolved_img;
+const vec3 max_float = vec3(65024.0, 65024.0, 64512.0);
 #endif
 #ifdef LDR_OUTPUT
 layout(binding = 1, rgba8) uniform writeonly image2D result_img;
 #else
 layout(binding = 1, rgba16f) uniform writeonly image2D result_img;
 #endif
+#ifdef HALF_INPUT
+layout(push_constant) uniform Params {
+    float strength;
+    float pad;
+    vec2 jitter;
+};
+#else
 layout(push_constant) uniform Params { float strength; };
+#endif
 #define A_GPU 1
 #define A_GLSL 1
 #include "fsr/ffx_a.h"
@@ -24,7 +37,11 @@ layout(push_constant) uniform Params { float strength; };
 #define FSR_RCAS_DENOISE 1
 float color_scale;
 vec3 loadColor(ivec2 p) {
-    return max(imageLoad(resolved_img, clamp(p, ivec2(0), imageSize(resolved_img)-1)).rgb, vec3(0));
+    vec3 c = imageLoad(resolved_img, clamp(p, ivec2(0), imageSize(resolved_img)-1)).rgb;
+    if (any(isnan(c)) || any(isinf(c))) {
+        return vec3(0.0);
+    }
+    return clamp(c, vec3(0.0), max_float);
 }
 AF4 FsrRcasLoadF(ASU2 p) { return vec4(loadColor(p) / color_scale, 1); }
 void FsrRcasInputF(inout AF1 r, inout AF1 g, inout AF1 b) {}
@@ -34,31 +51,198 @@ void main() {
     if (any(greaterThanEqual(p, imageSize(result_img)))) return;
     vec3 center = loadColor(p);
     float amount = clamp(strength, 0.0, 2.0);
+
 #ifdef HALF_INPUT
+    vec3 left   = loadColor(p + ivec2(-1,  0));
+    vec3 right  = loadColor(p + ivec2( 1,  0));
+    vec3 top    = loadColor(p + ivec2( 0, -1));
+    vec3 bottom = loadColor(p + ivec2( 0,  1));
+    vec3 tl     = loadColor(p + ivec2(-1, -1));
+    vec3 tr     = loadColor(p + ivec2( 1, -1));
+    vec3 bl     = loadColor(p + ivec2(-1,  1));
+    vec3 br     = loadColor(p + ivec2( 1,  1));
+
+    vec3 top2    = loadColor(p + ivec2( 0, -2));
+    vec3 bottom2 = loadColor(p + ivec2( 0,  2));
+    vec3 left2   = loadColor(p + ivec2(-2,  0));
+    vec3 right2  = loadColor(p + ivec2( 2,  0));
+
+    // Fast 8-neighbor partial sort for isolated point fireflies
+    vec3 p0_hi = max(left, right), p0_lo = min(left, right);
+    vec3 p1_hi = max(top, bottom), p1_lo = min(top, bottom);
+    vec3 p2_hi = max(tl, br),     p2_lo = min(tl, br);
+    vec3 p3_hi = max(tr, bl),     p3_lo = min(tr, bl);
+
+    vec3 hi_max0 = max(p0_hi, p1_hi), hi_min0 = min(p0_hi, p1_hi);
+    vec3 hi_max1 = max(p2_hi, p3_hi), hi_min1 = min(p2_hi, p3_hi);
+
+    vec3 rank2 = max(min(hi_max0, hi_max1), max(hi_min0, hi_min1));
+
+    // Spatial sandwich ceiling for streaks sandwiched between dark surfaces
+    vec3 v_sandwich = max(min(top, top2), min(bottom, bottom2));
+    vec3 h_sandwich = max(min(left, left2), min(right, right2));
+    vec3 vert_ceiling = v_sandwich * 1.30 + vec3(0.035);
+    vec3 horiz_ceiling = h_sandwich * 1.30 + vec3(0.035);
+
+    vec3 firefly_ceiling = min(rank2 * 1.30 + vec3(0.035), min(vert_ceiling, horiz_ceiling));
+
+    // Ground-truth input scene color clamping with G-buffer object segmentation:
+    // DLSS can hallucinate bright white disocclusion halos/streaks (e.g. between car bottom and road)
+    // during sudden braking or acceleration due to motion vector discontinuities at silhouette boundaries.
+    // By querying the G-buffer object ID (0 = road/track/environment, >0 = vehicle), we strictly
+    // prevent bright vehicle chassis samples from contaminating the ground-truth ceiling of the
+    // road surface and its contact shadow, while preserving HDR highlight headroom on the vehicle.
+    vec2 out_size = vec2(imageSize(result_img));
+    vec2 in_size = vec2(textureSize(input_color_tex, 0));
+    vec2 in_uv = (vec2(p) + 0.5) / out_size;
+    vec2 in_pos = in_uv * in_size - 0.5 + jitter;
+    ivec2 in_max_coord = ivec2(in_size) - 1;
+
+    ivec2 b00 = ivec2(floor(in_pos));
+    vec2 f = clamp(in_pos - vec2(b00), vec2(0.0), vec2(1.0));
+
+    ivec2 p00 = clamp(b00, ivec2(0), in_max_coord);
+    ivec2 p10 = clamp(b00 + ivec2(1, 0), ivec2(0), in_max_coord);
+    ivec2 p01 = clamp(b00 + ivec2(0, 1), ivec2(0), in_max_coord);
+    ivec2 p11 = clamp(b00 + ivec2(1, 1), ivec2(0), in_max_coord);
+
+    uint obj00 = uint(texelFetch(gbuffer_tex, p00, 0).a * 255.0 + 0.5) & 63u;
+    uint obj10 = uint(texelFetch(gbuffer_tex, p10, 0).a * 255.0 + 0.5) & 63u;
+    uint obj01 = uint(texelFetch(gbuffer_tex, p01, 0).a * 255.0 + 0.5) & 63u;
+    uint obj11 = uint(texelFetch(gbuffer_tex, p11, 0).a * 255.0 + 0.5) & 63u;
+
+    vec3 c00 = clamp(texelFetch(input_color_tex, p00, 0).rgb, vec3(0.0), max_float);
+    vec3 c10 = clamp(texelFetch(input_color_tex, p10, 0).rgb, vec3(0.0), max_float);
+    vec3 c01 = clamp(texelFetch(input_color_tex, p01, 0).rgb, vec3(0.0), max_float);
+    vec3 c11 = clamp(texelFetch(input_color_tex, p11, 0).rgb, vec3(0.0), max_float);
+
+    if (any(isnan(c00)) || any(isinf(c00))) c00 = vec3(0.0);
+    if (any(isnan(c10)) || any(isinf(c10))) c10 = vec3(0.0);
+    if (any(isnan(c01)) || any(isinf(c01))) c01 = vec3(0.0);
+    if (any(isnan(c11)) || any(isinf(c11))) c11 = vec3(0.0);
+
+    float w00 = (1.0 - f.x) * (1.0 - f.y);
+    float w10 = f.x * (1.0 - f.y);
+    float w01 = (1.0 - f.x) * f.y;
+    float w11 = f.x * f.y;
+
+    vec3 c_bilinear = c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11;
+    vec3 input_ceiling;
+    float veh_w;
+
+    // Fast-path: 98%+ of screen pixels are uniform (all road/environment or all vehicle).
+    if (obj00 == obj10 && obj00 == obj01 && obj00 == obj11) {
+        if (obj00 == 0u) {
+            veh_w = 0.0;
+            float road_lum = max(c_bilinear.r, max(c_bilinear.g, c_bilinear.b));
+            float road_mult = mix(1.08, 1.25, smoothstep(0.08, 0.60, road_lum));
+            float road_add  = mix(0.004, 0.020, smoothstep(0.08, 0.60, road_lum));
+            input_ceiling = c_bilinear * road_mult + vec3(road_add);
+        } else {
+            veh_w = 1.0;
+            float veh_lum = max(c_bilinear.r, max(c_bilinear.g, c_bilinear.b));
+            float veh_mult = mix(1.10, 1.45, smoothstep(0.10, 0.75, veh_lum));
+            float veh_add  = mix(0.006, 0.035, smoothstep(0.10, 0.75, veh_lum));
+            input_ceiling = c_bilinear * veh_mult + vec3(veh_add);
+        }
+    } else {
+        // Disocclusion silhouette boundary: partition cell into isolated vehicle & road bounds
+        veh_w = 0.0;
+        vec3 veh_sum = vec3(0.0);
+        if (obj00 > 0u) { veh_sum += c00 * w00; veh_w += w00; }
+        if (obj10 > 0u) { veh_sum += c10 * w10; veh_w += w10; }
+        if (obj01 > 0u) { veh_sum += c01 * w01; veh_w += w01; }
+        if (obj11 > 0u) { veh_sum += c11 * w11; veh_w += w11; }
+
+        float road_w = 1.0 - veh_w;
+        vec3 road_sum = max(c_bilinear - veh_sum, vec3(0.0));
+
+        vec3 veh_ref = veh_w > 0.0 ? (veh_sum / veh_w) : vec3(0.0);
+        float veh_lum = max(veh_ref.r, max(veh_ref.g, veh_ref.b));
+        float veh_mult = mix(1.10, 1.45, smoothstep(0.10, 0.75, veh_lum));
+        float veh_add  = mix(0.006, 0.035, smoothstep(0.10, 0.75, veh_lum));
+        vec3 veh_bound = veh_ref * veh_mult + vec3(veh_add);
+
+        vec3 road_ref = road_w > 0.0 ? (road_sum / road_w) : vec3(0.0);
+        float road_lum = max(road_ref.r, max(road_ref.g, road_ref.b));
+        float road_mult = mix(1.08, 1.25, smoothstep(0.08, 0.60, road_lum));
+        float road_add  = mix(0.004, 0.020, smoothstep(0.08, 0.60, road_lum));
+        vec3 road_bound = road_ref * road_mult + vec3(road_add);
+
+        // Continuous sub-pixel silhouette coverage:
+        // Road side (veh_w <= 0.50) is strictly clamped to road_bound, completely
+        // extinguishing disocclusion ghosting between bumper and road.
+        float edge = smoothstep(0.50, 0.60, veh_w);
+        input_ceiling = mix(road_bound, veh_bound, edge);
+    }
+
+    firefly_ceiling = min(firefly_ceiling, input_ceiling);
+    center = min(center, firefly_ceiling);
+
+    // Fast-path: When sharpening is disabled (amount <= 1e-4), output sanitized color immediately
+    if (amount <= 1e-4) {
+        imageStore(result_img, p, vec4(center, 1.0));
+        return;
+    }
+
+    vec3 peak = max(center, max(max(left, right), max(top, bottom)));
+    vec3 low  = min(center, min(min(left, right), min(top, bottom)));
+    peak = min(peak, firefly_ceiling);
+
     // Specular reflections and lamp glints can change independently of surface motion.
-    // DLSS has no reactive-mask input, so avoid post-sharpening HDR highlights where that
-    // temporal instability is most visible while retaining normal detail sharpening elsewhere.
-    float highlight = smoothstep(0.75, 2.5, max(center.r, max(center.g, center.b)));
-    amount *= mix(1.0, 0.15, highlight);
-#endif
-    if (amount == 0.0) {
-        imageStore(result_img, p, vec4(center, 1));
+    // DLSS has no reactive-mask input, so avoid post-sharpening HDR highlights.
+    float peak_val = max(peak.r, max(peak.g, peak.b));
+    float highlight = smoothstep(0.35, 0.85, peak_val);
+    amount *= (1.0 - highlight);
+
+    // Suppress RCAS contrast amplification at disocclusion silhouette boundaries
+    float sil_factor = 4.0 * veh_w * (1.0 - veh_w);
+    amount *= (1.0 - 0.75 * sil_factor);
+
+    color_scale = max(1.0, max(peak.r, max(peak.g, peak.b)));
+    if (all(lessThanEqual(peak - low, vec3(1e-6 * color_scale)))) {
+        imageStore(result_img, p, vec4(center, 1.0));
+        return;
+    }
+    uvec4 constants = uvec4(floatBitsToUint(exp2(-2.0 * (1.0 - min(amount, 1.0)))), 0, 0, 0);
+    vec3 sharpened;
+    FsrRcasF(sharpened.r, sharpened.g, sharpened.b, uvec2(p), constants);
+    if (any(isnan(sharpened)) || any(isinf(sharpened))) {
+        sharpened = center / color_scale;
+    }
+    vec3 out_color = mix(center, sharpened * color_scale, amount);
+    low = min(low, peak);
+    out_color = clamp(out_color, low, peak);
+    out_color = min(out_color, firefly_ceiling);
+    out_color = clamp(out_color, vec3(0.0), max_float);
+    imageStore(result_img, p, vec4(out_color, 1.0));
+#else
+    if (amount <= 1e-4) {
+        imageStore(result_img, p, vec4(center, 1.0));
         return;
     }
     // RCAS limits assume normalized color. A shared local scale also handles HDR input.
-    vec3 left = loadColor(p+ivec2(-1,0)), right = loadColor(p+ivec2(1,0));
-    vec3 top = loadColor(p+ivec2(0,-1)), bottom = loadColor(p+ivec2(0,1));
+    vec3 left   = loadColor(p + ivec2(-1,  0));
+    vec3 right  = loadColor(p + ivec2( 1,  0));
+    vec3 top    = loadColor(p + ivec2( 0, -1));
+    vec3 bottom = loadColor(p + ivec2( 0,  1));
     vec3 peak = max(center, max(max(left, right), max(top, bottom)));
     color_scale = max(1.0, max(peak.r, max(peak.g, peak.b)));
     vec3 low = min(center, min(min(left, right), min(top, bottom)));
-    // RCAS's approximate reciprocal can shift constant color, especially in HDR.
-    if (all(lessThanEqual(peak-low, vec3(1e-6*color_scale)))) {
-        imageStore(result_img, p, vec4(center, 1));
+    if (all(lessThanEqual(peak - low, vec3(1e-6 * color_scale)))) {
+        imageStore(result_img, p, vec4(center, 1.0));
         return;
     }
-    uvec4 constants = uvec4(floatBitsToUint(exp2(-2.0*(1.0-min(amount, 1.0)))), 0, 0, 0);
+    uvec4 constants = uvec4(floatBitsToUint(exp2(-2.0 * (1.0 - min(amount, 1.0)))), 0, 0, 0);
     vec3 sharpened;
     FsrRcasF(sharpened.r, sharpened.g, sharpened.b, uvec2(p), constants);
-    imageStore(result_img, p, vec4(clamp(mix(center, sharpened*color_scale, amount),
-                                      vec3(0), vec3(color_scale)), 1));
+    if (any(isnan(sharpened)) || any(isinf(sharpened))) {
+        sharpened = center / color_scale;
+    }
+    vec3 out_color = mix(center, sharpened * color_scale, amount);
+    low = min(low, peak);
+    out_color = clamp(out_color, low, peak);
+    out_color = clamp(out_color, vec3(0.0), max_float);
+    imageStore(result_img, p, vec4(out_color, 1.0));
+#endif
 }
