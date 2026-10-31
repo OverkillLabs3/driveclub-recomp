@@ -23,6 +23,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include "bbport_prompts.h"
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
@@ -1031,6 +1032,10 @@ void TextureCache::RefreshImage(Image& image) {
 
     RENDERER_TRACE;
     TRACE_HINT(fmt::format("{:x}:{:x}", image.info.guest_address, image.info.guest_size));
+
+    // DCport: button prompts that follow the input device (bbport_prompts.cpp)
+    BbPrompts::OnUpload(image.info.guest_address, image.info.mips_layout[0].size, image.info.size.width,
+                        image.info.size.height, image.info.resources.levels, image.info.num_bits);
 
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
