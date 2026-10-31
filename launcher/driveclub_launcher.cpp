@@ -1127,15 +1127,15 @@ void BuildModel() {
                               L"A part of the crashes players report comes from those additions, so the launcher keeps them "
                               L"out. Turn this on if you want the in-game overlay while playing. Players report random collision penalties and crashes with it on.", "@overlays", false);
   const int vr = toggle(L"VR headset (experimental)",
-                        L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit view follows your "
-                        L"head, in stereo. Needs openxr_loader.dll next to the game; see packaging/vr/README.md.",
+                        L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit and the cameras on "
+                        L"the car follow your head, in stereo. Needs openxr_loader.dll next to the game; see VR README.md.",
                         "@vr", false);
   g_vr_row = vr;
   const int vr_stereo = seg(L"Stereo mode",
                             L"How the VR headset gets its two eyes.\n"
                             L"\x2022 AFR: one eye per frame, in turn. The higher FPS, but each eye gets half of it.\n"
                             L"\x2022 True stereo (experimental): both eyes in every frame. Sharper and steadier, at a lower "
-                            L"FPS. Anti-aliasing: Game or DLSS, FSR 3.1 reads one eye only.",
+                            L"FPS.\nAnti-aliasing: Game or DLSS, not FSR 3.1.",
                             {L"AFR", L"True stereo"}, {"@vrstereo", ""}, 0);
   g_vrsize = seg(L"Headset picture (pixels per eye)",
                  L"The size the game draws each eye at, in the shape of a headset eye; the menus and the HUD keep "

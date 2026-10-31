@@ -4,16 +4,20 @@ VR QUICK START: what to set and press
 BEFORE PLAY
   Start Virtual Desktop / Link / SteamVR first and put the headset on. A headset that isn't on
   your head holds the game back (5-10 FPS).
-  Each eye gets half the game's FPS: you need about 90-100 FPS or more in the game to be
-  comfortable (the game is heavy on the CPU).
+  Stereo mode (launcher):
+    True stereo  both eyes in every frame: sharper and steadier, lower FPS (65-80 on the test PC)
+    AFR          one eye per frame: higher FPS, but each eye gets half of it, so you need about
+                 90-100 FPS or more to be comfortable
+  Set the headset's refresh rate a little BELOW the FPS your PC holds, in Virtual Desktop / Link /
+  SteamVR. The game follows it. If the headset runs faster than the game, moving things look double.
 
 LAUNCHER (the test PC's settings)
-  Display   Frame rate: Unlimited
+  Display   Frame rate: Follows the headset (the row shown while VR is on)
             Output / Render resolution: Default, Widescreen: Off, Widescreen FOV fix: off
             Two-thread rendering: on
-            VR headset: ON, Headset picture: 2688x2880
+            VR headset: ON, Stereo mode: True stereo or AFR, Headset picture: 2688x2880
               (2496x2688 for weaker PCs, 3200x3440 and up for Quest 3 / Pimax)
-            Anti-aliasing: Game or DLSS (RTX). NEVER FSR in VR (it mixes the eyes)
+            Anti-aliasing: Game or DLSS (RTX), per eye in both modes. NEVER FSR in VR
             Picture: brightness / contrast / gamma work in the headset too
   Graphics  everything off / Game, Dynamic resolution OFF, Motion blur OFF
   Gameplay  Mirror and reflection updates: Live
@@ -23,7 +27,11 @@ LAUNCHER (the test PC's settings)
                      High-FPS camera workaround off
   Driving   Field of view: MUST BE 100% (VR sets the view itself)
             Camera shake: 0-30% (0 = none); Lock to horizon: no effect in the cockpit with VR
-  Virtual Desktop: 120 Hz, H.264+ or HEVC 8-bit (HEVC 10-bit can stutter on a Quest 2)
+  Virtual Desktop: True stereo 72 Hz, AFR 90 or 120 Hz; H.264+ or HEVC 8-bit
+                   (HEVC 10-bit can stutter on a Quest 2)
+
+CAMERAS
+  Cockpit, bonnet, bumper, dash and chase all follow your head, in both stereo modes.
 
 KEYS (number row; the numpad works too)
   0        recentre: sit as you drive, look straight ahead, press 0
