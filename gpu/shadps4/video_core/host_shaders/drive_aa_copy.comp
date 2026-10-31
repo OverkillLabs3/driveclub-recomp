@@ -16,6 +16,7 @@ void main() {
     if (pixel.x >= int(size.x) || pixel.y >= int(size.y)) {
         return;
     }
-    const vec3 c = max(imageLoad(src_img, pixel).rgb, vec3(0.0));
-    imageStore(dst_img, pixel, vec4(c, 1.0));
+    const vec3 color = imageLoad(src_img, pixel).rgb;
+    const vec3 stored = mix(vec3(0.0), min(color, vec3(65024.0)), greaterThan(color, vec3(0.0)));
+    imageStore(dst_img, pixel, vec4(stored, 1.0));
 }
