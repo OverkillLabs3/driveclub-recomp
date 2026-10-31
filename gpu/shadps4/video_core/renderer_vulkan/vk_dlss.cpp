@@ -242,7 +242,7 @@ bool Dlss::Evaluate(vk::CommandBuffer command, const Frame& frame) {
         return false;
     }
     const auto image = [](const Resource& r) {
-        const vk::ImageSubresourceRange range{r.aspect, 0, 1, 0, 1};
+        const vk::ImageSubresourceRange range{r.aspect, 0, 1, r.layer, 1};
         return BbDlssImage{r.image,
                            r.view,
                            static_cast<VkImageSubresourceRange>(range),

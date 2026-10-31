@@ -27,6 +27,9 @@ struct Push {
     std::array<float, 2> scale;
     float use_stencil;
     float use_object;
+    float eye_shift;
+    float eye_z22;
+    float eye_inv_near;
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -213,9 +216,13 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out, bool chain) const {
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
                          u32 src_height, bool normalized, vk::ImageView object_view,
-                         vk::ImageView color_view) {
+                         vk::ImageView color_view, float eye_shift) {
     Push push{};
     ClipToPrevious(push.clip_to_prev_clip, two_back);
+    // Reversed Z: depth = near / w - P[2][2], near = P[3][2].
+    push.eye_shift = eye_shift;
+    push.eye_z22 = projection[10];
+    push.eye_inv_near = projection[14] != 0.0f ? 1.0f / projection[14] : 0.0f;
     push.size = {float(width), float(height)};
     push.src_size = {float(src_width), float(src_height)};
     // DLSS Frame Generation takes screen fractions (its scale is 1); FSR takes pixels.

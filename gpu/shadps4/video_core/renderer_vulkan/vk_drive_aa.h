@@ -96,12 +96,13 @@ private:
         u64 uid = 0;
         vk::Format format{};
         vk::ImageAspectFlags aspect{};
+        u32 layer = 0;
         vk::ImageView view;
         u64 last_use = 0;
     };
     vk::ImageView View(const VideoCore::Image& image, vk::Format format,
-                       vk::ImageAspectFlags aspect);
-    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss);
+                       vk::ImageAspectFlags aspect, u32 layer = 0);
+    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss, u32 image_layers);
     /// FSR or DLSS on `color` (jittered by `frame_jitter`): at the render size into `output`,
     /// or upscaled to the output size and sampled in place of `color` (Redirect).
     void Reconstruct(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
@@ -116,7 +117,7 @@ private:
     CameraMotion& camera_motion;
     std::unique_ptr<NeuralRendering> neural;
 
-    std::array<CachedView, 8> views{};
+    std::array<CachedView, 16> views{};
     u64 view_uses = 0;
 
     u32 width = 0, height = 0, out_width = 0, out_height = 0;
@@ -145,6 +146,10 @@ private:
     /// DLSS writes here when the result is sharpened into result_image afterwards.
     VideoCore::UniqueImage raw_image;
     vk::UniqueImageView raw_view;
+    /// VR multiview: the images above have a layer per eye and their views are the left eye's; these are the right's,
+    /// and the result as the game's shaders read it (a 2D array, also with one layer).
+    u32 layers = 1;
+    vk::UniqueImageView right_motion_view, right_result_view, right_raw_view, result_array;
     vk::UniquePipeline sharpen_pipeline;
     /// Views of the result with the swizzles the game samples it with (Redirect).
     std::array<std::pair<vk::ComponentMapping, vk::UniqueImageView>, 4> swizzled_views{};

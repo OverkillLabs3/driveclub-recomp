@@ -29,11 +29,11 @@ public:
 
     /// Records the motion pass: `depth_view` (depth, General) into `motion_view` (RG16F, General).
     /// `mask_view` is the stencil of the same depth (the player's car moves with the camera), or
-    /// `depth_view` itself when there is none.
+    /// `depth_view` itself when there is none. VR multiview: the views are one eye's layer, `eye_shift` its clip x shift.
     void Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view, vk::ImageView mask_view,
                 vk::ImageView motion_view,
                 u32 width, u32 height, u32 src_width, u32 src_height, bool normalized,
-                vk::ImageView object_view = {}, vk::ImageView color_view = {});
+                vk::ImageView object_view = {}, vk::ImageView color_view = {}, float eye_shift = 0.0f);
 
     /// VR with alternate frames: the motion goes back two frames, to the same eye's last frame (the previous one is
     /// the other eye's): the game's moves of this frame and the last are chained.

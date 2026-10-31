@@ -19,6 +19,9 @@ layout(push_constant) uniform Constants {
     vec2 scale;             // output scale: 1 for pixels, 1 / size for screen fractions
     float use_stencil;      // 1: the stencil view is real
     float use_object;       // 1: fuse Driveclub object vectors and highlight-aware camera flow
+    float eye_shift;        // VR multiview: the eye's clip x shift (0 for one picture)
+    float eye_z22;          // VR multiview: 1 / w is (depth + eye_z22) * eye_inv_near
+    float eye_inv_near;
 };
 
 void main() {
@@ -29,12 +32,14 @@ void main() {
     const ivec2 src = ivec2(min((vec2(pixel) + 0.5) / size * src_size, src_size - 1.0));
     const float depth = max(texelFetch(depth_tex, src, 0).r, 1e-7);
     const vec2 uv = (vec2(pixel) + 0.5) / size;
-    const vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    // VR multiview: the eye's pixels are the centre view's moved by shift / w, the same in the previous frame.
+    const float eye_ndc = eye_shift * (depth + eye_z22) * eye_inv_near;
+    const vec4 clip = vec4(uv.x * 2.0 - 1.0 - eye_ndc, 1.0 - uv.y * 2.0, depth, 1.0);
     // Stored by rows, read by columns: the matrix is transposed, so G * v is v * M.
     const vec4 prev = clip_to_prev_clip * clip;
     vec2 motion = vec2(0.0);
     if (prev.w > 1e-9) {
-        const vec2 prev_ndc = prev.xy / prev.w;
+        const vec2 prev_ndc = (prev.xy + vec2(eye_ndc, 0.0)) / prev.w;
         const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
         motion = (prev_uv - uv) * size;
     }

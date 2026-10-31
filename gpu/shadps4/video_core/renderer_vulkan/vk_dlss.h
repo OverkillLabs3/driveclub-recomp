@@ -45,6 +45,7 @@ public:
         vk::Format format;
         vk::ImageAspectFlags aspect;
         u32 width, height;
+        u32 layer = 0; ///< VR multiview: the eye's layer
     };
     struct FeatureDesc {
         u32 input_width, input_height, output_width, output_height;
