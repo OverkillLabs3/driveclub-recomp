@@ -17,7 +17,7 @@ public:
         float paper_nits = 350.0f;
         float peak_nits = 1000.0f;
         float has_hudless = 0.0f;
-        float knee = 0.45f;
+        float knee = 0.75f;
         float has_scene = 0.0f;
     };
 
