@@ -366,6 +366,7 @@ int g_sharp = -1;
 // "Frame cap" with the Unlocked (VRR) frame rate (fps_cap= in launcher.ini; 0 or missing: the display's refresh
 // rate less 3, which follows the display when it changes).
 int fps_cap_saved = 0;
+int flat_output_saved = -1, flat_render_saved = -1;  // Output / Render resolution for flat play: VR leaves them out of the patch list
 int g_fps_cap = -1;
 // The main display's refresh rate in Hz, 0 when unknown.
 int DisplayHz() {
@@ -579,6 +580,8 @@ bool RowHidden(const Ctl& c) {
   if (g_vr_fps >= 0 && &c == &g_c[g_vr_fps]) return !VrChosen();
   if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap] && VrChosen()) return true;
+  // VR: the headset picture sets the size; the flat rows come back with VR off, with their choices.
+  if (((g_outres >= 0 && &c == &g_c[g_outres]) || (g_inres >= 0 && &c == &g_c[g_inres])) && VrChosen()) return true;
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
@@ -1524,6 +1527,8 @@ void LoadSettings() {
     if (line.rfind("up=", 0) == 0) up_saved = atoi(line.substr(3).c_str());
     if (line.rfind("sharpness=", 0) == 0) sharp_saved = atoi(line.substr(10).c_str());
     if (line.rfind("fps_cap=", 0) == 0) fps_cap_saved = atoi(line.substr(8).c_str());
+    if (line.rfind("flat_output=", 0) == 0) flat_output_saved = atoi(line.substr(12).c_str());
+    if (line.rfind("flat_render=", 0) == 0) flat_render_saved = atoi(line.substr(12).c_str());
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = atoi(line.substr(9).c_str());
@@ -1656,6 +1661,9 @@ void LoadSettings() {
   // The sliders' saved values, else their defaults (the patch list sets nothing for them).
   if (g_sharp >= 0) g_c[g_sharp].sel = sharp_saved >= 0 ? (std::clamp)(sharp_saved, 0, 100) : g_c[g_sharp].def;
   if (g_fps_cap >= 0) g_c[g_fps_cap].sel = fps_cap_saved > 0 ? (std::clamp)(fps_cap_saved, g_c[g_fps_cap].min, g_c[g_fps_cap].max) : g_c[g_fps_cap].def;
+  // With VR on the resolutions are not in the patch list: the flat choices come back from launcher.ini.
+  if (g_vr && g_outres >= 0 && flat_output_saved >= 0) g_c[g_outres].sel = (std::min)(flat_output_saved, int(g_c[g_outres].items.size()) - 1);
+  if (g_vr && g_inres >= 0 && flat_render_saved >= 0) g_c[g_inres].sel = (std::min)(flat_render_saved, int(g_c[g_inres].items.size()) - 1);
   if (g_hdr >= 0 && hdr_saved >= 0) g_c[g_hdr].sel = hdr_saved ? 1 : 0;
   {
     std::ifstream hdr_ini(HdrIniPath().c_str());
@@ -1728,14 +1736,14 @@ void NameNativeUpscale() {
 // The output size counts too: 4K output with the Default render size crashed at boot on the default
 // memory budget, since the presented images are output-sized.
 int OutputMemoryTier() {
-  if (g_outres < 0) return 0;
+  if (g_outres < 0 || VrChosen()) return 0;
   const int o = g_c[g_outres].sel;  // output: Default 720p 1440p 1800p 4K 5K 8K
   return o >= 5 ? 3 : o >= 3 ? 2 : o == 2 ? 1 : 0;
 }
 
 int RenderMemoryTier() {
   if (g_inres < 0 || g_wide < 0) return 0;
-  const int r = g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
+  const int r = VrChosen() ? 0 : g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
   if (w == 6) return 3;  // 5120x2160 is 11 megapixels
   if (g_vrsize >= 0 && g_c[g_vrsize].sel >= 4) return 3;  // the big headset sizes: 11 and 13.8 megapixels
@@ -1818,6 +1826,8 @@ bool SaveSettings() {
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
+    if (g_outres >= 0) ini << "flat_output=" << g_c[g_outres].sel << "\r\n";
+    if (g_inres >= 0) ini << "flat_render=" << g_c[g_inres].sel << "\r\n";
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "lock_horizon=" << g_lock_horizon << "\r\n";
@@ -1859,6 +1869,7 @@ bool SaveSettings() {
   for (const auto& c : g_c) {
     if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
+    if (((g_outres >= 0 && &c == &g_c[g_outres]) || (g_inres >= 0 && &c == &g_c[g_inres])) && VrChosen()) continue;  // Default: launcher.ini keeps them
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) {

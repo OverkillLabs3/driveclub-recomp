@@ -79,7 +79,7 @@ Json UiState(const std::wstring& error=L"") {
   return {{"Version",3},{"GameProcessId",g_started_game_process_id},{"Controls",controls},{"Cards",cards},{"UpdatePath",Narrow(g_folder[0].path)},{"BasePath",Narrow(g_folder[1].path)},
     {"FoldersOk",FoldersOk()},{"FolderProblem",Narrow(!FolderProblem(0).empty()?FolderProblem(0):FolderProblem(1))},
     {"HardwareProblem",Narrow(g_gpu_problem)},{"RuntimeAvailable",Exists(GameExe())},{"StartupSignalSupported",GetRuntimeFeatures().startup},{"Error",Narrow(error)},
-    {"QuickControls",{g_preset,VrChosen()?g_vr_fps:g_fps,g_outres,g_aa}},{"PresetId",g_preset},
+    {"QuickControls",{g_preset,VrChosen()?g_vr_fps:g_fps,VrChosen()?g_vrsize:g_outres,g_aa}},{"PresetId",g_preset},
     {"BenchmarkFps",Narrow(g_bench_result.fps)},{"BenchmarkLows",Narrow(g_bench_result.lows)},{"BenchmarkAbout",Narrow(g_bench_result.about)},
     {"BenchmarkRanSummary",Narrow(g_bench_ran_short)},{"BenchmarkRanDetails",[&]{Json lines=Json::array();for(const auto& line:g_bench_ran_lines)lines.push_back(Narrow(line));return lines;}()},
     {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},
