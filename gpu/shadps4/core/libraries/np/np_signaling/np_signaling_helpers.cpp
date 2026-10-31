@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include "bbport_guest_call.h"
 #include <cstring>
 
 #include "common/alignment.h"
@@ -476,7 +477,7 @@ static void DispatchThreadMain() {
                       dispatch.conn_id, dispatch.event_type,
                       SignalingEventName(dispatch.event_type), dispatch.error_code,
                       fmt::ptr(dispatch.callback_arg));
-            dispatch.callback(static_cast<u32>(dispatch.ctx_id), static_cast<u32>(dispatch.conn_id),
+            GuestCall(dispatch.callback, static_cast<u32>(dispatch.ctx_id), static_cast<u32>(dispatch.conn_id),
                               dispatch.event_type, dispatch.error_code, dispatch.callback_arg);
         }
     }

@@ -53,7 +53,11 @@ void Write(std::string_view log_class, Level level, const char* file, int line, 
         const auto now = std::chrono::system_clock::now();
         const std::time_t t = std::chrono::system_clock::to_time_t(now);
         std::tm tm_local{};
+#ifdef _WIN32
         localtime_s(&tm_local, &t);
+#else
+        localtime_r(&t, &tm_local);
+#endif
         const int ms = int(std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
         std::snprintf(clock, sizeof(clock), "%02d:%02d:%02d.%03d ", tm_local.tm_hour, tm_local.tm_min, tm_local.tm_sec, ms);
     }

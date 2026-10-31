@@ -229,8 +229,15 @@ u32 BbDisplayRefreshHz() {
 extern "C" void runtime_ffb_release(const char* why); // src/runtime_logiwheel.inc: the wheel's forces off
 
 #ifdef BB_PGO_GENERATE
+#ifdef __clang__
 extern "C" int __llvm_profile_write_file(void);
 extern "C" void __llvm_profile_reset_counters(void);
+#else // GCC (the Linux build's BB_CC=gcc)
+extern "C" void __gcov_dump(void);
+extern "C" void __gcov_reset(void);
+static int __llvm_profile_write_file(void) { __gcov_dump(); return 0; }
+static void __llvm_profile_reset_counters(void) { __gcov_reset(); }
+#endif
 // Instrumented build (BB_PGO=generate): the game often ends through _exit (watchdog, guest
 // exit), which skips the profile write at exit. Write every 30 s and reset: the files sum the
 // intervals.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
+#include "bbport_guest_call.h"
 #include <cctype>
 #include <deque>
 #include <map>
@@ -946,7 +947,7 @@ static void DispatchPendingNpStateCallbacks() {
 
     for (auto& event : pending_events) {
         if (legacy_callback.func != nullptr) {
-            legacy_callback.func(event.user_id, event.state,
+            GuestCall(legacy_callback.func, event.user_id, event.state,
                                  event.has_np_id ? &event.np_id : nullptr,
                                  legacy_callback.userdata);
         }
@@ -957,18 +958,18 @@ static void DispatchPendingNpStateCallbacks() {
             }
 
             if (entry.func != nullptr) {
-                entry.func(event.user_id, event.state, entry.userdata);
+                GuestCall(entry.func, event.user_id, event.state, entry.userdata);
             }
         }
 
         if (toolkit_callback.func != nullptr) {
-            toolkit_callback.func(event.user_id, event.state, toolkit_callback.userdata);
+            GuestCall(toolkit_callback.func, event.user_id, event.state, toolkit_callback.userdata);
         }
     }
 
     // Reachability callback fires only on a change, after the state callbacks.
     for (const auto& [user_id, reach] : reachability_changes) {
-        reachability_callback.func(user_id, reach, reachability_callback.userdata);
+        GuestCall(reachability_callback.func, user_id, reach, reachability_callback.userdata);
     }
 }
 

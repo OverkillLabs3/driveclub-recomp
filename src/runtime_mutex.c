@@ -1,6 +1,7 @@
 /* Linux pthread-backed opaque PS4 mutex handles. No guest threads yet. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,7 +229,7 @@ static ABI int32_t once_run(volatile int32_t *control, void (ABI *routine)(void)
     for (;;) {
         int32_t seen = __sync_val_compare_and_swap(control, 0, 1);
         if (seen == 2) return 0;
-        if (seen == 0) { routine(); __sync_synchronize(); *control = 2; return 0; }
+        if (seen == 0) { guest_cpu_call((uintptr_t)routine, 0, NULL); __sync_synchronize(); *control = 2; return 0; }
         sched_yield();
     }
 }

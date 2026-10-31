@@ -13,13 +13,22 @@
  * the state is 4 then, a cleanup on another thread started in that gap, and the thread counts itself out again (the
  * manager is as before it came), waits for the cleanup to end and enters again. The cleanup's own entries (from the
  * destructors it runs) go in as before. */
-#ifdef _WIN32
-typedef int64_t (ABI *ResourceSelf)(void);
-typedef int (ABI *ResourceMutex)(void *);
-typedef int (ABI *ResourceSleep)(unsigned);
-static ResourceSelf resource_self;
-static ResourceMutex resource_lock, resource_unlock;
-static ResourceSleep resource_sleep;
+/* The game's functions this calls: through the guest CPU where the game's code does not run on the host CPU
+ * (guest_cpu.h). Called from resource_enter, i.e. on the game's thread inside a guest call. */
+static uintptr_t resource_self_fn, resource_lock_fn, resource_unlock_fn, resource_sleep_fn;
+static int64_t resource_self(void) { return (int64_t)guest_cpu_call(resource_self_fn,0,NULL); }
+static int resource_lock(void *mutex) {
+    const uint64_t a[1]={(uint64_t)(uintptr_t)mutex};
+    return (int)guest_cpu_call(resource_lock_fn,1,a);
+}
+static int resource_unlock(void *mutex) {
+    const uint64_t a[1]={(uint64_t)(uintptr_t)mutex};
+    return (int)guest_cpu_call(resource_unlock_fn,1,a);
+}
+static int resource_sleep(unsigned usec) {
+    const uint64_t a[1]={usec};
+    return (int)guest_cpu_call(resource_sleep_fn,1,a);
+}
 static int64_t resource_cleaner(unsigned char *m) {
     void *mutex=*(void **)(m+0x208);
     resource_lock(mutex);
@@ -85,22 +94,21 @@ static void resource_entry_install(void) {
     if (runtime_image_size<0x1240600 || memcmp(image+at,expected,sizeof expected)) {
         puts("ResourceEntry: unsupported signature; fix skipped"); return;
     }
-    resource_self=(ResourceSelf)(image+0x7ae780);       /* the game's current-thread call */
-    resource_lock=(ResourceMutex)(image+0x12402f0);     /* the mutex lock and unlock the entry uses */
-    resource_unlock=(ResourceMutex)(image+0x12402d0);
-    resource_sleep=(ResourceSleep)(image+0x664860);     /* its usleep */
+    resource_self_fn=(uintptr_t)(image+0x7ae780);       /* the game's current-thread call */
+    resource_lock_fn=(uintptr_t)(image+0x12402f0);      /* the mutex lock and unlock the entry uses */
+    resource_unlock_fn=(uintptr_t)(image+0x12402d0);
+    resource_sleep_fn=(uintptr_t)(image+0x664860);      /* its usleep */
     /* mov rdi,r13; movabs rax,resource_enter; call rax; lea r12,[r13+0x104]; jmp +0x77e8ce; the rest int3 */
     unsigned char *c=image+patch;
     memset(c,0xcc,resume-patch);
     const unsigned char head[]={0x4c,0x89,0xef,0x48,0xb8};
     memcpy(c,head,sizeof head); c+=sizeof head;
-    const uintptr_t fn=(uintptr_t)resource_enter; memcpy(c,&fn,8); c+=8;
+    const uintptr_t fn=guest_cpu_host_function((void *)resource_enter); memcpy(c,&fn,8); c+=8;
     const unsigned char tail[]={0xff,0xd0,0x4d,0x8d,0xa5,0x04,0x01,0x00,0x00,0xe9};
     memcpy(c,tail,sizeof tail); c+=sizeof tail;
     const int32_t rel=(int32_t)((image+resume)-(c+4)); memcpy(c,&rel,4);
+#ifdef _WIN32
     FlushInstructionCache(GetCurrentProcess(),image+patch,resume-patch);
+#endif
     puts("ResourceEntry: resource manager entry waits out a cleanup that starts as it enters (car select freeze)");
 }
-#else
-static void resource_entry_install(void) {}
-#endif

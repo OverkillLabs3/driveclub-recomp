@@ -44,6 +44,7 @@
  * own print output does not reach the log, so script messages go through a marker open (say:<text>). */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -333,7 +334,10 @@ static void set_guest_rain(void) {
     unsigned char *config = base[0x780] == 0 ? base + 0x3b8 : base + 8;
     const char *before = guest_string(config + 0x230);
     printf("Benchmark: rain: config weather '%.40s', precipitation '%.40s'", guest_string(config + 0x208), before);
-    ((guest_string_assign)(runtime_image_base + 0xe978b0))(config + 0x230, cfg.rain);
+    {
+        const uint64_t args[2] = {(uint64_t)(uintptr_t)(config + 0x230), (uint64_t)(uintptr_t)cfg.rain};
+        guest_cpu_call(runtime_image_base + 0xe978b0, 2, args); /* guest_string_assign */
+    }
     printf(" -> '%.40s'\n", guest_string(config + 0x230));
     fflush(stdout);
 }

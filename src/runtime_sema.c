@@ -1,8 +1,8 @@
-#include "../gpu/shim/bbport_diagnostics.h"
 /* Kernel semaphores: 32-bit IDs, counted tokens and FIFO waiters.
  * Priority-ordered semaphores are approximated by FIFO order. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,11 +66,7 @@ extern __thread int runtime_thread_background;
  * between polls instead of keeping a core busy. */
 static void throttle_background(void) {
     if (!runtime_thread_background) return;
-#ifdef _WIN32
     compat_sleep_ns(2000000);
-#else
-    usleep(2000);
-#endif
 }
 static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) {
     pthread_mutex_lock(&lock);

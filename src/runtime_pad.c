@@ -1,4 +1,3 @@
-#include "../gpu/shim/bbport_diagnostics.h"
 /* libScePad on SDL3 gamepads, with a keyboard fallback. SDL events are pumped
  * by the window thread (gpu/shim/window.cpp); here state is only sampled.
  *
@@ -9,6 +8,8 @@
  *   IJKL d-pad (I up, K down, J left, L right). */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
+#include "guest_cpu.h"
 #include "runtime_exit.h"
 #include "gpu/bbgpu.h"
 #include <stdio.h>
@@ -576,10 +577,13 @@ static bool exit_input(PadData *d) {
     static uint32_t previous_physical; static int previous_axis;
     bool activity=(physical & ~previous_physical) || (axis_direction && axis_direction!=previous_axis);
     previous_physical=physical; previous_axis=axis_direction;
-    int confirm=SDL_GAMEPAD_BUTTON_SOUTH,back=SDL_GAMEPAD_BUTTON_EAST;
+    const uint32_t logical_confirm=runtime_exit_confirm_button();
+    const uint32_t logical_back=logical_confirm ^ (BTN_CROSS|BTN_CIRCLE);
+    int confirm=logical_confirm==BTN_CIRCLE ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
+    int back=logical_back==BTN_CIRCLE ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
     for(int i=0;i<pad_remap_count;++i) {
-        if((uint32_t)pad_remap[i][0]==BTN_CROSS) confirm=pad_remap[i][1];
-        if((uint32_t)pad_remap[i][0]==BTN_CIRCLE) back=pad_remap[i][1];
+        if((uint32_t)pad_remap[i][0]==logical_confirm) confirm=pad_remap[i][1];
+        if((uint32_t)pad_remap[i][0]==logical_back) back=pad_remap[i][1];
     }
     bool neutral=!d->buttons && !d->touch_count && !SDL_GetMouseState(NULL,NULL) && d->l2<25 && d->r2<25 &&
         abs(d->left_x-128)<32 && abs(d->left_y-128)<32 &&
@@ -729,6 +733,9 @@ static void ffb_hook_install(void) {
     FlushInstructionCache(GetCurrentProcess(),at,32);
     printf("Runtime: FFB physics: reading the car's simulation\n");
 }
+#else
+/* The physics force feedback model reads the car through a Windows-only hook for now. */
+static void ffb_hook_install(void) {}
 #endif
 
 /* Driving options from the launcher: BB_GEARBOX (automatic, manual), BB_BRAKE_ASSIST (0 off .. 3 high),
@@ -741,6 +748,26 @@ static void ffb_hook_install(void) {
  * (a byte in the wheel settings of each of the two controller kinds, see +0x1a83b0). */
 typedef ABI void (*game_int_setter)(void *, int);
 typedef ABI void (*game_float_setter)(void *, float);
+/* The game's setters, on the game's thread (pad_read_state is called by the game): through the guest CPU
+ * where the game's code does not run on the host CPU. */
+static void game_set_int(uintptr_t setter, void *object, int value) {
+#ifdef GUEST_CPU_NATIVE
+    ((game_int_setter)setter)(object,value);
+#else
+    const uint64_t args[2]={(uint64_t)(uintptr_t)object,(uint64_t)(uint32_t)value};
+    guest_cpu_call(setter,2,args);
+#endif
+}
+static void game_set_float(uintptr_t setter, void *object, float value) {
+#ifdef GUEST_CPU_NATIVE
+    ((game_float_setter)setter)(object,value);
+#else
+    const uint64_t args[1]={(uint64_t)(uintptr_t)object};
+    uint32_t bits; memcpy(&bits,&value,4);
+    const uint64_t xmm[1]={bits};
+    guest_cpu_call_xmm(setter,1,args,1,xmm);
+#endif
+}
 static int env_choice(const char *name, const char *const *words, int count) {
     const char *e=getenv(name);
     if (!e || !*e) return -1;
@@ -772,16 +799,16 @@ static void game_options_apply(void) {
     /* the gearbox setter tells the game through its event queue (*(G+0x970)+0x590), which comes a little later */
     const unsigned char *events=*(const unsigned char *const *)(p+0x590);
     if (gearbox>=0 && *(const int *)d!=gearbox && events && *(const void *const *)(events+8)) {
-        ((game_int_setter)(runtime_image_base+0x1a33c0))(d,gearbox);
+        game_set_int(runtime_image_base+0x1a33c0,d,gearbox);
         if (changes++<20) printf("Runtime: gearbox set to %s\n",gearbox ? "automatic" : "manual");
     }
     if (brake>=0 && fabsf(*(const float *)(d+4)-(float)brake/3.0f)>0.01f) {
-        ((game_float_setter)(runtime_image_base+0x1a3490))(d,(float)brake/3.0f);
+        game_set_float(runtime_image_base+0x1a3490,d,(float)brake/3.0f);
         if (changes++<20) printf("Runtime: brake assist set to %d of 3\n",brake);
     }
     const unsigned char *handling=(const unsigned char *)(runtime_image_base+0x274be46);
     if (hardcore>=0 && (d[0x14]!=hardcore || *handling!=hardcore)) {
-        ((game_int_setter)(runtime_image_base+0x1a3a00))(d,hardcore);
+        game_set_int(runtime_image_base+0x1a3a00,d,hardcore);
         if (changes++<20) printf("Runtime: hardcore handling %s\n",hardcore ? "on" : "off");
     }
     if (wheel_assist>=0 && (s[0x1f8]!=wheel_assist || s[0x258]!=wheel_assist)) {

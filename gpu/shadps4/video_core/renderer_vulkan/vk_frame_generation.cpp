@@ -95,7 +95,9 @@ void DumpFrame(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer
     });
 }
 
+#ifdef _WIN32
 extern "C" short __stdcall GetAsyncKeyState(int key);
+#endif
 
 bool DumpWindow() {
     static const char* env = BB_DIAGNOSTIC_ENV("BB_FG_DUMP");
@@ -104,7 +106,11 @@ bool DumpWindow() {
     if (!env) {
         return false;
     }
+#ifdef _WIN32
     const bool now = (GetAsyncKeyState(0x7A) & 0x8000) != 0;
+#else
+    const bool now = false; // BB_FG_DUMP's F11 trigger is Windows-only
+#endif
     if (now && !down) {
         left = 3;
     }
