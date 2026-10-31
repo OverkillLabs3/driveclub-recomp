@@ -63,7 +63,7 @@ Json UiState(const std::wstring& error=L"") {
     if(int(i)==g_lang){for(auto* n:kLangName)options.push_back(Narrow(n));selected=g_lang_id;}
     else if(int(i)==g_btrack){for(const auto& x:kBenchTracks)options.push_back(Narrow(std::wstring(x.name)+L" ("+x.group+L")"));selected=g_bench_track;}
     else if(int(i)==g_bcar){for(const auto& x:kBenchCars)options.push_back(Narrow(x.name));selected=g_bench_car;}
-    else for(const auto& x:c.items)options.push_back(Narrow(x));
+    else for(const auto& x:c.items)options.push_back(Narrow(int(i)==g_aa && VrChosen() && &x==&c.items[1]?L"FSR 3.1 (not in VR)":x));
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
     controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint)},{"Kind",kind},{"Tag",c.patches[0]},
       {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
@@ -148,8 +148,9 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_wide && g_c[g_wide].sel>0)g_c[g_outres].sel=g_c[g_inres].sel=0;
         // VR: a headset size sets the render and output size itself, as a widescreen one does (one of the two)
-        if(changed==g_vrsize && g_vrsize>=0 && g_c[g_vrsize].sel>0){g_c[g_outres].sel=g_c[g_inres].sel=0;if(g_wide>=0)g_c[g_wide].sel=0;}
+        if(changed==g_vrsize && g_vrsize>=0 && g_c[g_vrsize].sel>0 && !VrChosen()){g_c[g_outres].sel=g_c[g_inres].sel=0;if(g_wide>=0)g_c[g_wide].sel=0;}
         if(changed==g_wide && g_vrsize>=0 && g_c[g_wide].sel>0)g_c[g_vrsize].sel=0;
+        ApplyVrAntiAliasing();
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
@@ -217,6 +218,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         if(!g_ui_capture_cancelled && g_status_color.GetValue()!=kOk.GetValue())throw std::runtime_error(Narrow(g_status));
       }
       else if(command==L"--ui-apply"||command==L"--ui-run"||command==L"--ui-benchmark"){
+        ApplyVrAntiAliasing();
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(!SaveSettings()) throw std::runtime_error(Narrow(g_settings_error));
         if(command!=L"--ui-apply"){

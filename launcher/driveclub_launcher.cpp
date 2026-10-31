@@ -364,7 +364,6 @@ int g_sharp = -1;
 // "Frame cap" with the Unlocked (VRR) frame rate (fps_cap= in launcher.ini; 0 or missing: the display's refresh
 // rate less 3, which follows the display when it changes).
 int fps_cap_saved = 0;
-int flat_output_saved = -1, flat_render_saved = -1;  // Output / Render resolution for flat play: VR leaves them out of the patch list
 int g_fps_cap = -1;
 // The main display's refresh rate in Hz, 0 when unknown.
 int DisplayHz() {
@@ -574,12 +573,45 @@ int g_vr_row = -1, g_vr_fps = -1;  // the VR switch; the Frame rate row shown wi
 // The VR switch as the page shows it now (g_vr is set when saving).
 bool VrChosen() { return g_vr_row >= 0 && g_c[g_vr_row].sel != 0; }
 
+// With VR on these rows do nothing, so they are hidden and VR decides. The patch list has only what goes to the game,
+// so launcher.ini keeps what the rows hold for flat play (flat_*).
+int g_wide_fix = -1;  // the "Widescreen field-of-view fix" row
+constexpr int kFlatRows = 5;
+int* const kFlatRow[kFlatRows] = {&g_outres, &g_inres, &g_wide, &g_wide_fix, &g_blur_patch};
+const char* const kFlatKey[kFlatRows] = {"flat_output=", "flat_render=", "flat_wide=", "flat_wide_fix=", "flat_blur="};
+int flat_saved[kFlatRows] = {-1, -1, -1, -1, -1};
+int flat_fov_saved = -1;
+bool flat_fsr = false;  // FSR is the flat choice: Game stands in for it with VR on
+bool VrPatchRow(const Ctl& c) {
+  for (int* row : kFlatRow)
+    if (*row >= 0 && &c == &g_c[*row]) return true;
+  return false;
+}
+bool VrHidesRow(const Ctl& c) {
+  if (!VrChosen()) return false;
+  if (VrPatchRow(c)) return true;
+  for (int row : {g_fov, g_camera_patch_row, g_camera_shake, g_gfx[kGfxDynres], g_gfx[kGfxBlur]})
+    if (row >= 0 && &c == &g_c[row]) return true;
+  return false;
+}
+// FSR does not work in VR: picked or left from flat play, Game takes its place until VR is off again.
+void ApplyVrAntiAliasing() {
+  if (g_aa < 0) return;
+  int& aa = g_c[g_aa].sel;
+  if (VrChosen()) {
+    if (aa == 1) flat_fsr = true, aa = 0;
+    else if (aa == 2) flat_fsr = false;
+  } else if (flat_fsr) {
+    flat_fsr = false;
+    if (aa == 0) aa = 1;
+  }
+}
+
 bool RowHidden(const Ctl& c) {
   if (g_vr_fps >= 0 && &c == &g_c[g_vr_fps]) return !VrChosen();
   if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap] && VrChosen()) return true;
-  // VR: the headset picture sets the size; the flat rows come back with VR off, with their choices.
-  if (((g_outres >= 0 && &c == &g_c[g_outres]) || (g_inres >= 0 && &c == &g_c[g_inres])) && VrChosen()) return true;
+  if (VrHidesRow(c)) return true;
   if (c.physics_only && !PhysicsChosen()) return true;
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
@@ -1055,7 +1087,7 @@ void BuildModel() {
                         "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]",
                         "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
                        00));
-  const int fov = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
+  const int fov = g_wide_fix = toggle(L"Widescreen field-of-view fix", L"For wide and ultrawide resolutions only.",
                          "FOV fix for wide resolutions", false);
   const int camera_patch = g_camera_patch_row = toggle(L"High-FPS camera fix",
       L"Smooths camera and replay shake at high frame rates. On by default for 60 FPS and unlocked modes, off at 30 FPS. Turn it off if the camera looks wrong.",
@@ -1525,8 +1557,10 @@ void LoadSettings() {
     if (line.rfind("up=", 0) == 0) up_saved = atoi(line.substr(3).c_str());
     if (line.rfind("sharpness=", 0) == 0) sharp_saved = atoi(line.substr(10).c_str());
     if (line.rfind("fps_cap=", 0) == 0) fps_cap_saved = atoi(line.substr(8).c_str());
-    if (line.rfind("flat_output=", 0) == 0) flat_output_saved = atoi(line.substr(12).c_str());
-    if (line.rfind("flat_render=", 0) == 0) flat_render_saved = atoi(line.substr(12).c_str());
+    for (int k = 0; k < kFlatRows; ++k)
+      if (line.rfind(kFlatKey[k], 0) == 0) flat_saved[k] = atoi(line.substr(strlen(kFlatKey[k])).c_str());
+    if (line.rfind("flat_fov=", 0) == 0) flat_fov_saved = atoi(line.substr(9).c_str());
+    if (line.rfind("flat_fsr=", 0) == 0) flat_fsr = line.substr(9) == "1";
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("unlocked=", 0) == 0) unlocked_saved = atoi(line.substr(9).c_str());
@@ -1659,9 +1693,12 @@ void LoadSettings() {
   // The sliders' saved values, else their defaults (the patch list sets nothing for them).
   if (g_sharp >= 0) g_c[g_sharp].sel = sharp_saved >= 0 ? (std::clamp)(sharp_saved, 0, 100) : g_c[g_sharp].def;
   if (g_fps_cap >= 0) g_c[g_fps_cap].sel = fps_cap_saved > 0 ? (std::clamp)(fps_cap_saved, g_c[g_fps_cap].min, g_c[g_fps_cap].max) : g_c[g_fps_cap].def;
-  // With VR on the resolutions are not in the patch list: the flat choices come back from launcher.ini.
-  if (g_vr && g_outres >= 0 && flat_output_saved >= 0) g_c[g_outres].sel = (std::min)(flat_output_saved, int(g_c[g_outres].items.size()) - 1);
-  if (g_vr && g_inres >= 0 && flat_render_saved >= 0) g_c[g_inres].sel = (std::min)(flat_render_saved, int(g_c[g_inres].items.size()) - 1);
+  // With VR on these rows are not in the patch list: their flat choices come back from launcher.ini.
+  for (int k = 0; g_vr && k < kFlatRows; ++k) {
+    if (*kFlatRow[k] < 0 || flat_saved[k] < 0) continue;
+    Ctl& c = g_c[*kFlatRow[k]];
+    c.sel = (std::min)(flat_saved[k], (c.kind == Kind::Toggle ? 2 : int(c.items.size())) - 1);
+  }
   if (g_hdr >= 0 && hdr_saved >= 0) g_c[g_hdr].sel = hdr_saved ? 1 : 0;
   {
     std::ifstream hdr_ini(HdrIniPath().c_str());
@@ -1708,6 +1745,9 @@ void LoadSettings() {
     for (const auto& line : ReadLines(CameraIniPath())) {
       if (line.rfind("fov=", 0) == 0) g_c[g_fov].sel = (std::clamp)(atoi(line.substr(4).c_str()), g_c[g_fov].min, g_c[g_fov].max);
     }
+    if (g_vr && flat_fov_saved > 0) {
+      g_c[g_fov].sel = (std::clamp)(flat_fov_saved, g_c[g_fov].min, g_c[g_fov].max);
+    }
   }
   DerivePreset();
 }
@@ -1741,7 +1781,7 @@ int OutputMemoryTier() {
 
 int RenderMemoryTier() {
   if (g_inres < 0 || g_wide < 0) return 0;
-  const int r = VrChosen() ? 0 : g_c[g_inres].sel, w = g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
+  const int r = VrChosen() ? 0 : g_c[g_inres].sel, w = VrChosen() ? 0 : g_c[g_wide].sel;  // render: Default 720p 1440p 1800p 4K; wide: Off + sizes
   if (r >= 5) return 3;
   if (w == 6) return 3;  // 5120x2160 is 11 megapixels
   if (g_vrsize >= 0 && g_c[g_vrsize].sel >= 4) return 3;  // the big headset sizes: 11 and 13.8 megapixels
@@ -1800,6 +1840,7 @@ bool SaveSettings() {
     g_settings_error=L"The existing optimization mask is invalid; settings were not changed.";return false;
   }
   const auto old_ini=ReadLines(IniPath());
+  ApplyVrAntiAliasing();
   const auto old_patches=ReadLines(SelectionPath());
   {
     std::ostringstream ini;
@@ -1824,8 +1865,10 @@ bool SaveSettings() {
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
-    if (g_outres >= 0) ini << "flat_output=" << g_c[g_outres].sel << "\r\n";
-    if (g_inres >= 0) ini << "flat_render=" << g_c[g_inres].sel << "\r\n";
+    for (int k = 0; k < kFlatRows; ++k)
+      if (*kFlatRow[k] >= 0) ini << kFlatKey[k] << g_c[*kFlatRow[k]].sel << "\r\n";
+    if (g_fov >= 0) ini << "flat_fov=" << g_c[g_fov].sel << "\r\n";
+    ini << "flat_fsr=" << (flat_fsr ? 1 : 0) << "\r\n";
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "lock_horizon=" << g_lock_horizon << "\r\n";
@@ -1851,8 +1894,9 @@ bool SaveSettings() {
           g_c[g_picture[k]].loaded = g_c[g_picture[k]].sel;
         }
     }
-    if (g_fov >= 0 && (g_c[g_fov].sel != 100 || Exists(CameraIniPath()))) {
-      if(!SaveIniValue(CameraIniPath(),"fov",std::to_string(g_c[g_fov].sel))) return false;
+    const int game_fov = g_fov >= 0 && !VrChosen() ? g_c[g_fov].sel : 100;  // VR sets the view itself
+    if (g_fov >= 0 && (game_fov != 100 || Exists(CameraIniPath()))) {
+      if(!SaveIniValue(CameraIniPath(),"fov",std::to_string(game_fov))) return false;
     }
     ini << SaveWheel();  // into default.ini; before the game has made it, kept here
     if(!g_settings_error.empty()) return false;
@@ -1867,7 +1911,10 @@ bool SaveSettings() {
   for (const auto& c : g_c) {
     if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
-    if (((g_outres >= 0 && &c == &g_c[g_outres]) || (g_inres >= 0 && &c == &g_c[g_inres])) && VrChosen()) continue;  // Default: launcher.ini keeps them
+    if (VrPatchRow(c) && VrChosen()) {
+      if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch]) out << c.patches[0] << "\n";  // off, unless the anti-aliasing needs it (above)
+      continue;
+    }
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) {
@@ -3006,11 +3053,11 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.reflections = sel(kGfxSsr, 0);
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
-    gc.motion_blur = BlurLocked() ? 1 : sel(kGfxBlur, 1);
+    gc.motion_blur = BlurLocked() ? 1 : VrChosen() ? 0 : sel(kGfxBlur, 1);
     gc.lens_dust = sel(kGfxDust, 1);
     gc.heat_haze = sel(kGfxHaze, 1);
     gc.fxaa = sel(kGfxFxaa, 1);
-    gc.dynamic_res = sel(kGfxDynres, 1);
+    gc.dynamic_res = VrChosen() ? 0 : sel(kGfxDynres, 1);
     const std::wstring graphics_dir = g_data + L"\\graphics";
     bool active = false;
     const std::wstring problem = BuildGraphics(g_folder[0].path, g_folder[1].path, graphics_dir, gc, active);
@@ -3049,7 +3096,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
                      L"\\content.bin\" --patches \"" + prep + L"\\patches.bin\" --app0 \"" + g_folder[0].path +
                      L"\" --app0-base \"" + g_folder[1].path + L"\" --user \"" + user + L"\" --mods \"" + g_home + L"\\mods\"" +
                      unlock_arg + graphics_arg + L" --stub-unresolved";
-  SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel ? L"1" : L"0");
+  SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel && !VrChosen() ? L"1" : L"0");
   SetLockHorizonEnvironment();
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());

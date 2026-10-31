@@ -13,22 +13,19 @@ BEFORE PLAY
   SteamVR. The game follows it. If the headset runs faster than the game, moving things look double.
 
 LAUNCHER (the test PC's settings)
-  Display   Frame rate: Follows the headset (the row shown while VR is on)
-            Output / Render resolution: hidden with VR on (Headset picture sets the size)
-            Widescreen: Off, Widescreen FOV fix: off
-            Two-thread rendering: on
-            VR headset: ON, Stereo mode: True stereo or AFR, Headset picture: 2688x2880
+  With VR on the launcher handles and hides these: frame rate, output and render resolution,
+  widescreen, field of view, High-FPS camera fix, dynamic resolution, motion blur, depth of field,
+  camera shake. FSR is off too (Game takes its place). Your choices come back with VR off.
+  Display   VR headset: ON, Stereo mode: True stereo or AFR, Headset picture: 2688x2880
               (2496x2688 for weaker PCs, 3200x3440 and up for Quest 3 / Pimax)
-            Anti-aliasing: Game or DLSS (RTX), per eye in both modes. NEVER FSR in VR
+            Two-thread rendering: on
+            Anti-aliasing: Game or DLSS (RTX), per eye in both modes
             Picture: brightness / contrast / gamma work in the headset too
-  Graphics  everything off / Game, Dynamic resolution OFF, Motion blur OFF
+  Graphics  everything else off / Game
   Gameplay  Mirror and reflection updates: Live
               (Static only if the FPS is too low: ~10% faster, but frozen reflections and rain
               on the glass, a bluish dashboard reflection on the windscreen)
-            Patches: Disable motion blur and depth of field ON,
-                     High-FPS camera workaround off
-  Driving   Field of view: MUST BE 100% (VR sets the view itself)
-            Camera shake: no visible effect in the headset; Lock to horizon: no effect in the cockpit with VR
+  Driving   Lock to horizon: no effect in the cockpit with VR
   Virtual Desktop: True stereo 72 Hz, AFR 90 or 120 Hz; H.264+ or HEVC 8-bit
                    (HEVC 10-bit can stutter on a Quest 2)
 

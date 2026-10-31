@@ -21,8 +21,11 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
    - *Headset picture (pixels per eye)*: the size the game draws each eye at, in the shape
      of a headset eye (the menus and the HUD keep their 16:9 shape). 1856x1984: the Quest 2 panel, light;
      **2496x2688** and 2688x2880: Virtual Desktop's High and Ultra on a Quest 2; 3200x3440 and 3584x3840: Quest 3,
-     Pimax and other sharp headsets. Pick about what your streaming app sends: more only costs frames. Leave
-     *Output*, *Render resolution* and *Widescreen* on Default and Off;
+     Pimax and other sharp headsets. Pick about what your streaming app sends: more only costs frames.
+     While VR is on the launcher hides *Output* and *Render resolution*, *Widescreen* and its FOV fix, *Dynamic
+     resolution*, the *High-FPS camera fix*, *Motion blur*, *Disable motion blur and depth of field* (on, except with
+     DLSS, which needs the blur pass), *Field of view* and *Camera shake*, and FSR gives way to Game. Your choices
+     come back with VR off;
    - *Frame rate* reads **Follows the headset** while VR is on: the game takes its limit from the headset's refresh
      rate, and your monitor does not hold it back. Pick the rate in Virtual Desktop, Link or SteamVR (see below). The
      usual *Frame rate* and *Frame cap* rows come back, with their choices, when VR is off;
@@ -47,7 +50,7 @@ reason for it. For True stereo on the test PC that means 72 Hz; a Quest 2 has 72
 offers 60 too, but there the screen flickers, most of all in the menus). In AFR 90 or 120
 Hz suits. A headset rate above the FPS does no harm to the game, it only brings the doubling back.
 
-*Driving* → *Camera shake* has no visible effect in the headset (checked at 100%): the view does not shake. *Lock to
+*Lock to
 horizon* does not change the cockpit while VR is on (the headset holds the view there); with *All views* the other cameras still keep level.
 
 The *Picture* sliders (brightness, contrast, gamma) and Page Up / Page Down while playing change the headset's
@@ -57,16 +60,15 @@ while VR is on.
 ## Recommended settings
 What the test PC (RTX 4070 Ti Super) plays with:
 
-- *Display*: Frame rate **Follows the headset** (in AFR the test PC holds about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz). Output and Render resolution **Default**,
-  Widescreen **Off**, Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
+- *Display*: Frame rate **Follows the headset** (in AFR the test PC holds about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz).
+  Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
   Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
 - *DLSS (experimental in VR)*: Anti-aliasing **DLSS (RTX)** with an *Upscaling* level works per eye in both stereo
   modes (each eye its own history and motion). It is smoother and cleaner than no anti-aliasing, but softer, with some
   ghosting (most of all the windscreen's HUD reflection), and gives no frames where the CPU is the limit. Key 7 tries
-  DLSS's models in a race. FSR does not work per eye (it reads one eye or mixes them): do not use it with VR.
-- *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on. **Motion blur off**:
-  the alternate frames come from eyes 6.3 cm apart, which the game's blur takes for motion.
-- *Gameplay*: Mirror and reflection updates **Live**; Patches: **Disable motion blur and depth of field** on.
+  DLSS's models in a race. FSR does not work per eye (it reads one eye or mixes them): the launcher turns it off in VR.
+- *Detail*: everything on Game / off, except Lens dust, Heat haze and the **FXAA pass** on.
+- *Gameplay*: Mirror and reflection updates **Live**.
   *Static (faster)* is only for when the FPS is too low: about 11% more FPS in a CPU-limited benchmark (125.7 → 139.3
   on the test PC), but the reflections and the rain on the glass freeze, and the windscreen gets a frozen bluish
   reflection of the dashboard that is very visible from the cockpit.
