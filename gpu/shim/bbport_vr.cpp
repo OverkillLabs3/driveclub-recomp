@@ -2624,7 +2624,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     if (st.frame_state.predictedDisplayPeriod > 0) {
         const uint32_t hz = uint32_t(1e9 / double(st.frame_state.predictedDisplayPeriod) + 0.5);
         const uint32_t was = headset_hz.load(std::memory_order_relaxed);
-        if (hz >= 30 && hz <= 1000 && (hz > was + 1 || hz + 1 < was)) { // a small wobble keeps the limit where it is
+        // A whole fraction of the rate is the runtime holding frames back, not the headset: SteamVR swings between
+        // 120, 60, 40 and 30 Hz many times a second, and the game's limit went with it.
+        const double times = hz ? double(was) / double(hz) : 0.0;
+        const bool fraction = hz < was && times >= 1.9 && std::fabs(times - std::round(times)) < 0.05;
+        if (hz >= 30 && hz <= 1000 && !fraction && (hz > was + 1 || hz + 1 < was)) { // a small wobble keeps the limit where it is
             headset_hz.store(hz, std::memory_order_relaxed);
             std::printf("VR: the headset runs at %u Hz: the game's frame limit follows it\n", hz);
         }
