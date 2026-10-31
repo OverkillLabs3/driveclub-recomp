@@ -43,12 +43,12 @@ Tested only on: Quest 2 through Virtual Desktop (its OpenXR runtime, VDXR), an R
 
 **Pick the headset's refresh rate a little below the FPS your PC holds.** When the headset shows the same frame twice,
 things that move in the picture (the road in a turn, other cars) look doubled, and in True stereo that is the only
-reason for it. For True stereo on the test PC that means 72 Hz; a Quest 2 has 72, 80, 90 and 120 Hz. In AFR 90 or 120
+reason for it. For True stereo on the test PC that means 72 Hz; a Quest 2 has 72, 80, 90 and 120 Hz (Virtual Desktop
+offers 60 too, but there the screen flickers, most of all in the menus). In AFR 90 or 120
 Hz suits. A headset rate above the FPS does no harm to the game, it only brings the doubling back.
 
-The game's camera shake at speed is applied after the head camera: *Driving* → *Camera shake* sets how much of it
-is left (0 takes it away; a little, such as 20-30%, keeps the feel of speed). *Lock to horizon* does not change the
-cockpit while VR is on (the headset holds the view there); with *All views* the other cameras still keep level.
+*Driving* → *Camera shake* has no visible effect in the headset (checked at 100%): the view does not shake. *Lock to
+horizon* does not change the cockpit while VR is on (the headset holds the view there); with *All views* the other cameras still keep level.
 
 The *Picture* sliders (brightness, contrast, gamma) and Page Up / Page Down while playing change the headset's
 picture as they do the monitor's. The in-game exit confirmation (an overlay drawn on the monitor only) stays off
@@ -154,5 +154,5 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
 - DLSS per eye is experimental: softer, some ghosting, and no FPS gain where the CPU is the limit. No FSR, no frame
   generation.
 - The game's camera motion blur is off while VR is on (the eyes 6.3 cm apart look like motion to it).
-- A few HUD and picture glitches remain (the minimap moves with the head, some screens before and after a race).
+- A few picture glitches remain (some screens before and after a race).
 - Tested with one headset, runtime and graphics card.
