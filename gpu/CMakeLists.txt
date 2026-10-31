@@ -262,6 +262,8 @@ target_sources(bbgpu PRIVATE third_party/imgui/imgui.cpp third_party/imgui/imgui
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
 target_include_directories(bbgpu PRIVATE third_party/imgui third_party/imgui/backends)
+# VR (bbport_vr.cpp): the OpenXR headers (Apache-2.0 OR MIT); the loader is a DLL found at run time.
+target_include_directories(bbgpu PRIVATE third_party/openxr/include)
 target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf"
     BB_EXIT_BODY_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/fonts/001futura-webfont.ttf"
