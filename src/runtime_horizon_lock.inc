@@ -118,13 +118,32 @@ static void horizon_level(float *cam, const float *car, const void *key, const c
 static __attribute__((used,noinline)) ABI void horizon_lock_compute(float *camera) {
     horizon_level(camera+0x270/4,camera+0x2d0/4,camera,"cockpit");
 }
-/* The other views (BB_LOCK_HORIZON=2), from the base camera update: `this` with its matrix at +0x10. */
+/* VR, true stereo: where the bonnet, bumper, dash and chase cameras were just now (other cars have them too), so the
+   headset can tell the main view is one of them (gpu/shim/bbport_vr.cpp, the scene camera hook). */
+static struct { float position[3]; ULONGLONG time_ms; } vehicle_cameras[16];
+static unsigned vehicle_camera_next;
+int runtime_vehicle_camera_at(const float *position) {
+    const ULONGLONG now=GetTickCount64();
+    for (unsigned i=0;i<16;++i) {
+        const float *p=vehicle_cameras[i].position;
+        const float dx=p[0]-position[0], dy=p[1]-position[1], dz=p[2]-position[2];
+        if (now-vehicle_cameras[i].time_ms<=300 && dx*dx+dy*dy+dz*dz<0.15f*0.15f) return 1;
+    }
+    return 0;
+}
+/* The other views, from the base camera update: `this` with its matrix at +0x10 (BB_LOCK_HORIZON=2 levels them). */
 static __attribute__((used,noinline)) ABI void horizon_cameras_compute(unsigned char *camera) {
     uintptr_t vtable; memcpy(&vtable,camera,8);
     vtable-=(uintptr_t)image;
     const int attached=vtable==0x1654250, chase=vtable==0x1654ef0;
     if (!attached && !chase) return;
     float *cam=(float *)(camera+0x10);
+    {
+        const unsigned slot=vehicle_camera_next++%16;
+        memcpy(vehicle_cameras[slot].position,cam+12,12);
+        vehicle_cameras[slot].time_ms=GetTickCount64();
+    }
+    if (horizon_mode!=2) return;
     if (chase) {   /* its own tilt out; its view down at the car stays */
         float rows[3][3];
         for (int i=0;i<3;++i) for (int k=0;k<3;++k) rows[i][k]=cam[i*4+k];
@@ -263,7 +282,9 @@ static void horizon_lock_install(void) {
         }
         printf("Runtime: camera shake %d%%%s\n",(int)lroundf(camera_shake*100.0f),fits ? "" : " (does not fit this game version: as made)");
     }
-    if (!horizon_mode) return;
+    const char *stereo_env=getenv("BB_VR_STEREO");
+    const int stereo=horizon_vr_wanted() && stereo_env && !strcmp(stereo_env,"mv");
+    if (!horizon_mode && !stereo) return;
     static const unsigned char head[14]={0xc4,0xc1,0x79,0x6f,0x87,0x10,0x03,0x00,0x00,   /* vmovdqa xmm0,[r15+0x310] */
                                          0xc5,0xf9,0x70,0xc8,0x00};                     /* vpshufd xmm1,xmm0,0 */
     static const unsigned char cameras[14]={0xc4,0xc1,0x78,0x29,0x44,0x24,0x40,   /* vmovaps [r12+0x40],xmm0 */
@@ -272,9 +293,10 @@ static void horizon_lock_install(void) {
     if (horizon_vr_wanted()) {
         /* VR head tracking hooks the same place (+0xb92420): the cockpit view is the headset's, the other views
            can still keep the horizon level (the base update leaves the driver's head camera alone). */
-        const int others=horizon_mode==2 && horizon_patch(0xcc8a57,cameras,(uintptr_t)horizon_cameras_bridge,&horizon_cameras_resume);
-        printf("Runtime: lock to horizon: the cockpit view is left to VR head tracking%s\n",
-               others ? "; the bonnet, bumper, dash and chase views keep the horizon level" : "");
+        const int others=(horizon_mode==2 || stereo) && horizon_patch(0xcc8a57,cameras,(uintptr_t)horizon_cameras_bridge,&horizon_cameras_resume);
+        if (horizon_mode) printf("Runtime: lock to horizon: the cockpit view is left to VR head tracking%s\n",
+                                 others && horizon_mode==2 ? "; the bonnet, bumper, dash and chase views keep the horizon level" : "");
+        if (stereo) printf("Runtime: VR: the bonnet, bumper, dash and chase views %s\n",others ? "are known to the headset" : "do not fit this game version");
         return;
     }
     if (!horizon_patch(0xb92420,head,(uintptr_t)horizon_lock_bridge,&horizon_lock_resume)) {
@@ -288,4 +310,5 @@ static void horizon_lock_install(void) {
 }
 #else
 static void horizon_lock_install(void) {}
+int runtime_vehicle_camera_at(const float *position) { (void)position; return 0; }
 #endif

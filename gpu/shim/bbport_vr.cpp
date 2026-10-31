@@ -93,6 +93,7 @@ void SetShift(float shift);
 #endif
 
 extern "C" uintptr_t runtime_image_base; // src/probe.c: where the guest's image is
+extern "C" int runtime_vehicle_camera_at(const float* position); // src/runtime_horizon_lock.inc
 
 namespace BbVr {
 std::mutex* g_queue_mutex = nullptr; // set by the presenter: every queue submission is made under it
@@ -952,6 +953,82 @@ bool EyeFov(int eye, XrFovf& out) {
     return true;
 }
 
+// Multiview: the bonnet, bumper, dash and chase cameras follow the head too: the scene camera hook puts the head's pose
+// on the camera's world matrix as the scene takes it, and the headset's field of view on its projection, so every
+// pass follows (the way was found by the dcport-vr fork). The driver's head camera keeps its own hook.
+std::atomic<long long> vehicle_view_us{0};
+bool VehicleView() {
+    return NowUs() - vehicle_view_us.load() <= 300000;
+}
+
+// The head relative to the recentred pose (yaw only: up stays up), in the headset's axes (X right, Y up, Z back, as the
+// scene camera's rows): r holds its turn as rows (row i is where axis i goes), d its move. False before it is known.
+bool HeadTurn(bool steady, float (&r)[3][3], XrVector3f& d, XrPosef& head) {
+    float centre_yaw;
+    XrVector3f centre;
+    {
+        std::scoped_lock lock{head_mutex};
+        if (!head_now_valid || !st.have_centre) {
+            return false;
+        }
+        head = steady ? Steady(head_now) : head_now;
+        centre_yaw = st.centre_yaw;
+        centre = st.centre_position;
+    }
+    const Quat uncentre = AxisAngle(0, 1, 0, centre_yaw * Pi / 180.0f);
+    const Quat q = Mul(uncentre, ToQuat(head.orientation));
+    d = Rotate(uncentre, {head.position.x - centre.x, head.position.y - centre.y, head.position.z - centre.z});
+    for (int i = 0; i < 3; ++i) {
+        const XrVector3f axis = Rotate(q, {i == 0 ? 1.0f : 0.0f, i == 1 ? 1.0f : 0.0f, i == 2 ? 1.0f : 0.0f});
+        r[i][0] = axis.x, r[i][1] = axis.y, r[i][2] = axis.z;
+    }
+    return true;
+}
+
+// Camera::Set (+0x72d9e0: rdi the camera, rsi the world, rdx a block: the projection, then at +0x60 six view-space
+// planes, outward normals: near, left, right, bottom, top, far). The game culls with these planes, which face forward
+// whatever the scene hook does later: for a vehicle camera they become the headset's field of view turned with the head
+// (a copy: the game's block is rebuilt every frame). Otherwise what is behind the car would be missing.
+alignas(16) float cull_block[0x110 / 4];
+
+void HeadPlane(const float (&r)[3][3], float nx, float ny, float nz, float d, float* out) {
+    const float inv = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+    nx *= inv, ny *= inv, nz *= inv;
+    for (int k = 0; k < 3; ++k) {
+        out[k] = nx * r[0][k] + ny * r[1][k] + nz * r[2][k];
+    }
+    out[3] = d * inv;
+}
+
+extern "C" __attribute__((ms_abi)) uint64_t bbvr_camera_cull_hook(uint64_t block) {
+    const float* const in = reinterpret_cast<const float*>(block);
+    const float aspect = GameAspect();
+    if (!VehicleView() || !aspect || in[11] != -1.0f || in[0] <= 0.3f || in[0] >= 2.0f) {
+        return block; // the player's view only (the mirrors are narrower: their P00 is above 2)
+    }
+    const float ratio = in[5] / in[0] / aspect;
+    float r[3][3];
+    XrVector3f d;
+    XrPosef head;
+    XrFovf fov{};
+    if (ratio < 0.96f || ratio > 1.045f || !EyeFov(-1, fov) || !HeadTurn(false, r, d, head)) {
+        return block;
+    }
+    std::memcpy(cull_block, in, sizeof cull_block);
+    constexpr float margin = 0.13f; // the eyes' offsets and the head turning until the frame is shown
+    const float left = std::tan(fov.angleLeft) - margin, right = std::tan(fov.angleRight) + margin;
+    const float up = std::tan(fov.angleUp) + margin, down = std::tan(fov.angleDown) - margin;
+    float* const planes = cull_block + 0x60 / 4;
+    const float near_d = planes[3], far_d = planes[23];
+    HeadPlane(r, 0.0f, 0.0f, 1.0f, near_d, planes + 0);
+    HeadPlane(r, -1.0f, 0.0f, -left, 0.0f, planes + 4);
+    HeadPlane(r, 1.0f, 0.0f, right, 0.0f, planes + 8);
+    HeadPlane(r, 0.0f, -1.0f, -down, 0.0f, planes + 12);
+    HeadPlane(r, 0.0f, 1.0f, up, 0.0f, planes + 16);
+    HeadPlane(r, 0.0f, 0.0f, -1.0f, far_d, planes + 20);
+    return reinterpret_cast<uint64_t>(cull_block);
+}
+
 extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t camera) {
     const float* proj = reinterpret_cast<const float*>(camera) + 16;
     const float aspect = GameAspect(), render = RenderAspect();
@@ -973,7 +1050,10 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
         pdiag.hook_other_fov += other_fov;
         pdiag.hook_stale += !other_fov && stale;
     }
-    if (ratio < 0.96f || ratio > 1.045f || other_fov || stale) {
+    const bool main_shape = ratio >= 0.96f && ratio <= 1.045f;
+    const bool vehicle = main_shape && Vulkan::Vr::Multiview::Enabled() &&
+                         runtime_vehicle_camera_at(reinterpret_cast<const float*>(camera) + 12);
+    if (!main_shape || ((other_fov || stale) && !vehicle)) {
         return camera; // not the driver's head camera (a mirror, a reflection's face, a menu's camera)
     }
     CameraCopy& copy = camera_copies[camera_copy_next.fetch_add(1) % 64];
@@ -982,16 +1062,42 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
     // The eye this camera was set up for: the head hook's call at its position (the game may set up the next frame's
     // camera before this one is drawn), else the last one.
     int eye = drawing_eye.load();
+    bool head_call = false;
     {
         const float* world = reinterpret_cast<const float*>(camera);
         std::scoped_lock lock{head_mutex};
         for (const HookCall& c : head_history) {
             const float dx = world[12] - c.position[0], dy = world[13] - c.position[1], dz = world[14] - c.position[2];
-            if (c.time_us && dx * dx + dy * dy + dz * dz < 0.002f * 0.002f) {
+            if (c.time_us && c.camera && dx * dx + dy * dy + dz * dz < 0.002f * 0.002f) {
                 eye = c.eye;
+                head_call = true;
                 break;
             }
         }
+    }
+    if (vehicle && !head_call) {
+        float r[3][3];
+        XrVector3f d;
+        XrPosef head;
+        if (!HeadTurn(true, r, d, head)) {
+            return camera;
+        }
+        const float* const from = reinterpret_cast<const float*>(camera);
+        float* const w = reinterpret_cast<float*>(copy.bytes);
+        for (int i = 0; i < 3; ++i)
+            for (int k = 0; k < 3; ++k) w[i * 4 + k] = r[i][0] * from[k] + r[i][1] * from[4 + k] + r[i][2] * from[8 + k];
+        for (int k = 0; k < 3; ++k) w[12 + k] = from[12 + k] + d.x * from[k] + d.y * from[4 + k] + d.z * from[8 + k];
+        // As the head hook notes its calls: the frame then finds its camera and head (these rows point right and back,
+        // the hook's left and forward).
+        std::scoped_lock lock{head_mutex};
+        HookCall& call = head_history[head_next++ % 64];
+        call = {NowUs(), head, {w[12], w[13], w[14]}, -1, nullptr};
+        for (int k = 0; k < 3; ++k) {
+            call.forward[k] = -w[8 + k];
+            call.axes[k] = -w[k], call.axes[3 + k] = w[4 + k], call.axes[6 + k] = -w[8 + k];
+            call.car[k] = -from[k], call.car[3 + k] = from[4 + k], call.car[6 + k] = -from[8 + k];
+        }
+        vehicle_view_us = call.time_us;
     }
     XrFovf fov{};
     if (own_fov && EyeFov(eye, fov)) {
@@ -1021,24 +1127,19 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
     return reinterpret_cast<uint64_t>(copy.bytes);
 }
 
-void InstallSceneCameraHook() {
+// A hook at a function's entry: bytes `expected` there are replaced by a jump to a trampoline that keeps the registers
+// the handler (Windows ABI) may change (rax too, though the jump in uses it), calls handler(the argument) with the first
+// or second pointer argument (rsi or rdx) and puts its result in that argument, then runs the replaced instructions
+// (position independent) and goes back.
+bool HookEntry(size_t offset, const uint8_t* expected, size_t size, uint64_t (*handler)(uint64_t), bool rdx) {
 #ifdef _WIN32
-    static const uint8_t expected[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,  // push rbp; mov rbp, rsp;
-                                         0x41, 0x55, 0x41, 0x54, 0x53};                    // push r15, r14, r13, r12, rbx
-    static bool installed = false;
-    uint8_t* site = reinterpret_cast<uint8_t*>(runtime_image_base + 0x5e7a20);
-    if (installed || std::memcmp(site, expected, sizeof expected) != 0) {
-        if (!installed) {
-            std::printf("VR: the scene camera hook does not fit this game version: the full HUD sizes are not drawn "
-                        "right\n");
-        }
-        return;
+    uint8_t* site = reinterpret_cast<uint8_t*>(runtime_image_base + offset);
+    if (size < 13 || std::memcmp(site, expected, size) != 0) {
+        return false;
     }
-    // The trampoline: the registers the handler (Windows ABI) may change are kept (rax too, though the jump in uses
-    // it), rsi = bbvr_scene_camera_hook(rsi), the instructions the jump replaces, back after them.
     uint8_t* t = static_cast<uint8_t*>(VirtualAlloc(nullptr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (!t) {
-        return;
+        return false;
     }
     size_t n = 0;
     const auto put = [&](std::initializer_list<uint8_t> bytes) {
@@ -1049,20 +1150,28 @@ void InstallSceneCameraHook() {
     for (int i = 0; i < 6; ++i) {
         put({0xf3, 0x0f, 0x7f, uint8_t(0x44 + 8 * i), 0x24, uint8_t(0x20 + 16 * i)}); // movdqu [rsp+0x20+16i], xmm<i>
     }
-    put({0x48, 0x89, 0xf1}); // mov rcx, rsi
-    put({0x48, 0xb8});       // mov rax, imm64
-    const uint64_t hook = reinterpret_cast<uint64_t>(&bbvr_scene_camera_hook);
+    if (rdx) {
+        put({0x48, 0x89, 0xd1}); // mov rcx, rdx
+    } else {
+        put({0x48, 0x89, 0xf1}); // mov rcx, rsi
+    }
+    put({0x48, 0xb8}); // mov rax, imm64
+    const uint64_t hook = reinterpret_cast<uint64_t>(handler);
     std::memcpy(t + n, &hook, 8), n += 8;
-    put({0xff, 0xd0});       // call rax
-    put({0x48, 0x89, 0xc6}); // mov rsi, rax
+    put({0xff, 0xd0}); // call rax
+    if (rdx) {
+        put({0x48, 0x89, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00}); // mov [rsp+0xa0], rax (the rdx pushed above)
+    } else {
+        put({0x48, 0x89, 0xc6}); // mov rsi, rax
+    }
     for (int i = 0; i < 6; ++i) {
         put({0xf3, 0x0f, 0x6f, uint8_t(0x44 + 8 * i), 0x24, uint8_t(0x20 + 16 * i)}); // movdqu xmm<i>, [rsp+0x20+16i]
     }
     put({0x48, 0x81, 0xc4, 0x80, 0x00, 0x00, 0x00});                         // add rsp, 0x80
     put({0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5a, 0x59, 0x58}); // pop r11 r10 r9 r8 rdx rcx rax
-    std::memcpy(t + n, expected, sizeof expected), n += sizeof expected;
+    std::memcpy(t + n, expected, size), n += size;
     put({0xff, 0x25, 0, 0, 0, 0}); // jmp [rip]
-    const uint64_t back = reinterpret_cast<uint64_t>(site + sizeof expected);
+    const uint64_t back = reinterpret_cast<uint64_t>(site + size);
     std::memcpy(t + n, &back, 8), n += 8;
     FlushInstructionCache(GetCurrentProcess(), t, n);
     // The jump in: mov rax, imm64; jmp rax (12 bytes: rax is free at a function's entry), a nop.
@@ -1071,14 +1180,36 @@ void InstallSceneCameraHook() {
     std::memcpy(jump + 2, &to, 8);
     DWORD old = 0;
     if (!VirtualProtect(site, sizeof jump, PAGE_EXECUTE_READWRITE, &old)) {
-        return;
+        return false;
     }
     std::memcpy(site, jump, sizeof jump);
     VirtualProtect(site, sizeof jump, old, &old);
     FlushInstructionCache(GetCurrentProcess(), site, sizeof jump);
+    return true;
+#else
+    return false;
+#endif
+}
+
+void InstallSceneCameraHook() {
+    static const uint8_t expected[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56,  // push rbp; mov rbp, rsp;
+                                         0x41, 0x55, 0x41, 0x54, 0x53};                    // push r15, r14, r13, r12, rbx
+    static bool installed = false;
+    if (installed) {
+        return;
+    }
+    if (!HookEntry(0x5e7a20, expected, sizeof expected, &bbvr_scene_camera_hook, false)) {
+        std::printf("VR: the scene camera hook does not fit this game version: the full HUD sizes are not drawn right\n");
+        return;
+    }
     installed = true;
     std::printf("VR: scene camera hook in\n");
-#endif
+    if (Vulkan::Vr::Multiview::Requested()) {
+        static const uint8_t cull[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, // push rbp; mov rbp, rsp; r15, r14
+                                         0x53, 0x50, 0x49, 0x89, 0xd6};                   // push rbx, rax; mov r14, rdx
+        std::printf("VR: culling hook %s\n",
+                    HookEntry(0x72d9e0, cull, sizeof cull, &bbvr_camera_cull_hook, true) ? "in" : "does not fit this game version");
+    }
 }
 
 void InstallHeadHook() {
@@ -2557,7 +2688,7 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     if (made && made->tagged) {
         st.tagged_us = now_us;
     }
-    const bool cockpit = Cockpit() && now_us - st.tagged_us <= 300000;
+    const bool cockpit = (Cockpit() || VehicleView()) && now_us - st.tagged_us <= 300000;
     st.cockpit_now = cockpit;
     if (made && made->split && !cockpit) {
         // a still screen: the scene and the HUD together (the window has read it)
