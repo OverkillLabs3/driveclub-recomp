@@ -953,13 +953,22 @@ bool EyeFov(int eye, XrFovf& out) {
     return true;
 }
 
-// Multiview: the bonnet, bumper, dash and chase cameras follow the head too: the scene camera hook puts the head's pose
-// on the camera's world matrix as the scene takes it, and the headset's field of view on its projection, so every
-// pass follows (the way was found by the dcport-vr fork). The driver's head camera keeps its own hook.
+// The bonnet, bumper, dash and chase cameras follow the head too: the scene camera hook puts the head's pose on the
+// camera's world matrix as the scene takes it, and the headset's field of view on its projection, so every pass follows
+// (the way was found by the dcport-vr fork). The driver's head camera keeps its own hook.
 std::atomic<long long> vehicle_view_us{0};
 bool VehicleView() {
     return NowUs() - vehicle_view_us.load() <= 300000;
 }
+
+// Alternate frames: these cameras take turns as the head hook's do, a frame each. The scene can take the same camera
+// twice in a frame: it is the same eye then (a car standing still keeps its matrix between frames, hence the time too).
+struct VehicleEye {
+    float world[16]{};
+    long long time_us = 0;
+    int eye = 1;
+    int eye_shifts = 0; // the eye_shifts taken
+} vehicle_eye;
 
 // The head relative to the recentred pose (yaw only: up stays up), in the headset's axes (X right, Y up, Z back, as the
 // scene camera's rows): r holds its turn as rows (row i is where axis i goes), d its move. False before it is known.
@@ -1051,8 +1060,7 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
         pdiag.hook_stale += !other_fov && stale;
     }
     const bool main_shape = ratio >= 0.96f && ratio <= 1.045f;
-    const bool vehicle = main_shape && Vulkan::Vr::Multiview::Enabled() &&
-                         runtime_vehicle_camera_at(reinterpret_cast<const float*>(camera) + 12);
+    const bool vehicle = main_shape && runtime_vehicle_camera_at(reinterpret_cast<const float*>(camera) + 12);
     if (!main_shape || ((other_fov || stale) && !vehicle)) {
         return camera; // not the driver's head camera (a mirror, a reflection's face, a menu's camera)
     }
@@ -1090,8 +1098,26 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
         // As the head hook notes its calls: the frame then finds its camera and head (these rows point right and back,
         // the hook's left and forward).
         std::scoped_lock lock{head_mutex};
+        eye = -1;
+        if (settings.afr && reproject_mode.load(std::memory_order_relaxed) != 2) {
+            const long long now = NowUs();
+            if (now - vehicle_eye.time_us >= 3000 || std::memcmp(vehicle_eye.world, from, sizeof vehicle_eye.world) != 0) {
+                vehicle_eye.eye ^= 1;
+                if (vehicle_eye.eye_shifts != eye_shifts.load(std::memory_order_relaxed)) {
+                    vehicle_eye.eye_shifts = eye_shifts.load(std::memory_order_relaxed);
+                    vehicle_eye.eye ^= 1; // the same eye as the last call: the order moves by one frame
+                }
+            }
+            std::memcpy(vehicle_eye.world, from, sizeof vehicle_eye.world);
+            vehicle_eye.time_us = now;
+            eye = vehicle_eye.eye;
+            // ipd/2 along the head's own x axis (this row points right: the left eye is on its - side)
+            const float side = eye == 0 ? -settings.ipd * 0.5f : settings.ipd * 0.5f;
+            for (int k = 0; k < 3; ++k) w[12 + k] += side * w[k];
+        }
+        drawing_eye = eye;
         HookCall& call = head_history[head_next++ % 64];
-        call = {NowUs(), head, {w[12], w[13], w[14]}, -1, nullptr};
+        call = {NowUs(), head, {w[12], w[13], w[14]}, eye, nullptr};
         for (int k = 0; k < 3; ++k) {
             call.forward[k] = -w[8 + k];
             call.axes[k] = -w[k], call.axes[3 + k] = w[4 + k], call.axes[6 + k] = -w[8 + k];
@@ -1204,12 +1230,10 @@ void InstallSceneCameraHook() {
     }
     installed = true;
     std::printf("VR: scene camera hook in\n");
-    if (Vulkan::Vr::Multiview::Requested()) {
-        static const uint8_t cull[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, // push rbp; mov rbp, rsp; r15, r14
-                                         0x53, 0x50, 0x49, 0x89, 0xd6};                   // push rbx, rax; mov r14, rdx
-        std::printf("VR: culling hook %s\n",
-                    HookEntry(0x72d9e0, cull, sizeof cull, &bbvr_camera_cull_hook, true) ? "in" : "does not fit this game version");
-    }
+    static const uint8_t cull[13] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, // push rbp; mov rbp, rsp; r15, r14
+                                     0x53, 0x50, 0x49, 0x89, 0xd6};                   // push rbx, rax; mov r14, rdx
+    std::printf("VR: culling hook %s\n",
+                HookEntry(0x72d9e0, cull, sizeof cull, &bbvr_camera_cull_hook, true) ? "in" : "does not fit this game version");
 }
 
 void InstallHeadHook() {
