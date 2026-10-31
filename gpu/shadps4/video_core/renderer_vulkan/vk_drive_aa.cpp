@@ -729,6 +729,9 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
 
     // Driveclub-specific single-dispatch path: build camera vectors and fuse valid car vectors
     // in one pass. The legacy CameraMotion path requires constants from another title.
+    DriveMotion::CarView car_view;
+    car_view.valid = BbVr::CarView(car_view.axes.data(), car_view.seat.data());
+    motion.SetCarView(car_view);
     if (stereo) {
         // Each eye from its own depth and stencil (the stencil as below), its pixels the centre view's moved by its shift.
         const float shift = Vr::Multiview::Shift();
@@ -748,8 +751,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             object_view = camera_motion.PrepareObjectMotion(cmdbuf, w, h, object_valid);
             if (!object_valid) object_view = vk::ImageView{};
         }
-        // VR per eye: the stencil marks the player's car and hands, which move with the camera (zero vectors); with
-        // the world's vectors they smear (no object map there).
+        // VR per eye: the stencil marks the player's car and hands, which only the head moves on the screen; with the
+        // world's vectors they smear (no object map there).
         const vk::ImageView mask_view = per_eye && depth_format == vk::Format::eD32SfloatS8Uint
             ? View(depth, depth_format, vk::ImageAspectFlagBits::eStencil) : depth_view;
         motion.Record(cmdbuf, depth_view, mask_view, *motion_view, w, h, w, h, false,

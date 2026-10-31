@@ -625,6 +625,8 @@ struct HookCall {
     float car[9]{};      // the frame the head turns in (the car body's axes as rows, world): the car's turn
     float forward[3]{};  // the camera's z axis (world): with the position it names the frame's camera
     float axes[9]{};     // the camera's axes as the hook set them (rows x, y, z; world)
+    float view[9]{};     // the view's rows (x right, y up, z back) in the axes of what the head rides on: CarView
+    float seat[3]{};     // the camera's position in those axes, from that thing's own point
 };
 HookCall head_history[64];
 std::atomic<int> drawing_eye{-1}; // the eye the head hook set the camera up for last
@@ -822,6 +824,14 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     drawing_eye = eye;
     for (int i = 0; i < 3; ++i)
         for (int k = 0; k < 3; ++k) call.car[i * 3 + k] = rest[i][k];
+    const float* const body = camera + 0x2d0 / 4;
+    static const float view_sign[3] = {-1.0f, 1.0f, -1.0f}; // the hook's rows point left and forward, the view's right and back
+    for (int i = 0; i < 3; ++i) {
+        for (int k = 0; k < 3; ++k) {
+            call.view[i * 3 + k] = view_sign[i] * r[i][k];
+            call.seat[i] += (cam[12 + k] - body[12 + k]) * rest[i][k];
+        }
+    }
     hook_time_us = call.time_us;
 }
 
@@ -1122,6 +1132,12 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
             call.forward[k] = -w[8 + k];
             call.axes[k] = -w[k], call.axes[3 + k] = w[4 + k], call.axes[6 + k] = -w[8 + k];
             call.car[k] = -from[k], call.car[3 + k] = from[4 + k], call.car[6 + k] = -from[8 + k];
+        }
+        for (int i = 0; i < 3; ++i) {
+            for (int k = 0; k < 3; ++k) {
+                call.view[i * 3 + k] = r[i][k];
+                call.seat[i] += (w[12 + k] - from[12 + k]) * from[i * 4 + k];
+            }
         }
         vehicle_view_us = call.time_us;
     }
@@ -1667,6 +1683,7 @@ struct FrameCamera {
     int eye = -1;
     XrPosef head{};
     float car[9]{};
+    float view[9]{}, seat[3]{}; // HookCall's: CarView
 };
 std::mutex camera_mutex;
 FrameCamera camera_now; // the frame being drawn
@@ -1971,6 +1988,8 @@ void NoteCameraConstants(const float* data) {
     }
     camera_now = {true, best->eye, best->head};
     std::memcpy(camera_now.car, best->car, sizeof best->car);
+    std::memcpy(camera_now.view, best->view, sizeof best->view);
+    std::memcpy(camera_now.seat, best->seat, sizeof best->seat);
     // The frame's own camera axes: its view-projection's rows x, y and w are P00 x + P20 z, P11 y + P21 z and z (the
     // view's rows, world); made orthonormal, each signed like the hook's. The turn from the hook's axes to them, in
     // the camera's own axes (the game turns the camera a little after the hook: 1-4 degrees seen), is put on the
@@ -2083,8 +2102,9 @@ bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
 }
 
 bool SceneOverlay(uint64_t vs_hash) {
-    // drawn over the composite before the HUD, part of the scene (found by the dcport-vr fork)
-    return vs_hash == 0x44606ffd || vs_hash == 0xdc8e480a;
+    // drawn over the composite before the HUD, part of the scene (found by the dcport-vr fork). 0x44606ffd comes after
+    // it too, drawn twice with thousands of indices: the minimap's track, which belongs to the HUD with its car dots.
+    return vs_hash == 0xdc8e480a;
 }
 
 void CapturePicture(const char* path) {
@@ -2098,6 +2118,19 @@ int DrawnEye() {
     }
     std::scoped_lock lock{camera_mutex};
     return camera_now.found ? camera_now.eye : -1;
+}
+
+bool CarView(float* view, float* seat) {
+    if (!Active()) {
+        return false;
+    }
+    std::scoped_lock lock{camera_mutex};
+    if (!camera_now.found) {
+        return false;
+    }
+    std::memcpy(view, camera_now.view, sizeof camera_now.view);
+    std::memcpy(seat, camera_now.seat, sizeof camera_now.seat);
+    return true;
 }
 
 int EyeAt(const float* position, float& distance) {

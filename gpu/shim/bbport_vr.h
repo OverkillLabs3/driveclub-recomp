@@ -47,6 +47,9 @@ bool HudLayer();
 /// The eye the frame being drawn is for (alternate frames, its camera found in the G-buffer pass), or -1: for DLSS
 /// per eye.
 int DrawnEye();
+/// The frame being drawn: its view in the axes of the car the head rides in, `view` nine floats (rows x right, y up,
+/// z back), `seat` three (metres). False without a matched camera. For the motion of what is fixed in the car.
+bool CarView(float* view, float* seat);
 /// DLSS capture: the picture the headset gets for the frame being drawn is saved to `path` (+ "_eyeN_WxH_rgba8.raw").
 void CapturePicture(const char* path);
 /// The eye of the head hook's call that put the camera at `position` (world, within 1 cm), or -1; `distance` gets the

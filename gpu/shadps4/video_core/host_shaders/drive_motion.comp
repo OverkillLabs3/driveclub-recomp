@@ -22,7 +22,19 @@ layout(push_constant) uniform Constants {
     float eye_shift;        // VR multiview: the eye's clip x shift (0 for one picture)
     float eye_z22;          // VR multiview: 1 / w is (depth + eye_z22) * eye_inv_near
     float eye_inv_near;
+    mat4 car_to_prev_clip;  // VR: as clip_to_prev_clip, for what is fixed in the car (identity otherwise)
 };
+
+// Pixels from this frame's place to the place in the frame `to_prev` goes to.
+vec2 MotionTo(mat4 to_prev, vec4 clip, float eye_ndc, vec2 uv) {
+    const vec4 prev = to_prev * clip;
+    if (prev.w <= 1e-9) {
+        return vec2(0.0);
+    }
+    const vec2 prev_ndc = (prev.xy + vec2(eye_ndc, 0.0)) / prev.w;
+    const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
+    return (prev_uv - uv) * size;
+}
 
 void main() {
     const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -36,16 +48,11 @@ void main() {
     const float eye_ndc = eye_shift * (depth + eye_z22) * eye_inv_near;
     const vec4 clip = vec4(uv.x * 2.0 - 1.0 - eye_ndc, 1.0 - uv.y * 2.0, depth, 1.0);
     // Stored by rows, read by columns: the matrix is transposed, so G * v is v * M.
-    const vec4 prev = clip_to_prev_clip * clip;
-    vec2 motion = vec2(0.0);
-    if (prev.w > 1e-9) {
-        const vec2 prev_ndc = (prev.xy + vec2(eye_ndc, 0.0)) / prev.w;
-        const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
-        motion = (prev_uv - uv) * size;
-    }
-    // The player's car, the hands and the other cars keep their place on the screen far better than the world does.
+    vec2 motion = MotionTo(clip_to_prev_clip, clip, eye_ndc, uv);
+    // The player's car, the hands and the other cars keep their place on the screen far better than the world does:
+    // in VR they still move with the head.
     if (use_stencil > 0.5 && (texelFetch(mask_tex, src, 0).r & 130u) != 0u) {
-        motion = vec2(0.0);
+        motion = MotionTo(car_to_prev_clip, clip, eye_ndc, uv);
     }
     if (use_object > 0.5) {
         const vec4 object_motion = texelFetch(object_tex, pixel, 0);

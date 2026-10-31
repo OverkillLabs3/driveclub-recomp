@@ -30,6 +30,8 @@ struct Push {
     float eye_shift;
     float eye_z22;
     float eye_inv_near;
+    std::array<float, 3> pad2; // the matrix starts on 16 bytes in the shader
+    Mat car_to_prev_clip;
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -88,6 +90,27 @@ bool Invert(const Mat& m, Mat& out) {
         }
     }
     return true;
+}
+
+/// A point fixed in the car, from one view to an earlier one: both views are known in the car's axes.
+Mat CarMove(const DriveMotion::CarView& now, const DriveMotion::CarView& then) {
+    Mat out = Identity;
+    if (!now.valid || !then.valid) {
+        return out;
+    }
+    for (int c = 0; c < 3; ++c) {
+        out[12 + c] = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            out[12 + c] += (now.seat[k] - then.seat[k]) * then.axes[c * 3 + k];
+        }
+        for (int r = 0; r < 3; ++r) {
+            out[r * 4 + c] = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                out[r * 4 + c] += now.axes[r * 3 + k] * then.axes[c * 3 + k];
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -162,6 +185,8 @@ void DriveMotion::EndFrame() noexcept {
     projection_two_back = previous_projection;
     previous_projection = projection;
     previous_relative = relative;
+    car_view_two_back = car_view_last;
+    car_view_last = car_view;
     frames_kept = std::min(frames_kept + 1, 3);
 }
 
@@ -219,6 +244,12 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView color_view, float eye_shift) {
     Push push{};
     ClipToPrevious(push.clip_to_prev_clip, two_back);
+    // One projection on both sides: a still head gives no motion at all, the jitter's move left out.
+    push.car_to_prev_clip = Identity;
+    if (Mat inverse{}; Invert(projection, inverse)) {
+        const Mat move = CarMove(car_view, two_back ? car_view_two_back : car_view_last);
+        push.car_to_prev_clip = Multiply(Multiply(inverse, move), projection);
+    }
     // Reversed Z: depth = near / w - P[2][2], near = P[3][2].
     push.eye_shift = eye_shift;
     push.eye_z22 = projection[10];
