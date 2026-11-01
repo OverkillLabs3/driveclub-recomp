@@ -1163,7 +1163,8 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t came
 // the handler (Windows ABI) may change (rax too, though the jump in uses it), calls handler(the argument) with the first
 // or second pointer argument (rsi or rdx) and puts its result in that argument, then runs the replaced instructions
 // (position independent) and goes back.
-bool HookEntry(size_t offset, const uint8_t* expected, size_t size, uint64_t (*handler)(uint64_t), bool rdx) {
+bool HookEntry(size_t offset, const uint8_t* expected, size_t size, uint64_t(__attribute__((ms_abi)) * handler)(uint64_t),
+               bool rdx) {
 #ifdef _WIN32
     uint8_t* site = reinterpret_cast<uint8_t*>(runtime_image_base + offset);
     if (size < 13 || std::memcmp(site, expected, size) != 0) {
