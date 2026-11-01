@@ -30,6 +30,7 @@ typedef struct DiagThread {
 
 uintptr_t runtime_image_base;
 uint64_t runtime_image_size;
+volatile int runtime_image_ready; /* the image has its final protection: other threads may read it */
 static DiagThread *threads;
 static pthread_mutex_t list_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local DiagThread *self;

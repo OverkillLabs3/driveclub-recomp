@@ -1583,6 +1583,7 @@ int main(int argc, char **argv) {
             executable_entry = 1;
     }
     if (!executable_entry) fail("entry is not executable");
+    runtime_image_ready = 1;
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
 #ifndef _WIN32
     /* The guest main thread runs on a stack below 1 TiB like PS4 stacks. */
