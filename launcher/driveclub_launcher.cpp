@@ -1253,7 +1253,7 @@ void BuildModel() {
     g_c.push_back(std::move(c));
   }
   const int lock_horizon = seg(L"Lock to horizon",
-                               L"Keeps the horizon level when the car leans in corners and dips under braking, as in Assetto Corsa.\n"
+                               L"Steadies the view as a driver's head does: it takes out the car leaning in corners and dipping under braking, and follows hills and banking slowly, as in Assetto Corsa.\n"
                                L"\x2022 Off: the view moves with the car's body, as on PS4.\n"
                                L"\x2022 Cockpit: the driver's view only.\n"
                                L"\x2022 All views: the bonnet, bumper and chase views too.\n"
