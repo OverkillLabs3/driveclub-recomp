@@ -61,7 +61,8 @@ while VR is on.
 What the test PC (RTX 4070 Ti Super) plays with:
 
 - *Display*: Frame rate **Follows the headset** (in AFR the test PC holds about 90 at 3200x3440 and 110-120 at 2688x2880 on a Quest 2 at 120 Hz).
-  Two-thread rendering on. Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
+  Two-thread rendering as the launcher sets it (on, but **off on AMD cards**: slower there, and it lost the device in
+  races). Anti-aliasing **Game** (or DLSS, see below), anisotropic filtering
   Automatic, HDR off. *VR headset*: on, Headset picture **2496x2688** (2688x2880 for a faster PC; 3200x3440 and up for Quest 3 or Pimax).
 - *DLSS (experimental in VR)*: Anti-aliasing **DLSS (RTX)** with an *Upscaling* level works per eye in both stereo
   modes (each eye its own history and motion). It is smoother and cleaner than no anti-aliasing, but softer, with some

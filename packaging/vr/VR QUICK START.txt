@@ -18,7 +18,7 @@ LAUNCHER (the test PC's settings)
   camera shake. FSR is off too (Game takes its place). Your choices come back with VR off.
   Display   VR headset: ON, Stereo mode: True stereo or AFR, Headset picture: 2688x2880
               (2496x2688 for weaker PCs, 3200x3440 and up for Quest 3 / Pimax)
-            Two-thread rendering: on
+            Two-thread rendering: as the launcher sets it: on, but OFF on AMD cards
             Anti-aliasing: Game or DLSS (RTX), per eye in both modes
             Picture: brightness / contrast / gamma work in the headset too
   Graphics  everything else off / Game
