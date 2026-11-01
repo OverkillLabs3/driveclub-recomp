@@ -93,6 +93,7 @@ void SetShift(float shift);
 #endif
 
 extern "C" uintptr_t runtime_image_base; // src/probe.c: where the guest's image is
+extern "C" volatile int runtime_image_ready; // src/probe.c: set once the loader has finished with its protection
 extern "C" int runtime_vehicle_camera_at(const float* position); // src/runtime_horizon_lock.inc
 
 namespace BbVr {
@@ -850,11 +851,17 @@ bool HeadAt(long long time_us, XrPosef& out) {
 // the dcport-vr fork). Every other view keeps the 16:9 projection: squeezed into the picture as the HUD is, it is shown
 // at 16:9 again on the still screen.
 float GameAspect() {
+    if (!runtime_image_ready) {
+        return 0.0f; // the headset starts first: while the loader works the whole image has no access
+    }
     const float a = *reinterpret_cast<const float*>(runtime_image_base + 0x729978);
     return a > 0.5f && a < 4.0f ? a : 0.0f;
 }
 
 float RenderAspect() { // the scene's size (eboot 0x16d0544 / 0x16d0554), width / height
+    if (!runtime_image_ready) {
+        return 0.0f;
+    }
     const uint32_t w = *reinterpret_cast<const uint32_t*>(runtime_image_base + 0x12d0544);
     const uint32_t h = *reinterpret_cast<const uint32_t*>(runtime_image_base + 0x12d0554);
     return w >= 64 && h >= 64 && w <= 16384 && h <= 16384 ? float(w) / float(h) : 0.0f;
@@ -1296,8 +1303,8 @@ void InstallHeadHook() {
 constexpr float kCockpitVfov = 60.18f;
 void SetFieldOfView() {
 #ifdef _WIN32
-    if (!hook_installed) {
-        return; // another game version: its address is not known to be this
+    if (!hook_installed || !runtime_image_ready) {
+        return; // another game version, its address is not known to be this; or the loader is not done
     }
     float* const k = reinterpret_cast<float*>(runtime_image_base + 0x12efac4);
     // With the runtime's eyes the game's own angle covers both (its culling), a little more; the projection is set
