@@ -188,7 +188,7 @@ void UniqueBuffer::Destroy() {
     bda_addr = 0;
 }
 
-void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
+VkResult UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                           VmaAllocationInfo* out_alloc_info) {
     const bool with_bda = bool(buffer_ci.usage & vk::BufferUsageFlagBits::eShaderDeviceAddress);
     if (mem_type != MemoryType::Sparse) {
@@ -234,8 +234,11 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         }
         if constexpr (BB_DIAGNOSTICS) BbStats::alloc_count[0].fetch_add(1, std::memory_order_relaxed);
         if constexpr (BB_DIAGNOSTICS) BbStats::alloc_bytes[0].fetch_add(buffer_ci_unsafe.size, std::memory_order_relaxed);
-        ASSERT_MSG(result == VK_SUCCESS, "Failed allocating buffer with error {}",
-                   vk::to_string(vk::Result{result}));
+        if (result != VK_SUCCESS) {
+            LOG_ERROR(Render_Vulkan, "Failed allocating buffer with error {}",
+                      vk::to_string(vk::Result{result}));
+            return result;
+        }
         buffer = vk::Buffer{unsafe_buffer};
     } else {
         buffer_ci.flags |=
@@ -243,7 +246,13 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
         if (sparse_aliased_enabled) {
             buffer_ci.flags |= vk::BufferCreateFlagBits::eSparseAliased;
         }
-        buffer = Vulkan::Check(device.createBuffer(buffer_ci));
+        auto create_res = device.createBuffer(buffer_ci);
+        if (create_res.result != vk::Result::eSuccess) {
+            LOG_ERROR(Render_Vulkan, "Failed creating sparse buffer with error {}",
+                      vk::to_string(create_res.result));
+            return static_cast<VkResult>(create_res.result);
+        }
+        buffer = create_res.value;
     }
 
     if (with_bda) {
@@ -251,9 +260,13 @@ void UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
             .buffer = buffer,
         };
         auto bda_result = device.getBufferAddress(bda_info);
-        ASSERT_MSG(bda_result != 0, "Failed to get buffer device address");
+        if (bda_result == 0) {
+            LOG_ERROR(Render_Vulkan, "Failed to get buffer device address");
+            return VK_ERROR_UNKNOWN;
+        }
         bda_addr = bda_result;
     }
+    return VK_SUCCESS;
 }
 
 Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
@@ -267,7 +280,12 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         .sharingMode = vk::SharingMode::eExclusive,
     };
     VmaAllocationInfo alloc_info{};
-    buffer.Create(buffer_ci, mem_type, &alloc_info);
+    const VkResult create_result = buffer.Create(buffer_ci, mem_type, &alloc_info);
+    if (create_result != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan, "Buffer construction failed ({}), buffer stays empty",
+                  vk::to_string(vk::Result{create_result}));
+        return;
+    }
 
     const auto device = instance.GetDevice();
     if (!debug_name.empty()) {
