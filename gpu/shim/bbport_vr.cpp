@@ -158,7 +158,7 @@ struct Settings {
     bool draw_trace = false;
     // the head pose stated for a frame takes the turn the game gave the camera after the hook (frame_pose)
     bool frame_pose = true;
-    uint64_t hidden[4]{};
+    uint64_t hidden[8]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     // and the turn compensation, the reprojection, the DLSS model
     int keys[10] = {'0', '2', '1', '5', '6', '4', '3', '9', '8', '7'};
@@ -213,6 +213,7 @@ std::atomic<bool> active{false};
 // from a frame drawn between them.
 std::atomic<int> reproject_mode{0};
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
+std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
 std::atomic<int> eye_shifts{0};
 std::string instance_extension_storage, device_extension_storage;
@@ -337,7 +338,7 @@ void ReadSettings() {
             BbSettings::Get().dlss_model = c == 'k' ? 11 : c == 'l' ? 12 : c == 'm' ? 13 : 0;
             continue;
         }
-        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 4, hex)
+        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 8, hex)
         char list[200] = "";
         if (std::sscanf(line, " hide_shader = %199[^\r\n#]", list) == 1) {
             char* at = list;
@@ -1753,6 +1754,15 @@ void ReadKeys() {
                     shifts);
     }
     was_shift = shift_down;
+    // draw_trace: [ takes the shaders of the next frames as the normal ones, ] prints what the next frames draw beyond them
+    static bool was_mark[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        const bool down = settings.draw_trace && (GetAsyncKeyState(i == 0 ? VK_OEM_4 : VK_OEM_6) & 0x8000) != 0;
+        if (down && !was_mark[i]) {
+            trace_mark = i + 1;
+        }
+        was_mark[i] = down;
+    }
 #endif
 }
 
@@ -2094,6 +2104,10 @@ void NoteCameraConstants(const float* data) {
 // ---- the HUD apart -----------------------------------------------------------------------------------------------------
 bool HudLayer() {
     return Active() && settings.hud_layer && gpu.ready && gpu.hud_pipeline;
+}
+
+int TraceMark() {
+    return trace_mark.exchange(0);
 }
 
 bool DrawTrace() {

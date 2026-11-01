@@ -1414,6 +1414,32 @@ private:
                 use.draws[kind] += f.draws;
                 use.indices[kind] += f.indices;
             }
+            // [ then ]: the shaders of the frames after ] that the frames after [ did not draw
+            if (const int mark = BbVr::TraceMark()) {
+                compare_kind = mark, compare_left = 120;
+                (mark == 1 ? normal : extra).clear();
+                std::printf("VR trace: %s frames for 120 frames\n", mark == 1 ? "taking the normal" : "comparing the");
+            }
+            if (compare_left) {
+                auto& set = compare_kind == 1 ? normal : extra;
+                for (const auto& [key, f] : frame) {
+                    auto& use = set[key];
+                    use.vs = f.vs, use.ps = f.ps, use.draws = std::max(use.draws, f.draws);
+                    use.indices = std::max(use.indices, f.indices);
+                }
+                if (--compare_left == 0 && compare_kind == 2) {
+                    std::printf("VR trace: drawn now and not in the normal frames:\n");
+                    for (const auto& [key, f] : extra) {
+                        const auto it = normal.find(key);
+                        if (it == normal.end()) {
+                            std::printf("VR trace:   vs %llx ps %llx, up to %u draws, %llu indices a frame\n",
+                                        (unsigned long long)f.vs, (unsigned long long)f.ps, f.draws,
+                                        (unsigned long long)f.indices);
+                        }
+                    }
+                    std::printf("VR trace: end of the list\n");
+                }
+            }
             if (now - last_sequence > std::chrono::seconds(10)) {
                 last_sequence = now;
                 logging = true;
@@ -1473,6 +1499,9 @@ private:
     }
 
     std::unordered_map<u64, FrameUse> frame;
+    std::unordered_map<u64, FrameUse> normal, extra; ///< the [ and ] keys' frames
+    int compare_kind = 0;
+    u32 compare_left = 0;
     std::unordered_map<u64, Use> uses;
     u32 frames[2]{};
     u64 frame_index = 0;

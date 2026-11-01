@@ -59,6 +59,8 @@ bool SceneOverlay(uint64_t vs_hash);
 /// Diagnostics (vr.ini, without a headset too): draw_trace = 1 logs one frame's draws into the display buffer every
 /// 10 s and the shaders drawn in only one eye's frames (without VR: only every other frame).
 bool DrawTrace();
+/// draw_trace: 1 once after the [ key, 2 once after the ] key, else 0: which frames to compare.
+int TraceMark();
 /// vr.ini hide_shader = <hex> ...: draws with one of these vertex or pixel shaders are skipped.
 bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash);
 bool SceneDrawn();
