@@ -120,7 +120,7 @@ static bool ffb_effect_from(const LogiEffectParams *p, SDL_HapticEffect *e, int3
 }
 /* The player's car in the game's simulation, kept by the force feedback inputs hook (runtime_pad.c): 0 while no car
  * is driven. step_us: when the game last passed its inputs (a physics step). */
-static struct { volatile uintptr_t state, setup, sim; uint64_t step_us; } ffb_car;
+static struct { volatile uintptr_t state, setup, sim; uint64_t step_us; bool released; } ffb_car;
 static void ffb_hook_install(void);
 
 /* ---- wheel_ffb_model = software: the steering force worked out here ---------------------------------------------- */
@@ -289,14 +289,19 @@ static void ffb_trace_open(void) {
 
 /* A car's key for its own force feedback gain (ffb_cars.ini): values of its setup and drivetrain that stay the same
  * while it is driven and from one session to the next (the steering lock, engine figures), hashed. */
-static uint64_t ffb_car_key(uintptr_t setup) {
+static uint64_t ffb_car_hash(uintptr_t setup, float v[6]) {
     static const uint16_t setup_at[]={0x45c,0x704,0x718}, drive_at[]={0x0c,0x3c,0x40};
-    float v[6]={0};
+    for (int i=0;i<6;++i) v[i]=0.0f;
     for (int i=0;i<3;++i) memcpy(&v[i],(const uint8_t *)setup+setup_at[i],4);
     uintptr_t drive; memcpy(&drive,(const uint8_t *)setup+8,8);
     if (drive) for (int i=0;i<3;++i) memcpy(&v[3+i],(const uint8_t *)drive+drive_at[i],4);
     uint64_t h=1469598103934665603ull;   /* FNV-1a */
-    for (size_t i=0;i<sizeof v;++i) h=(h^((const uint8_t *)v)[i])*1099511628211ull;
+    for (size_t i=0;i<6*sizeof(float);++i) h=(h^((const uint8_t *)v)[i])*1099511628211ull;
+    return h;
+}
+static uint64_t ffb_car_key(uintptr_t setup) {
+    float v[6];
+    const uint64_t h=ffb_car_hash(setup,v);
     printf("Runtime: FFB car %016llx (setup %g %g %g, drivetrain %g %g %g)\n",(unsigned long long)h,v[0],v[1],v[2],v[3],v[4],v[5]);
     return h;
 }
@@ -307,7 +312,10 @@ static void ffb_physics_step(const float *st, const uint8_t *in, uintptr_t car) 
     const float *load=st+0xa50/4, *lat=st+0xa60/4, *lon=st+0xa70/4, *ratio=st+0xb30/4, *slip=st+0xb50/4;
     const uint64_t now=now_us();
     pthread_mutex_lock(&ph.m);
-    if (ph.car!=car) {   /* another car: its tyres are learnt again from the usual values */
+    /* The next event's car can be given the last one's memory: after a car was let go, its values tell */
+    float v[6];
+    const bool recheck=__atomic_exchange_n(&ffb_car.released,false,__ATOMIC_ACQ_REL);
+    if (ph.car!=car || (recheck && ffb_car_hash(car,v)!=ph.key)) {   /* another car: its tyres are learnt again from the usual values */
         ph.car=car; ph.us=0; ph.k=24.0f; ph.mu=1.3f; ph.weight=0.0f; ph.lp_load[0]=ph.lp_load[1]=0.0f;
         ph.relaxed_set=false;
         ph.key=ffb_car_key(car);
