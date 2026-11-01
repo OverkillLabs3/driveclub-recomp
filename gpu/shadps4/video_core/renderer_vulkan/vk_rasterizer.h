@@ -313,6 +313,14 @@ private:
     AmdGpu::CbDbExtent CbExtent(u32 index) const;
     AmdGpu::CbDbExtent DbExtent() const;
 
+    /// VR multiview: a stage's buffer binding as this draw sees it: the ring's copy, else guest memory.
+    std::pair<const u8*, u32> EyeBindingBytes(const Shader::Info& stage, const PreparedStage* prepared, u32 index);
+    /// VR multiview: the binding's two descriptors become these two copies, keeping its offset adjustment.
+    bool BindEyeCopies(const void* left, const void* right, u32 bytes, vk::WriteDescriptorSet& write);
+    bool BindEyeSceneConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                               vk::WriteDescriptorSet& write);
+    bool BindEyeLightConstants(const Shader::Info& stage, const PreparedStage* prepared, u32 buffer_index,
+                               vk::WriteDescriptorSet& write);
     void BindBuffers(const Shader::Info& stage, const PreparedStage* prepared,
                      Shader::Backend::Bindings& binding,
                      Shader::PushData& push_data, u32& write_index);
@@ -406,6 +414,7 @@ private:
     bool motion_draw = false;
     u64 motion_geometry{};    ///< vertex-stream identity of the current direct draw
     bool gbuffer_draw = false;
+    int vr_draw_targets = 0; // bbport: VR: the colour targets of the current draw (its G-buffer pass has three)
     /// Frame generation: the scene depth (the G-buffer pass), the first draw into the display buffer
     /// since other work (the UI starts: the picture before it is the HUD-less frame).
     VideoCore::ImageId fg_depth{};
@@ -435,6 +444,9 @@ private:
     bool fg_in_display = false;
     u32 fg_display_draws = 0; ///< draws into the display buffer since other work
     bool fg_capture_pending = false;
+    bool vr_hud_pending = false; ///< VR: the next display draw that is not a scene overlay starts the HUD
+    VideoCore::ImageId vr_depth{}; ///< VR: this frame's scene depth (the biggest G-buffer pass's)
+    u64 vr_depth_area = 0;
     /// A compute pass writes one of the mirror scene's targets while that scene is skipped: it would filter
     /// an already filtered picture again, so the dispatch is dropped as well.
     bool skip_mirror_dispatch = false;
@@ -448,7 +460,8 @@ private:
     std::array<RenderTargetInfo, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;
     std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc> db_desc;
     boost::container::static_vector<vk::DescriptorImageInfo, Shader::NUM_IMAGES> image_infos;
-    boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS> buffer_infos;
+    boost::container::static_vector<vk::DescriptorBufferInfo, Shader::NUM_BUFFERS * 2>
+        buffer_infos; // VR multiview: two per guest buffer (the eyes)
     boost::container::static_vector<VideoCore::ImageId, Shader::NUM_IMAGES> bound_images;
     struct BoundBuffer {
         const VideoCore::Buffer* buffer;

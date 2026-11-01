@@ -14,8 +14,10 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
+#include "bbport_vr.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -499,6 +501,16 @@ bool Instance::CreateDevice() {
             }
         }
     }
+    // bbport: VR (off unless asked for): the OpenXR runtime's device extensions.
+    std::vector<const char*> vr_extensions;
+    BbVr::AppendDeviceExtensions(*instance, physical_device, vr_extensions);
+    for (const char* name : vr_extensions) {
+        if (std::none_of(enabled_extensions.begin(), enabled_extensions.end(),
+                         [&](const char* e) { return std::string_view{e} == name; }) &&
+            enabled_extensions.size() < enabled_extensions.capacity()) {
+            enabled_extensions.push_back(name);
+        }
+    }
     // bbport: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
     // Default on for AMD only, where the driver drops the old mapping of memory that a second sparse
     // buffer binds; NVIDIA and Intel keep what they had. BB_SPARSE_ALIASED=1 / 0 forces it on / off.
@@ -552,6 +564,10 @@ bool Instance::CreateDevice() {
         },
         vk::PhysicalDeviceVulkan11Features{
             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
+            // VR multiview (BB_VR_STEREO=mv only)
+            .multiview = Vr::Multiview::Requested() && vk11_features.multiview,
+            .multiviewGeometryShader = Vr::Multiview::Requested() && vk11_features.multiviewGeometryShader,
+            .multiviewTessellationShader = Vr::Multiview::Requested() && vk11_features.multiviewTessellationShader,
             .shaderDrawParameters = vk11_features.shaderDrawParameters,
         },
         vk::PhysicalDeviceVulkan12Features{
@@ -739,6 +755,8 @@ bool Instance::CreateDevice() {
     if (Dlss* dlss = Dlss::Get()) {
         dlss->Initialize(*instance, physical_device, *device);
     }
+    BbVr::OnDevice(*instance, physical_device, *device, queue_family_index, 0);
+    Vr::Multiview::OnDevice(VkDevice(*device), vk11_features.multiview == VK_TRUE); // VR multiview
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);

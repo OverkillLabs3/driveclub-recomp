@@ -2,7 +2,9 @@
 #include <cstdlib>
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "video_core/host_shaders/drive_motion_comp.h"
@@ -25,6 +27,11 @@ struct Push {
     std::array<float, 2> scale;
     float use_stencil;
     float use_object;
+    float eye_shift;
+    float eye_z22;
+    float eye_inv_near;
+    std::array<float, 3> pad2; // the matrix starts on 16 bytes in the shader
+    Mat car_to_prev_clip;
 };
 
 Mat Multiply(const Mat& a, const Mat& b) {
@@ -83,6 +90,27 @@ bool Invert(const Mat& m, Mat& out) {
         }
     }
     return true;
+}
+
+/// A point fixed in the car, from one view to an earlier one: both views are known in the car's axes.
+Mat CarMove(const DriveMotion::CarView& now, const DriveMotion::CarView& then) {
+    Mat out = Identity;
+    if (!now.valid || !then.valid) {
+        return out;
+    }
+    for (int c = 0; c < 3; ++c) {
+        out[12 + c] = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            out[12 + c] += (now.seat[k] - then.seat[k]) * then.axes[c * 3 + k];
+        }
+        for (int r = 0; r < 3; ++r) {
+            out[r * 4 + c] = 0.0f;
+            for (int k = 0; k < 3; ++k) {
+                out[r * 4 + c] += now.axes[r * 3 + k] * then.axes[c * 3 + k];
+            }
+        }
+    }
+    return out;
 }
 
 } // namespace
@@ -149,22 +177,83 @@ void DriveMotion::OnTaaConstants(u32 slot, const float* data, u32 dwords) {
     }
 }
 
-bool DriveMotion::ClipToPrevious(std::array<float, 16>& out) const {
+void DriveMotion::EndFrame() noexcept {
+    // the same values again (no new frame of the game's): nothing moves back
+    if (frames_kept > 0 && relative == previous_relative && projection == previous_projection) {
+        return;
+    }
+    projection_two_back = previous_projection;
+    previous_projection = projection;
+    previous_relative = relative;
+    car_view_two_back = car_view_last;
+    car_view_last = car_view;
+    frames_kept = std::min(frames_kept + 1, 3);
+}
+
+namespace {
+// How far a row-vector 4x4 is from a rigid move (orthonormal 3x3, last column 0 0 0 1).
+float RigidError(const Mat& m) {
+    float e = std::abs(m[3]) + std::abs(m[7]) + std::abs(m[11]) + std::abs(m[15] - 1.0f);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            float d = 0.0f;
+            for (int k = 0; k < 3; ++k) d += m[i * 4 + k] * m[j * 4 + k];
+            e += std::abs(d - (i == j ? 1.0f : 0.0f));
+        }
+    return e;
+}
+} // namespace
+
+bool DriveMotion::ClipToPrevious(std::array<float, 16>& out, bool chain) const {
     Mat inverse{};
     if (!Invert(projection, inverse)) {
         out = Identity;
         return false;
     }
     out = Multiply(inverse, relative);
+    // the last frame and the one before (EndFrame of this frame not run yet)
+    if (!chain || frames_kept < 2) {
+        return true;
+    }
+    // The move is view -> previous view, followed by a projection: the previous frame's or this one's (they differ
+    // in VR, each eye its own). The one that leaves a rigid move is it. Then clip -> clip two frames back:
+    // P^-1 * M(this frame) * M(last frame) * P(two frames back).
+    Mat inv_prev{}, inv_prev2{};
+    if (!Invert(previous_projection, inv_prev) || !Invert(projection_two_back, inv_prev2)) {
+        return true;
+    }
+    const Mat move_a = Multiply(relative, inv_prev), move_b = Multiply(relative, inverse);
+    const bool a = RigidError(move_a) <= RigidError(move_b);
+    const Mat move = a ? move_a : move_b;
+    const Mat last_move = Multiply(previous_relative, a ? inv_prev2 : inv_prev);
+    // into the clip space of the frame two back: the same eye's, with its own projection (each eye's differs)
+    out = Multiply(Multiply(Multiply(inverse, move), last_move), projection_two_back);
+    static int told = 0;
+    if (told++ < 3) {
+        std::printf("Camera motion: two frames back (VR), the move's projection is %s (rigid error %.4f against "
+                    "%.4f)\n",
+                    a ? "the previous frame's" : "this frame's", a ? RigidError(move_a) : RigidError(move_b),
+                    a ? RigidError(move_b) : RigidError(move_a));
+    }
     return true;
 }
 
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
                          u32 src_height, bool normalized, vk::ImageView object_view,
-                         vk::ImageView color_view) {
+                         vk::ImageView color_view, float eye_shift) {
     Push push{};
-    ClipToPrevious(push.clip_to_prev_clip);
+    ClipToPrevious(push.clip_to_prev_clip, two_back);
+    // One projection on both sides: a still head gives no motion at all, the jitter's move left out.
+    push.car_to_prev_clip = Identity;
+    if (Mat inverse{}; Invert(projection, inverse)) {
+        const Mat move = CarMove(car_view, two_back ? car_view_two_back : car_view_last);
+        push.car_to_prev_clip = Multiply(Multiply(inverse, move), projection);
+    }
+    // Reversed Z: depth = near / w - P[2][2], near = P[3][2].
+    push.eye_shift = eye_shift;
+    push.eye_z22 = projection[10];
+    push.eye_inv_near = projection[14] != 0.0f ? 1.0f / projection[14] : 0.0f;
     push.size = {float(width), float(height)};
     push.src_size = {float(src_width), float(src_height)};
     // DLSS Frame Generation takes screen fractions (its scale is 1); FSR takes pixels.
@@ -217,7 +306,7 @@ void DriveMotion::ClipTransforms(std::array<float, 16>& view_to_clip,
                                  std::array<float, 16>& clip_to_prev_clip,
                                  std::array<float, 16>& prev_clip_to_clip) const {
     view_to_clip = projection;
-    ClipToPrevious(clip_to_prev_clip);
+    ClipToPrevious(clip_to_prev_clip, false); // the frame generator: one frame back
     Mat inverse{};
     prev_clip_to_clip = Invert(clip_to_prev_clip, inverse) ? inverse : Identity;
 }

@@ -4,6 +4,7 @@
 
 #include "bbport_threads.h"
 #include "bbport_intro_pacing.h"
+#include "bbport_vr.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -988,7 +989,12 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // bbport: with a frame limit (uncapped presets) a queued flip is presented as soon as it
     // arrives and its slot allows, between vblanks, instead of on the next vblank tick.
     while (!token.stop_requested()) {
-        const u32 effective_limit = BbIntroPacing::EffectiveLimit(configured_limit);
+        u32 effective_limit = BbIntroPacing::EffectiveLimit(configured_limit);
+        // VR: never faster than the headset. Frames made ahead of it wait in bursts and the world moves unevenly in
+        // them, though the FPS looks right.
+        if (const u32 headset = BbVr::HeadsetHz(); headset && effective_limit > headset) {
+            effective_limit = headset;
+        }
         if (effective_limit != frame_limit) {
             frame_limit = effective_limit;
             frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
@@ -996,7 +1002,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
             credit = frame_period * credit_pct / 100;
             // Rebase the schedule so changing caps cannot release a burst of queued flips.
             next_flip = std::chrono::steady_clock::now() + frame_period;
-            std::printf("VideoOut: presentation cap %u FPS (configured %u; intro pacing %s)\n",
+            std::printf("VideoOut: presentation cap %u FPS (configured %u; intro pacing or headset %s)\n",
                         frame_limit, configured_limit, frame_limit != configured_limit ? "active" : "restored");
         }
         const bool immediate_flips = frame_limit != 0;

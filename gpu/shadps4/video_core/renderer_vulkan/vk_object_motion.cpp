@@ -11,6 +11,7 @@
 #include "shader_recompiler/runtime_info.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h"
 
 namespace Vulkan {
 
@@ -56,6 +57,11 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     if (!BbSettings::MotionVectorsOptIn() || !BbSettings::Get().object_motion ||
         BbSettings::Get().upscaler == BbSettings::UpscalerOff) {
         std::puts("Object motion: off (enable in menu or BB_OBJECT_MOTION=1)");
+        return;
+    }
+    // Its target has one layer, the multiview passes it joins draw two.
+    if (Vr::Multiview::Requested()) {
+        std::puts("Object motion: off in VR true stereo");
         return;
     }
     const auto& features = instance.GetPhysicalDevice().getFeatures();

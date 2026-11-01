@@ -19,6 +19,7 @@
 #include "video_core/host_shaders/drive_aa_copy_comp.h"
 #include "video_core/host_shaders/drive_aa_sharpen_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "bbport_vr.h"
 #include "bbport_neural_settings.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
@@ -26,6 +27,7 @@
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h"
 #include "video_core/texture_cache/texture_cache.h"
 
 namespace Vulkan {
@@ -425,7 +427,13 @@ void DriveAA::NextFrame() {
     // The upscaled picture stands in for the game's during the one draw that scales it to the
     // output (OnComposite runs after this, for that draw).
     redirect_valid = false;
-    jitter_index = jitter_index % phases + 1;
+    // VR with alternate frames: each eye draws every other frame, and every other Halton point stays in one half of
+    // the pixel (base 2: the odd ones all from 0.5 on), so each eye's DLSS saw half a pixel across and blurred the
+    // rest. Two frames in a row share a point: each eye goes through the whole sequence.
+    const bool vr_pairs = BbVr::DrawnEye() >= 0;
+    if (!vr_pairs || (vr_frames++ & 1) == 0) {
+        jitter_index = jitter_index % phases + 1;
+    }
     jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
     // The game's lighting and shadows rebuild positions from depth with the unshifted camera (it
     // does not jitter its own), so a shift of the geometry moves every lookup by as much: shadows
@@ -442,12 +450,12 @@ void DriveAA::NextFrame() {
 }
 
 vk::ImageView DriveAA::View(const VideoCore::Image& image, vk::Format format,
-                            vk::ImageAspectFlags aspect) {
+                            vk::ImageAspectFlags aspect, u32 layer) {
     const vk::Image handle = image.GetImage();
     CachedView* oldest = &views[0];
     for (auto& entry : views) {
         if (entry.view && entry.image == handle && entry.uid == image.image_uid &&
-            entry.format == format && entry.aspect == aspect) {
+            entry.format == format && entry.aspect == aspect && entry.layer == layer) {
             entry.last_use = ++view_uses;
             return entry.view;
         }
@@ -464,11 +472,12 @@ vk::ImageView DriveAA::View(const VideoCore::Image& image, vk::Format format,
         .uid = image.image_uid,
         .format = format,
         .aspect = aspect,
+        .layer = layer,
         .view = Check(device.createImageView({
             .image = handle,
             .viewType = vk::ImageViewType::e2D,
             .format = format,
-            .subresourceRange = {aspect, 0, 1, 0, 1},
+            .subresourceRange = {aspect, 0, 1, layer, 1},
         })),
         .last_use = ++view_uses,
     };
@@ -479,7 +488,7 @@ void DriveAA::Redirect(const vk::ComponentMapping& mapping, vk::ImageView& view,
                        vk::ImageLayout& layout) {
     layout = vk::ImageLayout::eGeneral;
     if (mapping == vk::ComponentMapping{}) {
-        view = *result_view;
+        view = result_array ? *result_array : *result_view;
         return;
     }
     for (const auto& [key, cached] : swizzled_views) {
@@ -497,10 +506,10 @@ void DriveAA::Redirect(const vk::ComponentMapping& mapping, vk::ImageView& view,
     slot.first = mapping;
     slot.second = Check(instance.GetDevice().createImageViewUnique({
         .image = vk::Image(result_image),
-        .viewType = vk::ImageViewType::e2D,
+        .viewType = result_array ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D,
         .format = vk::Format::eR16G16B16A16Sfloat,
         .components = mapping,
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, layers},
     }));
     view = *slot.second;
 }
@@ -553,9 +562,9 @@ void DriveAA::CreatePipeline() {
 
 }
 
-bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
+bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss, u32 image_layers) {
     if (ready && w == width && h == height && ow == out_width && oh == out_height &&
-        (context != nullptr) == !dlss) {
+        (context != nullptr) == !dlss && image_layers == layers) {
         return true;
     }
     scheduler.Finish();
@@ -563,6 +572,7 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
     for (auto& slot : swizzled_views) {
         slot.second.reset();
     }
+    result_array.reset();
     if (context) {
         ffxVkPortableUpscaleContextDestroy(context);
         context = nullptr;
@@ -571,6 +581,7 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
     height = h;
     out_width = ow;
     out_height = oh;
+    layers = image_layers;
     if (!dlss) {
         FfxVkPortableDeviceInfo device_info{};
         device_info.structSize = sizeof(device_info);
@@ -626,15 +637,17 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
     const auto device = instance.GetDevice();
     const auto allocator = instance.GetAllocator();
     const auto make = [&](VideoCore::UniqueImage& image, vk::UniqueImageView& view,
-                          vk::Format format, vk::ImageUsageFlags usage, u32 iw, u32 ih) {
+                          vk::UniqueImageView& right_view, vk::Format format,
+                          vk::ImageUsageFlags usage, u32 iw, u32 ih) {
         view.reset();
+        right_view.reset();
         image = VideoCore::UniqueImage(device, allocator);
         image.Create(vk::ImageCreateInfo{
             .imageType = vk::ImageType::e2D,
             .format = format,
             .extent = {iw, ih, 1},
             .mipLevels = 1,
-            .arrayLayers = 1,
+            .arrayLayers = image_layers,
             .samples = vk::SampleCountFlagBits::e1,
             .tiling = vk::ImageTiling::eOptimal,
             .usage = usage,
@@ -646,16 +659,32 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
             .format = format,
             .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         }));
+        if (image_layers == 2) {
+            right_view = Check(device.createImageViewUnique({
+                .image = vk::Image(image),
+                .viewType = vk::ImageViewType::e2D,
+                .format = format,
+                .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 1, 1},
+            }));
+        }
     };
-    make(motion_image, motion_view, vk::Format::eR16G16Sfloat,
+    make(motion_image, motion_view, right_motion_view, vk::Format::eR16G16Sfloat,
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h);
-    make(result_image, result_view, vk::Format::eR16G16B16A16Sfloat,
+    make(result_image, result_view, right_result_view, vk::Format::eR16G16B16A16Sfloat,
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
              vk::ImageUsageFlagBits::eTransferSrc,
          ow, oh);
     if (dlss) {
-        make(raw_image, raw_view, vk::Format::eR16G16B16A16Sfloat,
+        make(raw_image, raw_view, right_raw_view, vk::Format::eR16G16B16A16Sfloat,
              vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, ow, oh);
+    }
+    if (Vr::Multiview::Requested()) {
+        result_array = Check(device.createImageViewUnique({
+            .image = vk::Image(result_image),
+            .viewType = vk::ImageViewType::e2DArray,
+            .format = vk::Format::eR16G16B16A16Sfloat,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, image_layers},
+        }));
     }
     CreatePipeline();
     ready = true;
@@ -665,7 +694,7 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
     } else {
         std::printf("Upscaling: %s %ux%u to %ux%u", dlss ? "DLSS" : "FSR 3.1", w, h, ow, oh);
     }
-    std::puts("");
+    std::puts(image_layers == 2 ? " for each eye" : "");
     return true;
 }
 
@@ -718,9 +747,10 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
                     vk::AccessFlagBits2::eTransferWrite);
     runtime.FlushBarriers();
     const auto cmdbuf = scheduler.CommandBuffer();
+    const u32 copy_layers = Vr::Multiview::Stereo(color) && Vr::Multiview::Stereo(output) ? 2 : 1;
     const vk::ImageCopy region{
-        .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-        .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, copy_layers},
+        .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, copy_layers},
         .extent = {w, h, 1},
     };
     cmdbuf.copyImage(color.GetImage(), vk::ImageLayout::eGeneral, output.GetImage(),
@@ -790,7 +820,21 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const u32 oh = upscale ? BbFrame::output_h.load(std::memory_order_relaxed) : h;
     const float factor = float(ow) / float(w);
     scale = factor;
-    if (!EnsureResources(w, h, ow, oh, want_dlss)) {
+    // VR true stereo: the pictures have a layer per eye. DLSS runs twice, each eye with its own layers, its own feature
+    // (its own history) and its own motion; run once, it read the left eye only and both eyes were shown that picture.
+    const bool stereo = want_dlss && Vr::Multiview::Stereo(color) && Vr::Multiview::Stereo(depth) &&
+                        (!output_id || Vr::Multiview::Stereo(texture_cache.GetImage(output_id)));
+    if (stereo && !dlss->SelectFeature(1)) {
+        static bool told = false;
+        if (!told) {
+            told = true;
+            std::puts("Anti-aliasing: bbport_dlss.dll has one DLSS feature, true stereo needs two: not run");
+        }
+        reset = true;
+        return;
+    }
+    const u32 eyes = stereo ? 2 : 1;
+    if (!EnsureResources(w, h, ow, oh, want_dlss, eyes)) {
         failed = true;
         BbSettings::Get().aa_failed = true;
         return;
@@ -799,6 +843,13 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const auto depth_format = depth.info.pixel_format;
     const auto color_view = View(color, color_format, vk::ImageAspectFlagBits::eColor);
     const auto depth_view = View(depth, depth_format, vk::ImageAspectFlagBits::eDepth);
+    const std::array color_views{color_view, stereo ? View(color, color_format, vk::ImageAspectFlagBits::eColor, 1)
+                                                    : vk::ImageView{}};
+    const std::array depth_views{depth_view, stereo ? View(depth, depth_format, vk::ImageAspectFlagBits::eDepth, 1)
+                                                    : vk::ImageView{}};
+    const std::array motion_views{*motion_view, *right_motion_view};
+    const std::array result_views{*result_view, *right_result_view};
+    const std::array raw_views{*raw_view, *right_raw_view};
 
     // A new size or model makes a new DLSS feature. The old one's images and buffers may still be
     // used by recorded or submitted work (this command buffer can already hold an evaluation), so
@@ -807,10 +858,57 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     // (WriteInvalid) when leaving a race, where the sizes change.
     const Dlss::FeatureDesc dlss_desc{w, h, ow, oh, upscale ? Dlss::QualityForScale(factor) : 0, true, true,
                                       u32(BbSettings::Get().dlss_model.load())};
+    // VR with alternate frames: each eye its own DLSS feature (its own history) and motion back to its own last frame.
+    // The eye of this frame (its G-buffer camera matched with the head hook's calls), checked against its own camera
+    // where the scene constants are read.
+    int vr_eye = dlss ? BbVr::DrawnEye() : -1;
+    if (dlss && camera_motion.Ready()) {
+        float a[3], b[3], da = 0.0f, db = 0.0f;
+        camera_motion.CameraPositions(a, b);
+        const int ea = BbVr::EyeAt(a, da), eb = BbVr::EyeAt(b, db);
+        vr_eye = ea >= 0 ? ea : eb >= 0 ? eb : vr_eye;
+        static int told = 0;
+        if (told < 6 && (ea >= 0 || eb >= 0 || BbVr::DrawnEye() >= 0)) {
+            ++told;
+            std::printf("Anti-aliasing: VR eye %d (camera at %.3f %.3f %.3f: %.4f m from a head call, or %.3f %.3f "
+                        "%.3f: %.4f m; the G-buffer's eye %d)\n",
+                        vr_eye, a[0], a[1], a[2], da, b[0], b[1], b[2], db, BbVr::DrawnEye());
+        }
+    }
+    const bool per_eye = vr_eye >= 0 && dlss->SelectFeature(u32(vr_eye));
+    if (dlss && !per_eye) {
+        dlss->SelectFeature(0);
+    }
+    const u32 slot = per_eye ? u32(vr_eye) : 0;
+    camera_motion.SetEye(per_eye ? vr_eye : -1);
+    motion.SetTwoBack(per_eye);
+    if ((per_eye || stereo) != last_per_eye) {
+        last_per_eye = per_eye || stereo;
+        slot_reset[0] = slot_reset[1] = true; // into or out of the cockpit: the histories start again
+        std::printf("Anti-aliasing: %s\n", last_per_eye ? "DLSS per eye (VR)" : "DLSS for one picture");
+    }
+    if (reset) {
+        slot_reset[0] = slot_reset[1] = true;
+    }
+    if (per_eye && (camera_motion.Ready() ? !camera_motion.EyeHistoryValid() : !motion.TwoBackReady())) {
+        slot_reset[slot] = true; // no last frame of this eye yet
+    }
     const bool new_feature = dlss && !dlss->HasFeature(dlss_desc);
     if (new_feature) {
         scheduler.Finish();
         dlss->ReleaseFeature();
+    }
+    bool new_right = false; // the right eye's feature
+    if (stereo) {
+        dlss->SelectFeature(1);
+        new_right = !dlss->HasFeature(dlss_desc);
+        if (new_right) {
+            if (!new_feature) {
+                scheduler.Finish();
+            }
+            dlss->ReleaseFeature();
+        }
+        dlss->SelectFeature(0);
     }
 
     scheduler.EndRendering();
@@ -839,7 +937,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             .oldLayout = old_layout,
             .newLayout = vk::ImageLayout::eGeneral,
             .image = image,
-            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, layers},
         };
         cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
     };
@@ -850,7 +948,20 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
 
     // Driveclub-specific single-dispatch path: build camera vectors and fuse valid car vectors
     // in one pass. The legacy CameraMotion path requires constants from another title.
-    if (dlss && camera_motion.Ready()) {
+    DriveMotion::CarView car_view;
+    car_view.valid = BbVr::CarView(car_view.axes.data(), car_view.seat.data());
+    motion.SetCarView(car_view);
+    if (stereo) {
+        // Each eye from its own depth and stencil (the stencil as below), its pixels the centre view's moved by its shift.
+        const float shift = Vr::Multiview::Shift();
+        const bool has_stencil = depth_format == vk::Format::eD32SfloatS8Uint;
+        for (u32 eye = 0; eye < eyes; ++eye) {
+            const vk::ImageView mask_view =
+                has_stencil ? View(depth, depth_format, vk::ImageAspectFlagBits::eStencil, eye) : depth_views[eye];
+            motion.Record(cmdbuf, depth_views[eye], mask_view, motion_views[eye], w, h, w, h, false, {}, {},
+                          eye == 0 ? shift : -shift);
+        }
+    } else if (dlss && camera_motion.Ready()) {
         camera_motion.RecordMotion(cmdbuf, depth_view, *motion_view, w, h, color_view);
     } else {
         vk::ImageView object_view{};
@@ -859,9 +970,14 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             object_view = camera_motion.PrepareObjectMotion(cmdbuf, w, h, object_valid);
             if (!object_valid) object_view = vk::ImageView{};
         }
-        motion.Record(cmdbuf, depth_view, depth_view, *motion_view, w, h, w, h, false,
+        // VR per eye: the stencil marks the player's car and hands, which only the head moves on the screen; with the
+        // world's vectors they smear (no object map there).
+        const vk::ImageView mask_view = per_eye && depth_format == vk::Format::eD32SfloatS8Uint
+            ? View(depth, depth_format, vk::ImageAspectFlagBits::eStencil) : depth_view;
+        motion.Record(cmdbuf, depth_view, mask_view, *motion_view, w, h, w, h, false,
                       object_view, object_view ? color_view : vk::ImageView{});
     }
+    motion.EndFrame(); // this frame's move and projection are the next one's history
     barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
             vk::AccessFlagBits2::eShaderRead);
@@ -893,6 +1009,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             object_map_dumped = true;
         }
         DumpDlssCapture(instance, scheduler, cmdbuf, capture_directory, capture_frame, images);
+        if (BbVr::Active()) {
+            char headset[1024];
+            std::snprintf(headset, sizeof(headset), "%s/f%02d_headset", capture_directory.c_str(), capture_frame);
+            BbVr::CapturePicture(headset); // what the headset gets of this frame
+        }
         std::ofstream frame_log(std::filesystem::path(capture_directory) /
                                 ("f" + std::to_string(capture_frame) + "_meta.txt"));
         frame_log << "capture_frame=" << capture_frame << "\nrender=" << w << 'x' << h << "\noutput=" << ow
@@ -905,7 +1026,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                   << "\nobject_map_valid=" << object_map_valid
                   << "\nobject_map_in_this_file=" << dump_object
                   << "\nobject_motion_setting=" << bool(BbSettings::Get().object_motion)
-                  << "\nupscale=" << upscale << "\n";
+                  << "\nupscale=" << upscale << "\nvr_eye=" << vr_eye << "\nper_eye=" << per_eye
+                  << "\nslot=" << slot << "\nreset=" << (reset || slot_reset[slot]) << "\n";
         std::printf("DLSS capture: frame %d saved (motion=%s, object-map=%s)\n", capture_frame,
                     dlss && camera_ready ? "scene/object" : "game-camera+object-fusion",
                     dump_object ? "yes" : "no");
@@ -936,28 +1058,39 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     }
     if (dlss) {
         bool ok = true;
-        if (new_feature) {
-            ok = dlss->CreateFeature(cmdbuf, dlss_desc);
-            reset = true;
+        const bool any_new = new_feature || new_right;
+        for (u32 eye = 0; ok && eye < eyes; ++eye) {
+            const u32 feature = stereo ? eye : slot;
+            if (stereo) {
+                dlss->SelectFeature(eye);
+            }
+            if (eye == 0 ? new_feature : new_right) {
+                ok = dlss->CreateFeature(cmdbuf, dlss_desc);
+            }
+            if (ok) {
+                ok = dlss->Evaluate(
+                    cmdbuf,
+                    {.color = {color.GetImage(), color_views[eye], color_format,
+                               vk::ImageAspectFlagBits::eColor, w, h, eye},
+                     .depth = {depth.GetImage(), depth_views[eye], depth_format,
+                               vk::ImageAspectFlagBits::eDepth, w, h, eye},
+                     .motion = {vk::Image(motion_image), motion_views[eye], vk::Format::eR16G16Sfloat,
+                                vk::ImageAspectFlagBits::eColor, w, h, eye},
+                     .output = {sharpen_after ? vk::Image(raw_image) : vk::Image(result_image),
+                                sharpen_after ? raw_views[eye] : result_views[eye],
+                                vk::Format::eR16G16B16A16Sfloat, vk::ImageAspectFlagBits::eColor, ow, oh, eye},
+                     .jitter_x = frame_jitter[0],
+                     .jitter_y = frame_jitter[1],
+                     .reset = reset || any_new || slot_reset[feature],
+                     .frame_ms = frame_ms,
+                     .sharpness = sharpness});
+            }
+            slot_reset[feature] = false;
         }
-        if (ok) {
-            ok = dlss->Evaluate(
-                cmdbuf,
-                {.color = {color.GetImage(), color_view, color_format,
-                           vk::ImageAspectFlagBits::eColor, w, h},
-                 .depth = {depth.GetImage(), depth_view, depth_format,
-                           vk::ImageAspectFlagBits::eDepth, w, h},
-                 .motion = {vk::Image(motion_image), *motion_view, vk::Format::eR16G16Sfloat,
-                            vk::ImageAspectFlagBits::eColor, w, h},
-                 .output = {sharpen_after ? vk::Image(raw_image) : vk::Image(result_image),
-                            sharpen_after ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
-                            vk::ImageAspectFlagBits::eColor, ow, oh},
-                 .jitter_x = frame_jitter[0],
-                 .jitter_y = frame_jitter[1],
-                 .reset = reset,
-                 .frame_ms = frame_ms,
-                 .sharpness = sharpness});
+        if (stereo) {
+            dlss->SelectFeature(0);
         }
+        reset = reset || any_new;
         if (!ok) {
             std::puts("Anti-aliasing: DLSS failed; using FSR 3.1");
             BbSettings::Get().aa_mode = BbSettings::AaFsr3;
@@ -965,6 +1098,12 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             return;
         }
         dispatched = true;
+        if (capture_frame >= 0) {
+            // DLSS's own result (before the sharpening), for comparing with its input
+            const vk::Image out_image = sharpen_after ? vk::Image(raw_image) : vk::Image(result_image);
+            DumpDlssCapture(instance, scheduler, cmdbuf, capture_directory, capture_frame,
+                            {{out_image, ow, oh, 8, "output", "rgba16f"}});
+        }
     } else {
         FfxVkPortableUpscaleDispatchInfo info{};
         info.structSize = sizeof(info);
@@ -1035,26 +1174,28 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     if (sharpen_after) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eGeneral, all, rw,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
-        const vk::DescriptorImageInfo raw_info{.imageView = *raw_view,
-                                               .imageLayout = vk::ImageLayout::eGeneral};
-        const vk::DescriptorImageInfo result_info{.imageView = *result_view,
-                                                  .imageLayout = vk::ImageLayout::eGeneral};
-        const std::array<vk::WriteDescriptorSet, 2> writes = {{
-            {.dstBinding = 0,
-             .descriptorCount = 1,
-             .descriptorType = vk::DescriptorType::eStorageImage,
-             .pImageInfo = &raw_info},
-            {.dstBinding = 1,
-             .descriptorCount = 1,
-             .descriptorType = vk::DescriptorType::eStorageImage,
-             .pImageInfo = &result_info},
-        }};
         const std::array<float, 2> strength{sharpness, 0.0f};
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *sharpen_pipeline);
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
         cmdbuf.pushConstants(*copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
                              sizeof(strength), strength.data());
-        cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
+        for (u32 eye = 0; eye < eyes; ++eye) {
+            const vk::DescriptorImageInfo raw_info{.imageView = raw_views[eye],
+                                                   .imageLayout = vk::ImageLayout::eGeneral};
+            const vk::DescriptorImageInfo result_info{.imageView = result_views[eye],
+                                                      .imageLayout = vk::ImageLayout::eGeneral};
+            const std::array<vk::WriteDescriptorSet, 2> writes = {{
+                {.dstBinding = 0,
+                 .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageImage,
+                 .pImageInfo = &raw_info},
+                {.dstBinding = 1,
+                 .descriptorCount = 1,
+                 .descriptorType = vk::DescriptorType::eStorageImage,
+                 .pImageInfo = &result_info},
+            }};
+            cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
+            cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
+        }
         barrier(vk::Image(result_image), vk::ImageLayout::eGeneral,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all, rw);
     }
@@ -1088,30 +1229,32 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         return;
     }
     // The reconstructed picture replaces what the game's pass wrote.
-    const auto out_view = View(*output, vk::Format::eB10G11R11UfloatPack32,
-                               vk::ImageAspectFlagBits::eColor);
     barrier(vk::Image(result_image), vk::ImageLayout::eGeneral, all, rw,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
-    const vk::DescriptorImageInfo src_info{.imageView = *result_view,
-                                           .imageLayout = vk::ImageLayout::eGeneral};
-    const vk::DescriptorImageInfo dst_info{.imageView = out_view,
-                                           .imageLayout = vk::ImageLayout::eGeneral};
-    const std::array<vk::WriteDescriptorSet, 2> writes = {{
-        {.dstBinding = 0,
-         .descriptorCount = 1,
-         .descriptorType = vk::DescriptorType::eStorageImage,
-         .pImageInfo = &src_info},
-        {.dstBinding = 1,
-         .descriptorCount = 1,
-         .descriptorType = vk::DescriptorType::eStorageImage,
-         .pImageInfo = &dst_info},
-    }};
     const std::array<float, 2> size{float(w), float(h)};
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *copy_pipeline);
-    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
     cmdbuf.pushConstants(*copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(size),
                          size.data());
-    cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+    for (u32 eye = 0; eye < eyes; ++eye) {
+        const auto out_view = View(*output, vk::Format::eB10G11R11UfloatPack32,
+                                   vk::ImageAspectFlagBits::eColor, eye);
+        const vk::DescriptorImageInfo src_info{.imageView = result_views[eye],
+                                               .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo dst_info{.imageView = out_view,
+                                               .imageLayout = vk::ImageLayout::eGeneral};
+        const std::array<vk::WriteDescriptorSet, 2> writes = {{
+            {.dstBinding = 0,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &src_info},
+            {.dstBinding = 1,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &dst_info},
+        }};
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
+        cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+    }
     const vk::MemoryBarrier2 done{
         .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
