@@ -547,11 +547,13 @@ bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_
 // (its first start) the choices wait in launcher.ini (ffb.<key>=) and are written into it once it exists.
 // ------------------------------------------------------------------------------------------
 int g_ffb_model = -1, g_ffb_preset = -1, g_ffb_softlock = -1, g_ffb_wave = -1, g_wheel_setup = -1;
-int g_ffb_slider[7] = {-1, -1, -1, -1, -1, -1, -1};
+int g_ffb_slider[4] = {-1, -1, -1, -1};
+int g_ffb_effects = -1;  // Tyre effects: not part of the presets
+int g_ffb_tuner = -1;    // the Open FFB Tuner button
 int g_drag = -1;  // the slider being dragged
-// The two starting points (gain, filter, minimum force, kerbs, road, slip, damper), as FFB Tuner's.
-const int kWheelPreset[2][7] = {{100, 0, 0, 50, 50, 30, 10}, {130, 10, 8, 80, 80, 50, 0}};
-const int kWheelPresetWave[2] = {0, 1};  // sine on a direct drive, square on gear and belt wheels
+// The two starting points (gain, filter, minimum force, damper), as FFB Tuner's. The road (its surfaces, bumps and
+// kerbs) is always at its full, real strength in the physics model, and it has no vibration effects.
+const int kWheelPreset[2][4] = {{100, 0, 0, 10}, {130, 10, 8, 0}};  // the vibration wave is the Original model's own
 const char* const kSoftLock[6] = {"game", "off", "540", "720", "900", "1080"};
 constexpr char kLayoutMarker[] = "# DriveClub racing layout";  // the game replaces a default.ini without it
 
@@ -568,6 +570,7 @@ bool BlurRowLocked(const Ctl& c) {
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
 bool RowHidden(const Ctl& c) {
   if (c.physics_only && !PhysicsChosen()) return true;
+  if (g_ffb_wave >= 0 && &c == &g_c[g_ffb_wave]) return PhysicsChosen();   // the physics model has no vibrations
   if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap]) return g_fps >= 0 && g_c[g_fps].sel != 3;
@@ -612,13 +615,12 @@ void DeriveWheelPreset() {
   g_c[g_ffb_preset].sel = -1;
   for (int p = 0; p < 2; ++p) {
     bool same = true;
-    for (int k = 0; k < 7; ++k) same = same && g_c[g_ffb_slider[k]].sel == kWheelPreset[p][k];
+    for (int k = 0; k < 4; ++k) same = same && g_c[g_ffb_slider[k]].sel == kWheelPreset[p][k];
     if (same) g_c[g_ffb_preset].sel = p;
   }
 }
 void ApplyWheelPreset(int p) {
-  for (int k = 0; k < 7; ++k) g_c[g_ffb_slider[k]].sel = kWheelPreset[p][k];
-  if (g_ffb_wave >= 0) g_c[g_ffb_wave].sel = kWheelPresetWave[p];
+  for (int k = 0; k < 4; ++k) g_c[g_ffb_slider[k]].sel = kWheelPreset[p][k];
 }
 // "key = value" lines (comments after '#' dropped) into the rows.
 void ApplyWheelLines(const std::vector<std::string>& lines, const char* prefix) {
@@ -749,6 +751,33 @@ void OpenWheelSetup() {
     return;
   }
   g_status = L"WheelSetup.exe was not found next to DriveClub.exe.";
+  g_status_color = kBad;
+}
+// FFB Tuner.ps1 next to this program (or in the development tree), as FFB Tuner.bat starts it: a process of its own,
+// so it stays open when the game starts and this launcher closes; the game reads its changes within a second. Already
+// open: brought to the front.
+void OpenFfbTuner() {
+  if (HWND open = FindWindowW(nullptr, L"FFB Tuner - DriveClub")) {
+    ShowWindow(open, SW_RESTORE);
+    SetForegroundWindow(open);
+    g_status = L"FFB Tuner is already open.";
+    g_status_color = kMuted;
+    return;
+  }
+  for (const std::wstring& p : {g_home + L"\\FFB Tuner.ps1", g_home + L"\\..\\tools\\FFB Tuner.ps1"}) {
+    if (!Exists(p)) continue;
+    const std::wstring args = L"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + p + L"\"";
+    const auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(g_hwnd, L"open", L"powershell.exe", args.c_str(), Dir(p).c_str(), SW_HIDE));
+    if (opened <= 32) {
+      g_status = L"FFB Tuner could not be started (Windows error " + std::to_wstring(opened) + L").";
+      g_status_color = kBad;
+      return;
+    }
+    g_status = L"FFB Tuner is open. It stays open when the game starts: change the force while you drive.";
+    g_status_color = kMuted;
+    return;
+  }
+  g_status = L"FFB Tuner.ps1 was not found next to DriveClub.exe.";
   g_status_color = kBad;
 }
 
@@ -1391,6 +1420,12 @@ void BuildModel() {
                                 L"\x2022 Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels.",
                      {L"Direct drive", L"Gear or belt"}, {"@wheelpreset", ""}, -1);
   g_c[g_ffb_preset].physics_only = true;
+  g_ffb_tuner = int(g_c.size());
+  g_c.push_back(Ctl{L"FFB Tuner", L"Tweak the force feedback while you drive.\n"
+                                  L"\x2022 Opens a small window with all the force feedback settings.\n"
+                                  L"\x2022 It stays open when the game starts (this launcher closes), and the game takes each change within a second.\n"
+                                  L"Tip: play in windowed or borderless mode, or put the tuner on a second screen, to see both.",
+                    Kind::Button, {L"Open FFB Tuner..."}, {"@ffbtuner"}, 0, 0});
   auto slider = [](const wchar_t* label, const wchar_t* hint, const char* key, int lo, int hi, int def) {
     Ctl c{label, hint, Kind::Slider, {}, {std::string("@ffb:") + key}, def, def};
     c.min = lo;
@@ -1411,18 +1446,13 @@ void BuildModel() {
                                              L"\x2022 Gear and belt wheels often feel dead around the centre because they can't make very small forces.\n"
                                              L"Tip: try 5 to 10 if yours does. Keep it at 0 on a direct drive wheel.",
                            "wheel_ffb_physics_min_force", 0, 30, 0);
-  g_ffb_slider[3] = slider(L"Kerb effects", L"How much you feel kerbs and rumble strips. Also used for wheelspin.\n"
-                                            L"Tip: 50 is a good start; turn it down if kerbs shake the wheel too much.",
-                           "wheel_ffb_physics_kerbs", 0, 200, 50);
-  g_ffb_slider[4] = slider(L"Road effects", L"How much you feel bumps, dips and the road surface.\n"
-                                            L"Tip: turn it down for a calmer wheel.",
-                           "wheel_ffb_physics_road", 0, 200, 50);
-  g_ffb_slider[5] = slider(L"Slip effects", L"A light vibration when the tyres slide, spin or lock up: a warning that you're past the grip limit.\n"
-                                            L"Tip: many players keep it low or off, because the wheel already goes light when the tyres slide.",
-                           "wheel_ffb_physics_slip", 0, 200, 30);
-  g_ffb_slider[6] = slider(L"Damper", L"Makes the wheel a little heavier to turn, so it stays calm and doesn't wobble. Like real steering, it's heaviest when the car stands still.\n"
+  g_ffb_slider[3] = slider(L"Damper", L"Makes the wheel a little heavier to turn, so it stays calm and doesn't wobble. Like real steering, it's heaviest when the car stands still.\n"
                                       L"Tip: 10 to 30 on a direct drive wheel stops it wobbling when you let go. Gear and belt wheels usually want 0.",
                            "wheel_ffb_physics_damper", 0, 100, 10);
+  g_ffb_effects = slider(L"Tyre effects", L"A light buzz in the wheel when a tyre slides past its grip: the front sliding wide or locking under braking, the rear spinning or sliding. It only comes when a tyre really slides, and it buzzes faster the faster it slides.\n"
+                                          L"\x2022 0: off. Only the steering force, as a real car's wheel.\n"
+                                          L"Tip: lower it if the buzz is too strong on your wheel.",
+                          "wheel_ffb_physics_effects", 0, 100, 100);
   g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you can't turn it further than the car can.\n"
                                      L"\x2022 Game: the right angle for each car.\n"
                                      L"Tip: set your wheel's own software to 900 degrees as well.",
@@ -1495,10 +1525,8 @@ void BuildModel() {
                      L"Wheel Setup shows every controller plugged in.\n"
                      L"Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
   g_cards.back().sub = kSubWheel;
-  g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[6], g_ffb_softlock,
-                                         g_ffb_gain_row[0], g_ffb_gain_row[1]}, 0, kTabDriving});
-  g_cards.back().sub = kSubWheel;
-  g_cards.push_back({L"EFFECTS", {g_ffb_slider[3], g_ffb_slider[4], g_ffb_slider[5], g_ffb_wave}, 0, kTabDriving});
+  g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_tuner, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[3], g_ffb_effects, g_ffb_softlock,
+                                         g_ffb_wave, g_ffb_gain_row[0], g_ffb_gain_row[1]}, 0, kTabDriving});
   g_cards.back().sub = kSubWheel;
 }
 
@@ -4009,6 +4037,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (ctl.kind == Kind::Button) {
           const RectF ct = Scaled(ctl.ctl);
           if (c == g_wheel_setup && y >= ct.Y && y <= ct.Y + ct.Height) OpenWheelSetup();
+          if (c == g_ffb_tuner && y >= ct.Y && y <= ct.Y + ct.Height) OpenFfbTuner();
           if ((c == g_save_backup_row || c == g_save_restore_row) && y >= ct.Y && y <= ct.Y + ct.Height) {
             std::wstring message;
             const bool ok = RunSaveButton(c == g_save_restore_row, message);
