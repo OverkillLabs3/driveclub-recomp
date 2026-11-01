@@ -141,6 +141,85 @@ static std::span<const u32> NextPacket(std::span<const u32> span, size_t offset)
     return span.subspan(offset);
 }
 
+// bbport: the type-3 opcodes ProcessGraphics handles (its switch below).
+static bool GraphicsOpcode(PM4ItOpcode opcode) {
+    switch (opcode) {
+    case PM4ItOpcode::Nop: case PM4ItOpcode::ContextControl: case PM4ItOpcode::ClearState:
+    case PM4ItOpcode::SetConfigReg: case PM4ItOpcode::SetContextReg: case PM4ItOpcode::SetShReg:
+    case PM4ItOpcode::SetUconfigReg: case PM4ItOpcode::SetPredication: case PM4ItOpcode::IndexType:
+    case PM4ItOpcode::DrawIndex2: case PM4ItOpcode::DrawIndexOffset2: case PM4ItOpcode::DrawIndexAuto:
+    case PM4ItOpcode::DrawIndirect: case PM4ItOpcode::DrawIndirectMulti: case PM4ItOpcode::DrawIndexIndirect:
+    case PM4ItOpcode::DrawIndexIndirectMulti: case PM4ItOpcode::DrawIndexIndirectCountMulti:
+    case PM4ItOpcode::DispatchDirect: case PM4ItOpcode::DispatchIndirect: case PM4ItOpcode::NumInstances:
+    case PM4ItOpcode::IndexBase: case PM4ItOpcode::IndexBufferSize: case PM4ItOpcode::SetBase:
+    case PM4ItOpcode::EventWrite: case PM4ItOpcode::EventWriteEos: case PM4ItOpcode::EventWriteEop:
+    case PM4ItOpcode::DmaData: case PM4ItOpcode::WriteData: case PM4ItOpcode::CopyData:
+    case PM4ItOpcode::MemSemaphore: case PM4ItOpcode::AcquireMem: case PM4ItOpcode::Rewind:
+    case PM4ItOpcode::WaitRegMem: case PM4ItOpcode::IndirectBuffer: case PM4ItOpcode::IncrementDeCounter:
+    case PM4ItOpcode::WaitOnCeCounter: case PM4ItOpcode::PfpSyncMe: case PM4ItOpcode::StrmoutBufferUpdate:
+    case PM4ItOpcode::GetLodStats: case PM4ItOpcode::CondExec:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// bbport: whether the dwords from `at` on read as a whole graphics command stream: padding (the standard type-2
+// dword, 0x80000000) and type-3 packets with their reserved bits (2 to 7) clear, of opcodes ProcessGraphics
+// handles, each inside the submission and the last ending at its end. Stricter than the processing itself, so that
+// data read as packets does that next to never (made-up streams: 0 of 2000 random buffers); a real stream it does not
+// take is left out, the safe way.
+static bool WholeGraphicsStream(std::span<const u32> span, size_t at) {
+    while (at < span.size()) {
+        const auto* header = reinterpret_cast<const PM4Header*>(&span[at]);
+        if (span[at] == 0x80000000u) {
+            ++at;
+            continue;
+        }
+        if (header->type != 3 || (span[at] & 0xfcu) != 0 || !GraphicsOpcode(header->type3.opcode)) {
+            return false;
+        }
+        const size_t words = header->type3.NumWords() + 1;
+        if (words > span.size() - at) {
+            return false;
+        }
+        at += words;
+    }
+    return true;
+}
+
+// bbport: a header that cannot be a packet here (type 0, a reserved type, or a type-3 opcode the processor does not
+// know): the stream has lost its place (a player's race, once in hours: "type 0, base reg 688, size 1", which is a
+// plain dword of 688 read as a header), and reading on from it would run data as commands, writing who knows where.
+// Picked up at the first dword after it from which the rest reads as a whole command stream; none: the rest of this
+// submission is left out. Logged with where it was, the packet before it and the dwords around it, to find what
+// lost the place. Returns what is left to process.
+static std::span<const u32> RecoverGraphicsStream(std::span<const u32> dcb, uintptr_t base_addr, const char* what,
+                                                  u32 last_opcode, size_t last_at) {
+    const size_t at = (reinterpret_cast<uintptr_t>(dcb.data()) - base_addr) / sizeof(u32);
+    std::string around;
+    const size_t end = at + std::min<size_t>(5, dcb.size());
+    for (size_t i = at >= 4 ? at - 4 : 0; i < end; ++i) {
+        around += fmt::format("{}{:08x}", i == at ? " [" : " ", reinterpret_cast<const u32*>(base_addr)[i]);
+        if (i == at) {
+            around += "]";
+        }
+    }
+    size_t resume = 1;
+    while (resume < dcb.size() && !WholeGraphicsStream(dcb, resume)) {
+        ++resume;
+    }
+    static u32 logged;
+    if (logged++ < 20) {
+        LOG_ERROR(Render, "PM4 stream lost its place: {} at dword {} (the packet before: opcode {:#x} at dword {}); "
+                          "dwords{}; {}",
+                  what, at, last_opcode, last_at, around,
+                  resume < dcb.size() ? fmt::format("picked up {} dwords on", resume)
+                                      : fmt::format("the last {} dwords of the submission left out", dcb.size()));
+    }
+    return resume < dcb.size() ? dcb.subspan(resume) : std::span<const u32>{};
+}
+
 Liverpool::Liverpool() : guest_markers_enabled{EmulatorSettings.IsVkGuestMarkersEnabled()} {
     num_counter_pairs = Libraries::Kernel::sceKernelIsNeoMode() ? 16 : 8;
     process_thread = std::jthread{std::bind_front(&Liverpool::Process, this)};
@@ -867,6 +946,8 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
 
     const auto base_addr = reinterpret_cast<uintptr_t>(dcb.data());
+    u32 last_opcode = ~0u;   // bbport: for RecoverGraphicsStream's log
+    size_t last_at = 0;
     while (!dcb.empty()) {
         ProcessCommands();
 
@@ -875,12 +956,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
-            break;
+            dcb = RecoverGraphicsStream(dcb, base_addr, "a reserved packet type", last_opcode, last_at);
+            continue;
         case 0:
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
-            break;
+            // Type-0 register writes: the game never sends them (a lost place in the stream)
+            dcb = RecoverGraphicsStream(dcb, base_addr, "a type-0 header", last_opcode, last_at);
+            continue;
         case 2:
             // Type-2 packet are used for padding purposes
             dcb = NextPacket(dcb, 1);
@@ -888,6 +969,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
         case 3:
             const u32 count = header->type3.NumWords();
             const PM4ItOpcode opcode = header->type3.opcode;
+            if (!GraphicsOpcode(opcode)) {
+                dcb = RecoverGraphicsStream(dcb, base_addr, "an unknown type-3 opcode", last_opcode, last_at);
+                continue;
+            }
+            last_opcode = static_cast<u32>(opcode);
+            last_at = (reinterpret_cast<uintptr_t>(header) - base_addr) / sizeof(u32);
             BbStats::PhaseTimer opcode_timer{BbStats::opcode_ns[static_cast<u32>(opcode) & 255]};
             ApplyGraphicsRegisterPacket(regs, header, gfx_reg_checksum, &pipe_dirty, hash_registers);
             // DmaData to 0x3022C does nothing here (skipped below): no need to wait.
