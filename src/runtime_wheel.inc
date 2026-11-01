@@ -54,10 +54,10 @@ static int ffb_strength=100;   /* percent: the whole steering force of the softw
 static int ffb_center, ffb_slide;
 /* wheel_ffb_model = physics: the steering force from the car's front tyres in the game's simulation (the moment their
  * lateral forces put on the steering, runtime_logiwheel.inc), with settings named after Assetto Corsa's, percent:
- * gain (100: a 1 g corner at about 60% of the wheel's maximum), filter, minimum force, kerb, road and slip effects,
- * and a damper that is strongest at a standstill. */
+ * gain (100: a 1 g corner at about 60% of the wheel's maximum), filter, minimum force and a damper that is strongest at
+ * a standstill; the road, kerbs and kickback always at their real strength. */
 static bool ffb_physics;
-static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_kerbs=50, ffb_ph_road=50, ffb_ph_slip=30, ffb_ph_damper=10;
+static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=10, ffb_ph_effects=100;
 /* The tyres' trail follows how much of their grip the game's forces say is used (light at the real limit) and the force
  * keeps falling past it; wheel_ffb_physics_tyre = classic: the trail from the brush model's slip, as before. */
 static bool ffb_ph_tyre_grip=true;
@@ -110,6 +110,8 @@ static SDL_Joystick *shifter;
 typedef struct { uint16_t steer, throttle, brake, clutch, handbrake; uint8_t gear, magic; } WheelExtension;
 #define WHEEL_MAGIC 0x57
 _Static_assert(sizeof(WheelExtension)<=sizeof(((PadData *)0)->extension),"wheel data fits the pad extension");
+/* The pedals as last given to the game (0..65535), for the FFB trace's P rows */
+static volatile uint16_t wheel_last_throttle, wheel_last_brake, wheel_last_clutch;
 typedef struct {
     int32_t device_class; uint8_t reserved[4];
     uint8_t capability, reserved1; uint16_t max_physical_wheel_angle; uint8_t reserved2[8];
@@ -196,10 +198,9 @@ static void wheel_parse(const char *lhs, char *rhs) {
         if (!strcmp(k,"gain")) ffb_ph_gain=v<0 ? 0 : v>500 ? 500 : v;
         else if (!strcmp(k,"filter")) ffb_ph_filter=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"min_force")) ffb_ph_min_force=v<0 ? 0 : v>30 ? 30 : v;
-        else if (!strcmp(k,"kerbs")) ffb_ph_kerbs=v<0 ? 0 : v>200 ? 200 : v;
-        else if (!strcmp(k,"road")) ffb_ph_road=v<0 ? 0 : v>200 ? 200 : v;
-        else if (!strcmp(k,"slip")) ffb_ph_slip=v<0 ? 0 : v>200 ? 200 : v;
+        /* kerbs, road and slip are no settings any more (older files have them): the road at its full strength, no buzz */
         else if (!strcmp(k,"damper")) ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v;
+        else if (!strcmp(k,"effects")) ffb_ph_effects=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"tyre")) { lower(rhs); ffb_ph_tyre_grip=strncmp(rhs,"classic",7)!=0; }
         else if (!strcmp(k,"scrub")) { lower(rhs); ffb_ph_scrub=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
         else if (!strcmp(k,"combined")) { lower(rhs); ffb_ph_combined=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
@@ -326,8 +327,9 @@ static const char wheel_default_config[]=
     "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim. Its\n"
     "# settings, percent: wheel_ffb_physics_gain (0..300; 100: a 1 g corner at about 60% of the wheel's maximum),\n"
     "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force (0..30, for gear and belt wheels),\n"
-    "# wheel_ffb_physics_kerbs, wheel_ffb_physics_road and wheel_ffb_physics_slip (0..200), wheel_ffb_physics_damper\n"
-    "# (0..100). wheel_ffb_soft_lock, wheel_ffb_vibration_wave and wheel_ffb_invert apply too.\n"
+    "# wheel_ffb_physics_damper (0..100), wheel_ffb_physics_effects (0..100, 100; 0 off: a buzz from a tyre past its grip,\n"
+    "# a front sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
+    "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs, kickback) is always at its full strength.\n"
     "# The wheel goes light where the game's tyres run out of grip and keeps getting lighter in a slide, and the front\n"
     "# tyres' braking and drive forces turn it through the steering geometry (a kerb under braking, torque steer), and\n"
     "# braking hard into a corner lightens it as the front nears its limit (its grip used by braking and cornering\n"
@@ -604,6 +606,7 @@ static void wheel_sample(PadData *d, bool neutral) {
             w.throttle=wheel_value(p,WAX_THROTTLE); w.brake=wheel_value(p,WAX_BRAKE);
             w.clutch=wheel_value(p,WAX_CLUTCH);
         }
+        wheel_last_throttle=w.throttle; wheel_last_brake=w.brake; wheel_last_clutch=w.clutch;
         SDL_Joystick *hb=current_handbrake();
         if (hb) w.handbrake=handbrake_button>=0 ? (SDL_GetJoystickButton(hb,handbrake_button) ? 65535 : 0) : wheel_value(hb,WAX_HANDBRAKE);
         /* The game reads the wheel through logiWheel, which has no handbrake: a pulled handbrake is the pad's circle,
