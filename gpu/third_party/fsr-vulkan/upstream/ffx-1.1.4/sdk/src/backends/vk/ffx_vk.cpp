@@ -426,6 +426,11 @@ uint32_t findMemoryTypeIndex(
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
 
     uint32_t bestCandidate = UINT32_MAX;
+    // bbport: a device-local type the CPU can see too, for GPUs without any other (unified memory: Adreno with
+    // Turnip, Mali, Apple, integrated GPUs). Upstream skipped them all there, and FSR 3.1 could not create its
+    // first image on the AYN Odin 3.
+    uint32_t visibleFallback = UINT32_MAX;
+    VkMemoryPropertyFlags visibleFallbackProperties = 0;
 
     for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
         const VkMemoryPropertyFlags memoryProperties = memProperties.memoryTypes[i].propertyFlags;
@@ -441,8 +446,13 @@ uint32_t findMemoryTypeIndex(
             (memoryProperties & requestedProperties) == requestedProperties) {
 
             // if just device-local memory is requested, make sure this is the invisible heap to prevent over-subscribing the local heap
-            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+            if (requestedProperties == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT && (memoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+                if (visibleFallback == UINT32_MAX) {
+                    visibleFallback = i;
+                    visibleFallbackProperties = memoryProperties;
+                }
                 continue;
+            }
 
             bestCandidate = i;
             outProperties = memoryProperties;
@@ -453,6 +463,10 @@ uint32_t findMemoryTypeIndex(
         }
     }
 
+    if (bestCandidate == UINT32_MAX && visibleFallback != UINT32_MAX) {
+        bestCandidate = visibleFallback;
+        outProperties = visibleFallbackProperties;
+    }
     return bestCandidate;
 }
 
@@ -1605,13 +1619,22 @@ FfxErrorCode CreateBackendContextVK(FfxInterface* backendInterface, FfxEffect ef
         vkEnumerateDeviceExtensionProperties(backendContext->physicalDevice, nullptr, &backendContext->numDeviceExtensions, backendContext->extensionProperties);
 
         // create a global descriptor pool to hold all descriptors we'll need
+        // bbport: every pipeline allocates FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME sets of its own layout
+        // from this pool, and a layout holds at most a dozen descriptors of a type (FSR 3.1's upscaler: 10 pipelines,
+        // 40 sampled and 28 storage images, 12 uniform buffers in all; its frame generation: 18 pipelines, at most 12
+        // of a type in one). Upstream sized each type for FFX_MAX_RESOURCE_COUNT (512) descriptors per set: 2 million
+        // per type. Drivers that back a pool with GPU memory up front (Mesa's Turnip on Adreno: 64 bytes a
+        // descriptor, 128 a storage buffer) then need about 800 MB for it, and the context could not be created on the
+        // AYN Odin 3. 16 per set per type is still more than 13 times what FSR 3.1 uses.
+        constexpr uint32_t kDescriptorsPerSet = 16;
+        const uint32_t descriptorsPerType = backendContext->maxEffectContexts * kDescriptorsPerSet * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME;
         VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
         VkDescriptorPoolSize poolSizes[] = {
-            { VK_DESCRIPTOR_TYPE_SAMPLER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
-            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, backendContext->maxEffectContexts * FFX_MAX_RESOURCE_COUNT * FFX_MAX_PASS_COUNT * FFX_MAX_QUEUED_FRAMES * MAX_PIPELINE_USAGE_PER_FRAME },
+            { VK_DESCRIPTOR_TYPE_SAMPLER, descriptorsPerType },
+            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, descriptorsPerType },
+            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, descriptorsPerType },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptorsPerType },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptorsPerType },
         };
 
         descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;

@@ -1,6 +1,8 @@
 out/
 /release/
+squashfs-root/
 data/
+data-path
 logs/
 launcher.ini
 mods/

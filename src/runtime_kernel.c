@@ -3,6 +3,8 @@
  * use FreeBSD numbering; host errno values never reach the guest directly. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "guest_cpu.h"
+#include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +14,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/time.h>
+#ifdef GUEST_CPU_NATIVE
 #include <x86intrin.h>
+#endif
 #ifndef _WIN32
 #include <sys/random.h>
 #include <sys/resource.h>
@@ -85,6 +89,7 @@ static ABI uint64_t process_time_counter(void) {
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
+#ifdef GUEST_CPU_NATIVE
 static ABI uint64_t read_tsc(void) { return __rdtsc(); }
 static uint64_t tsc_hz;
 static ABI uint64_t tsc_frequency(void) {
@@ -102,10 +107,21 @@ static ABI uint64_t tsc_frequency(void) {
     }
     return tsc_hz;
 }
+#else
+/* The guest reads the same counter with RDTSC (FEXCore: the host's generic timer, scaled). */
+static ABI uint64_t read_tsc(void) { return guest_cpu_tsc(); }
+static ABI uint64_t tsc_frequency(void) { return guest_cpu_tsc_frequency(); }
+#endif
 /* Shared with the GPU library so flip/label timestamps use the guest's clock. */
 uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
+#ifndef _WIN32
+void compat_sleep_ns(uint64_t ns) {
+    struct timespec t={.tv_sec=(time_t)(ns/1000000000),.tv_nsec=(long)(ns%1000000000)};
+    while (nanosleep(&t,&t) && errno==EINTR) {}
+}
+#endif
 static int sleep_ns(uint64_t ns) {
 #ifdef _WIN32
     compat_sleep_ns(ns);
@@ -171,6 +187,11 @@ static ABI __attribute__((noreturn)) void hard_exit(int status) {
 static ABI __attribute__((noreturn)) void raise_exception(uint32_t code,uint64_t argument) {
     fprintf(stderr,"STOP: guest raised debug exception code=0x%x argument=0x%llx\n",code,(unsigned long long)argument);
     runtime_report();
+    /* exit() runs host static destructors in reverse registration order. The
+       copy pool is registered after the GPU's atexit fallback and would be
+       destroyed first, while presentation can still submit a final blank frame.
+       Join the GPU users while those shared resources are still alive. */
+    bbgpu_shutdown();
     exit(23);
 }
 static ABI int32_t print_backtrace(void) {
@@ -247,7 +268,7 @@ static ABI int32_t thread_once(int32_t *once,void (ABI *routine)(void)) {
         int32_t state=__atomic_load_n(once,__ATOMIC_ACQUIRE);
         if (state==1) return 0;
         if (state==0 && __atomic_compare_exchange_n(once,&state,2,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)) {
-            routine();
+            guest_cpu_call((uintptr_t)routine,0,NULL);
             __atomic_store_n(once,1,__ATOMIC_RELEASE);
             return 0;
         }
@@ -291,7 +312,8 @@ void runtime_thread_keys_cleanup(void) {
             void *value=key_values[i];
             if (!value || !keys[i].used || !keys[i].destructor) continue;
             key_values[i]=NULL; any=1;
-            keys[i].destructor(value);
+            const uint64_t argument=(uint64_t)(uintptr_t)value;
+            guest_cpu_call((uintptr_t)keys[i].destructor,1,&argument);
         }
         if (!any) break;
     }

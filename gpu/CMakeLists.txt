@@ -33,11 +33,16 @@ if (BB_PGO STREQUAL "generate")
     add_compile_options(-fprofile-generate=${BB_PGO_DIR} -fprofile-update=atomic)
     add_link_options(-fprofile-generate=${BB_PGO_DIR})
     add_compile_definitions(BB_PGO_GENERATE)
-elseif (BB_PGO STREQUAL "use")
+elseif (BB_PGO STREQUAL "use" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Clang: code without recorded counts is optimized normally, and functions changed since the profile
     # (or built differently for it, bbgpu_init) are compiled without it.
     add_compile_options(-fprofile-use=${BB_PGO_DIR} -Wno-profile-instr-missing
                         -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled)
+elseif (BB_PGO STREQUAL "use")
+    # GCC (Linux, .gcda files): partial training keeps unprofiled code optimized normally; counters from
+    # concurrent threads can be slightly inconsistent (correction).
+    add_compile_options(-fprofile-use=${BB_PGO_DIR} -fprofile-partial-training
+                        -fprofile-correction -Wno-missing-profile -Wno-coverage-mismatch)
 endif()
 
 find_package(Vulkan REQUIRED)
@@ -176,7 +181,24 @@ add_library(bbgpu ${BBGPU_KIND} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOU
 add_dependencies(bbgpu host_shaders)
 # bbport co-op: PS4 network and PSN libraries with the shadNet client, from shadp2p
 # (github.com/Wozzardman/shadp2p, GPL-2.0), for private Bloodborne co-op servers.
-find_package(Protobuf CONFIG REQUIRED)
+# Protobuf: prefer upstream's CMake package; distributions that only ship module-mode files
+# (Ubuntu 24.04's libprotobuf-dev 3.21 has no protobuf-config.cmake) use FindProtobuf instead.
+find_package(Protobuf CONFIG QUIET)
+if (NOT Protobuf_FOUND)
+    find_package(Protobuf REQUIRED)
+    if (NOT TARGET protobuf::libprotobuf)
+        list(GET Protobuf_LIBRARIES 0 BBPROTOBUF_LIBRARY)
+        add_library(protobuf::libprotobuf UNKNOWN IMPORTED)
+        set_target_properties(protobuf::libprotobuf PROPERTIES
+            IMPORTED_LOCATION "${BBPROTOBUF_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${Protobuf_INCLUDE_DIRS}")
+    endif()
+    if (NOT TARGET protobuf::protoc)
+        add_executable(protobuf::protoc IMPORTED)
+        set_target_properties(protobuf::protoc PROPERTIES
+            IMPORTED_LOCATION "${Protobuf_PROTOC_EXECUTABLE}")
+    endif()
+endif()
 set(SHADNET_PROTO_OUT "${CMAKE_CURRENT_BINARY_DIR}/shadnet_proto_gen")
 file(MAKE_DIRECTORY "${SHADNET_PROTO_OUT}")
 add_custom_command(
@@ -207,12 +229,15 @@ target_link_libraries(bbnet PRIVATE PNG::PNG)
 if (WIN32)
     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
     target_include_directories(bbnet PRIVATE third_party/wepoll)
-    find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
-    find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
-    target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
-    target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
-    target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 endif()
+# UPnP port mapping (net_upnp.h). Windows links the static MSYS2 package; Linux the shared one.
+find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
+find_library(MINIUPNPC_LIBRARY NAMES libminiupnpc.a miniupnpc REQUIRED)
+target_include_directories(bbnet PRIVATE "${MINIUPNPC_INCLUDE}")
+if (WIN32)
+    target_compile_definitions(bbnet PRIVATE MINIUPNP_STATICLIB)
+endif()
+target_link_libraries(bbnet PRIVATE "${MINIUPNPC_LIBRARY}")
 target_compile_definitions(bbnet PRIVATE BOOST_ASIO_STANDALONE NDEBUG BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 target_compile_options(bbnet PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
 target_link_libraries(bbnet PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
@@ -253,10 +278,17 @@ if (WIN32)
     # <windows.h> out of the way of std::min/max and the Vulkan/SDL headers.
     target_compile_definitions(bbgpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(bbgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_win_compat.h)
-    target_include_directories(bbgpu PRIVATE third_party/xbyak)
     target_link_libraries(bbgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm)
 else()
-    target_link_libraries(bbgpu PUBLIC PkgConfig::X11)
+    # The Vulkan loader is the host's; recording it as a dependency keeps libbbgpu loadable
+    # when the executable is linked with --as-needed.
+    target_link_libraries(bbgpu PUBLIC PkgConfig::X11 Vulkan::Vulkan)
+endif()
+
+# The SRT walker's x86-64 code generator (Xbyak, vendored). Other hosts (aarch64) interpret the walker
+# instead (shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp).
+if (WIN32 OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+    target_include_directories(bbgpu PRIVATE third_party/xbyak)
 endif()
 
 # bbport (Windows): bbgpu is a static library there, so the loader and the HLE runtime are

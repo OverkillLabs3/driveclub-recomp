@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=DriveClub Recomp
+GenericName=Racing Game
+Comment=DriveClub (PS4) running natively on Linux
+Exec=driveclub-recomp
+Icon=driveclub-recomp
+Terminal=false
+Categories=Game;Racing;
+StartupNotify=true

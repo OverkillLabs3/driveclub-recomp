@@ -5,6 +5,7 @@
 #include <boost/container/small_vector.hpp>
 #include "bbport_toggles.h"
 #include "bbport_frametrace.h"
+#include "bbport_guest_call.h"
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -34,6 +35,8 @@
 #include "common/decoder.h"
 #include <immintrin.h>
 #endif
+// The guest memory's backing view (src/runtime_memory.c): reads that do not fault on protected pages.
+extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64_t size);
 
 extern "C" int runtime_memory_read_backing(uintptr_t address, void* data, uint64_t size);
 
@@ -1559,7 +1562,7 @@ ReadbackGetter g_real_getter = nullptr;
 alignas(16) thread_local u8 g_served_value[16]; // read by the caller after return: per thread
 
 PS4_SYSV_ABI bool ExposureValueGet(void* obj, u32 frame, void** out, u32* count) {
-    if (!g_real_getter(obj, frame, out, count)) {
+    if (!GuestCall(g_real_getter, obj, frame, out, count)) {
         return false;
     }
     auto* r = VideoCore::g_memops_rasterizer;
@@ -1663,7 +1666,7 @@ PS4_SYSV_ABI bool CloudGet(void* obj, u32 frame, void** out, u32* count) {
     auto* r = VideoCore::g_memops_rasterizer;
     const GetterPick pick = r ? PickGetterSlot(static_cast<const u8*>(obj), frame) : GetterPick{};
     if (!pick.ok || !pick.data || !pick.count) {
-        return g_real_getter(obj, frame, out, count); // not ready (or not a counted buffer): as before
+        return GuestCall(g_real_getter, obj, frame, out, count); // not ready (or not a counted buffer): as before
     }
     constexpr u64 size = 16;
     if (r->IsRangeGpuWritten(pick.count, 4) || r->IsRangeGpuWritten(pick.data, size)) {
@@ -1686,7 +1689,7 @@ PS4_SYSV_ABI bool CloudGet(void* obj, u32 frame, void** out, u32* count) {
         }
         // Nothing delivered yet: the real getter (it waits) this once.
     }
-    const bool ok = g_real_getter(obj, frame, out, count);
+    const bool ok = GuestCall(g_real_getter, obj, frame, out, count);
     u8 point[size];
     u32 n;
     std::memcpy(point, reinterpret_cast<const void*>(pick.data), size);
@@ -2084,7 +2087,7 @@ PS4_SYSV_ABI bool ExposureExactGet(void* obj, u32 frame, void** out, u32* count)
     const bool exposure_obj = r && flags == Flags;
     const GetterPick pick = exposure_obj ? PickGetterSlot(o, frame) : GetterPick{};
     const ExactSlots slots = exposure_obj ? ReadExactSlots(o, false) : ExactSlots{};
-    if (!g_real_getter(obj, frame, out, count)) {
+    if (!GuestCall(g_real_getter, obj, frame, out, count)) {
         return false;
     }
     const auto at = reinterpret_cast<uintptr_t>(*out);
@@ -2191,7 +2194,7 @@ constexpr u32 QueryMaxBytes = 256 * 1024;
 // answered.
 template <u32 Site>
 bool RealGetterAnswer(void* obj, u32 frame, void** out, u32* count, char path) {
-    const bool ready = g_real_getter(obj, frame, out, count);
+    const bool ready = GuestCall(g_real_getter, obj, frame, out, count);
     if (ready && Site == 4 && ExactDefer()) {
         std::scoped_lock lk{g_exact_stats_mutex};
         EndDeferral(Site, obj, frame, path); // explicit requests: the generation asked for is the frame

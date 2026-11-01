@@ -1,5 +1,5 @@
-#include "../gpu/shim/bbport_diagnostics.h"
-/* Minimal x86-64 native loader experiment. Not a PS4 emulator or game port. */
+/* Minimal x86-64 loader experiment (the game's code runs natively on x86-64 hosts, through
+ * FEXCore elsewhere: guest_cpu.h). Not a PS4 emulator or game port. */
 #define _GNU_SOURCE
 #include <stdint.h>
 #include <stdio.h>
@@ -8,9 +8,11 @@
 #include <inttypes.h>
 #include <time.h>
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
+#include "guest_cpu.h"
 #include "gpu/bbgpu.h"
-#if !defined(__x86_64__) || !defined(__GNUC__)
-#error This prototype requires x86-64 GCC or Clang (including MinGW).
+#if !defined(__GNUC__) || (!defined(__x86_64__) && defined(_WIN32))
+#error This prototype requires GCC or Clang, on x86-64 for MinGW.
 #endif
 #ifdef _WIN32
 #include <windows.h>
@@ -75,8 +77,9 @@ int runtime_start_linked_module(const char *path, uint64_t args, const void *arg
         int32_t start=0;
         if (!x->started) {
             x->started=1;
-            typedef int (ABI *ModuleInit)(uint64_t,const void *,void *);
-            start=((ModuleInit)(image+x->init))(args,argp,NULL);
+            /* Guest code: through the guest CPU, as the other modules' initializers (FEXCore on ARM64). */
+            const uint64_t init_args[3]={args,(uint64_t)(uintptr_t)argp,0};
+            start=(int32_t)guest_cpu_call((uintptr_t)(image+x->init),3,init_args);
             printf("Runtime: linked module %s started; module_start returned %d\n",x->name,start);
         }
         if (result) *result=start;
@@ -110,6 +113,14 @@ static void protect(void *p, size_t size, unsigned flags) {
     if (mprotect(p, size, mode)) fail("mprotect failed");
 #endif
 }
+/* Memory for x86-64 code the loader writes (patch thunks): the guest CPU is told it holds guest code. */
+static unsigned char *allocate_code(size_t size) {
+    unsigned char *p = allocate(size);
+    guest_cpu_code((uintptr_t)p, size);
+    return p;
+}
+/* A host function the game's code calls or jumps to from a patch thunk (SysV arguments). */
+static uintptr_t host_entry(uintptr_t fn) { return fn ? guest_cpu_host_function((void *)fn) : 0; }
 /* SSE4a (EXTRQ, INSERTQ) exists on the PS4's Jaguar and on AMD CPUs; Intel CPUs raise #UD on it.
  * Register forms only (memory operands do not exist): 66|F2 [REX] 0F 78|79 ModRM(mod 11) [ib ib]. */
 typedef struct { int length, insert, immediate, dst, src; unsigned len, idx; } Sse4a;
@@ -132,16 +143,24 @@ static int decode_sse4a(const unsigned char *p, Sse4a *o) {
     return 1;
 }
 static int host_has_sse4a(void) {
+#ifndef GUEST_CPU_NATIVE
+    return 0; /* the guest CPU (FEXCore) is told the rewritten forms, which every x86-64 translator has */
+#else
     unsigned a, b, c, d;
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000u), "c"(0));
     if (a < 0x80000001u) return 0;
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000001u), "c"(0));
     return (c >> 6) & 1;
+#endif
 }
 static int host_has_sse41(void) {
+#ifndef GUEST_CPU_NATIVE
+    return 1;
+#else
     unsigned a, b, c, d;
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1u), "c"(0));
     return (c >> 19) & 1;
+#endif
 }
 /* On a host without SSE4a, `extrq xmm, len, idx` in guest code is rewritten before entry:
  * extrq x, 8, 0  -> pmovzxbq x, x (same low qword; SSE4.1), padded with nop, in place;
@@ -206,7 +225,7 @@ static ABI uint64_t unresolved_soft(uint32_t id, uintptr_t argument) {
     static unsigned char seen[4096];
     if (id < sizeof seen && !__sync_lock_test_and_set(&seen[id], 1))
         printf("STUBBED: %s (%s) arg0=0x%" PRIxPTR " caller=+0x%" PRIxPTR "\n", names[id], runtime_import_name(names[id]), argument,
-               (uintptr_t)__builtin_return_address(0) - (uintptr_t)image);
+               guest_cpu_return_address((uintptr_t)__builtin_return_address(0)) - (uintptr_t)image);
     /* A stubbed import that a guest thread polls in a loop (the USB event loop, for one) returns at once and would
      * keep a whole CPU core busy. Past 2000 calls in 100 ms a call sleeps 1 ms, as the blocking original would. */
     if (id < 4096) {
@@ -224,11 +243,10 @@ static ABI uint64_t unresolved_soft(uint32_t id, uintptr_t argument) {
 }
 static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argument) {
     if (id >= import_count) fail("bad import trap index");
+    uintptr_t caller=guest_cpu_return_address((uintptr_t)__builtin_return_address(0))-(uintptr_t)image;
     printf("STOP: first unsupported PS4 import: %s (index %u)\n", names[id], id);
     printf("API: %s\n", runtime_import_name(names[id]));
-    printf("Caller return offset: 0x%" PRIxPTR "; first argument: 0x%" PRIxPTR "\n",
-           (uintptr_t)__builtin_return_address(0) - (uintptr_t)image, argument);
-    uintptr_t caller=(uintptr_t)__builtin_return_address(0)-(uintptr_t)image;
+    printf("Caller return offset: 0x%" PRIxPTR "; first argument: 0x%" PRIxPTR "\n", caller, argument);
     for (uint64_t m=0;m<module_count;++m)
         if (caller>=modules[m].base && caller-modules[m].base<modules[m].size)
             printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",caller-modules[m].base);
@@ -238,7 +256,7 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     fflush(NULL);
     _exit(20); /* no destructors: GPU, audio and guest threads are still running */
 }
-#ifndef _WIN32
+#if !defined(_WIN32) && defined(GUEST_CPU_NATIVE)
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
 __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
@@ -575,7 +593,8 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
 #endif
 #ifndef _WIN32
 static void fault(int sig, siginfo_t *info, void *context) {
-    /* GPU page tracking (write-protected guest pages) is resolved first. */
+    /* The guest CPU's own faults (FEXCore's JIT), then GPU page tracking (write-protected guest pages). */
+    if (guest_cpu_handle_fault(sig, info, context)) return;
     if (gpu_enabled && sig == SIGSEGV && bbgpu_handle_fault(context, info->si_addr)) return;
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
     if ((sig == SIGSEGV || sig == SIGBUS) && runtime_fault_recover) {
@@ -588,8 +607,9 @@ static void fault(int sig, siginfo_t *info, void *context) {
         siglongjmp(*recover, 1);
     }
     /* The process is terminating: dladdr/snprintf are acceptable here. */
-    ucontext_t *uc = context;
-    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+    GuestRegs regs;
+    const int in_guest = guest_cpu_signal_regs(context, &regs);
+    uintptr_t rip = in_guest == GUEST_CPU_IN_GUEST ? (uintptr_t)regs.rip : guest_cpu_host_pc(context);
     char line[512];
     Dl_info where;
     if (rip - (uintptr_t)image < 0x10000000)
@@ -601,6 +621,10 @@ static void fault(int sig, siginfo_t *info, void *context) {
     else
         snprintf(line, sizeof(line), "Fault (signal %d) at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
     { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
+    if (in_guest == GUEST_CPU_IN_HOST_CALL && regs.rip - (uintptr_t)image < 0x10000000) {
+        snprintf(line, sizeof(line), "  called by the game at guest offset 0x%lx\n", (unsigned long)(regs.rip - (uintptr_t)image));
+        ssize_t written_=write(2, line, strlen(line)); (void)written_;
+    }
     if (gpu_enabled) bbgpu_dump_guest_writes(context);
     /* Host call chain (frames with unwind info; guest frames end it). */
     void *frames[32];
@@ -626,11 +650,19 @@ static void write_hex(char *out, uint64_t v) {
 }
 static void dump_frames(ucontext_t *uc) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
-    uintptr_t rip=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP], rbp=(uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
+    /* Guest frames when the guest CPU is not the host's: the host PC first, then the guest's rbp chain. */
+    GuestRegs regs;
+    const int in_guest=guest_cpu_signal_regs(uc,&regs);
+    uintptr_t rip=in_guest ? (uintptr_t)regs.rip : guest_cpu_host_pc(uc), rbp=in_guest ? (uintptr_t)regs.gpr[GUEST_RBP] : 0;
     uint64_t tid=(uint64_t)gettid();
+    if (in_guest==GUEST_CPU_IN_HOST_CALL) {
+        char host[]="  tid=0000000000000000 host pc=0000000000000000 host-relative=0000000000000000\n";
+        write_hex(host+6,tid); write_hex(host+31,guest_cpu_host_pc(uc)); write_hex(host+62,guest_cpu_host_pc(uc)-exe_base);
+        ssize_t written_=write(2,host,sizeof(host)-1); (void)written_;
+    }
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
-    write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)uc->uc_mcontext.gregs[REG_RDI]);
+    write_hex(arg+6,tid); write_hex(arg+27,in_guest ? regs.gpr[GUEST_RDI] : 0);
     { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
@@ -713,9 +745,9 @@ static void patch_shared_alloc(unsigned char *image, uint64_t size) {
     const char *pad = getenv("BB_SHARED_PAD");
     const int log = BB_DIAGNOSTIC_ENV("BB_SHARED_LOG") != NULL, padding = pad ? (int)strtoul(pad, NULL, 0) : 3;
     if ((!log && !padding) || size < 0x100ad1c + 5) return;
-    uintptr_t wrapper = bbgpu_shared_alloc_hook((uintptr_t)image + alloc, (uintptr_t)image);
+    uintptr_t wrapper = host_entry(bbgpu_shared_alloc_hook((uintptr_t)image + alloc, (uintptr_t)image));
     if (!wrapper) return;
-    unsigned char *thunks = allocate(page_size);
+    unsigned char *thunks = allocate_code(page_size);
     int patched = 0;
     for (int c = 0; c < 7; ++c) {
         const int payload = sites[c] == 0x75848e || sites[c] == 0x7584c4, count = sites[c] == 0x7584e1;
@@ -755,10 +787,10 @@ static void patch_exposure_copy(unsigned char *image, uint64_t size) {
     static const unsigned char mov_edx_400[5] = {0xba, 0x00, 0x04, 0x00, 0x00};
     if (size < 0x123e3b0 + 16) return;
     uintptr_t hooks[3];
-    hooks[0] = hooks[1] = bbgpu_exposure_hook();
+    hooks[0] = hooks[1] = host_entry(bbgpu_exposure_hook());
     if (!hooks[0]) return;
-    hooks[2] = bbgpu_exposure_value_hook((uintptr_t)image + targets[2]);
-    unsigned char *thunk = allocate(page_size);
+    hooks[2] = host_entry(bbgpu_exposure_value_hook((uintptr_t)image + targets[2]));
+    unsigned char *thunk = allocate_code(page_size);
     for (int c = 0; c < 3; ++c) {
         unsigned char *site = image + sites[c], *t = thunk + 16 * c;
         int32_t rel;
@@ -791,10 +823,10 @@ static int patch_exposure_exact(unsigned char *image, uint64_t size) {
     if (size < getter + 16) return 0;
     uintptr_t hooks[3];
     for (int c = 0; c < 3; ++c) {
-        hooks[c] = bbgpu_exposure_exact_hook((uintptr_t)image + getter, c);
+        hooks[c] = host_entry(bbgpu_exposure_exact_hook((uintptr_t)image + getter, c));
         if (!hooks[c]) return 0;
     }
-    unsigned char *thunk = allocate(page_size);
+    unsigned char *thunk = allocate_code(page_size);
     for (int c = 0; c < 3; ++c) {
         unsigned char *site = image + sites[c], *t = thunk + 16 * c;
         int32_t rel;
@@ -823,7 +855,7 @@ static int patch_exposure_exact(unsigned char *image, uint64_t size) {
 static void patch_cloud_get(unsigned char *image, uint64_t size) {
     static const uint64_t site_at = 0x60265e, getter = 0x758980;
     if (size < getter + 16) return;
-    uintptr_t hook = bbgpu_cloud_hook((uintptr_t)image);
+    uintptr_t hook = host_entry(bbgpu_cloud_hook((uintptr_t)image));
     if (!hook) return;
     unsigned char *site = image + site_at;
     int32_t rel;
@@ -832,7 +864,7 @@ static void patch_cloud_get(unsigned char *image, uint64_t size) {
         printf("BB_CLOUD_STALE: site %#" PRIx64 " is not the cloud sample's getter call; not patched\n", site_at);
         return;
     }
-    unsigned char *thunk = allocate(page_size);
+    unsigned char *thunk = allocate_code(page_size);
     thunk[0] = 0x48; thunk[1] = 0xb8; memcpy(thunk + 2, &hook, 8); /* movabs rax, hook */
     thunk[10] = 0xff; thunk[11] = 0xe0;                              /* jmp rax */
     protect(thunk, page_size, 5);
@@ -851,7 +883,7 @@ static void patch_cloud_get(unsigned char *image, uint64_t size) {
 static void patch_query_get(unsigned char *image, uint64_t size) {
     static const uint64_t site_at = 0x1051f3c, getter = 0x758980;
     if (size < site_at + 16) return;
-    uintptr_t hook = bbgpu_query_hook((uintptr_t)image);
+    uintptr_t hook = host_entry(bbgpu_query_hook((uintptr_t)image));
     if (!hook) return;
     unsigned char *site = image + site_at;
     int32_t rel;
@@ -861,7 +893,7 @@ static void patch_query_get(unsigned char *image, uint64_t size) {
         printf("BB_QUERY_EXACT: site %#" PRIx64 " is not the query results' getter call; not patched\n", site_at);
         return;
     }
-    unsigned char *thunk = allocate(page_size);
+    unsigned char *thunk = allocate_code(page_size);
     thunk[0] = 0x45; thunk[1] = 0x89; thunk[2] = 0xf0;               /* mov r8d, r14d */
     thunk[3] = 0x48; thunk[4] = 0xb8; memcpy(thunk + 5, &hook, 8);  /* movabs rax, hook */
     thunk[13] = 0xff; thunk[14] = 0xe0;                              /* jmp rax */
@@ -880,7 +912,7 @@ static void patch_query_get(unsigned char *image, uint64_t size) {
 static void patch_crowd_get(unsigned char *image, uint64_t size) {
     static const uint64_t site_at = 0x574d79, getter = 0x758980;
     if (size < getter + 16) return;
-    uintptr_t hook = bbgpu_crowd_hook((uintptr_t)image);
+    uintptr_t hook = host_entry(bbgpu_crowd_hook((uintptr_t)image));
     if (!hook) return;
     unsigned char *site = image + site_at;
     int32_t rel;
@@ -890,7 +922,7 @@ static void patch_crowd_get(unsigned char *image, uint64_t size) {
         printf("BB_CROWD_EXACT: site %#" PRIx64 " is not the crowd heights' getter call; not patched\n", site_at);
         return;
     }
-    unsigned char *thunk = allocate(page_size);
+    unsigned char *thunk = allocate_code(page_size);
     thunk[0] = 0x48; thunk[1] = 0xb8; memcpy(thunk + 2, &hook, 8); /* movabs rax, hook */
     thunk[10] = 0xff; thunk[11] = 0xe0;                              /* jmp rax */
     protect(thunk, page_size, 5);
@@ -1027,7 +1059,7 @@ static void apply_cull_scale(unsigned char *image, uint64_t size) {
                                          0xc4,0xc1,0x7a,0x10,0x46,0x34,0xc5,0xfa,0x11,0x43,0x10};
     unsigned char *site=image+0x60ffcb;
     if (memcmp(site,expect,sizeof expect)) { printf("Pop-in: the cull thresholds are not where eboot 1.28 has them; not changed\n"); return; }
-    unsigned char *t=allocate(page_size);
+    unsigned char *t=allocate_code(page_size);
     memcpy(t+0x80,scales,sizeof scales);
     /* (from, to, scale) triples: tag offset -> cull parameter offset, times scales[i]; the shadow thunk at 0, the
      * other at 0x30 */
@@ -1079,9 +1111,13 @@ void runtime_restart(void) {
     runtime_ffb_release("restart");
     TerminateProcess(GetCurrentProcess(),0);
 #else
-    puts("Runtime: restarting through run.sh");
+    /* The packaged AppImage sets BB_RESTART_COMMAND to the AppImage itself; from a source tree the
+     * restart goes through run.sh, which reads the settings the launcher wrote. */
+    const char *command=getenv("BB_RESTART_COMMAND");
+    puts(command && *command ? "Runtime: restarting" : "Runtime: restarting through run.sh");
     syscall(SYS_close_range, 3u, ~0u, 0u);
-    execlp("bash", "bash", "run.sh", (char *)NULL);
+    if (command && *command) execlp("bash", "bash", "-c", command, (char *)NULL);
+    else execlp("bash", "bash", "run.sh", (char *)NULL);
     perror("runtime_restart: exec");
     _exit(1);
 #endif
@@ -1268,6 +1304,7 @@ int main(int argc, char **argv) {
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
     mallopt(M_ARENA_MAX,1);
     mallopt(M_MMAP_THRESHOLD,32*1024*1024);
+    guest_cpu_init(runtime_low_map);
 #endif
     if (argc == 2 && !strcmp(argv[1], "--vulkan-only")) return vulkan_smoke();
 #ifdef _WIN32
@@ -1487,11 +1524,13 @@ int main(int argc, char **argv) {
     unsigned char *traps = allocate(round_page((import_count + 1) * 32));
     unsigned char *data_traps = allocate((import_count + 1) * page_size);
     protect(data_traps, (import_count + 1) * page_size, 0);
+    guest_cpu_code((uintptr_t)image, round_page(size));
+    guest_cpu_code((uintptr_t)traps, round_page((import_count + 1) * 32));
+    const uintptr_t handler = host_entry(stub_unresolved ? (uintptr_t)unresolved_soft : (uintptr_t)unresolved);
     for (uint64_t i = 0; i < import_count; ++i) {
         unsigned char *t = traps + i * 32;
         /* SysV: mov edi, index; movabs rax, handler; jmp rax. No fake return values. */
         uint32_t index = (uint32_t)i;
-        uintptr_t handler = stub_unresolved ? (uintptr_t)unresolved_soft : (uintptr_t)unresolved;
         t[0] = 0x48; t[1] = 0x89; t[2] = 0xfe; /* mov rsi,rdi: preserve arg0 */
         t[3] = 0xbf; memcpy(t + 4, &index, 4);
         t[8] = 0x48; t[9] = 0xb8; memcpy(t + 10, &handler, 8);
@@ -1503,7 +1542,8 @@ int main(int argc, char **argv) {
                         : (uintptr_t)image + relocs[i].value;
         if (relocs[i].kind) {
             uintptr_t resolved = runtime_resolve(names[relocs[i].value], relocs[i].kind == 2);
-            if (resolved) value = resolved + relocs[i].addend;
+            if (resolved && relocs[i].kind == 1) value = host_entry(resolved);
+            else if (resolved) value = resolved + relocs[i].addend;
             else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
@@ -1544,6 +1584,13 @@ int main(int argc, char **argv) {
     }
     if (!executable_entry) fail("entry is not executable");
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
+#ifndef _WIN32
+    /* The guest main thread runs on a stack below 1 TiB like PS4 stacks. */
+    enum { MAIN_STACK=8*1024*1024 };
+    unsigned char *stack=runtime_low_map(MAIN_STACK,PROT_READ|PROT_WRITE);
+    if (!stack) fail("cannot allocate guest main stack");
+    guest_cpu_thread_stack(stack+MAIN_STACK-64,MAIN_STACK-64);
+#endif
     if (native_libc) {
         for (uint64_t m=0;m<module_count;++m) {
             int init_executable=0;
@@ -1563,8 +1610,8 @@ int main(int argc, char **argv) {
                 continue;
             }
             printf("Starting linked module %" PRIu64 " at image offset 0x%" PRIx64 "; native bindings=%" PRIu64 "\n",m,modules[m].init,nb);
-            typedef int (ABI *ModuleInit)(uint64_t,void *,void *);
-            int result=((ModuleInit)(image+modules[m].init))(0,NULL,NULL);
+            const uint64_t init_args[3]={0,0,0};
+            int result=(int)guest_cpu_call((uintptr_t)(image+modules[m].init),3,init_args);
             printf("Module %" PRIu64 " initializer returned %d\n",m,result);
             if (result) fail("module initializer failed");
             modules[m].started=1;
@@ -1574,17 +1621,17 @@ int main(int argc, char **argv) {
     extern void runtime_exit_initialize(void);
     runtime_exit_initialize();
     entered_game=1;
-    struct { uint64_t argc; const char *argv[3]; } params = {1, {"/app0/eboot.bin", NULL, NULL}};
+    /* Static: the host stack may lie above 47-bit guest addresses (arm64 hosts). */
+    static struct { uint64_t argc; const char *argv[3]; } params = {1, {"/app0/eboot.bin", NULL, NULL}};
     if ((params.argv[1]=runtime_benchmark_guest_arg())) params.argc=2;
 #ifdef _WIN32
     typedef void (ABI *Entry)(void *, void (ABI *)(void));
     ((Entry)(image + entry))(&params, guest_exit);
-#else
-    /* The guest main thread runs on a stack below 1 TiB like PS4 stacks. */
-    enum { MAIN_STACK=8*1024*1024 };
-    unsigned char *stack=runtime_low_map(MAIN_STACK,PROT_READ|PROT_WRITE);
-    if (!stack) fail("cannot allocate guest main stack");
+#elif defined(GUEST_CPU_NATIVE)
     enter_on_stack(image+entry,&params,(void *)guest_exit,stack+MAIN_STACK-64);
+#else
+    const uint64_t entry_args[2]={(uint64_t)(uintptr_t)&params,host_entry((uintptr_t)guest_exit)};
+    guest_cpu_call((uintptr_t)(image+entry),2,entry_args);
 #endif
     fail("entry unexpectedly returned");
 }

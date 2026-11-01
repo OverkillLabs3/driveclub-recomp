@@ -12,6 +12,20 @@ static void open_dialog(ExitDialog *d) {
     assert(d->open && !d->selected_exit && !d->exiting);
 }
 int main(void) {
+    for (uint32_t confirm=0x2000;confirm<=0x4000;confirm+=0x2000) {
+        const uint32_t back=confirm ^ 0x6000;
+        assert(exit_dialog_actions(confirm,confirm)==EXIT_CONFIRM);
+        assert(exit_dialog_actions(back,confirm)==EXIT_BACK);
+        assert(exit_dialog_actions(0x6000,confirm)==(EXIT_BACK|EXIT_CONFIRM));
+        ExitDialog regional={0}; step(&regional,true,0,0,0,0);
+        step(&regional,true,exit_dialog_actions(confirm,confirm),0,0,0); assert(!regional.open);
+        step(&regional,true,0,0,0,0);
+        step(&regional,true,exit_dialog_actions(back,confirm),0,0,0); assert(regional.open);
+        step(&regional,true,0,0,0,0); step(&regional,true,EXIT_NEXT,0,0,0);
+        step(&regional,true,0,0,0,0);
+        step(&regional,true,exit_dialog_actions(confirm,confirm),0,0,0); assert(regional.exiting);
+    }
+    assert(!exit_dialog_actions(0x6000,0));
     ExitDialog d={0};
     /* A Back held across a submenu -> root transition must never open. */
     step(&d,false,0,0,0,0); step(&d,false,EXIT_BACK,0,0,0);

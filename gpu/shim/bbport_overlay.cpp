@@ -733,7 +733,8 @@ void FpsCounter() {
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
                         s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : "FSR 3.1",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
-                        s.aa_running ? " on" : " waiting", *keys ? "  (" : "", keys, *keys ? ")" : "");
+                        s.aa_running ? " on" : s.aa_failed ? " failed (see the log)" : " waiting", *keys ? "  (" : "",
+                        keys, *keys ? ")" : "");
         } else if (g_aa_used) {
             ImGui::Text("AA: game  (F9 on)");
         }

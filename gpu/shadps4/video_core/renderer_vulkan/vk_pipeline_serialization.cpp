@@ -475,7 +475,7 @@ void PersistentSrtInfo::Serialize(Serialization::Archive& ar) const {
 
     srt.Write(this, sizeof(*this));
     if (walker_func_size) {
-        srt.Write(reinterpret_cast<void*>(walker_func), walker_func_size);
+        srt.Write(static_cast<const u8*>(SrtWalkerCode(walker_func)), walker_func_size);
     }
 }
 
@@ -487,6 +487,9 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
     if (walker_func_size) {
         walker_func = RegisterWalkerCode(ar.CurrPtr(), walker_func_size);
         ar.Advance(walker_func_size);
+        if (!walker_func) {
+            return false;
+        }
     }
 
     return true;

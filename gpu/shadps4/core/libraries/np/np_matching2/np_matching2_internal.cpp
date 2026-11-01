@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include "bbport_guest_call.h"
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -1310,7 +1311,7 @@ void FireEvent(const PendingEvent& ev) {
             LOG_DEBUG(Lib_NpMatching2, "callback CONTEXT ctx={} event={:#x} cause={} err={:#x}",
                       ev.ctx_id, static_cast<u16>(ev.ctx_event),
                       static_cast<u8>(ev.ctx_event_cause), ev.error_code);
-            ctx->context_callback(ev.ctx_id, ev.ctx_event, ev.ctx_event_cause, ev.error_code,
+            GuestCall(ctx->context_callback, ev.ctx_id, ev.ctx_event, ev.ctx_event_cause, ev.error_code,
                                   ctx->context_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2, "callback CONTEXT ctx={} event={:#x} SKIPPED: no callback",
@@ -1326,7 +1327,7 @@ void FireEvent(const PendingEvent& ev) {
                       "callback REQUEST ctx={} reqId={} event={:#x} err={:#x} data={}", ev.ctx_id,
                       ev.req_id, static_cast<u16>(ev.req_event), ev.error_code,
                       fmt::ptr(ev.request_data));
-            ev.request_cb(ev.ctx_id, ev.req_id, ev.req_event, ev.error_code, ev.request_data,
+            GuestCall(ev.request_cb, ev.ctx_id, ev.req_id, ev.req_event, ev.error_code, ev.request_data,
                           ev.request_cb_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,
@@ -1340,7 +1341,7 @@ void FireEvent(const PendingEvent& ev) {
                       "callback SIGNALING ctx={} room={} member={} event={:#x} err={:#x}",
                       ev.ctx_id, ev.room_id, ev.member_id, static_cast<u16>(ev.sig_event),
                       ev.error_code);
-            ctx->signaling_callback(ev.ctx_id, ev.room_id, ev.member_id, ev.sig_event,
+            GuestCall(ctx->signaling_callback, ev.ctx_id, ev.room_id, ev.member_id, ev.sig_event,
                                     ev.error_code, ctx->signaling_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,
@@ -1353,7 +1354,7 @@ void FireEvent(const PendingEvent& ev) {
             LOG_DEBUG(Lib_NpMatching2, "callback ROOM_EVENT ctx={} room={} event={:#x} data={}",
                       ev.ctx_id, ev.room_id, static_cast<u16>(ev.room_event),
                       fmt::ptr(ev.room_event_data));
-            ctx->room_event_callback(ev.ctx_id, ev.room_id, ev.room_event, ev.room_event_data,
+            GuestCall(ctx->room_event_callback, ev.ctx_id, ev.room_id, ev.room_event, ev.room_event_data,
                                      ctx->room_event_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,
@@ -1366,7 +1367,7 @@ void FireEvent(const PendingEvent& ev) {
             LOG_DEBUG(Lib_NpMatching2, "callback LOBBY_EVENT ctx={} lobby={} event={:#x} data={}",
                       ev.ctx_id, ev.lobby_id, static_cast<u16>(ev.lobby_event),
                       fmt::ptr(ev.lobby_event_data));
-            ctx->lobby_event_callback(ev.ctx_id, ev.lobby_id, ev.lobby_event, ev.lobby_event_data,
+            GuestCall(ctx->lobby_event_callback, ev.ctx_id, ev.lobby_id, ev.lobby_event, ev.lobby_event_data,
                                       ctx->lobby_event_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,
@@ -1378,7 +1379,7 @@ void FireEvent(const PendingEvent& ev) {
         if (ctx->lobby_message_callback) {
             LOG_DEBUG(Lib_NpMatching2, "callback LOBBY_MESSAGE ctx={} lobby={} src={} event={:#x}",
                       ev.ctx_id, ev.lobby_id, ev.src_member_id, static_cast<u16>(ev.msg_event));
-            ctx->lobby_message_callback(ev.ctx_id, ev.lobby_id, ev.src_member_id, ev.msg_event,
+            GuestCall(ctx->lobby_message_callback, ev.ctx_id, ev.lobby_id, ev.src_member_id, ev.msg_event,
                                         ev.message_data, ctx->lobby_message_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,
@@ -1390,7 +1391,7 @@ void FireEvent(const PendingEvent& ev) {
         if (ctx->room_message_callback) {
             LOG_DEBUG(Lib_NpMatching2, "callback ROOM_MESSAGE ctx={} room={} src={} event={:#x}",
                       ev.ctx_id, ev.room_id, ev.src_member_id, static_cast<u16>(ev.msg_event));
-            ctx->room_message_callback(ev.ctx_id, ev.room_id, ev.src_member_id, ev.msg_event,
+            GuestCall(ctx->room_message_callback, ev.ctx_id, ev.room_id, ev.src_member_id, ev.msg_event,
                                        ev.message_data, ctx->room_message_callback_arg);
         } else {
             LOG_WARNING(Lib_NpMatching2,

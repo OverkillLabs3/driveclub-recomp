@@ -5,12 +5,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 #include <vk_mem_alloc.h>
-#include <string>
 
 #include "bbport_frame_info.h"
 #include "bbport_settings.h"
@@ -55,6 +56,203 @@ FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 h
     out.aspect = static_cast<VkImageAspectFlags>(aspect);
     out.state = state;
     return out;
+}
+
+// FSR's Vulkan calls, logged when they fail. AMD's backend inside the FSR library loads its Vulkan functions through
+// the getDeviceProcAddr it is given, and the library reports any failure as one result code: these wrappers say which
+// call failed, with what and why, so a context that cannot be created on a driver names the reason in the log.
+struct FsrCalls {
+    PFN_vkGetDeviceProcAddr get = nullptr;
+    PFN_vkCreateImage create_image = nullptr;
+    PFN_vkCreateBuffer create_buffer = nullptr;
+    PFN_vkAllocateMemory allocate_memory = nullptr;
+    PFN_vkBindImageMemory bind_image = nullptr;
+    PFN_vkBindBufferMemory bind_buffer = nullptr;
+    PFN_vkCreateImageView create_view = nullptr;
+    PFN_vkCreateShaderModule create_module = nullptr;
+    PFN_vkCreateComputePipelines create_pipelines = nullptr;
+    PFN_vkCreatePipelineLayout create_layout = nullptr;
+    PFN_vkCreateDescriptorSetLayout create_set_layout = nullptr;
+    PFN_vkCreateDescriptorPool create_pool = nullptr;
+    PFN_vkAllocateDescriptorSets allocate_sets = nullptr;
+    PFN_vkCreateSampler create_sampler = nullptr;
+    u32 images = 0, buffers = 0, pipelines = 0, modules = 0, failures = 0;
+    size_t last_module_bytes = 0;
+    std::string missing; // functions the driver does not have
+} g_fsr;
+
+void FsrFailed(const char* call, VkResult result, const std::string& what) {
+    ++g_fsr.failures;
+    std::printf("Anti-aliasing: FSR 3 %s failed (%s)%s%s\n", call, vk::to_string(vk::Result(result)).c_str(),
+                what.empty() ? "" : ": ", what.c_str());
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateImage(VkDevice d, const VkImageCreateInfo* ci, const VkAllocationCallbacks* a,
+                                              VkImage* out) {
+    const VkResult r = g_fsr.create_image(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        char what[200];
+        std::snprintf(what, sizeof(what), "%ux%u %s, usage %s, flags %#x, %u mips", ci->extent.width, ci->extent.height,
+                      vk::to_string(vk::Format(ci->format)).c_str(),
+                      vk::to_string(vk::ImageUsageFlags(ci->usage)).c_str(), ci->flags, ci->mipLevels);
+        FsrFailed("vkCreateImage", r, what);
+    } else {
+        ++g_fsr.images;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateBuffer(VkDevice d, const VkBufferCreateInfo* ci, const VkAllocationCallbacks* a,
+                                               VkBuffer* out) {
+    const VkResult r = g_fsr.create_buffer(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkCreateBuffer", r, std::to_string(ci->size) + " bytes, usage " +
+                                           vk::to_string(vk::BufferUsageFlags(ci->usage)));
+    } else {
+        ++g_fsr.buffers;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrAllocateMemory(VkDevice d, const VkMemoryAllocateInfo* ai,
+                                                 const VkAllocationCallbacks* a, VkDeviceMemory* out) {
+    const VkResult r = g_fsr.allocate_memory(d, ai, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkAllocateMemory", r, std::to_string(ai->allocationSize) + " bytes, memory type " +
+                                             std::to_string(ai->memoryTypeIndex));
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrBindImage(VkDevice d, VkImage i, VkDeviceMemory m, VkDeviceSize o) {
+    const VkResult r = g_fsr.bind_image(d, i, m, o);
+    if (r != VK_SUCCESS) FsrFailed("vkBindImageMemory", r, "");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrBindBuffer(VkDevice d, VkBuffer b, VkDeviceMemory m, VkDeviceSize o) {
+    const VkResult r = g_fsr.bind_buffer(d, b, m, o);
+    if (r != VK_SUCCESS) FsrFailed("vkBindBufferMemory", r, "");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateView(VkDevice d, const VkImageViewCreateInfo* ci, const VkAllocationCallbacks* a,
+                                             VkImageView* out) {
+    const VkResult r = g_fsr.create_view(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateImageView", r, vk::to_string(vk::Format(ci->format)));
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateModule(VkDevice d, const VkShaderModuleCreateInfo* ci,
+                                               const VkAllocationCallbacks* a, VkShaderModule* out) {
+    g_fsr.last_module_bytes = ci->codeSize;
+    const VkResult r = g_fsr.create_module(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateShaderModule", r, std::to_string(ci->codeSize) + " bytes of SPIR-V");
+    else ++g_fsr.modules;
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreatePipelines(VkDevice d, VkPipelineCache c, uint32_t n,
+                                                  const VkComputePipelineCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                  VkPipeline* out) {
+    const VkResult r = g_fsr.create_pipelines(d, c, n, ci, a, out);
+    if (r != VK_SUCCESS) {
+        u32 subgroup = 0;
+        for (auto* next = static_cast<const VkBaseInStructure*>(ci->stage.pNext); next; next = next->pNext) {
+            if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO) {
+                subgroup = reinterpret_cast<const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*>(next)
+                               ->requiredSubgroupSize;
+            }
+        }
+        FsrFailed("vkCreateComputePipelines", r,
+                  "pipeline " + std::to_string(g_fsr.pipelines + 1) + " (in FSR's order: luma pyramid, RCAS, ...), " +
+                      std::to_string(g_fsr.last_module_bytes) + " bytes of SPIR-V, required subgroup size " +
+                      (subgroup ? std::to_string(subgroup) : std::string("none")));
+    } else {
+        g_fsr.pipelines += n;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateLayout(VkDevice d, const VkPipelineLayoutCreateInfo* ci,
+                                               const VkAllocationCallbacks* a, VkPipelineLayout* out) {
+    const VkResult r = g_fsr.create_layout(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkCreatePipelineLayout", r, std::to_string(ci->setLayoutCount) + " set layouts, " +
+                                                   std::to_string(ci->pushConstantRangeCount) + " push constant ranges");
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateSetLayout(VkDevice d, const VkDescriptorSetLayoutCreateInfo* ci,
+                                                  const VkAllocationCallbacks* a, VkDescriptorSetLayout* out) {
+    const VkResult r = g_fsr.create_set_layout(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        std::string what = std::to_string(ci->bindingCount) + " bindings:";
+        for (u32 i = 0; i < ci->bindingCount && i < 24; ++i) {
+            what += " " + vk::to_string(vk::DescriptorType(ci->pBindings[i].descriptorType)) + "x" +
+                    std::to_string(ci->pBindings[i].descriptorCount);
+        }
+        FsrFailed("vkCreateDescriptorSetLayout", r, what);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreatePool(VkDevice d, const VkDescriptorPoolCreateInfo* ci,
+                                             const VkAllocationCallbacks* a, VkDescriptorPool* out) {
+    const VkResult r = g_fsr.create_pool(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        std::string what = std::to_string(ci->maxSets) + " sets:";
+        for (u32 i = 0; i < ci->poolSizeCount; ++i) {
+            what += " " + vk::to_string(vk::DescriptorType(ci->pPoolSizes[i].type)) + "x" +
+                    std::to_string(ci->pPoolSizes[i].descriptorCount);
+        }
+        FsrFailed("vkCreateDescriptorPool", r, what);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrAllocateSets(VkDevice d, const VkDescriptorSetAllocateInfo* ai, VkDescriptorSet* out) {
+    const VkResult r = g_fsr.allocate_sets(d, ai, out);
+    if (r != VK_SUCCESS) FsrFailed("vkAllocateDescriptorSets", r, std::to_string(ai->descriptorSetCount) + " sets");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateSampler(VkDevice d, const VkSamplerCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                VkSampler* out) {
+    const VkResult r = g_fsr.create_sampler(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateSampler", r, "");
+    return r;
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FsrGetDeviceProcAddr(VkDevice device, const char* name) {
+    const PFN_vkVoidFunction real = g_fsr.get(device, name);
+    if (!real) {
+        if (g_fsr.missing.size() < 600) g_fsr.missing += std::string(g_fsr.missing.empty() ? "" : ", ") + name;
+        return real;
+    }
+#define DC_FSR_WRAP(fn, member, wrapper)                                                                               \
+    if (std::strcmp(name, #fn) == 0) {                                                                                 \
+        g_fsr.member = reinterpret_cast<PFN_##fn>(real);                                                               \
+        return reinterpret_cast<PFN_vkVoidFunction>(wrapper);                                                          \
+    }
+    DC_FSR_WRAP(vkCreateImage, create_image, FsrCreateImage)
+    DC_FSR_WRAP(vkCreateBuffer, create_buffer, FsrCreateBuffer)
+    DC_FSR_WRAP(vkAllocateMemory, allocate_memory, FsrAllocateMemory)
+    DC_FSR_WRAP(vkBindImageMemory, bind_image, FsrBindImage)
+    DC_FSR_WRAP(vkBindBufferMemory, bind_buffer, FsrBindBuffer)
+    DC_FSR_WRAP(vkCreateImageView, create_view, FsrCreateView)
+    DC_FSR_WRAP(vkCreateShaderModule, create_module, FsrCreateModule)
+    DC_FSR_WRAP(vkCreateComputePipelines, create_pipelines, FsrCreatePipelines)
+    DC_FSR_WRAP(vkCreatePipelineLayout, create_layout, FsrCreateLayout)
+    DC_FSR_WRAP(vkCreateDescriptorSetLayout, create_set_layout, FsrCreateSetLayout)
+    DC_FSR_WRAP(vkCreateDescriptorPool, create_pool, FsrCreatePool)
+    DC_FSR_WRAP(vkAllocateDescriptorSets, allocate_sets, FsrAllocateSets)
+    DC_FSR_WRAP(vkCreateSampler, create_sampler, FsrCreateSampler)
+#undef DC_FSR_WRAP
+    return real;
+}
+
+const char* PortableResultName(FfxVkPortableResult result) {
+    switch (result) {
+    case FFX_VK_PORTABLE_OK: return "ok";
+    case FFX_VK_PORTABLE_ERROR_INVALID_POINTER: return "invalid pointer";
+    case FFX_VK_PORTABLE_ERROR_INVALID_STRUCT_SIZE: return "invalid struct size";
+    case FFX_VK_PORTABLE_ERROR_VULKAN: return "a Vulkan call failed (its own images)";
+    case FFX_VK_PORTABLE_ERROR_INVALID_ARGUMENT: return "invalid argument";
+    case FFX_VK_PORTABLE_ERROR_OUT_OF_MEMORY: return "out of memory";
+    case FFX_VK_PORTABLE_ERROR_UNSUPPORTED: return "unsupported (the device's capabilities, or a format or memory type)";
+    case FFX_VK_PORTABLE_ERROR_BACKEND: return "AMD's FSR backend failed (its pipelines or resources)";
+    }
+    return "unknown";
 }
 
 void PrintIssues(const char* what, u64 issues) {
@@ -211,6 +409,7 @@ void DriveAA::NextFrame() {
         applied_mode = mode;
         reset = true;
         failed = false;
+        BbSettings::Get().aa_failed = false;
         jitter_index = 0;
     }
     // Called for every draw into the display buffer: "running" means it ran lately.
@@ -378,7 +577,9 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
         device_info.instance = instance.GetInstance();
         device_info.physicalDevice = instance.GetPhysicalDevice();
         device_info.device = instance.GetDevice();
-        device_info.getDeviceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+        g_fsr = {};
+        g_fsr.get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+        device_info.getDeviceProcAddr = FsrGetDeviceProcAddr;
         device_info.queue = instance.GetGraphicsQueue();
         device_info.queueFamilyIndex = instance.GetGraphicsQueueFamilyIndex();
         device_info.shaderFloat16Enabled = instance.IsShaderFloat16Enabled();
@@ -398,9 +599,26 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
             PrintIssues("create info", issues);
             return false;
         }
-        if (ffxVkPortableUpscaleContextCreate(&device_info, &create_info, &context) !=
-            FFX_VK_PORTABLE_OK) {
-            std::puts("Anti-aliasing: FSR 3 context creation failed");
+        const FfxVkPortableResult created = ffxVkPortableUpscaleContextCreate(&device_info, &create_info, &context);
+        if (created != FFX_VK_PORTABLE_OK) {
+            std::printf("Anti-aliasing: FSR 3 context creation failed: %s (%d), %ux%u to %ux%u\n",
+                        PortableResultName(created), int(created), w, h, ow, oh);
+            // What FSR checks the device for, and how far it got.
+            FfxVkPortableDeviceCapabilities caps{};
+            caps.structSize = sizeof(caps);
+            if (ffxVkPortableQueryDeviceCapabilities(instance.GetPhysicalDevice(), &caps) == FFX_VK_PORTABLE_OK) {
+                std::printf("Anti-aliasing: FSR 3 device check: prerequisites %d (compute queue %d, subgroup operations %d, "
+                            "storage formats %d), subgroup size %u (%u to %u, size control %d), float16 %d; device "
+                            "float16 %d, size control %d\n",
+                            caps.fsr3ComputePrerequisites, caps.hasComputeQueue, caps.subgroupOperations,
+                            caps.requiredFsr3StorageFormats, caps.subgroupSize, caps.minSubgroupSize,
+                            caps.maxSubgroupSize, caps.subgroupSizeControl, caps.shaderFloat16,
+                            int(device_info.shaderFloat16Enabled), int(device_info.subgroupSizeControlEnabled));
+            }
+            std::printf("Anti-aliasing: FSR 3 created %u images, %u buffers, %u shader modules, %u pipelines before it "
+                        "stopped; %u Vulkan calls failed%s%s\n",
+                        g_fsr.images, g_fsr.buffers, g_fsr.modules, g_fsr.pipelines, g_fsr.failures,
+                        g_fsr.missing.empty() ? "" : "; not offered by the driver (FSR falls back to others): ", g_fsr.missing.c_str());
             context = nullptr;
             return false;
         }
@@ -574,6 +792,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     scale = factor;
     if (!EnsureResources(w, h, ow, oh, want_dlss)) {
         failed = true;
+        BbSettings::Get().aa_failed = true;
         return;
     }
     const auto color_format = color.info.pixel_format;
@@ -794,11 +1013,13 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         if (const u64 issues = ffxVkPortableValidateUpscaleDispatchInfo(&create_info, &info)) {
             PrintIssues("dispatch", issues);
             failed = true;
+            BbSettings::Get().aa_failed = true;
             return;
         }
         if (ffxVkPortableUpscaleContextRecordDispatch(context, &info) != FFX_VK_PORTABLE_OK) {
             std::puts("Anti-aliasing: FSR 3 dispatch failed");
             failed = true;
+            BbSettings::Get().aa_failed = true;
             return;
         }
         dispatched = true;

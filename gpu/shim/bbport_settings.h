@@ -142,6 +142,8 @@ struct Values {
     std::atomic<int> dlss_model{0};
     /// The anti-aliasing replaced the game's result in the last frame (for the overlay).
     std::atomic<bool> aa_running{false};
+    /// FSR or DLSS could not start or run and stays off until the choice changes (the log says why).
+    std::atomic<bool> aa_failed{false};
     std::atomic<int> frame_gen_multiplier{2};
     /// At most the frames the display shows between two of the game's (an uncapped game then
     /// gets fewer generated frames); off: the multiplier as chosen.

@@ -2,6 +2,7 @@
 #define BB_RUNTIME_H
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 #ifdef _WIN32
 #include "compat_win.h"
 /* No signals on Windows: the exception handler resumes the thread in bb_longjmp
@@ -10,6 +11,8 @@ typedef bb_jmp_buf sigjmp_buf;
 #define sigsetjmp(buffer, save) bb_setjmp(buffer)
 #else
 #include <setjmp.h>
+/* compat_win.h's sleep, for code shared with the Windows build (runtime_logiwheel.inc); runtime_kernel.c. */
+void compat_sleep_ns(uint64_t ns);
 #endif
 /* Recovery point for speculative guest memory reads on this thread (probe.c fault handler). */
 extern __thread sigjmp_buf *runtime_fault_recover;
@@ -17,7 +20,13 @@ extern __thread sigjmp_buf *runtime_fault_recover;
 void runtime_restart(void);
 /* Stops the wheel's forces and lets it go (runtime_logiwheel.inc): before the process ends any way it can. */
 void runtime_ffb_release(const char *why);
+/* The guest's calling convention for host functions it calls. Elsewhere than x86-64 the guest CPU
+ * (guest_cpu.h, FEXCore) converts guest calls to the host's convention. */
+#if defined(__x86_64__)
 #define ABI __attribute__((sysv_abi))
+#else
+#define ABI
+#endif
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
 uintptr_t runtime_resolve(const char *name, int is_data);

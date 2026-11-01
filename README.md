@@ -13,6 +13,11 @@ The source code is in this repository and the build is on the [Releases](../../r
 - **DLSS Neural Rendering (Standard and Optimised model support)**
 - **Further performance and stability improvements**
 
+## New in 0.4.0
+- **Private multiplayer with friends.** Sessions and private lobbies, races together, clubs, statistics and presence, over a home network or a VPN (Tailscale, Hamachi, Radmin). One player hosts; the server is in the zip and the launcher starts it. See [docs/online/QUICKSTART.md](docs/online/QUICKSTART.md).
+- **Trophies.** A PS4-style banner with the trophy's picture, name and description, and saved unlocks.
+- **A new launcher** with grouped settings and a mod manager. `DriveClub.exe` opens it; the classic launcher (`DriveClub.Native.exe`) is used under Wine and Proton or when .NET is missing. Both have the same settings.
+
 ## New in 0.3.0
 - **DLSS and FSR upscaling.** Pick the Output size and a mode from Quality to Ultra Performance: the game renders smaller and DLSS (GeForce RTX) or FSR 3.1 (any card) brings the picture to the output, with a Sharpness slider. Shadows no longer flicker while upscaling, and it works in car selection and the pre-race flyovers.
 - **HDR10 output** on HDR displays, with a brightness control (Page Up / Page Down in the game).
@@ -39,9 +44,23 @@ Nothing to install. Your own files are never modified or copied, and the folders
 
 Logs are in the `logs` folder.
 
+### Linux (x86_64)
+The AppImage is built by the [AppImage workflow](.github/workflows/appimage.yml), or locally with
+`bash packaging/appimage/build-appimage.sh <version>` (see [BUILDING.md](BUILDING.md#linux-x86_64)).
+It uses the same game dumps and keeps its settings, prepared image, saves and logs in a
+`data/` folder beside the AppImage whenever that folder is writable (otherwise in
+`~/.local/share/driveclub-recomp`). Running the AppImage opens the native Linux launcher, with
+the same game folders, display, driving and patch settings as the Windows launcher. Press
+PLAY there and the recomp prepares and starts; `--play` starts it headlessly with the saved
+settings. Use DATA FOLDER > Change... in the launcher to select another folder or move the
+existing data. Put `update/` and `base/` next to the AppImage, use `--setup UPDATE BASE` once,
+or set `DRIVECLUB_UPDATE_DIR` and `DRIVECLUB_BASE_DIR`. The choice is stored in `data-path`
+beside the AppImage; `DRIVECLUB_DATA_DIR` overrides it, and a `portable` marker selects `data/`
+when no folder has been chosen.
+
 ## Highlights
 - The game's own x86-64 code runs directly on your CPU, with no CPU emulation. The PS4 system libraries are reimplemented and the GPU commands are translated to Vulkan, similar to Wine and DXVK
-- Playable from the menus through races, photo mode and saves
+- Playable from the menus through races, photo mode and saves, with trophies and private multiplayer with friends
 - About 60 FPS at 4K in the heaviest scenes on our test PC (RTX 5070 Ti, Ryzen 7 5800X3D), higher in lighter ones, with an unlocked frame rate option in the launcher that keeps the game at its normal speed
 - Runs on NVIDIA, AMD and Intel graphics through Vulkan, with Resizable BAR used automatically where the driver allows it
 - Keyboard racing layout and any gamepad (Xbox, PlayStation, Switch Pro, 8BitDo)
@@ -116,9 +135,7 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Performance preset:** Handheld, Low, Medium, High or Ultra pick the render and output sizes for your PC. You can still change each size afterwards.
 
-**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, or **Unlocked (VRR)**. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion. **No V-Sync** is for displays without variable refresh: unlocked with no cap and no V-Sync, so each frame is shown the moment it is done (expect tearing). Above about 120 FPS the game's movement timing breaks (the car can run slower or behave wrongly), so cap it in your graphics driver if your PC goes past 120.
-
-**High-FPS camera workaround (experimental):** an optional switch under Gameplay → Patches, enabled by default. It bundles the camera/replay changes to reduce shaking above 30 FPS, including replay HUD and driver motion. Camera behavior is still incorrect in some situations and does not match the 30 FPS reference. Restart the game after changing it. This is a workaround requiring further review, not a complete camera accuracy fix.
+**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, **Unlocked (VRR)** or **Unlimited** (no cap and no V-Sync, above your display's refresh rate if your PC can; the picture can tear). **Unlocked (VRR)** is for G-Sync and FreeSync displays. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion. **No V-Sync** is for displays without variable refresh: unlocked with no cap and no V-Sync, so each frame is shown the moment it is done (expect tearing). Above about 120 FPS the game's movement timing breaks (the car can run slower or behave wrongly), so cap it in your graphics driver if your PC goes past 120.
 
 **Resolution:** output from 720p to 8K, render size from 720p to 8K, and ultrawide sizes with a field-of-view fix. Sizes above 1080p use more memory; the needed memory patch is added for you.
 
@@ -140,6 +157,16 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Driving:** the field of view, **Lock to horizon** (Off, Cockpit or All views: the horizon stays level while the car leans and dips, as in Assetto Corsa; the driver's head still looks into corners and its sway is smoothed, which is easier on motion sickness; All views does the bonnet, bumper and chase views too), **Camera shake** (0 to 100% of the game's shake over bumps and kerbs; the game's own Options menu has a Camera shake setting that adds more on top, so set it to 0 there too for the calmest view), the gearbox, brake assist, hardcore handling and wheel assist, and the steering wheel (Wheel Setup and force feedback, see [Steering wheels](#steering-wheels)). **Sim** turns the assists off, with a manual gearbox and hardcore handling; **Assisted** uses an automatic gearbox, brake assist and wheel assist; **Game Defaults** leaves them to the game's own menu. A choice made here wins over the game's menu; **In-game** hands that option back to the menu.
 
+**Online play** (General tab): Off, **Host a session** or **Join a session** (type the host's IP address). Players reach each other over a home network or a VPN. Run `Allow-Firewall.bat` once. Both players need the same version. More in [docs/online](docs/online).
+
+**Save profile** (General tab, SAVES): four separate careers on one install, a backup of your saves at every start (the last ten are kept), and **Back up now** and **Restore the latest backup** buttons.
+
+**Unlock every car and bike:** off by default. Makes every car and bike available from the first level, including the add-on content. Cars won in events stay as the game has them.
+
+**Picture** (Display tab): brightness, contrast and gamma. In the game, **F4** picks contrast or gamma and **Page Up / Page Down** change the value.
+
+**Lock to horizon** and **Camera shake** (Driving tab): keep the horizon level in corners (cockpit or all views), and lower how much the camera shakes.
+
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.
 
 ## Benchmark
@@ -157,8 +184,9 @@ A second line, `Benchmark: ran render=... output=... fps_limit=... aa=...`, list
 - **Static (faster)** stops reflections and rain on the glass from updating.
 - **The processor is the limit.** Heavy scenes (many cars, trees and rain) drop frames first on slower CPUs.
 - **First play builds shaders:** short stutters in the first minutes until they are cached. This gets better on later runs.
-- **Online features do not work.**
-- Tested on an NVIDIA graphics card only. AMD and Intel are untested; reports from AMD and Intel players are welcome.
+- **Online play is private.** It works between friends on a home network or a VPN, with the same version for everyone. There are no public servers yet.
+- Mostly tested on NVIDIA graphics cards. AMD and Intel players still report colour glitches or "device lost" crashes in some cases; reports with the log files are welcome.
+- Above 120 FPS the game can have issues.
 
 ## Notes
 - You must supply your own, legally obtained dump of the game. No game files are included.
@@ -167,7 +195,8 @@ A second line, `Benchmark: ran render=... output=... fps_limit=... aa=...`, list
 - Requires Windows 10/11 64-bit, a processor from Intel Haswell (2013) or AMD Excavator or Ryzen onward, and a graphics card with a Vulkan 1.3 driver. About 40 GB of free space is needed for the game dumps.
 
 ## Building from source
-See [BUILDING.md](BUILDING.md).
+See [BUILDING.md](BUILDING.md). The Linux build produces a native AppImage (`packaging/appimage/build-appimage.sh`);
+the same document lists its dependencies.
 
 ## Reporting problems
 Open an [issue](../../issues/new/choose) and fill in the form. **Attach the log files**: without them an issue usually cannot be solved. In the folder next to `DriveClub.exe`, open `logs` and drag these into the issue:

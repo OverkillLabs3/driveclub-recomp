@@ -17,6 +17,12 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int SOCKET; /* the Winsock names the co-op poll below uses */
+#define INVALID_SOCKET (-1)
+#define closesocket close
 #endif
 
 #define USER_ID 1
