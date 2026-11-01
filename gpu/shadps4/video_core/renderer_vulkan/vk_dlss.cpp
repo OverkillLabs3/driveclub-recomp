@@ -354,6 +354,9 @@ std::string Dlss::Problem() const {
 bool Dlss::HasFeature(const FeatureDesc&) const {
     return false;
 }
+bool Dlss::SelectFeature(u32) {
+    return false;
+}
 bool Dlss::CreateFeature(vk::CommandBuffer, const FeatureDesc&) {
     return false;
 }
