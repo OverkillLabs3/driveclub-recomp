@@ -706,7 +706,11 @@ static void watch_install(void *address) {
 static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t *caller, uintptr_t ret) {
     memcpy(obj+0xf4,in,0x30);
     if (ret!=runtime_image_base+0xd93c3e) return;
-    if (!in[0]) { ffb_car.state=ffb_car.setup=ffb_car.sim=0; return; }   /* no car under the player's control */
+    if (!in[0]) {   /* no car under the player's control */
+        if (ffb_car.state) __atomic_store_n(&ffb_car.released,true,__ATOMIC_RELEASE);
+        ffb_car.state=ffb_car.setup=ffb_car.sim=0;
+        return;
+    }
     /* the caller has just read the block from these (+0xd9393d..+0xd93945), so they are valid */
     const uintptr_t iface=caller[-0x78/8];
     const uintptr_t state=*(const uintptr_t *)(iface+0x8), setup=*(const uintptr_t *)(iface+0x20), sim=*(const uintptr_t *)(setup+0x8);
