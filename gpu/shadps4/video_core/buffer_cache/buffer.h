@@ -82,8 +82,8 @@ struct UniqueBuffer {
         return *this;
     }
 
-    void Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
-                VmaAllocationInfo* out_alloc_info);
+    VkResult Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
+                    VmaAllocationInfo* out_alloc_info);
 
     void Destroy();
 
