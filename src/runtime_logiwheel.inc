@@ -512,8 +512,9 @@ static void ffb_gain_buttons(uint64_t car) {
     static bool was_down[2];
     bool down[2]={false,false};
     pthread_mutex_lock(&lock);
-    for (int b=0;b<2;++b) if (wheel && ffb_gain_button[b]>=0) down[b]=SDL_GetJoystickButton(wheel,ffb_gain_button[b]);
+    for (int b=0;b<2;++b) if (ffb_gain_button[b]>=0) down[b]=wheel_button_down(ffb_gain_dev[b],ffb_gain_button[b]);
     pthread_mutex_unlock(&lock);
+    for (int b=0;b<2;++b) down[b]|=ffb_gain_key_down(b);
     for (int b=0;b<2;++b) {
         const bool pressed=down[b] && !was_down[b];
         was_down[b]=down[b];
@@ -527,7 +528,7 @@ static void ffb_gain_buttons(uint64_t car) {
         ffb_cars[i].percent=ffb_car_percent=percent;
         ffb_cars_save();
         char note[96];
-        snprintf(note,sizeof note,"FFB %d%% for this car   (wheel: FFB gain + / -)",percent);
+        snprintf(note,sizeof note,"FFB %d%% for this car   (FFB gain + / -)",percent);
         bbgpu_overlay_note(note);
         printf("Runtime: FFB %d%% for car %016llx\n",percent,(unsigned long long)car);
     }
