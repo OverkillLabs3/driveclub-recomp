@@ -98,6 +98,8 @@ static void touch_click(PadData *d, int right) {
  * with a clutch axis, 2 for a wheel without one, 1 for a gamepad's triggers (R2 throttle, L2 brake), 0 before the
  * game has read a pad. */
 static PadData pad_last_read;   /* the last read of any port, under lock */
+#include "runtime_haptics.inc"   /* DualSense haptics from the car data, over the controller's USB sound card */
+#include "runtime_telemetry.inc"   /* the player's car every frame: telemetry out and adaptive triggers (off unless asked for) */
 static bool pad_was_read;
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
@@ -593,6 +595,8 @@ static bool exit_input(PadData *d) {
 }
 static void sample(PadData *d) {
     sample_host(d);
+    bbgpu_reflex_on_input_sampled();
+    if (bbgpu_overlay_captures_input()) { hold_after_capture=1; return; }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -643,6 +647,7 @@ static int32_t open_port(int32_t user, int32_t type, int32_t index, bool ext) {
     return free_slot+1;
 }
 static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const void *param) {
+    if (tele_wanted()) tele_install();
     (void)param;
     return open_port(user,type,index,false);
 }
@@ -1173,6 +1178,7 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
     runtime_exit_tick();
+    bbgpu_reflex_pre_input_sample();
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
@@ -1218,9 +1224,11 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
     { static unsigned n; if (n++<12 || ((param[0] || param[1]) && n<200)) printf("Runtime: scePadSetVibration large %u small %u\n",param[0],param[1]); }
+    hap_rumble_large=param[0]; hap_rumble_small=param[1];
     pthread_mutex_lock(&lock);
     SDL_Gamepad *g=current_gamepad();
-    if (g && !SDL_RumbleGamepad(g,(uint16_t)(param[1]*257u),(uint16_t)(param[0]*257u),0xFFFFFFFFu)) {
+    const bool hap=hap_active && g==gamepad;   /* the haptics stream plays the rumble: the motors stay off, or SDL mutes the haptics */
+    if (g && !SDL_RumbleGamepad(g,hap ? 0 : (uint16_t)(param[1]*257u),hap ? 0 : (uint16_t)(param[0]*257u),0xFFFFFFFFu)) {
         static int warned; if (!warned++) printf("Runtime: rumble not available on this pad: %s\n",SDL_GetError());
     }
     pthread_mutex_unlock(&lock);

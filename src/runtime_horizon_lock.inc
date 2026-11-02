@@ -2,7 +2,7 @@
 
    BB_LOCK_HORIZON=1: the cockpit (driver's head) camera is steadied as a driver's head is: it follows the car's slow
    pitch and roll (hills, banking) and takes out most of the quick ones (horizon_follow), much as Assetto Corsa's lock
-   to horizon does; =2: the bonnet, bumper, dash and chase cameras too. BB_CAMERA_SHAKE=<0..100>: percent
+   to horizon does; =2: the bonnet, bumper, dash and chase cameras too. BB_CAMERA_SHAKE=<0..200>: percent
    of the game's camera shake (100 as made).
 
    Cockpit: in the driver's head camera update (guest +0xb916d0, `this` in r15), at +0xb92420, +0x270..+0x2a0 hold the
@@ -277,8 +277,8 @@ static void horizon_lock_install(void) {
     const char *mode=getenv("BB_LOCK_HORIZON"), *smooth=getenv("BB_LOCK_HORIZON_SMOOTH"), *shake=getenv("BB_CAMERA_SHAKE");
     horizon_mode=mode && (mode[0]=='1' || mode[0]=='2') && !mode[1] ? mode[0]-'0' : 0;
     if (smooth && *smooth) horizon_smooth_s=(float)atoi(smooth)/1000.0f;
-    if (shake && *shake) camera_shake=(float)(atoi(shake)<0 ? 0 : atoi(shake)>100 ? 100 : atoi(shake))/100.0f;
-    if (camera_shake<0.999f) {
+    if (shake && *shake) camera_shake=(float)(atoi(shake)<0 ? 0 : atoi(shake)>200 ? 200 : atoi(shake))/100.0f;
+    if (camera_shake<0.999f || camera_shake>1.001f) {
         /* the 18 bytes of the effect call (mov rax,[r12+0x78]; mov rdi,[rax+rbx*8]; mov rax,[rdi]; mov rsi,r15;
            call [rax+0x10]): jmp [rip] to the bridge, then four bytes never reached */
         static const unsigned char call[18]={0x49,0x8b,0x44,0x24,0x78,0x48,0x8b,0x3c,0xd8,0x48,0x8b,0x07,0x4c,0x89,0xfe,0xff,0x50,0x10};

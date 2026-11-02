@@ -1216,7 +1216,9 @@ static void *ffb_thread(void *unused) {
                   ffb_restart(haptic,sw.id,&sw.running);
                   ffb_restart(haptic,pw.id,&pw.running);
                   ffb_restart(haptic,pw.damper_id,&pw.damper_running);
-                  ffb_restart(haptic,pw.slip_id,&pw.slip_running);
+                  ffb_restart(haptic,pw.friction_id,&pw.friction_running);
+                  ffb_restart(haptic,pw.inertia_id,&pw.inertia_running);
+                  ffb_restart(haptic,pw.buzz_id,&pw.buzz_running);
                   static unsigned n;
                   if (n++<3 || ffb_log()) printf("Runtime: FFB effects started again after %.1f s (steering force %+.2f)\n",(double)age*1e-6,steer);
               }
