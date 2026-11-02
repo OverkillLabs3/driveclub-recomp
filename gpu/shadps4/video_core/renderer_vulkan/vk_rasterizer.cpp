@@ -2509,6 +2509,81 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         ResetBindings(true);
         return;
     }
+    // vr.ini game_taa = 0: the game's temporal anti-aliasing (its resolve, cs 0x403f86d4: the lit HDR picture in,
+    // the anti-aliased one out) gives the picture as drawn: a copy of its input into its output. Variants that write
+    // anything else (the menu cameras' masks for later passes) still run. FSR and DLSS replace the result anyway.
+    // The resolve is known as DriveAA knows it (OnTaa below): 6 to 8 images, the lit HDR picture first, the G-buffer's
+    // RGBA8, depth (R32) and its history last (R32); the hash is only DCPort's.
+    const auto taa_format = [&](u32 i) { return texture_cache.GetImage(bound_images[i]).info.pixel_format; };
+    const bool taa_pass = bound_images.size() == cs.images.size() &&
+                          (cs.pgm_hash == 0x403f86d4 ||
+                           (cs.images.size() >= 6 && cs.images.size() <= 8 &&
+                            taa_format(0) == vk::Format::eB10G11R11UfloatPack32 &&
+                            taa_format(1) == vk::Format::eR8G8B8A8Unorm && taa_format(2) == vk::Format::eR32Sfloat &&
+                            taa_format(u32(cs.images.size()) - 1) == vk::Format::eR32Sfloat));
+    if (!drive_aa->Active() && BbVr::GameTaaOff() && taa_pass) {
+        const auto& format = taa_format;
+        constexpr auto hdr = vk::Format::eB10G11R11UfloatPack32;
+        u32 out = 0, written_hdr = 0, written_other = 0;
+        std::string list;
+        for (u32 i = 0; i < cs.images.size(); ++i) {
+            if (cs.images[i].is_written) {
+                ++(format(i) == hdr ? written_hdr : written_other);
+            }
+            if (cs.images[i].is_written && format(i) == hdr && !out) {
+                out = i;
+            }
+            list += fmt::format(" [{} {}]", vk::to_string(format(i)), cs.images[i].is_written ? "written" : "read");
+        }
+        // one HDR picture out, nothing else but R32 (its depth history): the masks of the menu cameras' variants are
+        // for later passes, those run
+        bool masks = false;
+        for (u32 i = 0; i < cs.images.size(); ++i) {
+            masks |= cs.images[i].is_written && format(i) != hdr && format(i) != vk::Format::eR32Sfloat;
+        }
+        const bool leave_out = out && written_hdr == 1 && !masks;
+        static std::mutex told_mutex;
+        static std::set<std::string> told;
+        {
+            std::scoped_lock lock{told_mutex};
+            if (told.insert(list).second) {
+                std::printf("Anti-aliasing: the game's TAA, cs %#llx (%zu images:%s)%s\n",
+                            (unsigned long long)cs.pgm_hash, cs.images.size(), list.c_str(),
+                            leave_out ? ": left out" : ": kept (it makes masks for later passes)");
+                std::fflush(stdout);
+            }
+        }
+        if (leave_out) {
+            auto& src = texture_cache.GetImage(bound_images[0]);
+            auto& dst = texture_cache.GetImage(bound_images[out]);
+            const auto& src_ci = src.backing->image.image_ci;
+            const auto& dst_ci = dst.backing->image.image_ci;
+            if (src_ci.extent == dst_ci.extent) {
+                static std::atomic_flag told = ATOMIC_FLAG_INIT;
+                if (!told.test_and_set()) {
+                    std::printf("Anti-aliasing: the game's TAA is off (game_taa = 0): the frame goes on as drawn\n");
+                }
+                scheduler.EndRendering();
+                runtime.Transit(&src, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                                vk::AccessFlagBits2::eTransferRead);
+                runtime.Transit(&dst, vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                                vk::AccessFlagBits2::eTransferWrite);
+                runtime.FlushBarriers();
+                const u32 layers = std::min(src_ci.arrayLayers, dst_ci.arrayLayers); // VR multiview: both eyes
+                const vk::ImageCopy region{
+                    .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers},
+                    .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers},
+                    .extent = src_ci.extent,
+                };
+                scheduler.Record([from = src.GetImage(), to = dst.GetImage(), region](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.copyImage(from, vk::ImageLayout::eTransferSrcOptimal, to,
+                                     vk::ImageLayout::eTransferDstOptimal, region);
+                });
+                ResetBindings(true);
+                return;
+            }
+        }
+    }
 
     if (needs_barrier) {
         runtime.FlushBarriers();

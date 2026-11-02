@@ -162,6 +162,8 @@ struct Settings {
     // dump_each = 1: hide_shader's list is not hidden in play; the = key saves one frame as it is and then one frame
     // with each of them hidden alone (EyeDump, DumpHide)
     bool dump_each = false;
+    // game_taa = 0: the game's temporal anti-aliasing is left out (GameTaaOff); FXAA stays the launcher's row
+    bool game_taa = true;
     // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
     uint64_t hidden_targets[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
@@ -220,7 +222,8 @@ std::atomic<int> reproject_mode{0};
 std::atomic<bool> hiding{true}; // hide_shader / hide_target in effect (the \ key)
 std::atomic<uint64_t> solo_hide{0}; // dump_each: the one shader hidden in the frame being saved
 std::atomic<bool> eye_dump{false};
-std::atomic<bool> dlss_capture{false}; // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture) // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
+std::atomic<bool> dlss_capture{false};
+std::atomic<int> game_taa_key{-1}; // the ; key: the game's TAA off and on in play (-1: as vr.ini says) // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture) // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
@@ -404,6 +407,7 @@ void ReadSettings() {
         // audit = 1: the multiview audit (BB_VR_AUDIT), the passes that give both eyes one eye's picture, in the log
         else if (k == "audit" && value != 0) _putenv("BB_VR_AUDIT=1");
         else if (k == "dump_each") settings.dump_each = value != 0;
+        else if (k == "game_taa") settings.game_taa = value != 0;
         else if (k == "frame_pose") settings.frame_pose = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
@@ -1804,6 +1808,16 @@ void ReadKeys() {
         std::fflush(stdout);
     }
     was_capture = capture_down;
+    // The ; key: the game's TAA off and on (to compare; vr.ini game_taa sets how it starts)
+    static bool was_taa = false;
+    const bool taa_down = BbVr::Wanted() && (GetAsyncKeyState(VK_OEM_1) & 0x8000) != 0;
+    if (taa_down && !was_taa) {
+        const bool on = BbVr::GameTaaOff(); // off now: it goes on
+        game_taa_key = on ? 1 : 0;
+        std::printf("VR: the game's TAA %s (the ; key)\n", on ? "on" : "off");
+        std::fflush(stdout);
+    }
+    was_taa = taa_down;
     // True stereo diagnostics: the = key saves one frame's two-layer render targets, both eyes (EyeDump)
     static bool was_dump = false;
     const bool dump_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
@@ -2200,6 +2214,15 @@ bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
 
 bool EyeDump() {
     return eye_dump.exchange(false);
+}
+
+bool GameTaaOff() {
+    static const bool env_off = [] {
+        const char* v = std::getenv("BB_GAME_TAA");
+        return v && v[0] == '0';
+    }();
+    const int key = game_taa_key.load(std::memory_order_relaxed);
+    return key >= 0 ? key == 0 : env_off || (Wanted() && !settings.game_taa);
 }
 
 bool DlssCapture() {

@@ -2447,10 +2447,9 @@ bool SaveSettings() {
   for (const auto& c : g_c) {
     if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
-    if (VrPatchRow(c) && VrChosen()) {
-      if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch]) out << c.patches[0] << "\n";  // off, unless the anti-aliasing needs it (above)
-      continue;
-    }
+    // VR: the blur patch stays out too. Motion blur, depth of field and the game's TAA share its pass; the game zeroes
+    // the motion blur in VR itself (DriveMotionBlur::Zero), and the TAA is the only anti-aliasing of Game.
+    if (VrPatchRow(c) && VrChosen()) continue;
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
     } else if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) {
@@ -3678,7 +3677,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.reflections = sel(kGfxSsr, 0);
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
-    gc.motion_blur = BlurLocked() ? 1 : VrChosen() ? 0 : sel(kGfxBlur, 1);
+    gc.motion_blur = BlurLocked() || VrChosen() ? 1 : sel(kGfxBlur, 1);  // VR: the pass stays (see the blur patch)
     gc.lens_dust = sel(kGfxDust, 1);
     gc.heat_haze = sel(kGfxHaze, 1);
     gc.fxaa = sel(kGfxFxaa, 1);

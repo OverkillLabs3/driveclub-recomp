@@ -72,6 +72,9 @@ bool EyeDump();
 /// The - key (vr.ini draw_trace off) was pressed (once): DLSS's inputs of the next 8 frames are saved
 /// (BB_GPU_USER_DIR/dlss_capture, as dlss_capture.trigger does).
 bool DlssCapture();
+/// vr.ini game_taa = 0 (or BB_GAME_TAA=0, without VR too): the game's temporal anti-aliasing is left out, the frame
+/// goes on as drawn (with the Game anti-aliasing; FSR and DLSS replace it anyway).
+bool GameTaaOff();
 /// vr.ini dump_each = 1: the shader to hide alone in the dump's frame `step` (1.., hide_shader's list), 0 when the
 /// list is done (or without dump_each, or for step 0: the frame as it is).
 uint64_t DumpHide(int step);
