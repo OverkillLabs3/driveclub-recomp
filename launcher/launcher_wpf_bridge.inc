@@ -168,6 +168,10 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         OpenWheelSetup();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
       }
+      else if(command==L"--ui-ffbtuner"){
+        OpenFfbTuner();
+        if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
+      }
       else if(command==L"--ui-savebackup" || command==L"--ui-saverestore"){
         std::wstring message;
         const bool ok=RunSaveButton(command==L"--ui-saverestore",message);
