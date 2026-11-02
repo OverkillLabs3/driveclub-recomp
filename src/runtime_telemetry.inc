@@ -172,6 +172,29 @@ static void tele_triggers(const uint8_t *state, float speed) {
         last_right_rumble = 0;
     }
     const SDL_GamepadType type = SDL_GetGamepadType(g);
+
+    /* The event/menu screens can keep the car simulating in the background after the race is done.
+     * In that case, the driver is no longer actively holding the throttle/brake inputs, so the trigger outputs
+     * must be cleared instantly rather than continued from stale telemetry. */
+    const bool active_input = pad_last_read.l2 > 8 || pad_last_read.r2 > 8;
+    if (!active_input) {
+        memset(last, 0, sizeof last);
+        last_left_rumble = 0;
+        last_right_rumble = 0;
+        if (type == SDL_GAMEPAD_TYPE_PS5) {
+            uint8_t report[47];
+            memset(report, 0, sizeof report);
+            report[0] = 0x04 | 0x08;
+            if (memcmp(report, last, sizeof report) != 0) {
+                memcpy(last, report, sizeof report);
+                SDL_SendGamepadEffect(g, report, (int)sizeof report);
+            }
+        } else {
+            SDL_RumbleGamepadTriggers(g, 0, 0, 0);
+        }
+        return;
+    }
+
     if (type == SDL_GAMEPAD_TYPE_PS5) {
         const float *ratio = (const float *)(state + 0xb30);
         const float front = fminf(ratio[0], ratio[1]);   /* most negative: a locking front wheel */
