@@ -72,6 +72,12 @@ when no folder has been chosen.
 ## Controls
 Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
 
+### Controller button prompts
+Button prompt icons can be configured in the launcher under **Driving > Controller buttons** (or via `button_prompts`, `xbox_buttons`, and `playstation_buttons` in `driveclub.ini`):
+- **Prompts**: `Auto` (automatically follows the controller in use), `PlayStation`, or `Xbox`.
+- **Xbox buttons**: `Xbox One` (modern flat A/B/X/Y buttons with View icon) or `Xbox 360` (glossy gem buttons with Back pill).
+- **PlayStation buttons**: `PS4` (the game's original symbols) or `PS5` (DualSense-style icons).
+
 | Action | Keyboard |
 |---|---|
 | Accelerate | W |

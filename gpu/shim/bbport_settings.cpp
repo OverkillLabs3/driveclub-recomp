@@ -102,6 +102,16 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "motion_blur_reference") {
         v.motion_blur_reference = value == "long" || value == "30" ? 30
                                 : value == "short" || value == "60" ? 60 : 0;
+    } else if (key == "button_prompts") {
+        v.button_prompts = value == "playstation" ? PromptsPlayStation
+                         : value == "keyboard"    ? PromptsKeyboard
+                         : value == "xbox"        ? PromptsXbox
+                         : value == "switch"      ? PromptsSwitch
+                                                  : PromptsAuto;
+    } else if (key == "xbox_buttons") {
+        v.xbox_buttons = value == "one" ? 1 : 0;
+    } else if (key == "playstation_buttons") {
+        v.playstation_buttons = value == "ps5" ? 1 : 0;
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
     } else if (key == "show_pedals") {
@@ -140,6 +150,15 @@ void Load() {
     auto& v = Get();
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = Effects[e].default_on;
+    }
+    if (const char* bp = std::getenv("BB_BUTTON_PROMPTS")) {
+        Set(v, "button_prompts", bp);
+    }
+    if (const char* xb = std::getenv("BB_XBOX_BUTTONS")) {
+        Set(v, "xbox_buttons", xb);
+    }
+    if (const char* ps = std::getenv("BB_PLAYSTATION_BUTTONS")) {
+        Set(v, "playstation_buttons", ps);
     }
     if (FILE* file = std::fopen(Path(), "r")) {
         char line[256];
@@ -282,6 +301,10 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
+    static constexpr const char* prompts[PromptsCount] = {"auto", "playstation", "keyboard", "xbox", "switch"};
+    std::fprintf(file, "button_prompts=%s\n", prompts[std::clamp(v.button_prompts.load(), 0, PromptsCount - 1)]);
+    std::fprintf(file, "xbox_buttons=%s\nplaystation_buttons=%s\n", v.xbox_buttons ? "one" : "360",
+                 v.playstation_buttons ? "ps5" : "ps4");
     std::fprintf(file, "motion_blur_reference=%d\n", v.motion_blur_reference.load());
     std::fprintf(file, "show_pedals=%d\n", int(v.show_pedals.load()));
     std::fprintf(file, "aa_scale=%s", AaScaleName(v.aa_scale));

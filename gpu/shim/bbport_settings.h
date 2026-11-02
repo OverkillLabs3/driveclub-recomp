@@ -84,6 +84,11 @@ inline bool MotionVectorsOptIn() {
     return aa && std::strcmp(aa, "dlss") == 0;
 }
 
+/// Button prompts (bbport_prompts.cpp): the game's icons switch with the device in use, or stay.
+enum Prompts : int {
+    PromptsAuto = 0, PromptsPlayStation = 1, PromptsKeyboard = 2, PromptsXbox = 3, PromptsSwitch = 4, PromptsCount
+};
+
 struct Values {
     /// HDR output (BB_HDR=1 and a display in HDR mode): set by the presenter; the rasterizer then
     /// keeps the picture before the UI. Brightness of SDR white (UI, menus) and of the brightest
@@ -109,6 +114,13 @@ struct Values {
     std::atomic<int> debug_view{DebugNone};
     // 0: unmodified control; 30: Slow; 60: Fast. F3 switches the two exposure presets.
     std::atomic<int> motion_blur_reference{0};
+    /// Keyboard and mouse button prompts: with the device in use (auto), or always one kind.
+    std::atomic<int> button_prompts{PromptsAuto};
+    /// DCport: the look of Driveclub's controller prompts: Xbox 360 (0) or Xbox One (1) buttons
+    /// for an Xbox controller; the game's PS4 symbols (0) or DualSense-style ones (1) for a
+    /// PlayStation controller.
+    std::atomic<int> xbox_buttons{0};
+    std::atomic<int> playstation_buttons{0};
     std::atomic<bool> show_fps{true}; // ssport: on by default
     std::atomic<bool> show_pedals{false}; // the pedals' travel, bottom left (F2)
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.
