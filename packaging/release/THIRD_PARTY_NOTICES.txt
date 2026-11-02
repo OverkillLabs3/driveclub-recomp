@@ -7,8 +7,10 @@ This program includes code and libraries from other projects. Their licenses app
 - Dear ImGui (MIT), stb_truetype (public domain), miniz (MIT), xbyak (BSD-3-Clause), magic_enum (MIT)
 - SDL3 (zlib), FFmpeg (LGPL-2.1-or-later), Vulkan Memory Allocator (MIT)
 - FidelityFX FSR (MIT)
-- NVIDIA DLSS libraries (nvngx_dlss.dll, nvngx_dlssg.dll in the runtime folder), used only for DLSS frame generation on GeForce RTX cards. They are distributed under the NVIDIA DLSS license in the licenses folder.
-- DLSS bridge (bbport_dlss.dll, MIT): license in the licenses folder, source in gpu/dlss_bridge.
+- AMD FSR SDK 2.4 Vulkan DLLs (runtime/fsr: amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll), used for FSR 4.1 on Radeon graphics cards, unmodified; the licence is LICENSE-AMD-FidelityFX-SDK.md in that folder.
+- FSR 4 model files (runtime/fsr4_shaders): built by the Q2RTX project from the MIT-licensed FSR 4 source in AMD's FidelityFX SDK; the notice is LICENSE-FSR4-v07.txt in that folder.
+- NVIDIA DLSS library (nvngx_dlss.dll in the runtime folder), used for DLSS anti-aliasing and upscaling on GeForce RTX cards. They are distributed under the NVIDIA DLSS license in the licenses folder.
+- DLSS bridge (driveclub_dlss.dll, MIT): license in the licenses folder, source in gpu/dlss_bridge.
 - The remaining runtime DLLs next to the program come from the MSYS2 CLANG64 distribution; each keeps its own license.
 
 Source for the GPL parts is available from the project repository this release was built from.

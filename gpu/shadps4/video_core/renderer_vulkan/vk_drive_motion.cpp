@@ -27,10 +27,11 @@ struct Push {
     std::array<float, 2> scale;
     float use_stencil;
     float use_object;
+    std::array<float, 2> jitter;
     float eye_shift;
     float eye_z22;
     float eye_inv_near;
-    std::array<float, 3> pad2; // the matrix starts on 16 bytes in the shader
+    std::array<float, 1> pad2; // the matrix starts on 16 bytes in the shader
     Mat car_to_prev_clip;
 };
 
@@ -241,7 +242,7 @@ bool DriveMotion::ClipToPrevious(std::array<float, 16>& out, bool chain) const {
 void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
                          vk::ImageView mask_view, vk::ImageView motion_view, u32 width, u32 height, u32 src_width,
                          u32 src_height, bool normalized, vk::ImageView object_view,
-                         vk::ImageView color_view, float eye_shift) {
+                         vk::ImageView color_view, std::array<float, 2> jitter, float eye_shift) {
     Push push{};
     ClipToPrevious(push.clip_to_prev_clip, two_back);
     // One projection on both sides: a still head gives no motion at all, the jitter's move left out.
@@ -259,6 +260,7 @@ void DriveMotion::Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view,
     // DLSS Frame Generation takes screen fractions (its scale is 1); FSR takes pixels.
     push.scale = normalized ? std::array<float, 2>{1.0f / float(width), 1.0f / float(height)}
                             : std::array<float, 2>{1.0f, 1.0f};
+    push.jitter = jitter;
     const vk::DescriptorImageInfo depth_info{.imageView = depth_view,
                                              .imageLayout = vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo motion_info{.imageView = motion_view,

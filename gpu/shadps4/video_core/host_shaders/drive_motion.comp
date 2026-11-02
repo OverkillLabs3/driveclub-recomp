@@ -19,6 +19,7 @@ layout(push_constant) uniform Constants {
     vec2 scale;             // output scale: 1 for pixels, 1 / size for screen fractions
     float use_stencil;      // 1: the stencil view is real
     float use_object;       // 1: fuse Driveclub object vectors and highlight-aware camera flow
+    vec2 jitter;            // this frame's viewport shift in pixels (x right, y down)
     float eye_shift;        // VR multiview: the eye's clip x shift (0 for one picture)
     float eye_z22;          // VR multiview: 1 / w is (depth + eye_z22) * eye_inv_near
     float eye_inv_near;
@@ -43,7 +44,9 @@ void main() {
     }
     const ivec2 src = ivec2(min((vec2(pixel) + 0.5) / size * src_size, src_size - 1.0));
     const float depth = max(texelFetch(depth_tex, src, 0).r, 1e-7);
-    const vec2 uv = (vec2(pixel) + 0.5) / size;
+    // Depth was rasterised through a shifted viewport: the unjittered position, and no jitter
+    // in the motion vectors.
+    const vec2 uv = (vec2(pixel) + 0.5) / size - jitter / size;
     // VR multiview: the eye's pixels are the centre view's moved by shift / w, the same in the previous frame.
     const float eye_ndc = eye_shift * (depth + eye_z22) * eye_inv_near;
     const vec4 clip = vec4(uv.x * 2.0 - 1.0 - eye_ndc, 1.0 - uv.y * 2.0, depth, 1.0);

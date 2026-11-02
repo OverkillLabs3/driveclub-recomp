@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_frame_info.h"
 #include <deque>
+#include <fstream>
 #include <cstring>
 #include <zlib.h>
 #include <string>
@@ -22,6 +23,8 @@
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
 #include "bbport_vr.h"
+#include "bbport_neural_settings.h"
+#include "bbport_safe_start.h"
 #include "imgui.h"
 #include "bbport_scene_debug.h"
 #include "../../src/runtime_exit.h"
@@ -337,7 +340,13 @@ void PollHotkeys() {
     if (s.frame_gen != BbSettings::FrameGenOff) {
         g_fg_used = true;
         if (f8 && !f8_down) {
-            s.frame_gen_paused = !s.frame_gen_paused;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+                s.fg_pacing_gpu = !s.fg_pacing_gpu;   // Ctrl+F8: how the images are spaced
+                Note(s.fg_pacing_gpu ? "Frame generation pacing: GPU timing  (Ctrl+F8: standard)"
+                                     : "Frame generation pacing: standard  (Ctrl+F8: GPU timing)");
+            } else {
+                s.frame_gen_paused = !s.frame_gen_paused;
+            }
         }
     }
     f8_down = f8;
@@ -721,9 +730,10 @@ void FpsCounter() {
             if (s.frame_gen_paused) {
                 ImGui::Text("Frame generation: paused  (F8 on)");
             } else {
-                ImGui::Text("Frame generation: %s %dx  (F8 pause)",
+                ImGui::Text("Frame generation: %s %dx  (F8 pause, Ctrl+F8 pacing: %s)",
                             s.frame_gen == BbSettings::FrameGenDlss ? "DLSS" : "FSR 3.1",
-                            s.frame_gen == BbSettings::FrameGenDlss ? s.frame_gen_multiplier.load() : 2);
+                            s.frame_gen == BbSettings::FrameGenDlss ? s.frame_gen_multiplier.load() : 2,
+                            s.fg_pacing_gpu ? "GPU timing" : "standard");
             }
         }
         if (s.aa_mode != BbSettings::AaOff) {
@@ -732,12 +742,27 @@ void FpsCounter() {
             const char* keys = up ? (s.dlss_supported ? "F10 FSR/DLSS" : "")
                                   : (s.dlss_supported ? "F9 off, F10 FSR/DLSS" : "F9 off");
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
-                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : "FSR 3.1",
+                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : BbSettings::IsFsr4(s.upscaler) ? "FSR 4" : "FSR 3.1",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
                         s.aa_running ? " on" : s.aa_failed ? " failed (see the log)" : " waiting", *keys ? "  (" : "",
                         keys, *keys ? ")" : "");
         } else if (g_aa_used) {
             ImGui::Text("AA: game  (F9 on)");
+        }
+        if (const char* safe = BbSafeStart::Note()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", safe);
+        }
+        {
+            // Neural rendering: whether it runs, its model and style (F11 off/on, Shift+F11 next style: vk_presenter.cpp).
+            static const bool requested = BbNeural::Snapshot().enabled;
+            if (requested) {
+                const auto config = BbNeural::Snapshot();
+                static const char* const model[BbNeural::PresetCount] = {"automatic", "original", "optimized"};
+                ImGui::Text("Neural rendering: %s, %s, style %d  (F11 off/on, Shift+F11 style)",
+                            config.enabled ? BbNeural::Status().c_str() : "off",
+                            model[config.preset >= 0 && config.preset < BbNeural::PresetCount ? config.preset : 0],
+                            config.passes[0].style + 1);
+            }
         }
     }
     static unsigned shown_w, shown_h, frames;
@@ -903,6 +928,13 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        // Alt + Enter switches between fullscreen and a window.
+        if (down && !event.key.repeat && event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)) {
+            if (SDL_Window* window = SDL_GetWindowFromID(event.key.windowID)) {
+                SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+            }
+            return true;
+        }
         if (!is_open) {
             return false;
         }
@@ -1011,6 +1043,35 @@ void SetTextEntry(bool active, const std::string& prompt, const std::string& tex
     text_entry_text = text;
 }
 
+// Seconds the game has run, kept in <user dir>/playtime.txt (the launcher shows it); written every 30 seconds.
+void CountPlaytime(float ms) {
+    static double total = -1.0, unsaved = 0.0;
+    static std::string path;
+    if (total < 0.0) {
+        const char* dir = std::getenv("BB_GPU_USER_DIR");
+        path = dir && *dir ? std::string(dir) + "/playtime.txt" : std::string();
+        total = 0.0;
+        if (!path.empty()) {
+            std::ifstream in(path);
+            long long seconds = 0;
+            if (in >> seconds && seconds > 0) {
+                total = double(seconds);
+            }
+        }
+    }
+    if (path.empty()) {
+        return;
+    }
+    BbSafeStart::Frame(ms);
+    total += ms / 1000.0;
+    unsaved += ms / 1000.0;
+    if (unsaved >= 30.0) {
+        unsaved = 0.0;
+        std::ofstream out(path, std::ios::trunc);
+        out << static_cast<long long>(total);
+    }
+}
+
 void NotePresent() {
     // Called every present whether or not anything of ours is drawn, so this is the only place
     // the keys can be polled from: Render() is gated on Visible(), which is false once F12 has
@@ -1022,6 +1083,7 @@ void NotePresent() {
     if (last_present.time_since_epoch().count() && SceneDebug::Enabled()) SceneDebug::NoteFrame(ms,now);
     last_present = now;
     if (ms > 0.0f && ms < 1000.0f) {
+        CountPlaytime(ms);
         frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
     }
 }

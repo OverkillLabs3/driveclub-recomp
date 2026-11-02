@@ -13,7 +13,7 @@ contain the model.
 - `gpu/shim/bbport_neural_settings.{h,cpp}`: the `nr_*` settings: up to four passes, each with a stage, style
   and intensity, the model preset, the input scale and the resolve method.
 - `gpu/nr_bridge/`: the adapter that loads `nvngx_dlssnr.dll`. It is built on its own (MSVC, with the NVIDIA
-  DLSS SDK headers), see `CMakeLists.txt`. The output has to be named `bbport_nr_nvngx.dll`; the model checks
+  DLSS SDK headers), see `CMakeLists.txt`. The output has to be named `driveclub_nr_nvngx.dll`; the model checks
   the name.
 
 The hooks are a few lines each: the presenter (final frame, stage `Present`), the anti-aliasing pass (stages
@@ -22,11 +22,11 @@ The hooks are a few lines each: the presenter (final frame, stage `Present`), th
 
 ## Turning it on
 
-1. Build `bbport_nr_nvngx.dll` and put it with your own `nvngx_dlssnr.dll` in the folder `BB_NR_RUNTIME` points
+1. Build `driveclub_nr_nvngx.dll` and put it with your own `nvngx_dlssnr.dll` in the folder `BB_NR_RUNTIME` points
    to (or next to `DriveClubGame.exe` in `runtime`).
 2. Set `nr_enabled=1` in the settings file (or `BB_NEURAL=1`), then start the game. It must be set before the
    start, because the extensions are requested when the device is created.
-3. **F7** switches it off and on, **F6** steps through the styles of the first pass.
+3. **F11** switches it off and on, **Shift+F11** steps through the styles of the first pass.
 
 It needs a GeForce RTX card and a recent driver. The log says why it did not start.
 

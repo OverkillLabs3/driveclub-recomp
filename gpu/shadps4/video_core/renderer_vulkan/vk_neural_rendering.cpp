@@ -207,12 +207,12 @@ struct NeuralRendering::Impl {
         const auto count = GetModuleFileNameW(nullptr, executable.data(), DWORD(executable.size()));
         executable.resize(count);
         const auto directory = std::filesystem::path(executable).parent_path();
-        const auto path = directory / L"bbport_nr_nvngx.dll";
+        const auto path = directory / L"driveclub_nr_nvngx.dll";
         if (!module) module =
             LoadLibraryExW(path.c_str(), nullptr,
                            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if (!module) {
-            Problem("bbport_nr_nvngx.dll is not installed beside the renderer");
+            Problem("driveclub_nr_nvngx.dll is not installed beside the renderer");
             return false;
         }
         const auto get =

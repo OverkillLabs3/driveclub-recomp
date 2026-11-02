@@ -90,6 +90,10 @@ static bool parse_input(const char *name, uint8_t *kind, int *code) {
     return false;
 }
 static void add_binding(const Binding *b) { if (binding_count<MAX_BINDINGS) bindings[binding_count++]=*b; }
+/* ffb_gain_up / ffb_gain_down = <key>[, <key>, <key>]: keys (a Stream Deck's too) for the per-car force feedback gain
+ * (ffb_gain_buttons in runtime_logiwheel.inc); several lines each. */
+static Binding ffb_gain_keys[2][4];
+static int ffb_gain_key_count[2];
 static void wheel_parse(const char *lhs, char *rhs);   /* runtime_wheel.inc */
 static void wheel_config_append(const char *path);
 
@@ -183,11 +187,12 @@ static void parse_line(char *line) {
     if (!out_ok && (!strcmp(lhs,"touchpad_center") || !strcmp(lhs,"touchpad_left") || !strcmp(lhs,"touchpad_right"))) {
         b.out_kind=OUT_TOUCH; b.touch_side=!strcmp(lhs,"touchpad_left") ? 0 : !strcmp(lhs,"touchpad_right") ? 2 : 1; out_ok=true;
     }
-    if (!out_ok) return;
+    const int ffb_gain=!strcmp(lhs,"ffb_gain_up") ? 0 : !strcmp(lhs,"ffb_gain_down") ? 1 : -1;
+    if (!out_ok && ffb_gain<0) return;
     /* Controller section: the right hand side is a controller input name. */
     lower(rhs);
     for (size_t i=0;i<sizeof(sdl_button_names)/sizeof(*sdl_button_names);++i) {
-        if (!strcmp(rhs,sdl_button_names[i].name) && b.out_kind==OUT_BUTTON) {
+        if (!strcmp(rhs,sdl_button_names[i].name) && b.out_kind==OUT_BUTTON && ffb_gain<0) {
             if (pad_remap_count<32) { pad_remap[pad_remap_count][0]=(int)b.button; pad_remap[pad_remap_count][1]=sdl_button_names[i].sdl; ++pad_remap_count; }
             return;
         }
@@ -201,7 +206,8 @@ static void parse_line(char *line) {
         if (parse_input(tok,&kind,&code)) { b.in[b.in_count].kind=kind; b.in[b.in_count].code=code; ++b.in_count; }
         tok=strtok_r(NULL,",",&save);
     }
-    if (b.in_count) add_binding(&b);
+    if (b.in_count && ffb_gain>=0) { if (ffb_gain_key_count[ffb_gain]<4) ffb_gain_keys[ffb_gain][ffb_gain_key_count[ffb_gain]++]=b; }
+    else if (b.in_count) add_binding(&b);
 }
 static void input_load(void) {
     if (input_loaded) return;
@@ -245,6 +251,13 @@ static bool binding_down(const Binding *b, const bool *keys, SDL_MouseButtonFlag
     }
     return b->in_count>0;
 }
+/* One of the per-car gain's keys is held (0: up, 1: down); the game's window has the keyboard. */
+static bool ffb_gain_key_down(int which) {
+    if (!ffb_gain_key_count[which]) return false;
+    const bool *keys=SDL_GetKeyboardState(NULL);
+    for (int i=0;i<ffb_gain_key_count[which];++i) if (binding_down(&ffb_gain_keys[which][i],keys,0)) return true;
+    return false;
+}
 /* A 0..255 stick value (128 centre) through the configured inner and outer dead zones. */
 static uint8_t dz_axis(int16_t v, int which) {
     const float x=(float)v/32768.0f*127.5f;      /* -127.5 .. 127.5 */
@@ -253,4 +266,60 @@ static uint8_t dz_axis(int16_t v, int which) {
     if (m<=inner) m=0; else { m=(m-inner)/(outer-inner)*127.5f; if (m>127.5f) m=127.5f; }
     const float out=128.0f+(x<0 ? -m : m);
     return (uint8_t)(out<0 ? 0 : out>255 ? 255 : out);
+}
+
+/* The key cap text of a key, for the button prompts ("Enter", "Z", "F5"); false for a key without one. */
+static bool prompt_key_label(int code, char *out, size_t size) {
+    static const struct { SDL_Scancode sc; const char *text; } names[]={
+        {SDL_SCANCODE_RETURN,"Enter"},{SDL_SCANCODE_KP_ENTER,"Enter"},{SDL_SCANCODE_SPACE,"Space"},{SDL_SCANCODE_TAB,"Tab"},
+        {SDL_SCANCODE_BACKSPACE,"Bksp"},{SDL_SCANCODE_ESCAPE,"Esc"},{SDL_SCANCODE_LSHIFT,"Shift"},{SDL_SCANCODE_RSHIFT,"Shift"},
+        {SDL_SCANCODE_LCTRL,"Ctrl"},{SDL_SCANCODE_RCTRL,"Ctrl"},{SDL_SCANCODE_LALT,"Alt"},{SDL_SCANCODE_RALT,"Alt"},
+        {SDL_SCANCODE_CAPSLOCK,"Caps"},{SDL_SCANCODE_INSERT,"Ins"},{SDL_SCANCODE_DELETE,"Del"},{SDL_SCANCODE_HOME,"Home"},
+        {SDL_SCANCODE_END,"End"},{SDL_SCANCODE_PAGEUP,"PgUp"},{SDL_SCANCODE_PAGEDOWN,"PgDn"},
+        {SDL_SCANCODE_UP,"\xe2\x86\x91"},{SDL_SCANCODE_DOWN,"\xe2\x86\x93"},{SDL_SCANCODE_LEFT,"\xe2\x86\x90"},
+        {SDL_SCANCODE_RIGHT,"\xe2\x86\x92"},{SDL_SCANCODE_COMMA,","},{SDL_SCANCODE_PERIOD,"."},{SDL_SCANCODE_MINUS,"-"},
+        {SDL_SCANCODE_EQUALS,"="},{SDL_SCANCODE_SEMICOLON,";"},{SDL_SCANCODE_APOSTROPHE,"'"},{SDL_SCANCODE_SLASH,"/"},
+        {SDL_SCANCODE_BACKSLASH,"\\"},{SDL_SCANCODE_LEFTBRACKET,"["},{SDL_SCANCODE_RIGHTBRACKET,"]"},{SDL_SCANCODE_GRAVE,"`"},
+    };
+    char text[16]="";
+    if (code>=SDL_SCANCODE_A && code<=SDL_SCANCODE_Z) snprintf(text,sizeof text,"%c",'A'+(code-SDL_SCANCODE_A));
+    else if (code>=SDL_SCANCODE_1 && code<=SDL_SCANCODE_9) snprintf(text,sizeof text,"%c",'1'+(code-SDL_SCANCODE_1));
+    else if (code==SDL_SCANCODE_0) snprintf(text,sizeof text,"0");
+    else if (code>=SDL_SCANCODE_F1 && code<=SDL_SCANCODE_F12) snprintf(text,sizeof text,"F%d",code-SDL_SCANCODE_F1+1);
+    else if (code>=SDL_SCANCODE_KP_1 && code<=SDL_SCANCODE_KP_9) snprintf(text,sizeof text,"Num%d",code-SDL_SCANCODE_KP_1+1);
+    else if (code==SDL_SCANCODE_KP_0) snprintf(text,sizeof text,"Num0");
+    else for (size_t i=0;i<sizeof(names)/sizeof(*names);++i) if ((int)names[i].sc==code) { snprintf(text,sizeof text,"%s",names[i].text); break; }
+    if (!text[0]) return false;
+    snprintf(out,size,"%s",text);
+    return true;
+}
+
+/* The keys bound to a PS4 button, as the text for key caps joined by '+' when the line holds several together ("Shift+Z").
+ * A button can have several lines (Circle is Space for the handbrake and Backspace in the menus): the prompts are mostly
+ * in the menus, so a line with Enter, Backspace, Escape or Tab comes first, else the first line with a key. Empty when no
+ * key is bound to it or the bindings are not read yet. Used by the button prompts (gpu/shim/bbport_prompts.cpp); the
+ * bindings are not changed after they are read. */
+size_t runtime_input_keys_for_button(uint32_t button, char *out, size_t size) {
+    if (!size) return 0;
+    out[0]=0;
+    if (!input_loaded) return 0;
+    char first[64]="", menu[64]="";
+    for (int i=0;i<binding_count;++i) {
+        const Binding *b=&bindings[i];
+        if (b->out_kind!=OUT_BUTTON || b->button!=button) continue;
+        char text[64]=""; int keys=0; bool navigation=false;
+        for (int k=0;k<b->in_count;++k) {
+            char one[16];
+            if (b->in[k].kind!=IN_KEY || !prompt_key_label(b->in[k].code,one,sizeof one)) continue;
+            const int code=b->in[k].code;
+            if (code==SDL_SCANCODE_RETURN || code==SDL_SCANCODE_KP_ENTER || code==SDL_SCANCODE_BACKSPACE || code==SDL_SCANCODE_ESCAPE || code==SDL_SCANCODE_TAB) navigation=true;
+            if (keys++) strncat(text,"+",sizeof text-strlen(text)-1);
+            strncat(text,one,sizeof text-strlen(text)-1);
+        }
+        if (!keys) continue;
+        if (!first[0]) snprintf(first,sizeof first,"%s",text);
+        if (navigation && !menu[0]) snprintf(menu,sizeof menu,"%s",text);
+    }
+    snprintf(out,size,"%s",menu[0] ? menu : first);
+    return strlen(out);
 }

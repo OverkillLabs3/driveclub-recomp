@@ -582,4 +582,34 @@ void CleanUp(const std::wstring& home) {
   }
 }
 
+bool FileSha256(const std::wstring& path, std::string& hex) {
+  return Sha256(path, hex);
+}
+
+bool MakeZip(const std::wstring& zip_path, const std::vector<std::pair<std::wstring, std::string>>& files,
+             const std::string& note) {
+  DeleteFileW(zip_path.c_str());
+  mz_zip_archive zip{};
+  FILE* out = _wfopen(zip_path.c_str(), L"wb");
+  if (!out) return false;
+  if (!mz_zip_writer_init_cfile(&zip, out, 0)) {
+    std::fclose(out);
+    return false;
+  }
+  bool ok = mz_zip_writer_add_mem(&zip, "README.txt", note.data(), note.size(), MZ_BEST_COMPRESSION) != 0;
+  for (const auto& [path, name] : files) {
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) continue;
+    std::string data;
+    char buf[1 << 16];
+    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) data.append(buf, n);
+    std::fclose(f);
+    ok = mz_zip_writer_add_mem(&zip, name.c_str(), data.data(), data.size(), MZ_BEST_COMPRESSION) != 0 && ok;
+  }
+  ok = mz_zip_writer_finalize_archive(&zip) != 0 && ok;
+  mz_zip_writer_end(&zip);
+  ok = std::fclose(out) == 0 && ok;
+  return ok;
+}
+
 }  // namespace Updater

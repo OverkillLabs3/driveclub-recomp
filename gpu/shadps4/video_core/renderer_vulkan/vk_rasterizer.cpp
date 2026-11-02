@@ -1701,7 +1701,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 object_motion->InvalidateHistory();
                 camera_motion->InvalidateHistory();
             }
-            camera_motion->SetJitter(upscaler->Enabled() ? upscaler->Jitter() : drive_aa->Jitter());
+            camera_motion->SetJitter(drive_aa->Active() ? drive_aa->Jitter()
+                                                        : (upscaler->Active() ? upscaler->Jitter()
+                                                                              : std::array<float, 2>{}));
             static const char* scene_debug = BB_DIAGNOSTIC_ENV("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
@@ -1839,6 +1841,31 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
+    {
+        // BB_RT_STATS=1: how much geometry the scene's G-buffer draws carry per second (what a ray tracing
+        // acceleration structure would have to hold). Only counts; nothing is captured.
+        static const bool rt_stats = std::getenv("BB_RT_STATS") != nullptr;
+        static u64 draws = 0, triangles = 0, instanced = 0, indexed = 0, frames = 0;
+        static auto window_start = std::chrono::steady_clock::now();
+        if (rt_stats && frame_display) {
+            ++frames;
+        }
+        if (rt_stats && motion_draw) {
+            ++draws;
+            indexed += is_indexed ? 1 : 0;
+            instanced += regs.num_instances.NumInstances() > 1 ? 1 : 0;
+            triangles += u64(regs.num_indices) / 3 * regs.num_instances.NumInstances();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - window_start >= std::chrono::seconds(5)) {
+                const u64 f = frames ? frames : 1;
+                std::printf("RT stats: per frame %llu G-buffer draws (%llu indexed, %llu instanced), %llu triangles\n",
+                            (unsigned long long)(draws / f), (unsigned long long)(indexed / f),
+                            (unsigned long long)(instanced / f), (unsigned long long)(triangles / f));
+                draws = triangles = instanced = indexed = frames = 0;
+                window_start = now;
+            }
+        }
+    }
     if (motion_draw && motion_geometry) {
         const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
         const auto [base_vertex, first_instance] =
@@ -1925,12 +1952,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
     draw_jitter = {};
-    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth() &&
+    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
-        draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
-               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = drive_aa->Jitter();
+    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth() &&
+               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
+        draw_jitter = upscaler->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -2327,10 +2354,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.yoffset *= target_scale[1];
     pipeline->BindResources(set_writes, push_data);
     draw_jitter = {};
-    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
-        draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
+    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
         draw_jitter = drive_aa->Jitter();
+    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth()) {
+        draw_jitter = upscaler->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -2536,7 +2563,41 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
             const u32 out = two_masks ? 5 : one_mask ? 4 :
                 cs.images[3].is_written ? 3 : cs.images[4].is_written ? 4 : 0;
             if (valid_mask && out && cs.images[out].is_written && format(out) == hdr) {
-                drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out]);
+                DriveAA::DcInputs dc_inputs{};
+                bool dc_ok = false;
+                if (cs.buffers.size() >= 3 &&
+                    !cs.buffers[0].IsSpecial() && !cs.buffers[1].IsSpecial() && !cs.buffers[2].IsSpecial()) {
+                    const u64 alignment = instance.StorageMinAlignment();
+                    dc_ok = true;
+                    for (u32 b = 0; b < 3; ++b) {
+                        const auto sharp = cs.buffers[b].GetSharp(cs);
+                        const VAddr addr = sharp.base_address;
+                        const u32 size = sharp.GetSize();
+                        if (!addr || !size) {
+                            dc_ok = false;
+                            break;
+                        }
+                        auto [buf, offset] = buffer_cache.ObtainBuffer(addr, size, false);
+                        if (!buf) {
+                            dc_ok = false;
+                            break;
+                        }
+                        const u64 offset_aligned = Common::AlignDown(offset, alignment);
+                        const u64 adjust = offset - offset_aligned;
+                        dc_inputs.buffers[b] = {
+                            .buffer = buf->Handle(),
+                            .offset = offset_aligned,
+                            .size = size + adjust,
+                        };
+                        dc_inputs.dword_offsets[b] = static_cast<u32>(adjust / 4);
+                    }
+                    if (dc_ok && memory->IsValidGpuMapping(cs.buffers[0].GetSharp(cs).base_address, 0)) {
+                        const auto* f0 = reinterpret_cast<const float*>(cs.buffers[0].GetSharp(cs).base_address);
+                        dc_inputs.tan_half_fov_y = f0[93];
+                    }
+                }
+                drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out], bound_images[1],
+                                dc_ok ? &dc_inputs : nullptr);
             }
         }
     }

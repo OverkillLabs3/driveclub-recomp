@@ -14,6 +14,8 @@
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_amd_ffx.h"
+#include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/texture_cache/image.h"
 
@@ -67,7 +69,18 @@ public:
 
     /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
     /// scene depth and `output` the image it wrote.
-    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output);
+    struct DcBuffer {
+        vk::Buffer buffer;
+        u64 offset = 0, size = 0;
+    };
+    struct DcInputs {
+        std::array<DcBuffer, 3> buffers{};
+        std::array<u32, 3> dword_offsets{};
+        float tan_half_fov_y = 0.0f;
+    };
+
+    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
+               VideoCore::ImageId gbuffer = {}, const DcInputs* dc_inputs = nullptr);
 
     /// Upscaling: OnTaa left the picture for the pass that scales it into the display buffer, and
     /// `image` (sampled by the first draw into the display buffer) is that picture.
@@ -116,6 +129,12 @@ private:
     DriveMotion& motion;
     CameraMotion& camera_motion;
     std::unique_ptr<NeuralRendering> neural;
+    /// FSR 4 (BB_UPSCALER=fsr4 / fsr411): the same inputs as FSR 3.1; assets missing or unsupported hardware fall back to FSR 3.1.
+    std::unique_ptr<Fsr4Upscaler> fsr4;
+    /// AMD's own FSR 4.1 through its Vulkan DLLs (BB_UPSCALER=fsr_amd); a failure falls back to FSR 4 (INT8) or FSR 3.1.
+    std::unique_ptr<AmdFfxUpscaler> amd_ffx;
+    bool amd_failed = false;
+    bool fsr4_failed = false;
 
     std::array<CachedView, 16> views{};
     u64 view_uses = 0;
@@ -137,6 +156,7 @@ private:
     u32 frame_id = 0;
     u32 jitter_index = 0;
     u32 vr_frames = 0; ///< VR with alternate frames: counts the frames, two in a row share a jitter
+    bool jitter_due = false;
     std::array<float, 2> jitter{};
     std::chrono::steady_clock::time_point last_frame{};
 
@@ -150,12 +170,27 @@ private:
     /// and the result as the game's shaders read it (a 2D array, also with one layer).
     u32 layers = 1;
     vk::UniqueImageView right_motion_view, right_result_view, right_raw_view, result_array;
+    vk::UniqueDescriptorSetLayout sharpen_desc_layout;
+    vk::UniquePipelineLayout sharpen_pipeline_layout;
     vk::UniquePipeline sharpen_pipeline;
     /// Views of the result with the swizzles the game samples it with (Redirect).
     std::array<std::pair<vk::ComponentMapping, vk::UniqueImageView>, 4> swizzled_views{};
     vk::UniqueDescriptorSetLayout copy_desc_layout;
     vk::UniquePipelineLayout copy_pipeline_layout;
     vk::UniquePipeline copy_pipeline;
+    VideoCore::UniqueImage depth_copy_image;
+    vk::UniqueImageView depth_copy_view;
+    vk::UniqueDescriptorSetLayout dc_motion_desc_layout;
+    vk::UniquePipelineLayout dc_motion_pipeline_layout;
+    vk::UniquePipeline dc_motion_pipeline;
+
+    bool has_dc_inputs = false;
+    DcInputs current_dc_inputs{};
+    VideoCore::ImageId current_gbuffer_id{};
+
+    bool late_has_dc_inputs = false;
+    DcInputs late_dc_inputs{};
+    VideoCore::ImageId late_gbuffer_id{};
 };
 
 } // namespace Vulkan

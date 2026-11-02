@@ -42,6 +42,17 @@ struct Frame {
     vk::Fence present_done;
     vk::Semaphore ready_semaphore;
     u64 ready_tick;
+    Scheduler* source_scheduler = nullptr; ///< whose timeline ready_tick belongs to
+    /// bbport: the identity NVIDIA Reflex attributes this frame's input, simulation, render and
+    /// present markers to. Captured when the guest's flip is accepted, not read later on a worker.
+    u64 reflex_frame_id{};
+    /// The same identity for the CPU-side latency trace, kept separate so a mode change cannot
+    /// make a driver report and a local sample disagree about which frame they describe.
+    u64 content_frame_id{};
+    /// Monotonic accepted-flip ticket the bounded backlog registers and retires by. It is not the
+    /// content identity: a content id can repeat across accepted flips, which would make the
+    /// backlog undercount its outstanding depth and stall the guest.
+    u64 flip_ticket{};
     bool is_hdr{false};
     u8 id{};
 
@@ -117,10 +128,14 @@ public:
 
     bool IsVideoOutSurface(const AmdGpu::ColorBuffer& color_buffer) const;
 
+    /// bbport: `content_frame_id` is the identity captured when the guest's flip was accepted.
+    /// It becomes the frame's Reflex identity instead of the live thread-local counter.
     Frame* PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
-                        VAddr cpu_address);
+                        VAddr cpu_address, u64 content_frame_id);
 
-    Frame* PrepareBlankFrame(bool present_thread);
+    /// The present thread has no accepted flip and keeps the live identity; the flip path passes
+    /// the accepted identity explicitly, including zero at startup.
+    Frame* PrepareBlankFrame(bool present_thread, u64 content_frame_id = 0);
 
     void Present(Frame* frame, bool is_reusing_frame = false, bool is_game_frame = true);
     Frame* PrepareLastFrame();
@@ -136,7 +151,8 @@ private:
     /// bbport: frame generation is off (or the output HDR): its memory is freed.
     void ReleaseFrameGen(Frame* frame);
     /// bbport: present thread, after a game frame: how many generated frames the display can
-    /// show per game frame (frame_gen_limit). `present_ms`: the time Present took.
+    /// show per game frame (frame_gen_limit). `work_ms`: what presentation itself cost, with the
+    /// pacing sleeps and the wait for the source on the GPU left out.
     void UpdateFrameGenLimit(bool wanted, double present_ms);
     /// bbport: blits `image` (General layout) into a swapchain image with the overlay and
     /// presents it. `last`: the game frame itself, which also signals the frame's fence.
@@ -187,6 +203,7 @@ private:
     std::unique_ptr<NeuralRendering> neural; // optional DLSS neural rendering on the final frame, off by default
     /// The game's picture before its UI, through the same passes as the frame.
     Frame hudless_frame{};
+    /// When the last game frame reached the presenter: the interval the pacer works from.
     std::chrono::steady_clock::time_point last_game_present{};
     std::atomic<double> game_frame_ms{16.7}; ///< written by the present thread
     /// Generated frames per game frame the display can show (UpdateFrameGenLimit).
@@ -197,6 +214,9 @@ private:
     int frame_gen_hold_seconds{5};
     std::chrono::steady_clock::time_point frame_gen_hold_until{};
     bool swapchain_frame_gen{};
+    /// Present thread: an interpolation group is between its ordinary PRESENT markers, so the
+    /// images inside it (the real one included) are attributed out of band.
+    bool reflex_grouped{};
     // Present thread: the game frames of the current second, and the seconds with room for
     // one more generated frame.
     std::chrono::steady_clock::time_point limit_window{};

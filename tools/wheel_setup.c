@@ -90,14 +90,44 @@ static const char *const action_ps[]={"r1","l1","cross","circle","triangle","squ
 #define NACT ((int)(sizeof action_ps/sizeof *action_ps))
 static const char *const gear_name[]={"1","2","3","4","5","6","r"};
 typedef struct { int axis, inv; } AxisSetting;   /* axis -1: none; inv -1: the game decides, 0 normal, 1 inverted */
+/* Keys a button row can be mapped to (a Stream Deck sends keys too), with the names the game's keyboard bindings use. */
+static const struct { int vk; const char *name; } key_table[]={
+    {VK_SPACE,"space"},{VK_RETURN,"enter"},{VK_TAB,"tab"},{VK_BACK,"backspace"},{VK_INSERT,"insert"},{VK_DELETE,"delete"},
+    {VK_HOME,"home"},{VK_END,"end"},{VK_PRIOR,"pageup"},{VK_NEXT,"pagedown"},{VK_UP,"up"},{VK_DOWN,"down"},
+    {VK_LEFT,"left"},{VK_RIGHT,"right"},{VK_CAPITAL,"capslock"},{VK_ADD,"kpplus"},{VK_SUBTRACT,"kpminus"},
+    {VK_MULTIPLY,"kpmultiply"},{VK_DIVIDE,"kpdivide"},{VK_DECIMAL,"kpperiod"},{VK_OEM_COMMA,"comma"},
+    {VK_OEM_PERIOD,"period"},{VK_OEM_MINUS,"minus"},{VK_OEM_PLUS,"equals"},{VK_OEM_1,"semicolon"},
+    {VK_OEM_7,"apostrophe"},{VK_OEM_2,"slash"},{VK_OEM_5,"backslash"},{VK_OEM_4,"leftbracket"},
+    {VK_OEM_6,"rightbracket"},{VK_OEM_3,"grave"},{VK_LCONTROL,"lctrl"},{VK_RCONTROL,"rctrl"},{VK_LSHIFT,"lshift"},
+    {VK_RSHIFT,"rshift"},{VK_LMENU,"lalt"},{VK_RMENU,"ralt"},
+};
+static bool key_name(int vk, char *out, size_t n) {
+    if ((vk>='A' && vk<='Z') || (vk>='0' && vk<='9')) { snprintf(out,n,"%c",(char)tolower(vk)); return true; }
+    if (vk>=VK_F1 && vk<=VK_F24) { snprintf(out,n,"f%d",vk-VK_F1+1); return true; }
+    if (vk>=VK_NUMPAD0 && vk<=VK_NUMPAD9) { snprintf(out,n,"kp%d",vk-VK_NUMPAD0); return true; }
+    for (size_t i=0;i<sizeof key_table/sizeof *key_table;++i) if (key_table[i].vk==vk) { snprintf(out,n,"%s",key_table[i].name); return true; }
+    return false;
+}
+static int key_vk(const char *name) {
+    char n[32]; snprintf(n,sizeof n,"%s",name); lower_in_place(n);
+    if (n[0] && !n[1] && (isalpha((unsigned char)n[0]) || isdigit((unsigned char)n[0]))) return toupper((unsigned char)n[0]);
+    if (n[0]=='f' && atoi(n+1)>=1 && atoi(n+1)<=24) return VK_F1+atoi(n+1)-1;
+    if (n[0]=='k' && n[1]=='p' && isdigit((unsigned char)n[2]) && !n[3]) return VK_NUMPAD0+n[2]-'0';
+    for (size_t i=0;i<sizeof key_table/sizeof *key_table;++i) if (!strcmp(key_table[i].name,n)) return key_table[i].vk;
+    return 0;
+}
+/* The tag on the keyboard binding lines this tool writes for a button row, so that it finds them again. */
+#define KEY_TAG "# WheelSetup key"
 typedef struct {
     AxisSetting steer, pedal[4];
     int button[NACT], gear[7];
+    char button_dev[NACT][128];   /* the controller of button[i] as wheel_button names it; "": the wheel */
+    char key[NACT][64];           /* a row mapped to keys: the binding's keys ("lctrl, f13"); "": none */
     int hb_button;                                 /* wheel_handbrake = button <n>; -1: an axis (pedal[3]) or none */
     char device[160], pedals[128], shifter[128];   /* wheel_device, wheel_pedals, wheel_shifter as read */
     char hb_device[128];                           /* wheel_handbrake_device as read */
     int rotation;
-    char extra[16][96]; int nextra;   /* wheel_button lines for PS4 buttons this tool does not show */
+    char extra[16][200]; int nextra;   /* wheel_button lines for PS4 buttons this tool does not show */
 } Mapping;
 static Mapping cur, saved;
 static bool dirty;
@@ -127,12 +157,17 @@ static void load_mapping(const char *path, Mapping *m) {
     if (!f) return;
     char line[512];
     while (fgets(line,sizeof line,f)) {
+        const bool tagged=strstr(line,KEY_TAG)!=NULL;
         char *hash=strchr(line,'#'); if (hash) *hash=0;
         char *eq=strchr(line,'=');
         if (!eq) continue;
         *eq=0;
         char *k=strip(line), *v=strip(eq+1);
         lower_in_place(k);
+        if (tagged) {   /* a button row's keys */
+            for (int i=0;i<NACT;++i) if (!strcmp(k,action_ps[i])) snprintf(m->key[i],sizeof m->key[i],"%s",v);
+            continue;
+        }
         if (strncmp(k,"wheel_",6)) continue;
         k+=6;
         if (!strcmp(k,"steering")) { m->steer=parse_axis(v); if (m->steer.inv<0) m->steer.inv=0; continue; }
@@ -140,13 +175,14 @@ static void load_mapping(const char *path, Mapping *m) {
         for (int p=0;p<4;++p) if (!strcmp(k,pedal_key[p])) m->pedal[p]=parse_axis(v);
         if (!strcmp(k,"handbrake_device")) snprintf(m->hb_device,sizeof m->hb_device,"%s",v);
         if (!strcmp(k,"button")) {
-            int index=-1; char ps[32]="";
-            if (sscanf(v," %d , %31s",&index,ps)!=2 || index<0) continue;
-            lower_in_place(ps);
+            int index=-1; char ps[32]="", on[128]="";
+            if (sscanf(v," %d , %31[^,] , %127[^\n]",&index,ps,on)<2 || index<0) continue;
+            char *p=strip(ps), *o=strip(on);
+            lower_in_place(p);
             int a=-1;
-            for (int i=0;i<NACT && a<0;++i) if (!strcmp(ps,action_ps[i])) a=i;
-            if (a>=0) m->button[a]=index;
-            else if (m->nextra<16) snprintf(m->extra[m->nextra++],sizeof m->extra[0],"wheel_button = %d, %s",index,ps);
+            for (int i=0;i<NACT && a<0;++i) if (!strcmp(p,action_ps[i])) a=i;
+            if (a>=0) { m->button[a]=index; snprintf(m->button_dev[a],sizeof m->button_dev[a],"%s",SDL_strcasecmp(o,"wheel") ? o : ""); }
+            else if (m->nextra<16) snprintf(m->extra[m->nextra++],sizeof m->extra[0],"wheel_button = %d, %s%s%s",index,p,*o ? ", " : "",o);
         } else if (!strcmp(k,"gear")) {
             int index=-1; char g[8]="";
             if (sscanf(v," %d , %7s",&index,g)!=2 || index<0) continue;
@@ -178,6 +214,20 @@ static int find_device(const char *setting, bool for_wheel) {
         if (strstr(dev[i].lpath,which)) return i;
     }
     return -1;
+}
+/* The controller of button row i: the wheel, or the one its wheel_button line names; -1 not connected. */
+static int button_dev_index(int i) {
+    return cur.button_dev[i][0] ? find_device(cur.button_dev[i],false) : wheel_dev;
+}
+/* How wheel_button names controller d (not the wheel), as the game finds it: by name, with " @col02" (its HID
+ * collection) or " @2" (the second of that name, the wheel not counted) when another one has the same name. */
+static void button_dev_setting(int d, char *out, size_t n) {
+    int same=0, rank=0;
+    for (int i=0;i<ndev;++i) if (i!=wheel_dev && strstr(dev[i].lname,dev[d].lname)) { ++same; if (i==d) rank=same; }
+    const bool wheel_named=wheel_dev>=0 && strstr(dev[wheel_dev].lname,dev[d].lname);
+    if ((same>1 || wheel_named) && dev[d].col[0]) snprintf(out,n,"%s @%s",dev[d].name,dev[d].col);
+    else if (same>1) snprintf(out,n,"%s @%d",dev[d].name,rank);
+    else snprintf(out,n,"%s",dev[d].name);
 }
 static void resolve_devices(void) {
     wheel_dev=find_device(cur.device,true);
@@ -248,9 +298,10 @@ static void start_listening(int r) {
                                        "Выжми до конца: %s, затем отпусти.   (Esc — отмена)"),row_label(r));
         say(buf);
     } else if (r<R_GEAR) {
-        if (!w) { stop_listening(T("No wheel chosen.","Руль не выбран.")); return; }
-        for (int b=0;b<SDL_GetNumJoystickButtons(w) && b<256;++b) L.base_btn[0][b]=SDL_GetJoystickButton(w,b);
-        snprintf(buf,sizeof buf,T("Press the wheel button for: %s   (Esc: cancel)","Нажми кнопку на руле для: %s   (Esc — отмена)"),row_label(r));
+        /* any controller's button (the wheel, a button box), or a key (a Stream Deck sends keys): see the message loop */
+        for (int d=0;d<ndev;++d) for (int b=0;b<dev[d].nbuttons && b<256;++b) L.base_btn[d][b]=SDL_GetJoystickButton(dev[d].j,b);
+        snprintf(buf,sizeof buf,T("Press a button (wheel, button box, any controller) or a key for: %s   (Esc: cancel)",
+                                  "Нажми кнопку (руль, кнопочный блок, любой контроллер) или клавишу для: %s   (Esc — отмена)"),row_label(r));
         say(buf);
     } else {
         for (int d=0;d<ndev;++d) for (int b=0;b<dev[d].nbuttons && b<256;++b) L.base_btn[d][b]=SDL_GetJoystickButton(dev[d].j,b);
@@ -345,17 +396,19 @@ static void poll_listening(void) {
             }
         }
     } else if (r<R_GEAR) {
-        SDL_Joystick *w=wheel_joy();
-        for (int b=0;b<SDL_GetNumJoystickButtons(w) && b<256;++b) {
-            if (L.base_btn[0][b] || !SDL_GetJoystickButton(w,b)) continue;
+        for (int d=0;d<ndev;++d) for (int b=0;b<dev[d].nbuttons && b<256;++b) {
+            if (L.base_btn[d][b] || !SDL_GetJoystickButton(dev[d].j,b)) continue;
             const int i=r-R_BUTTON;
             char taken[160]="";
-            for (int k=0;k<NACT;++k) if (k!=i && cur.button[k]==b) {
-                cur.button[k]=-1;
+            for (int k=0;k<NACT;++k) if (k!=i && cur.button[k]==b && button_dev_index(k)==d) {
+                cur.button[k]=-1; cur.button_dev[k][0]=0;
                 snprintf(taken,sizeof taken,T(" (taken from \"%s\")"," (снята с «%s»)"),row_label(R_BUTTON+k));
             }
-            cur.button[i]=b;
-            snprintf(what,sizeof what,T("button %d%s","кнопка %d%s"),b,taken);
+            cur.button[i]=b; cur.key[i][0]=0;
+            if (d==wheel_dev) cur.button_dev[i][0]=0;
+            else button_dev_setting(d,cur.button_dev[i],sizeof cur.button_dev[i]);
+            if (d==wheel_dev) snprintf(what,sizeof what,T("button %d%s","кнопка %d%s"),b,taken);
+            else snprintf(what,sizeof what,T("button %d of %s%s","кнопка %d (%s)%s"),b,dev[d].name,taken);
             done(what);
             return;
         }
@@ -377,10 +430,41 @@ static void poll_listening(void) {
         }
     }
 }
+/* A key pressed while a button row listens (a Stream Deck's key too): the row gets it, with the Ctrl, Shift and Alt
+ * keys held with it (at most two: the game's bindings take three keys). A modifier alone waits for the key. */
+static bool capture_key(int vk, LPARAM lp) {
+    const bool extended=(lp>>24)&1;
+    if (vk==VK_SHIFT || vk==VK_CONTROL || vk==VK_MENU) return true;
+    char name[16];
+    if (vk==VK_RETURN && extended) snprintf(name,sizeof name,"kpenter");
+    else if (!key_name(vk,name,sizeof name)) { say(T("That key cannot be used. Try another (F13-F24 suit a Stream Deck).",
+                                                      "Эту клавишу нельзя назначить. Выбери другую (для Stream Deck подойдут F13-F24).")); return true; }
+    static const int mods[]={VK_LCONTROL,VK_RCONTROL,VK_LSHIFT,VK_RSHIFT,VK_LMENU,VK_RMENU};
+    char keys[64]=""; int count=0;
+    for (size_t m=0;m<sizeof mods/sizeof *mods && count<2;++m) {
+        char mod[16];
+        if (!(GetKeyState(mods[m])&0x8000) || !key_name(mods[m],mod,sizeof mod) || !strcmp(mod,name)) continue;
+        snprintf(keys+strlen(keys),sizeof keys-strlen(keys),"%s, ",mod); ++count;
+    }
+    snprintf(keys+strlen(keys),sizeof keys-strlen(keys),"%s",name);
+    const int i=L.row-R_BUTTON;
+    char taken[160]="";
+    for (int k=0;k<NACT;++k) if (k!=i && !strcmp(cur.key[k],keys)) {
+        cur.key[k][0]=0;
+        snprintf(taken,sizeof taken,T(" (taken from \"%s\")"," (снята с «%s»)"),row_label(R_BUTTON+k));
+    }
+    snprintf(cur.key[i],sizeof cur.key[i],"%s",keys);
+    cur.button[i]=-1; cur.button_dev[i][0]=0;
+    char shown[64]; snprintf(shown,sizeof shown,"%s",keys);
+    for (char *c=shown; *c; ++c) *c=(char)toupper((unsigned char)*c);
+    char what[200]; snprintf(what,sizeof what,T("key %s%s","клавиша %s%s"),shown,taken);
+    done(what);
+    return true;
+}
 static void clear_row(int r) {
     if (r==R_STEER) cur.steer.axis=-1;
     else if (r<R_BUTTON) { cur.pedal[r-R_PEDAL].axis=-1; if (r==R_PEDAL+3) { cur.hb_button=-1; hb_dev=-1; } }
-    else if (r<R_GEAR) cur.button[r-R_BUTTON]=-1;
+    else if (r<R_GEAR) { cur.button[r-R_BUTTON]=-1; cur.button_dev[r-R_BUTTON][0]=0; cur.key[r-R_BUTTON][0]=0; }
     else cur.gear[r-R_GEAR]=-1;
     dirty=true;
     char buf[200]; snprintf(buf,sizeof buf,T("%s: cleared.","%s: сброшено."),row_label(r)); say(buf);
@@ -438,7 +522,10 @@ static bool save(int rotation) {
         const char *s=l; while (*s==' ' || *s=='\t') ++s;
         const bool ffb=!SDL_strncasecmp(s,"wheel_ffb",9), hat=!SDL_strncasecmp(s,"wheel_hat_dpad",14), stick=!SDL_strncasecmp(s,"wheel_as_stick",14);
         kept_ffb|=ffb; kept_hat|=hat; kept_stick|=stick;
-        if (ffb || hat || stick || SDL_strncasecmp(s,"wheel_",6)) fwrite(l,1,len,f);
+        /* this tool's key lines go too (written again below); the player's own keyboard bindings stay */
+        bool own_key=false;
+        for (const char *t=s; t<l+len && !own_key; ++t) own_key=!strncmp(t,KEY_TAG,sizeof KEY_TAG-1);
+        if (!own_key && (ffb || hat || stick || SDL_strncasecmp(s,"wheel_",6))) fwrite(l,1,len,f);
         l=next ? next+1 : NULL;
     }
     if (n && text[n-1]!='\n') fputc('\n',f);
@@ -462,8 +549,12 @@ static bool save(int rotation) {
         else if (a.inv<0) fprintf(f,"wheel_%s = %d\n",pedal_key[p],a.axis);
         else fprintf(f,"wheel_%s = %d, %s\n",pedal_key[p],a.axis,a.inv ? "inverted" : "normal");
     }
-    for (int i=0;i<NACT;++i) if (cur.button[i]>=0) fprintf(f,"wheel_button = %d, %s\n",cur.button[i],action_ps[i]);
+    /* a button of another controller names it: wheel_button = <n>, <PS4 button>, <controller> */
+    for (int i=0;i<NACT;++i) if (cur.button[i]>=0) fprintf(f,"wheel_button = %d, %s%s%s\n",cur.button[i],action_ps[i],
+                                                         cur.button_dev[i][0] ? ", " : "",cur.button_dev[i]);
     for (int i=0;i<cur.nextra;++i) fprintf(f,"%s\n",cur.extra[i]);
+    /* a row mapped to keys: a keyboard binding, as the game's own (several per PS4 button may exist) */
+    for (int i=0;i<NACT;++i) if (cur.key[i][0]) fprintf(f,"%s = %s   " KEY_TAG "\n",action_ps[i],cur.key[i]);
     fprintf(f,"wheel_shifter = %s\n",shifter);
     for (int g=0;g<7;++g) if (cur.gear[g]>=0) fprintf(f,"wheel_gear = %d, %s\n",cur.gear[g],gear_name[g]);
     if (!kept_hat) fprintf(f,"wheel_hat_dpad = true\n");
@@ -534,8 +625,14 @@ static void mapping_text(int r, char *out, size_t n) {
         else snprintf(out,n,T("axis %d%s%s","ось %d%s%s"),a.axis,pedal_dev>=0 ? T(" of the pedals"," педалей") : "",
                       a.inv==1 ? T(", reversed",", перевёрнута") : "");
     } else if (r<R_GEAR) {
-        const int b=cur.button[r-R_BUTTON];
-        if (b<0) snprintf(out,n,"%s",none); else snprintf(out,n,T("button %d","кнопка %d"),b);
+        const int i=r-R_BUTTON, b=cur.button[i];
+        if (cur.key[i][0]) {
+            char keys[64]; snprintf(keys,sizeof keys,"%s",cur.key[i]);
+            for (char *c=keys; *c; ++c) *c=(char)toupper((unsigned char)*c);
+            snprintf(out,n,T("key %s","клавиша %s"),keys);
+        } else if (b<0) snprintf(out,n,"%s",none);
+        else if (cur.button_dev[i][0]) snprintf(out,n,T("button %d of %s","кнопка %d (%s)"),b,cur.button_dev[i]);
+        else snprintf(out,n,T("button %d","кнопка %d"),b);
     } else {
         const int b=cur.gear[r-R_GEAR];
         if (b<0) snprintf(out,n,"%s",none); else snprintf(out,n,T("button %d","кнопка %d"),b);
@@ -575,9 +672,16 @@ static void draw_live(HDC dc, int r, int y) {
         return;
     }
     SDL_Joystick *j=NULL; int b=-1;
-    if (r<R_GEAR) { j=wheel_joy(); b=cur.button[r-R_BUTTON]; }
-    else { j=shifter_dev>=0 ? dev[shifter_dev].j : NULL; b=cur.gear[r-R_GEAR]; }
-    const bool on=j && b>=0 && b<SDL_GetNumJoystickButtons(j) && SDL_GetJoystickButton(j,b);
+    bool on=false;
+    if (r<R_GEAR && cur.key[r-R_BUTTON][0]) {   /* keys: lit while all of them are held */
+        char keys[64]; snprintf(keys,sizeof keys,"%s",cur.key[r-R_BUTTON]);
+        on=true;
+        for (char *t=strtok(keys,","); t; t=strtok(NULL,",")) { const int vk=key_vk(strip(t)); on&=vk && (GetAsyncKeyState(vk)&0x8000); }
+    } else {
+        if (r<R_GEAR) { const int d=button_dev_index(r-R_BUTTON); j=d>=0 ? dev[d].j : NULL; b=cur.button[r-R_BUTTON]; }
+        else { j=shifter_dev>=0 ? dev[shifter_dev].j : NULL; b=cur.gear[r-R_GEAR]; }
+        on=j && b>=0 && b<SDL_GetNumJoystickButtons(j) && SDL_GetJoystickButton(j,b);
+    }
     fill(dc,x,y,h,h,on ? C_ON : RGB(255,255,255)); frame(dc,x,y,h,h,on ? C_ON : C_LINE);
     if (on) draw_text(dc,x+h+8,y-5,120,ROW_H,T("pressed","нажата"),C_ON,font,0);
 }
@@ -587,7 +691,8 @@ static void paint(HDC dc, int cw, int ch) {
     draw_text(dc,16,12,70,26,T("Wheel","Руль"),C_TEXT,bold,0);
     draw_text(dc,16,46,70,26,T("Pedals","Педали"),C_TEXT,bold,0);
     draw_text(dc,530,12,100,26,T("Rotation °","Угол °"),C_TEXT,bold,0);
-    static const char *const heads[3][2]={{"Steering and pedals","Руль и педали"},{"Wheel buttons","Кнопки руля"},
+    static const char *const heads[3][2]={{"Steering and pedals","Руль и педали"},
+                                          {"Buttons: wheel, button box or keyboard","Кнопки: руль, кнопочный блок или клавиатура"},
                                           {"H-pattern shifter","H-шифтер"}};
     for (int s=0;s<3;++s) {
         const int y=row_top(s==0 ? R_STEER : s==1 ? R_BUTTON : R_GEAR)-SECTION_H;
@@ -603,7 +708,8 @@ static void paint(HDC dc, int cw, int ch) {
         mapping_text(r,buf,sizeof buf);
         const bool unset=(r==R_STEER && cur.steer.axis<0) ||
                          (r>=R_PEDAL && r<R_BUTTON && cur.pedal[r-R_PEDAL].axis<0 && (r!=R_PEDAL+3 || cur.hb_button<0)) ||
-                         (r>=R_BUTTON && r<R_GEAR && cur.button[r-R_BUTTON]<0) || (r>=R_GEAR && cur.gear[r-R_GEAR]<0);
+                         (r>=R_BUTTON && r<R_GEAR && cur.button[r-R_BUTTON]<0 && !cur.key[r-R_BUTTON][0]) ||
+                         (r>=R_GEAR && cur.gear[r-R_GEAR]<0);
         draw_text(dc,210,y,185,ROW_H,buf,unset ? C_DIM : C_TEXT,font,0);
         draw_live(dc,r,y);
         fill(dc,MAP_X,y+3,70,ROW_H-6,C_BUTTON); frame(dc,MAP_X,y+3,70,ROW_H-6,r==L.row ? C_BAR : C_LINE);
@@ -788,6 +894,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     MSG m;
     while (GetMessageW(&m,NULL,0,0)>0) {
         if (m.message==WM_KEYDOWN && m.wParam==VK_ESCAPE && L.row>=0) { stop_listening(T("Cancelled.","Отменено.")); InvalidateRect(win,NULL,FALSE); continue; }
+        if ((m.message==WM_KEYDOWN || m.message==WM_SYSKEYDOWN) && L.row>=R_BUTTON && L.row<R_GEAR && m.wParam!=VK_ESCAPE &&
+            capture_key((int)m.wParam,m.lParam)) { InvalidateRect(win,NULL,FALSE); continue; }
         if (m.message==WM_KEYDOWN && m.wParam==VK_RETURN && L.row>=R_PEDAL && L.row<R_BUTTON && L.phase==1) {
             char what[80]; snprintf(what,sizeof what,T("axis %d%s","ось %d%s"),L.axis,cur.pedal[L.row-R_PEDAL].inv ? T(", reversed",", перевёрнута") : "");
             done(what); InvalidateRect(win,NULL,FALSE); continue;

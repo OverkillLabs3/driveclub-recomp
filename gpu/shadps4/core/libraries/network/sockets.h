@@ -228,6 +228,8 @@ struct UnixSocket : public Socket {
     }
 };
 
+// The player name the P2P relay (the community server, BB_COOP_RELAY=1) announces this game under.
+void P2PRelaySetName(const std::string& name);
 u16 GetP2PConfiguredPort();
 u32 GetP2PAdvertisedAddr();
 bool EnsureP2PTransport();

@@ -39,6 +39,20 @@ cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sl
 cp out/DriveClubGame.exe "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
+mkdir -p "$OUT/runtime/skip_intro" && cp -r packaging/skip_intro/. "$OUT/runtime/skip_intro/"   # the "Skip the intro video" option
+# FSR 4 (v07 INT8) model files: MIT, built by Q2RTX from AMD's FidelityFX SDK source. FSR4_ASSETS=<folder> uses a copy
+# already on disk, otherwise they are downloaded (pinned commit). The game finds them through BB_FSR4_DIR (the launcher sets it).
+FSR4_SRC="${FSR4_ASSETS:-out/fsr4_shaders}"
+if [ ! -f "$FSR4_SRC/LICENSE-FSR4-v07.txt" ]; then bash packaging/fetch_fsr4_assets.sh "$FSR4_SRC"; fi
+mkdir -p "$OUT/runtime/fsr4_shaders"
+for f in "$FSR4_SRC"/*; do
+  case "$f" in *_drs_*|*/opt) ;; *) cp -r "$f" "$OUT/runtime/fsr4_shaders/" ;; esac
+done
+# AMD's signed FSR SDK 2.4 Vulkan DLLs for FSR 4.1 on Radeon; the game finds them in runtime/fsr (the launcher sets BB_FFX_DIR).
+AMD_FSR_SRC="${AMD_FSR_DIR:-out/amd_fsr}"
+bash packaging/fetch_amd_fsr.sh "$AMD_FSR_SRC"
+mkdir -p "$OUT/runtime/fsr"
+cp "$AMD_FSR_SRC"/*.dll "$AMD_FSR_SRC"/LICENSE-AMD-FidelityFX-SDK.md "$OUT/runtime/fsr/"
 cp packaging/release/trophies.tsv "$OUT/runtime/"   # trophy banner texts: names, descriptions, grades
 cp packaging/release/README.txt packaging/release/THIRD_PARTY_NOTICES.txt LICENSE "$OUT/"
 echo "$VERSION" > "$OUT/version.txt"
@@ -75,9 +89,13 @@ if [ ! -f "$OUT/runtime/SDL3.dll" ] || [ "$(find "$OUT/runtime" -name '*.dll' | 
   exit 1
 fi
 # DLSS frame generation: the bridge built from gpu/dlss_bridge and NVIDIA's DLSS libraries.
-cp packaging/dlss_bin/bbport_dlss.dll packaging/dlss_bin/nvngx_dlss.dll packaging/dlss_bin/nvngx_dlssg.dll "$OUT/runtime/"
+cp packaging/dlss_bin/driveclub_dlss.dll packaging/dlss_bin/nvngx_dlss.dll "$OUT/runtime/"
 mkdir -p "$OUT/licenses"
 cp packaging/dlss/NVIDIA-DLSS-LICENSE.txt packaging/dlss/dlss_bridge-LICENSE.txt "$OUT/licenses/"
+# DLSS neural rendering: only the bridge (MIT, gpu/nr_bridge). NVIDIA's nvngx_dlssnr.dll is not shipped: the player supplies it
+# (the launcher shows the option only when runtime/nvngx_dlssnr.dll exists).
+cp packaging/nr_bin/driveclub_nr_nvngx.dll "$OUT/runtime/"
+cp gpu/nr_bridge/LICENSE.txt "$OUT/licenses/nr_bridge-LICENSE.txt"
 # The community server is GPL-2.0 software: its licence and where its source is.
 [ -f "$SERVER_BIN/LICENSE" ] && cp "$SERVER_BIN/LICENSE" "$OUT/licenses/driveclub-server-LICENSE.txt"
 printf 'The program in the server folder is the DriveClub community server, GPL-2.0.
@@ -91,8 +109,10 @@ done
 (cd "$OUT/runtime" && find . -type f ! -name files.txt | sed 's|^\./||' | sort > files.txt)
 # Nothing of the game, the console firmware or the player may end up in the package.
 leaks="$(find "$OUT" -type f \( -iname 'eboot.bin' -o -iname '*.sprx' -o -iname '*.prx' -o -iname '*.pkg' -o -iname '*.sfo' \
-  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.spv' -o -iname '*.dmp' \
+  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.dmp' \
   -o -iname 'launcher.ini' -o -path '*/data/*' -o -path '*/logs/*' -o -path '*/sce_sys/*' \) -print)"
+# SPIR-V is the one allowed kind of shader file: only the FSR 4 model files in runtime/fsr4_shaders (not the game's own shaders).
+more="$(find "$OUT" -type f -iname '*.spv' ! -path "*/runtime/fsr4_shaders/*" -print)"; [ -n "$more" ] && leaks="$leaks$more" || true
 if [ -n "$leaks" ]; then
   echo "Package leak check failed, these files must not ship:" >&2
   echo "$leaks" >&2

@@ -125,7 +125,7 @@ bool DumpWindow() {
 } // namespace
 
 void FgProfiler::Init(const Instance& instance) {
-    const char* env = BB_DIAGNOSTIC_ENV("BB_FG_PROFILE");
+    const char* env = std::getenv("BB_FG_PROFILE");   // also in the normal build: the one way to see where the time goes
     if (!env || env[0] != '1' || instance_ptr) {
         return;
     }
@@ -235,7 +235,7 @@ FrameGenerator::FrameGenerator(const Instance& instance_, Scheduler& scheduler_)
     if (settings.frame_gen == BbSettings::FrameGenDlss && dlss_max < 1) {
         const Dlss* dlss = Dlss::Get();
         std::printf("Frame generation: DLSS Frame Generation unavailable (%s); using FSR 3.1\n",
-                    !dlss ? "bbport_dlss.dll and nvngx_dlss.dll are not installed"
+                    !dlss ? "driveclub_dlss.dll and nvngx_dlss.dll are not installed"
                     : !dlss->Available() ? "DLSS is unavailable on this system"
                                          : "GeForce RTX 40 or newer, nvngx_dlssg.dll and a "
                                            "current driver are needed");

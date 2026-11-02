@@ -24,6 +24,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<int, FrameworkElement> pages = [];
     private readonly Dictionary<string, BitmapSource> images = [];
     private readonly List<Button> navButtons = [];
+    private double homeExtraRows;   // the rows Game status has beyond the first four
     private readonly string[] names = ["Play", "Display", "Graphics", "General", "Driving", "Patches", "Benchmark", "Mods"];
     private readonly string[] hints = ["Your game, ready to drive.", "Frame rate, resolution, anti-aliasing and HDR.", "Scene detail, reflections and camera effects.", "Player profile, content, launcher behavior and advanced options.", "Driving assists, field of view and steering wheel forces.", "Compatibility workarounds and optional community patches.", "A repeatable event driven by the game's AI.", "Manage local replacement files."];
     // Home is shell-only; the remaining pages follow the native 0.3.1 tabs.
@@ -35,7 +36,8 @@ public partial class MainWindow : Window
     private bool foldersAnimating;
     private Action? arrangeHome;
     private readonly string root = AppContext.BaseDirectory;
-    private int currentPage, revision;
+    private int currentPage, revision, pageGeneration;
+    private (ScrollViewer Viewer, double Offset, int Generation)? pendingScroll;
     private int navigationSelection = -1;
     private bool suppress, busy, allowClose;
     private Window? launchSplash;
@@ -231,15 +233,44 @@ public partial class MainWindow : Window
     private void Adopt(LauncherState incoming)
     {
         bool initial = state.Controls.Count == 0;
+        var currentScroll = PageHolder.Children.OfType<ScrollViewer>().LastOrDefault();
+        double? offset = currentScroll?.VerticalOffset;
+        if (offset == 0 && pendingScroll is { } pending && pending.Generation == pageGeneration && ReferenceEquals(pending.Viewer, currentScroll))
+            offset = pending.Offset;
+        pendingScroll = null;
         if (initial || !incoming.FoldersOk || (!state.FoldersOk && incoming.FoldersOk))
             foldersExpanded = !incoming.FoldersOk;
         suppress = true;
         foreach (var c in state.Controls) c.PropertyChanged -= SettingChanged;
         state = incoming;
+        HeaderText.Text = incoming.InstalledVersion.Length == 0 ? "PC LAUNCHER" : "PC LAUNCHER  \u00b7  VERSION " + incoming.InstalledVersion;
         // Sidebar, window border, page margins, two panels, gap and scrollbar.
         MinWidth = Math.Ceiling(228 + 2 + 72 + 2 * MeasureGameStatus(double.PositiveInfinity).Width + 24 + 10);
         foreach (var c in state.Controls) c.PropertyChanged += SettingChanged;
         pages.Clear(); ShowPage(currentPage, initial); suppress = false;
+        if (offset > 0 && PageHolder.Children.OfType<ScrollViewer>().LastOrDefault() is { } scroll)
+        {
+            int generation = pageGeneration;
+            double desiredOffset = offset.Value;
+            pendingScroll = (scroll, desiredOffset, generation);
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            {
+                if (generation == pageGeneration && ReferenceEquals(PageHolder.Children.OfType<FrameworkElement>().LastOrDefault(), scroll) && scroll.VerticalOffset == 0)
+                {
+                    ScrollChangedEventHandler? changed = null;
+                    void ClearPending()
+                    {
+                        scroll.ScrollChanged -= changed;
+                        if (pendingScroll is { } queued && ReferenceEquals(queued.Viewer, scroll)) pendingScroll = null;
+                    }
+                    changed = (_, e) => { if (e.VerticalChange != 0) ClearPending(); };
+                    scroll.ScrollChanged += changed;
+                    scroll.ScrollToVerticalOffset(desiredOffset);
+                    Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(ClearPending));
+                }
+                else if (pendingScroll is { } queued && ReferenceEquals(queued.Viewer, scroll)) pendingScroll = null;
+            }));
+        }
         FooterPlay.IsEnabled = preview || (state.FoldersOk && string.IsNullOrEmpty(state.HardwareProblem));
         FooterPlay.ToolTip = string.IsNullOrEmpty(state.HardwareProblem) ? "Save and start the game." : state.HardwareProblem;
     }
@@ -288,6 +319,7 @@ public partial class MainWindow : Window
     private void ShowPage(int index, bool animate = true)
     {
         if (state.Controls.Count == 0 || (currentPage == index && PageHolder.Children.Count != 0 && animate)) return;
+        ++pageGeneration;
         currentPage = index;
         for (int i = 0; i < navButtons.Count; ++i)
         {
@@ -586,8 +618,8 @@ public partial class MainWindow : Window
     }
     private (string[] Labels, string[] Values, double LabelWidth, double ValueOffset, double Width) MeasureGameStatus(double availableWidth)
     {
-        string[] labels = ["Game version", "Renderer", "Hardware", "Runtime"];
-        string[] values = [state.FoldersOk ? "1.28" : "Select game folders", "Vulkan 1.3  /  native x64", string.IsNullOrEmpty(state.HardwareProblem) ? "No blocking issue" : "Needs attention", state.RuntimeAvailable ? "Available" : "Runtime not bundled"];
+        string[] labels = ["Game version", "Renderer", "Hardware", "Runtime", "Play time"];
+        string[] values = [state.FoldersOk ? "1.28" : "Select game folders", "Vulkan 1.3  /  native x64", string.IsNullOrEmpty(state.HardwareProblem) ? "No blocking issue" : "Needs attention", state.RuntimeAvailable ? "Available" : "Runtime not bundled", state.PlayTime.Length > 0 ? state.PlayTime : "0 min"];
         double Measure(string value, double size, bool heading = false)
         {
             var text = Text(value, size, heading); text.TextWrapping = TextWrapping.NoWrap;
@@ -614,8 +646,9 @@ public partial class MainWindow : Window
         double logoInset = 500 * 8d / 880;
         Caption(canvas, "NEVER DRIVE ALONE", logoLeft + logoInset, 151, 500 - logoInset, 29, 22, true, "#F5F6F8");
         double statusShift = 48 - SectionHeaderHeight - 12;
-        RulePanel(canvas, left, 230, sw, 198 - statusShift, "GAME STATUS");
-        for (int k = 0; k < 4; ++k)
+        double extraRows = homeExtraRows = (labels.Length - 4) * 35;
+        RulePanel(canvas, left, 230, sw, 198 + extraRows - statusShift, "GAME STATUS");
+        for (int k = 0; k < labels.Length; ++k)
         {
             Caption(canvas, labels[k], left + 22, 278 - statusShift + k * 35, labelWidth, 29, 14, false, "#8B93A1");
             var statusValue = Caption(canvas, values[k], left + valueOffset, 278 - statusShift + k * 35, sw - valueOffset - 22, 29, 14, false, k == 0 && state.FoldersOk ? "#5AC878" : "#E8EAED");
@@ -632,16 +665,16 @@ public partial class MainWindow : Window
                 var version = Text(values[0], 14); version.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
                 Place(canvas, verified, left + valueOffset + Math.Ceiling(version.DesiredSize.Width) + 10, 278 - statusShift + 6.5, 16, 16);
             }
-            if (k < 3) Place(canvas, new Border { Background = Brush("#313134") }, left + 22, 310 - statusShift + k * 35, sw - 44, 1);
+            if (k < labels.Length - 1) Place(canvas, new Border { Background = Brush("#313134") }, left + 22, 310 - statusShift + k * 35, sw - 44, 1);
         }
         var play = new Button { Content = preview ? "PREVIEW LAUNCH" : "PLAY", Style = (Style)FindResource("PlayButton"), FontSize = 23, Padding = new(0), BorderThickness = new(0), Background = Brush("#ED2B38"), IsEnabled = preview || (state.FoldersOk && string.IsNullOrEmpty(state.HardwareProblem)), ToolTip = string.IsNullOrEmpty(state.HardwareProblem) ? "Save and start the game." : state.HardwareProblem };
-        play.Click += PlayClick; AutomationProperties.SetAutomationId(play, "HomePlay"); Place(canvas, play, left, 452 - statusShift, sw, 44);
-        Caption(canvas, preview ? "Interface preview only. No game will be started." : "Your settings are saved when you start the game.", left, 524 - statusShift, sw, 24, 13, false, "#8B93A1");
+        play.Click += PlayClick; AutomationProperties.SetAutomationId(play, "HomePlay"); Place(canvas, play, left, 452 + extraRows - statusShift, sw, 44);
+        Caption(canvas, preview ? "Interface preview only. No game will be started." : "Your settings are saved when you start the game.", left, 524 + extraRows - statusShift, sw, 24, 13, false, "#8B93A1");
         // Paths share the status row on wide windows and flow below it on narrow ones.
         double foldersY = besideStatus ? 230 : 574;
         double foldersHeight = BuildFolders(canvas, besideStatus ? left + sw + 24 : left, foldersY, actualFoldersWidth);
         // Quick Settings stays bottom-docked and is pushed down by this upper section.
-        canvas.Height = Math.Max(548, foldersY + foldersHeight);
+        canvas.Height = Math.Max(548 + extraRows, foldersY + foldersHeight);
     }
     private double BuildFolders(Canvas canvas, double left, double y, double width)
     {
@@ -650,7 +683,7 @@ public partial class MainWindow : Window
         animateFoldersOpening = false;
         var body = new Canvas { Width = width, Height = foldersExpanded && !opening ? bodyHeight : 0, Opacity = foldersExpanded && !opening ? 1 : 0, ClipToBounds = true, Visibility = foldersExpanded ? Visibility.Visible : Visibility.Collapsed };
         AutomationProperties.SetAutomationId(body, "GameFoldersBody");
-        body.SizeChanged += (_, _) => canvas.Height = Math.Max(548, y + SectionHeaderHeight + body.ActualHeight);
+        body.SizeChanged += (_, _) => canvas.Height = Math.Max(548 + homeExtraRows, y + SectionHeaderHeight + body.ActualHeight);
         Place(canvas, body, left, y + SectionHeaderHeight, width, body.Height);
         var headerContent = new Grid { Width = width - 40, Height = SectionHeaderHeight };
         var title = Text("GAME FILES", 15, true, "#D7D7D9"); title.VerticalAlignment = VerticalAlignment.Center;

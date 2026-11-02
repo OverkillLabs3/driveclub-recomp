@@ -9,7 +9,9 @@ body:
         - The problem is not listed in the open issues. Add your log to that issue instead of opening a new one.
         - One problem per issue.
 
-        Without the log files an issue usually cannot be solved, so please attach them. Open the folder next to `DriveClub.exe`, go into `logs`, and drag these files into the box below:
+        Without the log files an issue usually cannot be solved, so please attach them. The easy way: open the launcher, go to the General tab, press **Save a bug report** (Help card) and drag the `bug-report.zip` it makes into the box below. It holds everything listed here.
+
+        Or by hand: open the folder next to `DriveClub.exe`, go into `logs`, and drag these files into the box below:
         - the newest `driveclub_<date>_<time>.log` (one per start: take the one from the run that went wrong)
         - `launcher.log` (it also exists when the game never started, for example when the launcher shows an error)
         - any `crash_*.dmp` (a small file written when the game crashes). Please attach it, it often shows the exact cause.
