@@ -1,0 +1,31 @@
+Optional environment timelapse (Windows x86-64, game 1.28)
+
+Set BB_ENV_TIMELAPSE=1 before launching. It is disabled by default; unset it or
+set it to 0 to keep the original environment updates.
+
+Hold +/= or Numpad + to fast-forward; hold - to rewind available history.
+Release to resume normal speed. The default rate is 600x. Shift doubles it;
+Ctrl halves it; both modifiers cancel each other. Both direction keys cancel.
+BB_ENV_TIMELAPSE_RATE optionally selects a base rate from 1 to 3600.
+Keyboard control is active only while this game's window has focus.
+
+Time of day, sky/cloud queues, weather and lightning share the visual timeline.
+Scene/crowd animation groups and the common shader wind clock also follow it,
+including wind-driven flags, wires and vegetation. Vehicle physics and vehicle
+driver animations keep their native clock. Weather can still change road grip.
+The expanded statistics show the actual signed time-of-day compression, including
+the configured normal rate and any history-boundary clamp. Release restores the
+normal configured readout. At normal x1: +600x; Shift +1200x; Ctrl +300x; reverse
+uses negative rates. No physics timestep or stored menu value is changed.
+
+Reverse is bounded by captured environment history. Dead GPU particles cannot
+be resurrected, so particles hold during reverse; thunder audio is not rewound.
+History restores logical state into live game allocations, not saved resource
+pointers. No trace files, benchmark controls or save/config changes are added.
+Unsupported images or incomplete hook installation leave the mod disabled.
+The existing scene telemetry hook remains independent of this opt-in mod.
+Non-Windows builds retain their existing behavior; Linux/FEX execution of the
+mod is not implemented.
+
+Host tests (MSYS2 CLANG64, no game or GPU launch):
+  python tests/run_environment_timelapse.py --cc clang --build-dir out/test-timelapse
