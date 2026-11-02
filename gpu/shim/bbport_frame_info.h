@@ -7,6 +7,12 @@
 namespace BbFrame {
 inline std::atomic<uint32_t> scene_w{0}, scene_h{0};
 inline std::atomic<uint32_t> output_w{0}, output_h{0};  // the game's display buffer (what is presented)
+inline std::atomic<uint32_t> display_w{0}, display_h{0};  // the swapchain extent (the panel size)
+
+inline void NoteDisplay(uint32_t w, uint32_t h) {
+    display_w.store(w, std::memory_order_relaxed);
+    display_h.store(h, std::memory_order_relaxed);
+}
 
 inline void NoteOutput(uint32_t w, uint32_t h) {
     output_w.store(w, std::memory_order_relaxed);

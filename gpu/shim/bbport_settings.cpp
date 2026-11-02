@@ -97,8 +97,14 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                      : value == "m" || value == "M" ? 13 : 0;
     } else if (key == "frame_gen_multiplier") {
         v.frame_gen_multiplier = std::clamp(i, 2, 4);
+    } else if (key == "frame_gen_auto") {
+        v.frame_gen_auto = i != 0;
     } else if (key == "frame_gen_fit_display") {
         v.frame_gen_fit_display = i != 0;
+    } else if (key == "reflex") {
+        v.reflex = value == "off" ? ReflexOff : value == "boost" ? ReflexBoost
+                       : value == "on" ? ReflexOn
+                       : std::clamp(i, 0, ReflexCount - 1);
     } else if (key == "motion_blur_reference") {
         v.motion_blur_reference = value == "long" || value == "30" ? 30
                                 : value == "short" || value == "60" ? 60 : 0;
@@ -175,6 +181,9 @@ void Load() {
         std::printf("Settings: %s\n", Path());
     }
     BbNeural::Load(Path());
+    if (const char* pacing = std::getenv("BB_FG_PACING"); pacing && std::strcmp(pacing, "gpu") == 0) {
+        v.fg_pacing_gpu = true;
+    }
     // The HDR brightness last set while playing (the launcher passes its slider, which shows it).
     if (FILE* file = std::fopen(HdrIniPath().c_str(), "r")) {
         char line[64];
@@ -214,7 +223,7 @@ void Load() {
         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_AA", "aa"},                            {"BB_AA_SCALE", "aa_scale"},                            {"BB_FRAME_GEN", "frame_gen"},              {"BB_FRAME_GEN_MULTIPLIER", "frame_gen_multiplier"},
-        {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
+        {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_FRAME_GEN_AUTO", "frame_gen_auto"}, {"BB_DLSS_MODEL", "dlss_model"},
         {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
         {"BB_BRIGHTNESS", "brightness"},              {"BB_CONTRAST", "contrast"},
@@ -258,7 +267,7 @@ void ConfigureDlssSupport(bool available, const char* problem) {
     v.dlss_problem = available || kept.empty() ? nullptr : kept.c_str();
     if (v.upscaler == UpscalerDlss && !available) {
         std::printf("Upscaler: DLSS unavailable (%s); falling back to FSR 3.1\n",
-                    kept.empty() ? "bbport_dlss.dll or nvngx_dlss.dll missing" : kept.c_str());
+                    kept.empty() ? "driveclub_dlss.dll or nvngx_dlss.dll missing" : kept.c_str());
         v.upscaler = UpscalerFsr3;
     }
 }
@@ -311,9 +320,9 @@ void Save() {
     std::fputc(10, file);
     std::fprintf(file, "aa=%s", AaName(v.aa_mode));
     std::fputc(10, file);
-    std::fprintf(file, "frame_gen=%s\nframe_gen_multiplier=%d\nframe_gen_fit_display=%d\n",
+    std::fprintf(file, "frame_gen=%s\nframe_gen_multiplier=%d\nframe_gen_fit_display=%d\nframe_gen_auto=%d\n",
                  FrameGenName(v.frame_gen), v.frame_gen_multiplier.load(),
-                 int(v.frame_gen_fit_display.load()));
+                 int(v.frame_gen_fit_display.load()), int(v.frame_gen_auto.load()));
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -375,7 +384,7 @@ float AaScaleFactor(int scale) {
 }
 
 const char* UpscalerName(int upscaler) {
-    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss"};
+    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss", "fsr_amd"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 

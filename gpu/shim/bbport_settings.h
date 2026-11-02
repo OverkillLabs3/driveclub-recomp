@@ -12,7 +12,7 @@
 namespace BbSettings {
 
 enum Upscaler : int { UpscalerOff = 0, UpscalerFsr3 = 1, UpscalerFsr4 = 2, UpscalerFsr411 = 3,
-                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerCount };
+                      UpscalerTaa = 4, UpscalerDlss = 5, UpscalerAmd = 6, UpscalerCount };   // UpscalerAmd: AMD's own FSR 4.1 through its Vulkan DLLs (vk_amd_ffx.h)
 /// FSR 4 v07 or FSR 4.1.1: the same inputs, settings and placement in the frame.
 inline bool IsFsr4(int upscaler) {
     return upscaler == UpscalerFsr4 || upscaler == UpscalerFsr411;
@@ -23,6 +23,8 @@ enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugV
 enum FrameGen : int { FrameGenOff = 0, FrameGenFsr3 = 1, FrameGenDlss = 2, FrameGenCount };
 /// Anti-aliasing at the render resolution: the game's own, FSR 3.1, or DLSS (DLAA).
 enum Aa : int { AaOff = 0, AaFsr3 = 1, AaDlss = 2, AaCount };
+/// NVIDIA Reflex (vk_reflex.h): off, on, or on with Boost.
+enum Reflex : int { ReflexOff = 0, ReflexOn = 1, ReflexBoost = 2, ReflexCount };
 /// Upscaling with the anti-aliasing: render size to output size (Native, Quality 1.5x, Balanced 1.7x,
 /// Performance 2x, Ultra Performance 3x). The runtime sets the game's render size (src/probe.c).
 enum AaScale : int { AaScaleNative = 0, AaScaleQuality = 1, AaScaleBalanced = 2, AaScalePerformance = 3,
@@ -137,7 +139,7 @@ struct Values {
     /// Why FSR 4 cannot run (assets, device features), or null. Set by the renderer.
     std::atomic<const char*> fsr4_problem{nullptr};
     std::atomic<bool> fsr4_supported{false}, fsr411_supported{false};
-    /// DLSS (bbport_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
+    /// DLSS (driveclub_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
 
@@ -152,14 +154,20 @@ struct Values {
     /// The DLSS Super Resolution model (NVIDIA's render preset): 0 NVIDIA's choice for the quality
     /// mode, 11 K (DLSS 4), 12 L, 13 M (DLSS 4.5); BB_DLSS_MODEL = k, l or m for tests.
     std::atomic<int> dlss_model{0};
+    std::atomic<int> reflex{ReflexOff};
     /// The anti-aliasing replaced the game's result in the last frame (for the overlay).
     std::atomic<bool> aa_running{false};
+    /// Frame generation paces its images from when the GPU finished the game's frame (Ctrl+F8 switches it, BB_FG_PACING=gpu starts with it).
+    std::atomic<bool> fg_pacing_gpu{false};
     /// FSR or DLSS could not start or run and stays off until the choice changes (the log says why).
     std::atomic<bool> aa_failed{false};
     std::atomic<int> frame_gen_multiplier{2};
     /// At most the frames the display shows between two of the game's (an uncapped game then
     /// gets fewer generated frames); off: the multiplier as chosen.
     std::atomic<bool> frame_gen_fit_display{false};
+    /// V-Sync: the multiplier follows the game's frame rate (the highest up to the chosen one that still fits the
+    /// display's refresh rate), instead of capping the game to refresh / multiplier.
+    std::atomic<bool> frame_gen_auto{false};
     std::atomic<int> dlssg_max_multiplier{1};
     std::atomic<const char*> frame_gen_problem{nullptr};
     /// Generated frames per game frame the display has room for now (0: paused), and its

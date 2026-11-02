@@ -4,6 +4,8 @@
 #include "bbport_write_log.h"
 // bbport: glue between the C loader and the vendored shadPS4 video core.
 #include "bbport_overlay.h"
+#include "bbport_safe_start.h"
+#include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "bbport_settings.h"
 #include "bbport_copy.h"
 #ifndef _WIN32
@@ -279,6 +281,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         _exit(21);
     });
     BbSettings::Load();
+    BbSafeStart::Begin();   // after a start that did not get through, the risky features stay off this time
 #ifdef BB_PGO_GENERATE
     StartProfileWriter();
 #endif
@@ -528,4 +531,22 @@ extern "C" int bbgpu_text_input_poll(char* out, uint64_t size) {
         out[n] = 0;
     }
     return state;
+}
+
+/* NVIDIA Reflex hooks for the loader's pad path and the guest simulation cycles. */
+extern "C" void bbgpu_reflex_pre_input_sample(void) {
+    Vulkan::AntiLag::Input();   // AMD Anti-Lag 2: the game samples its controls for a new frame
+    Vulkan::Reflex::PreInputSample();
+}
+
+extern "C" void bbgpu_reflex_on_input_sampled(void) {
+    Vulkan::Reflex::OnInputSampled();
+}
+
+extern "C" void bbgpu_reflex_on_simulation_end(void) {
+    Vulkan::Reflex::OnSimulationEnd();
+}
+
+extern "C" uint64_t bbgpu_reflex_current_sim_frame_id(void) {
+    return Vulkan::Reflex::CurrentSimFrameId();
 }

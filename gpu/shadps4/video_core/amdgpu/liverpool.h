@@ -220,7 +220,8 @@ private:
 
     using CmdBuffer = std::pair<std::span<const u32>, std::span<const u32>>;
     CmdBuffer CopyCmdBuffers(std::span<const u32> dcb, std::span<const u32> ccb);
-    Task ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb, u64 seq = NoSeq);
+    Task ProcessGraphics(std::span<const u32> dcb, std::span<const u32> ccb, u64 seq = NoSeq,
+                         u64 frame_id = 0);
     Task ProcessCeUpdate(std::span<const u32> ccb);
     template <bool is_indirect = false>
     Task ProcessCompute(std::span<const u32> acb, u32 vqid);

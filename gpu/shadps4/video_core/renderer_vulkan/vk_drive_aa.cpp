@@ -913,6 +913,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         reset = true;
         return;
     }
+    const int selected_upscaler = BbSettings::Get().upscaler;
+    const bool want_amd = !want_dlss && !amd_failed && selected_upscaler == BbSettings::UpscalerAmd;
+    const bool want_fsr4 = !want_dlss && !want_amd && !fsr4_failed && BbSettings::IsFsr4(selected_upscaler) &&
+                           (selected_upscaler == BbSettings::UpscalerFsr411 ? instance.IsFsr411Supported()
+                                                                            : instance.IsFsr4Int8Supported());
     // Upscaled to the game's output size (its display buffer).
     const u32 ow = upscale ? BbFrame::output_w.load(std::memory_order_relaxed) : w;
     const u32 oh = upscale ? BbFrame::output_h.load(std::memory_order_relaxed) : h;
@@ -1197,6 +1202,88 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         if (!ok) {
             std::puts("Anti-aliasing: DLSS failed; using FSR 3.1");
             BbSettings::Get().aa_mode = BbSettings::AaFsr3;
+            reset = true;
+            return;
+        }
+        dispatched = true;
+    } else if (want_amd) {
+        if (!amd_ffx) {
+            amd_ffx = std::make_unique<AmdFfxUpscaler>(instance, scheduler);
+        }
+        const bool ok = amd_ffx->Record({
+            .cmdbuf = cmdbuf,
+            .color = {color.GetImage(), color_format, color.usage_flags, w, h},
+            .depth = {depth.GetImage(), depth_format, depth.usage_flags, w, h},
+            .motion = {vk::Image(motion_image), vk::Format::eR16G16Sfloat,
+                       vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h},
+            .output = {vk::Image(result_image), vk::Format::eR16G16B16A16Sfloat,
+                       vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                           vk::ImageUsageFlagBits::eTransferSrc,
+                       ow, oh},
+            .render_width = w,
+            .render_height = h,
+            .jitter = {frame_jitter[0], frame_jitter[1]},
+            .frame_ms = frame_ms,
+            .near_plane = motion.Near(),
+            .far_plane = 3000.0f,
+            .vertical_fov = motion.VerticalFov(),
+            .sharpness = sharpness,
+            .sharpen = settings.sharpen,
+            .reset = reset,
+            .auto_exposure = settings.fsr4_auto_exposure,
+        });
+        if (!ok) {
+            if (amd_ffx->Fatal()) {
+                const bool int8 = instance.IsFsr4Int8Supported();
+                std::printf("Anti-aliasing: AMD FSR 4.1 is not available; using %s\n", int8 ? "FSR 4 (INT8)" : "FSR 3.1");
+                BbSettings::Get().upscaler = int8 ? BbSettings::UpscalerFsr4 : BbSettings::UpscalerFsr3;
+                amd_failed = true;
+            }
+            reset = true;
+            return;
+        }
+        dispatched = true;
+    } else if (want_fsr4) {
+        if (!fsr4) {
+            fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
+        }
+        // The model is per preset: the one whose ratio is closest to the real render / output ratio.
+        const int preset = factor < 1.05f   ? BbSettings::NativeAA
+                           : factor < 1.6f  ? BbSettings::Quality
+                           : factor < 1.85f ? BbSettings::Balanced
+                           : factor < 2.5f  ? BbSettings::Performance
+                                            : BbSettings::UltraPerformance;
+        const bool ok = fsr4->Record({
+            .cmdbuf = cmdbuf,
+            .color = {color.GetImage(), color_view, w, h},
+            .depth = {depth.GetImage(), depth_view, w, h},
+            .motion = {vk::Image(motion_image), *motion_view, w, h},
+            .output = {vk::Image(result_image), *result_view, ow, oh},
+            .render_width = w,
+            .render_height = h,
+            .preset = preset,
+            .jitter = {frame_jitter[0], frame_jitter[1]},
+            .frame_ms = frame_ms,
+            .near_plane = motion.Near(),
+            .far_plane = 3000.0f,
+            .vertical_fov = motion.VerticalFov(),
+            .sharpness = sharpness,
+            .sharpen = settings.sharpen,
+            .reset = reset,
+            .auto_exposure = settings.fsr4_auto_exposure,
+        });
+        if (!ok) {
+            static std::string shown;
+            const char* problem = fsr4->Problem();
+            if (problem && shown != problem) {
+                shown = problem;
+                std::printf("Anti-aliasing: FSR 4 failed: %s\n", problem);
+            }
+            if (fsr4->Fatal()) {
+                std::puts("Anti-aliasing: FSR 4 is not available; using FSR 3.1");
+                BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
+                fsr4_failed = true;
+            }
             reset = true;
             return;
         }

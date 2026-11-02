@@ -1391,6 +1391,31 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
+    {
+        // BB_RT_STATS=1: how much geometry the scene's G-buffer draws carry per second (what a ray tracing
+        // acceleration structure would have to hold). Only counts; nothing is captured.
+        static const bool rt_stats = std::getenv("BB_RT_STATS") != nullptr;
+        static u64 draws = 0, triangles = 0, instanced = 0, indexed = 0, frames = 0;
+        static auto window_start = std::chrono::steady_clock::now();
+        if (rt_stats && frame_display) {
+            ++frames;
+        }
+        if (rt_stats && motion_draw) {
+            ++draws;
+            indexed += is_indexed ? 1 : 0;
+            instanced += regs.num_instances.NumInstances() > 1 ? 1 : 0;
+            triangles += u64(regs.num_indices) / 3 * regs.num_instances.NumInstances();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - window_start >= std::chrono::seconds(5)) {
+                const u64 f = frames ? frames : 1;
+                std::printf("RT stats: per frame %llu G-buffer draws (%llu indexed, %llu instanced), %llu triangles\n",
+                            (unsigned long long)(draws / f), (unsigned long long)(indexed / f),
+                            (unsigned long long)(instanced / f), (unsigned long long)(triangles / f));
+                draws = triangles = instanced = indexed = frames = 0;
+                window_start = now;
+            }
+        }
+    }
     if (motion_draw && motion_geometry) {
         const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
         const auto [base_vertex, first_instance] =

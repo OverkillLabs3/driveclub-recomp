@@ -64,6 +64,14 @@ uintptr_t bbgpu_exposure_exact_hook(uintptr_t real_getter, int site);
 uintptr_t bbgpu_cloud_hook(uintptr_t image_base);
 uintptr_t bbgpu_query_hook(uintptr_t image_base);
 uintptr_t bbgpu_crowd_hook(uintptr_t image_base);
+/* NVIDIA Reflex: called before pad input sampling (driver frame pacing). */
+void bbgpu_reflex_pre_input_sample(void);
+/* NVIDIA Reflex: called immediately after pad input has been sampled. */
+void bbgpu_reflex_on_input_sampled(void);
+/* NVIDIA Reflex: called when a simulation cycle ends (e.g. at flip submission). */
+void bbgpu_reflex_on_simulation_end(void);
+/* Returns the current monotonic simulation frame ID (0 if not active/supported). */
+uint64_t bbgpu_reflex_current_sim_frame_id(void);
 #ifdef __cplusplus
 }
 #endif

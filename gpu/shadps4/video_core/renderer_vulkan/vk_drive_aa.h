@@ -14,6 +14,8 @@
 
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
+#include "video_core/renderer_vulkan/vk_amd_ffx.h"
+#include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/texture_cache/image.h"
 
@@ -123,6 +125,12 @@ private:
     DriveMotion& motion;
     CameraMotion& camera_motion;
     std::unique_ptr<NeuralRendering> neural;
+    /// FSR 4 (BB_UPSCALER=fsr4 / fsr411): the same inputs as FSR 3.1; assets missing or unsupported hardware fall back to FSR 3.1.
+    std::unique_ptr<Fsr4Upscaler> fsr4;
+    /// AMD's own FSR 4.1 through its Vulkan DLLs (BB_UPSCALER=fsr_amd); a failure falls back to FSR 4 (INT8) or FSR 3.1.
+    std::unique_ptr<AmdFfxUpscaler> amd_ffx;
+    bool amd_failed = false;
+    bool fsr4_failed = false;
 
     std::array<CachedView, 8> views{};
     u64 view_uses = 0;

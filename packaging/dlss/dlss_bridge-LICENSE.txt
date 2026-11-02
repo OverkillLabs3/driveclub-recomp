@@ -1,7 +1,7 @@
 MIT License
 
 Copyright (c) 2026 IFreemz
-Copyright (c) 2026 bbport contributors
+Copyright (c) 2026 DriveClub Recomp contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 This license covers the files in this directory only. The bridge is adapted from
-the shadps4_dlss bridge of https://github.com/IFreemz/shadPS4-Bloodborne-DLSS-FSR.
+the DLSS bridge by IFreemz (MIT).
 Building it requires the NVIDIA DLSS SDK (https://github.com/NVIDIA/DLSS), which is
 licensed separately by NVIDIA Corporation and is not included in this repository.

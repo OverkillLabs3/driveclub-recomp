@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright 2026 IFreemz (shadps4_dlss bridge), bbport contributors
 # SPDX-License-Identifier: MIT
 #
-# bbport_dlss.dll links the NVIDIA DLSS SDK (MSVC only) and is built separately from the port:
+# driveclub_dlss.dll links the NVIDIA DLSS SDK (MSVC only) and is built separately from the port:
 #   cmake -S gpu/dlss_bridge -B out/dlss-bridge -G "Visual Studio 17 2022" -A x64 \
 #         -DDLSS_SDK_ROOT=<github.com/NVIDIA/DLSS checkout> -DVULKAN_INCLUDE=<Vulkan-Headers include>
 #   cmake --build out/dlss-bridge --config Release
@@ -25,6 +25,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
 add_library(bbport_dlss SHARED bbport_dlss_bridge.cpp bbport_dlss_bridge.h)
+set_target_properties(bbport_dlss PROPERTIES OUTPUT_NAME "driveclub_dlss")
 target_include_directories(bbport_dlss PRIVATE "${DLSS_SDK_ROOT}/include" "${VULKAN_INCLUDE}")
 target_link_libraries(bbport_dlss PRIVATE "${DLSS_SDK_ROOT}/lib/Windows_x86_64/x64/nvsdk_ngx_s.lib")
 target_compile_definitions(bbport_dlss PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

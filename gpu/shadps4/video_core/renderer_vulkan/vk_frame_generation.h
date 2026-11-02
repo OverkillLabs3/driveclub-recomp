@@ -5,7 +5,7 @@
 // taken where the temporal upscaler runs, before the game's post-processing (BeginCapture):
 // the scene depth and the upscaler's motion vectors (CameraMotion, camera and object motion).
 //  - FSR 3.1 frame interpolation (FireBurn/FSR-Vulkan, native Vulkan): any GPU, 2x.
-//  - DLSS Frame Generation (bbport_dlss.dll with nvngx_dlssg.dll): GeForce RTX 40 2x,
+//  - DLSS Frame Generation (driveclub_dlss.dll with nvngx_dlssg.dll): GeForce RTX 40 2x,
 //    RTX 50 up to 4x.
 
 #pragma once
@@ -265,6 +265,10 @@ private:
         u64 tick;
     };
     std::deque<Pending> fsr3_pending;
+public:
+    /// FSR 3.1 frames the GPU has not finished yet (for the periodic log line).
+    [[nodiscard]] size_t PendingFsr3() const noexcept { return fsr3_pending.size(); }
+private:
 };
 
 } // namespace Vulkan
