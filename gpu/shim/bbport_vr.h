@@ -63,6 +63,17 @@ bool DrawTrace();
 int TraceMark();
 /// vr.ini hide_shader = <hex> ...: draws with one of these vertex or pixel shaders are skipped.
 bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash);
+/// vr.ini hide_target = <hex> ...: draws into a render target at one of these guest addresses are skipped. The \ key
+/// turns hide_shader and hide_target off and on.
+bool HiddenTarget(uint64_t address);
+/// True stereo diagnostics: the = key was pressed (once): the next frame's two-layer render targets are saved, both
+/// eyes, as they are when the HUD starts (BB_GPU_USER_DIR/eye_dump).
+bool EyeDump();
+/// vr.ini dump_each = 1: the shader to hide alone in the dump's frame `step` (1.., hide_shader's list), 0 when the
+/// list is done (or without dump_each, or for step 0: the frame as it is).
+uint64_t DumpHide(int step);
+/// Draws with this vertex or pixel shader are skipped (0: none), whatever hide_shader says.
+void SetSoloHide(uint64_t hash);
 bool SceneDrawn();
 /// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.
 /// `stereo`: the display buffer has the right eye in layer 1 (multiview): it is copied out too.

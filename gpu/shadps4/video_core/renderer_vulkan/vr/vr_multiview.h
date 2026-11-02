@@ -196,8 +196,8 @@ void NoteRingBuffer(u64 address, u64 size);
 /// Development audit (BB_VR_AUDIT=1): an image copy (`what`) touching a two-layer image, once per kind.
 void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst);
 
-/// Development log (BB_VR_MONO_COMPUTE): the draw's vertex shader.
-void SetDrawHash(u64 hash);
+/// The audit's names (BB_VR_AUDIT): before a draw binds, its vertex and pixel shaders; before a dispatch, its compute.
+void SetDrawHash(u64 hash, u64 ps_hash = 0);
 
 /// Runtime::ResolveImage: the layers to resolve or copy (`layers`, the source's and the destination's): both eyes when
 /// both images have them.

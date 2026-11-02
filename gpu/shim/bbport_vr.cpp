@@ -158,7 +158,12 @@ struct Settings {
     bool draw_trace = false;
     // the head pose stated for a frame takes the turn the game gave the camera after the hook (frame_pose)
     bool frame_pose = true;
-    uint64_t hidden[8]{};
+    uint64_t hidden[16]{};
+    // dump_each = 1: hide_shader's list is not hidden in play; the = key saves one frame as it is and then one frame
+    // with each of them hidden alone (EyeDump, DumpHide)
+    bool dump_each = false;
+    // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
+    uint64_t hidden_targets[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
     // and the turn compensation, the reprojection, the DLSS model
     int keys[10] = {'0', '2', '1', '5', '6', '4', '3', '9', '8', '7'};
@@ -212,6 +217,9 @@ std::atomic<bool> active{false};
 // The eyes made from depth (reproject, key_reproject): 0 off, 1 the other eye from each alternate frame, 2 both eyes
 // from a frame drawn between them.
 std::atomic<int> reproject_mode{0};
+std::atomic<bool> hiding{true}; // hide_shader / hide_target in effect (the \ key)
+std::atomic<uint64_t> solo_hide{0}; // dump_each: the one shader hidden in the frame being saved
+std::atomic<bool> eye_dump{false}; // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
@@ -338,7 +346,7 @@ void ReadSettings() {
             BbSettings::Get().dlss_model = c == 'k' ? 11 : c == 'l' ? 12 : c == 'm' ? 13 : 0;
             continue;
         }
-        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 8, hex)
+        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 16, hex)
         char list[200] = "";
         if (std::sscanf(line, " hide_shader = %199[^\r\n#]", list) == 1) {
             char* at = list;
@@ -348,6 +356,35 @@ void ReadSettings() {
                 hash = std::strtoull(at, &end, 16);
                 if (end == at) break;
                 std::printf("VR: draws with shader %llx are hidden (hide_shader)\n", (unsigned long long)hash);
+                at = end;
+            }
+            continue;
+        }
+        // audit_vs = d7c64806: the audit lists that shader's passes, their reads and writes (BB_VR_AUDIT_VS)
+        if (std::sscanf(line, " audit_vs = %199[0-9a-fA-F]", list) == 1) {
+            _putenv((std::string("BB_VR_AUDIT_VS=") + list).c_str());
+            continue;
+        }
+        // audit_addr = 5034670000: the audit lists the passes that write there (BB_VR_AUDIT_ADDR)
+        if (std::sscanf(line, " audit_addr = %199[0-9a-fA-F]", list) == 1) {
+            _putenv((std::string("BB_VR_AUDIT_ADDR=") + list).c_str());
+            continue;
+        }
+        // dump_target = 500ac50000: the eye dump saves that render target alone (BB_VR_DUMP_TARGET)
+        if (std::sscanf(line, " dump_target = %199[0-9a-fA-F]", list) == 1) {
+            _putenv((std::string("BB_VR_DUMP_TARGET=") + list).c_str());
+            continue;
+        }
+        // hide_target = 50101a8000: draws into the render target at that guest address are skipped (up to 4, hex)
+        if (std::sscanf(line, " hide_target = %199[^\r\n#]", list) == 1) {
+            char* at = list;
+            for (uint64_t& address : settings.hidden_targets) {
+                while (*at == ' ' || *at == ',' || *at == '\t') ++at;
+                char* end = at;
+                address = std::strtoull(at, &end, 16);
+                if (end == at) break;
+                std::printf("VR: draws into %llx are hidden (hide_target; the \\ key shows them again)\n",
+                            (unsigned long long)address);
                 at = end;
             }
             continue;
@@ -363,6 +400,9 @@ void ReadSettings() {
         else if (k == "auto_recentre") settings.auto_recentre = value != 0;
         else if (k == "diag") settings.diag = value != 0;
         else if (k == "draw_trace") settings.draw_trace = value != 0;
+        // audit = 1: the multiview audit (BB_VR_AUDIT), the passes that give both eyes one eye's picture, in the log
+        else if (k == "audit" && value != 0) _putenv("BB_VR_AUDIT=1");
+        else if (k == "dump_each") settings.dump_each = value != 0;
         else if (k == "frame_pose") settings.frame_pose = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
@@ -1754,6 +1794,25 @@ void ReadKeys() {
                     shifts);
     }
     was_shift = shift_down;
+    // True stereo diagnostics: the = key saves one frame's two-layer render targets, both eyes (EyeDump)
+    static bool was_dump = false;
+    const bool dump_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
+    if (dump_down && !was_dump) {
+        eye_dump = true;
+        std::printf("VR: eye dump asked for (the next frame)\n");
+        std::fflush(stdout);
+    }
+    was_dump = dump_down;
+    // hide_shader / hide_target: the \ key shows what they hide and hides it again
+    static bool was_hide = false;
+    const bool hide_down = (settings.hidden[0] || settings.hidden_targets[0]) && (GetAsyncKeyState(VK_OEM_5) & 0x8000) != 0;
+    if (hide_down && !was_hide) {
+        const bool on = !hiding.load();
+        hiding = on;
+        std::printf("VR: hide_shader / hide_target %s\n", on ? "on (hidden)" : "off (drawn)");
+        std::fflush(stdout);
+    }
+    was_hide = hide_down;
     // draw_trace: [ takes the shaders of the next frames as the normal ones, ] prints what the next frames draw beyond them
     static bool was_mark[2] = {};
     for (int i = 0; i < 2; ++i) {
@@ -2115,11 +2174,41 @@ bool DrawTrace() {
 }
 
 bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
-    if (!settings.hidden[0]) {
+    if (const uint64_t solo = solo_hide.load(std::memory_order_relaxed); solo && (solo == vs_hash || solo == ps_hash)) {
+        return true;
+    }
+    if (!settings.hidden[0] || settings.dump_each || !hiding.load(std::memory_order_relaxed)) {
         return false;
     }
     for (const uint64_t hash : settings.hidden) {
         if (hash && (hash == vs_hash || hash == ps_hash)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool EyeDump() {
+    return eye_dump.exchange(false);
+}
+
+uint64_t DumpHide(int step) {
+    if (!settings.dump_each) {
+        return 0;
+    }
+    return step >= 1 && step <= 16 ? settings.hidden[step - 1] : 0;
+}
+
+void SetSoloHide(uint64_t hash) {
+    solo_hide = hash;
+}
+
+bool HiddenTarget(uint64_t address) {
+    if (!settings.hidden_targets[0] || !hiding.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    for (const uint64_t target : settings.hidden_targets) {
+        if (target && target == address) {
             return true;
         }
     }
