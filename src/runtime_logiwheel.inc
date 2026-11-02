@@ -743,6 +743,21 @@ void runtime_ffb_release(const char *why) {
     for (int i=0;i<75 && !ffb_release_done;++i) compat_sleep_ns(4000000);
 }
 
+/* SDL_HAPTIC_INFINITY does not reach the wheel as DirectInput's INFINITE: SDL multiplies the length by 1000 into its
+ * 32-bit duration, 4294966296 us (71.6 minutes), and drivers that keep a duration as 16 bits of milliseconds end the
+ * effect far sooner: a Simagic base after 35.1 s (4294966 ms cut to 16 bits, #239), a Thrustmaster after 65.5 s (the
+ * most 16 bits hold, #102). The wheel goes light until the effect is started again, as a pause does. So the effects
+ * that play are started again every 20 to 28 s, at the first moment in that time the steering force is small: a wheel
+ * that feels the restart feels it where there is little to feel. Stopped first, as a pause does: a driver may take a
+ * start of an effect it still counts as playing as nothing to do. */
+#define FFB_RESTART_EARLY_US 20000000
+#define FFB_RESTART_LATE_US 28000000
+static void ffb_restart(SDL_Haptic *haptic, int id, bool *running) {
+    if (id<0 || !*running) return;
+    SDL_StopHapticEffect(haptic,id);
+    *running=SDL_RunHapticEffect(haptic,id,1);
+}
+
 /* The haptic thread: opens the wheel's force feedback and keeps its effects as the game last asked. */
 static void *ffb_thread(void *unused) {
     (void)unused;
@@ -927,6 +942,22 @@ static void *ffb_thread(void *unused) {
         { uint64_t car=0;
           if (physics) { pthread_mutex_lock(&ph.m); car=ph.key; pthread_mutex_unlock(&ph.m); }
           ffb_gain_buttons(car); }
+        /* before the drivers that cut the effects' duration end them (see ffb_restart) */
+        { static uint64_t restarted;
+          const uint64_t age=pass_now-restarted;
+          const float steer=physics ? pw.force : ffb_software ? sw.force : 0.0f;
+          if (age>=FFB_RESTART_LATE_US || (age>=FFB_RESTART_EARLY_US && fabsf(steer)<0.1f)) {
+              if (restarted) {
+                  for (int i=0;i<LOGI_EFFECTS;++i) ffb_restart(haptic,sdl_id[i],&running[i]);
+                  ffb_restart(haptic,sw.id,&sw.running);
+                  ffb_restart(haptic,pw.id,&pw.running);
+                  ffb_restart(haptic,pw.damper_id,&pw.damper_running);
+                  ffb_restart(haptic,pw.slip_id,&pw.slip_running);
+                  static unsigned n;
+                  if (n++<3 || ffb_log()) printf("Runtime: FFB effects started again after %.1f s (steering force %+.2f)\n",(double)age*1e-6,steer);
+              }
+              restarted=pass_now;
+          } }
         ffb_settings_reload();
     }
     return NULL;
