@@ -1531,8 +1531,8 @@ void BuildModel() {
   g_telemetry = toggle(L"Telemetry output (UDP)",
                        L"Sends the car's data (speed, G-forces, tyre slip, load, pedals, steering) as UDP packets in the Forza Motorsport 7 Dash format to 127.0.0.1 port 5300, for SimHub, SimTools and Buttkicker software: set their game to Forza Motorsport 7 and port 5300. The engine speed and gear are not available yet, so those read 0. Off by default.",
                        "@telemetry", false);
-  g_triggers = toggle(L"DualSense haptics and triggers",
-                      L"On a PlayStation 5 controller (DualSense) connected with the USB cable: the controller's haptic actuators play the engine, road and kerbs, tyre scrub, gear changes and the rev limiter, and the triggers push back on gear changes and vibrate when a wheel locks or spins. Over Bluetooth only the triggers work. Off by default.",
+  g_triggers = toggle(L"DualSense and Xbox impulse triggers",
+                      L"On a PlayStation 5 controller (DualSense) connected with the USB cable: the controller's haptic actuators play the engine, road and kerbs, tyre scrub, gear changes and the rev limiter, and the triggers push back on gear changes and vibrate when a wheel locks or spins. On an Xbox One or Series controller: impulse triggers vibrate on wheel slip, ABS lockup, and gear shifts. Off by default.",
                       "@triggers", false);
   g_profile_row = seg(L"Save profile",
                       L"Four separate careers on one install, for different players. Picking another profile swaps your saves in when you press Play or Save. "
@@ -3685,7 +3685,10 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   }
   if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
   if (g_telemetry >= 0 && !UserEnv(L"BB_TELEMETRY") && g_c[g_telemetry].sel == 1) SetEnvironmentVariableW(L"BB_TELEMETRY", L"1");
-  if (g_triggers >= 0 && !UserEnv(L"BB_ADAPTIVE_TRIGGERS") && g_c[g_triggers].sel == 1) SetEnvironmentVariableW(L"BB_ADAPTIVE_TRIGGERS", L"1");
+  if (g_triggers >= 0 && g_c[g_triggers].sel == 1) {
+    if (!UserEnv(L"BB_ADAPTIVE_TRIGGERS")) SetEnvironmentVariableW(L"BB_ADAPTIVE_TRIGGERS", L"1");
+    if (!UserEnv(L"BB_IMPULSE_TRIGGERS")) SetEnvironmentVariableW(L"BB_IMPULSE_TRIGGERS", L"1");
+  }
   if (g_fgpace >= 0 && !UserEnv(L"BB_FG_PACING") && g_c[g_fgpace].sel == 1) SetEnvironmentVariableW(L"BB_FG_PACING", L"gpu");
   if (g_reflex >= 0 && !UserEnv(L"BB_REFLEX")) {
     const int r = g_c[g_reflex].sel;
