@@ -986,6 +986,9 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * fits all UI menus, HUD, and video quads cleanly onto the screen. */
 static void apply_ui_resolution(unsigned char *image, uint64_t size) {
     if (size < 0x12cf510) return;
+    /* VR: the headset sizes (taller than wide) keep the 16:9 canvas, the HUD goes to the headset on its own
+       16:9 layer, and the headset sets the field of view */
+    if (horizon_vr_wanted()) return;
     if (image[0x754c19] != 0x41 || image[0x754c1a] != 0xb8 || image[0x754c1f] != 0x41 || image[0x754c20] != 0xb9) return;
     uint32_t out_w, out_h;
     memcpy(&out_w, image + 0x754c1b, 4); memcpy(&out_h, image + 0x754c21, 4);
