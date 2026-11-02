@@ -98,8 +98,16 @@ static void touch_click(PadData *d, int right) {
  * with a clutch axis, 2 for a wheel without one, 1 for a gamepad's triggers (R2 throttle, L2 brake), 0 before the
  * game has read a pad. */
 static PadData pad_last_read;   /* the last read of any port, under lock */
+#ifdef _WIN32
 #include "runtime_haptics.inc"   /* DualSense haptics from the car data, over the controller's USB sound card */
 #include "runtime_telemetry.inc"   /* the player's car every frame: telemetry out and adaptive triggers (off unless asked for) */
+#else
+/* Both need Windows (WASAPI, Winsock, the game's car data patched in place): off on other systems. */
+static volatile int hap_active;
+static volatile uint8_t hap_rumble_large, hap_rumble_small;
+static bool tele_wanted(void) { return false; }
+static void tele_install(void) {}
+#endif
 static bool pad_was_read;
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
