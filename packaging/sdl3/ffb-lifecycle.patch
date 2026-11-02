@@ -1,0 +1,24 @@
+diff --git a/src/haptic/windows/SDL_dinputhaptic.c b/src/haptic/windows/SDL_dinputhaptic.c
+--- a/src/haptic/windows/SDL_dinputhaptic.c
++++ b/src/haptic/windows/SDL_dinputhaptic.c
+@@ -1124,9 +1124,17 @@ void SDL_DINPUT_HapticDestroyEffect(SDL_Haptic *haptic, struct haptic_effect *effect)
+ {
+     HRESULT ret;
+ 
+-    ret = IDirectInputEffect_Unload(effect->hweffect->ref);
+-    if (FAILED(ret)) {
+-        DI_SetError("Removing effect from the device", ret);
++    if (effect->hweffect->ref) {
++        ret = IDirectInputEffect_Stop(effect->hweffect->ref);
++        if (FAILED(ret)) {
++            DI_SetError("Stopping effect before removal", ret);
++        }
++        ret = IDirectInputEffect_Unload(effect->hweffect->ref);
++        if (FAILED(ret)) {
++            DI_SetError("Removing effect from the device", ret);
++        }
++        IDirectInputEffect_Release(effect->hweffect->ref);
++        effect->hweffect->ref = NULL;
+     }
+     SDL_SYS_HapticFreeDIEFFECT(&effect->hweffect->effect, effect->effect.type);
+ }

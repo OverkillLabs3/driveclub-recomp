@@ -1,0 +1,47 @@
+--- a/src/haptic/windows/SDL_dinputhaptic.c
++++ b/src/haptic/windows/SDL_dinputhaptic.c
+@@ -649,7 +649,7 @@
+         dest->lpvTypeSpecificParams = constant;
+ 
+         // Generics
+-        dest->dwDuration = hap_constant->length * 1000UL; // In microseconds.
++        dest->dwDuration = hap_constant->length == SDL_HAPTIC_INFINITY ? INFINITE : hap_constant->length * 1000UL;
+         dest->dwTriggerButton = DIGetTriggerButton(hap_constant->button);
+         dest->dwTriggerRepeatInterval = hap_constant->interval;
+         dest->dwStartDelay = hap_constant->delay * 1000UL; // In microseconds.
+@@ -693,7 +693,7 @@
+         dest->lpvTypeSpecificParams = periodic;
+ 
+         // Generics
+-        dest->dwDuration = hap_periodic->length * 1000UL; // In microseconds.
++        dest->dwDuration = hap_periodic->length == SDL_HAPTIC_INFINITY ? INFINITE : hap_periodic->length * 1000UL;
+         dest->dwTriggerButton = DIGetTriggerButton(hap_periodic->button);
+         dest->dwTriggerRepeatInterval = hap_periodic->interval;
+         dest->dwStartDelay = hap_periodic->delay * 1000UL; // In microseconds.
+@@ -743,7 +743,7 @@
+         dest->lpvTypeSpecificParams = condition;
+ 
+         // Generics
+-        dest->dwDuration = hap_condition->length * 1000UL; // In microseconds.
++        dest->dwDuration = hap_condition->length == SDL_HAPTIC_INFINITY ? INFINITE : hap_condition->length * 1000UL;
+         dest->dwTriggerButton = DIGetTriggerButton(hap_condition->button);
+         dest->dwTriggerRepeatInterval = hap_condition->interval;
+         dest->dwStartDelay = hap_condition->delay * 1000UL; // In microseconds.
+@@ -773,7 +773,7 @@
+         dest->lpvTypeSpecificParams = ramp;
+ 
+         // Generics
+-        dest->dwDuration = hap_ramp->length * 1000UL; // In microseconds.
++        dest->dwDuration = hap_ramp->length == SDL_HAPTIC_INFINITY ? INFINITE : hap_ramp->length * 1000UL;
+         dest->dwTriggerButton = DIGetTriggerButton(hap_ramp->button);
+         dest->dwTriggerRepeatInterval = hap_ramp->interval;
+         dest->dwStartDelay = hap_ramp->delay * 1000UL; // In microseconds.
+@@ -815,7 +815,7 @@
+         dest->lpvTypeSpecificParams = custom;
+ 
+         // Generics
+-        dest->dwDuration = hap_custom->length * 1000UL; // In microseconds.
++        dest->dwDuration = hap_custom->length == SDL_HAPTIC_INFINITY ? INFINITE : hap_custom->length * 1000UL;
+         dest->dwTriggerButton = DIGetTriggerButton(hap_custom->button);
+         dest->dwTriggerRepeatInterval = hap_custom->interval;
+         dest->dwStartDelay = hap_custom->delay * 1000UL; // In microseconds.
