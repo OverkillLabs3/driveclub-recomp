@@ -219,8 +219,9 @@ bool Enabled() {
 }
 
 const char* CacheSuffix() {
-    // Multiview shaders (2D images as arrays, per-eye buffers, the eye shift) are cached apart.
-    return Requested() ? "_mv" : "";
+    // Multiview shaders (2D images as arrays, per-eye buffers, the eye shift) are cached apart. _mv2: multisampled
+    // images are arrays too.
+    return Requested() ? "_mv2" : "";
 }
 
 void OnDevice(VkDevice device, bool supported) {
@@ -308,7 +309,7 @@ bool Stereo(const VideoCore::Image& image) {
 }
 
 bool ArrayView(AmdGpu::ImageType type) {
-    return Requested() && type == AmdGpu::ImageType::Color2D;
+    return Requested() && (type == AmdGpu::ImageType::Color2D || type == AmdGpu::ImageType::Color2DMsaa);
 }
 
 void AdjustView(const VideoCore::Image& image, const VideoCore::ImageViewInfo& info, vk::ImageViewType& type,

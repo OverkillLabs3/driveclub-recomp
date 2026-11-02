@@ -25,7 +25,11 @@ bool MultiviewShaders() {
 }
 
 bool ArrayedImage(AmdGpu::ImageType view_type) {
-    return MultiviewShaders() && view_type == AmdGpu::ImageType::Color2D;
+    // Multisampled ones too: the half-size 4x MSAA pass (glass, its drops and reflections) has both eyes, and the
+    // pass that puts it on the scene read its layer 0 in both (the left eye's glass a frame to the right in the right
+    // eye).
+    return MultiviewShaders() &&
+           (view_type == AmdGpu::ImageType::Color2D || view_type == AmdGpu::ImageType::Color2DMsaa);
 }
 
 bool EyeBufferArrays() {
@@ -114,8 +118,9 @@ Id Coords(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id im
     if (!Sirit::ValidId(image)) {
         image = ctx.OpLoad(texture.image_type, texture.id);
     }
-    const Id size = texture.is_storage ? ctx.OpImageQuerySize(ctx.U32[3], image)
-                                       : ctx.OpImageQuerySizeLod(ctx.U32[3], image, ctx.u32_zero_value);
+    const bool no_lod = texture.is_storage || texture.view_type == AmdGpu::ImageType::Color2DMsaa;
+    const Id size = no_lod ? ctx.OpImageQuerySize(ctx.U32[3], image)
+                           : ctx.OpImageQuerySizeLod(ctx.U32[3], image, ctx.u32_zero_value);
     const Id last = ctx.OpISub(ctx.U32[1], ctx.OpCompositeExtract(ctx.U32[1], size, 2), ctx.ConstU32(1U));
     layer = ctx.OpUMin(ctx.U32[1], layer, last);
     return ctx.OpCompositeConstruct(ctx.U32[3], ctx.OpCompositeExtract(ctx.U32[1], coords, 0),
