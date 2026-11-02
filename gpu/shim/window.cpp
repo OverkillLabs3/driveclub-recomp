@@ -53,6 +53,11 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_GetWindowSizeInPixels(window, &w, &h);
     width = w;
     height = h;
+    const bool is_fullscreen = fullscreen && fullscreen[0] == '1';
+    if (!is_fullscreen && height_ > 0) {
+        const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+        SDL_SetWindowAspectRatio(window, aspect, aspect);
+    }
     LOG_INFO(Frontend, "Window {}x{} on {}", w, h, driver);
 }
 

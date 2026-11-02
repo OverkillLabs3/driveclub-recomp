@@ -283,8 +283,12 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     VideoCore::SetStreamPlacementRenderHeight(config->render_height);
 #ifdef _WIN32
     if (config->user_dir && !std::getenv("BB_GPU_USER_DIR")) _putenv_s("BB_GPU_USER_DIR", config->user_dir);
+    if (config->width > 0 && !std::getenv("BB_INTERNAL_WIDTH")) _putenv_s("BB_INTERNAL_WIDTH", std::to_string(config->width).c_str());
+    if (config->height > 0 && !std::getenv("BB_INTERNAL_HEIGHT")) _putenv_s("BB_INTERNAL_HEIGHT", std::to_string(config->height).c_str());
 #else
     if (config->user_dir) setenv("BB_GPU_USER_DIR", config->user_dir, 0);
+    if (config->width > 0 && !std::getenv("BB_INTERNAL_WIDTH")) setenv("BB_INTERNAL_WIDTH", std::to_string(config->width).c_str(), 0);
+    if (config->height > 0 && !std::getenv("BB_INTERNAL_HEIGHT")) setenv("BB_INTERNAL_HEIGHT", std::to_string(config->height).c_str(), 0);
 #endif
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Bloodborne";

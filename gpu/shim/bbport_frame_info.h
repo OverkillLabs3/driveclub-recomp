@@ -25,10 +25,17 @@ inline void NoteRender(uint32_t w, uint32_t h) {
     if (w == 0 || h == 0 || w > 8192 || h > 8192) {
         return;  // passes without a real extent report huge sizes
     }
-    if (w * 9 * 100 < h * 16 * 95 || w * 9 * 100 > h * 16 * 105) {
+    const uint32_t ow = output_w.load(std::memory_order_relaxed);
+    const uint32_t oh = output_h.load(std::memory_order_relaxed);
+    if (ow > 0 && oh > 0) {
+        if (uint64_t(w) * oh * 100 < uint64_t(h) * ow * 95 ||
+            uint64_t(w) * oh * 100 > uint64_t(h) * ow * 105) {
+            return;  // atlases and cube faces are not the scene
+        }
+    } else if (w * 9 * 100 < h * 16 * 95 || w * 9 * 100 > h * 16 * 105) {
         return;  // atlases and cube faces are not the scene
     }
-    if (w == output_w.load(std::memory_order_relaxed) && h == output_h.load(std::memory_order_relaxed)) {
+    if (w == ow && h == oh) {
         return;  // the finished picture (menus, HUD), not the scene; with nothing else drawn the overlay shows the output size
     }
     const uint64_t area = uint64_t(w) * h;
