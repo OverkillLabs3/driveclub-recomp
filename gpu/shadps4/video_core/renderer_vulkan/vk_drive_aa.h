@@ -64,7 +64,18 @@ public:
 
     /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
     /// scene depth and `output` the image it wrote.
-    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output);
+    struct DcBuffer {
+        vk::Buffer buffer;
+        u64 offset = 0, size = 0;
+    };
+    struct DcInputs {
+        std::array<DcBuffer, 3> buffers{};
+        std::array<u32, 3> dword_offsets{};
+        float tan_half_fov_y = 0.0f;
+    };
+
+    void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
+               VideoCore::ImageId gbuffer = {}, const DcInputs* dc_inputs = nullptr);
 
     /// Upscaling: OnTaa left the picture for the pass that scales it into the display buffer, and
     /// `image` (sampled by the first draw into the display buffer) is that picture.
@@ -132,6 +143,7 @@ private:
     int applied_mode = -1;
     u32 frame_id = 0;
     u32 jitter_index = 0;
+    bool jitter_due = false;
     std::array<float, 2> jitter{};
     std::chrono::steady_clock::time_point last_frame{};
 
@@ -147,6 +159,19 @@ private:
     vk::UniqueDescriptorSetLayout copy_desc_layout;
     vk::UniquePipelineLayout copy_pipeline_layout;
     vk::UniquePipeline copy_pipeline;
+    VideoCore::UniqueImage depth_copy_image;
+    vk::UniqueImageView depth_copy_view;
+    vk::UniqueDescriptorSetLayout dc_motion_desc_layout;
+    vk::UniquePipelineLayout dc_motion_pipeline_layout;
+    vk::UniquePipeline dc_motion_pipeline;
+
+    bool has_dc_inputs = false;
+    DcInputs current_dc_inputs{};
+    VideoCore::ImageId current_gbuffer_id{};
+
+    bool late_has_dc_inputs = false;
+    DcInputs late_dc_inputs{};
+    VideoCore::ImageId late_gbuffer_id{};
 };
 
 } // namespace Vulkan

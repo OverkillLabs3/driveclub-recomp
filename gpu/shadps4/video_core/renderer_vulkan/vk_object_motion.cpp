@@ -53,6 +53,17 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
     : instance{instance_}, scheduler{scheduler_} {
     // Pipeline selection limits the extra attachment and vertex stores to likely
     // animated draws. A setting or environment override can still disable the path.
+    const char* forced = std::getenv("BB_OBJECT_MOTION");
+    if (!(forced && forced[0] == '1')) {
+        std::printf("Object motion: off (Driveclub's upscaler takes its motion from the game)\n");
+        return;
+    }
+    const auto props = instance.GetPhysicalDevice().getProperties();
+    if (props.vendorID == 0x1002 && props.deviceID < 0x7440 && !(forced && forced[0] == '1')) {
+        std::printf("Object motion: off on this AMD GPU (RX 6000 and older lose the device with it; "
+                    "BB_OBJECT_MOTION=1 turns it on)\n");
+        return;
+    }
     if (!BbSettings::MotionVectorsOptIn() || !BbSettings::Get().object_motion ||
         BbSettings::Get().upscaler == BbSettings::UpscalerOff) {
         std::puts("Object motion: off (enable in menu or BB_OBJECT_MOTION=1)");
