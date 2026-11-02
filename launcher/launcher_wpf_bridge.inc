@@ -198,7 +198,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         HWND capture=CreateWindowExW(0,L"STATIC",L"",0,0,0,0,0,HWND_MESSAGE,nullptr,GetModuleHandleW(nullptr),nullptr);
         if(!capture)throw std::runtime_error("Cannot start wheel button capture");
         const int which=command==L"--ui-ffbgainup"?0:1;
-        if(request.value("CaptureClear",false))SetFfbGainButton(capture,which,-1);
+        if(request.value("CaptureClear",false))SetFfbGainInput(capture,which,FfbGainInput{});
         else StartFfbCapture(capture,which);
         const auto until=GetTickCount64()+15000;
         while(g_ffb_capture>=0 && GetTickCount64()<until){
@@ -206,7 +206,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
           if(!commands.empty() && commands[0]=="cancel") {
             StopFfbCapture(capture);g_ui_capture_cancelled=true;g_status=L"Wheel button unchanged.";break;
           }
-          if(!commands.empty() && commands[0]=="clear") {SetFfbGainButton(capture,which,-1);break;}
+          if(!commands.empty() && commands[0]=="clear") {SetFfbGainInput(capture,which,FfbGainInput{});break;}
           PollFfbCapture(capture);Sleep(30);
         }
         if(g_ffb_capture>=0){StopFfbCapture(capture);g_status=L"No new wheel button pressed within 15 seconds.";g_status_color=kWarn;}

@@ -90,6 +90,10 @@ static bool parse_input(const char *name, uint8_t *kind, int *code) {
     return false;
 }
 static void add_binding(const Binding *b) { if (binding_count<MAX_BINDINGS) bindings[binding_count++]=*b; }
+/* ffb_gain_up / ffb_gain_down = <key>[, <key>, <key>]: keys (a Stream Deck's too) for the per-car force feedback gain
+ * (ffb_gain_buttons in runtime_logiwheel.inc); several lines each. */
+static Binding ffb_gain_keys[2][4];
+static int ffb_gain_key_count[2];
 static void wheel_parse(const char *lhs, char *rhs);   /* runtime_wheel.inc */
 static void wheel_config_append(const char *path);
 
@@ -183,11 +187,12 @@ static void parse_line(char *line) {
     if (!out_ok && (!strcmp(lhs,"touchpad_center") || !strcmp(lhs,"touchpad_left") || !strcmp(lhs,"touchpad_right"))) {
         b.out_kind=OUT_TOUCH; b.touch_side=!strcmp(lhs,"touchpad_left") ? 0 : !strcmp(lhs,"touchpad_right") ? 2 : 1; out_ok=true;
     }
-    if (!out_ok) return;
+    const int ffb_gain=!strcmp(lhs,"ffb_gain_up") ? 0 : !strcmp(lhs,"ffb_gain_down") ? 1 : -1;
+    if (!out_ok && ffb_gain<0) return;
     /* Controller section: the right hand side is a controller input name. */
     lower(rhs);
     for (size_t i=0;i<sizeof(sdl_button_names)/sizeof(*sdl_button_names);++i) {
-        if (!strcmp(rhs,sdl_button_names[i].name) && b.out_kind==OUT_BUTTON) {
+        if (!strcmp(rhs,sdl_button_names[i].name) && b.out_kind==OUT_BUTTON && ffb_gain<0) {
             if (pad_remap_count<32) { pad_remap[pad_remap_count][0]=(int)b.button; pad_remap[pad_remap_count][1]=sdl_button_names[i].sdl; ++pad_remap_count; }
             return;
         }
@@ -201,7 +206,8 @@ static void parse_line(char *line) {
         if (parse_input(tok,&kind,&code)) { b.in[b.in_count].kind=kind; b.in[b.in_count].code=code; ++b.in_count; }
         tok=strtok_r(NULL,",",&save);
     }
-    if (b.in_count) add_binding(&b);
+    if (b.in_count && ffb_gain>=0) { if (ffb_gain_key_count[ffb_gain]<4) ffb_gain_keys[ffb_gain][ffb_gain_key_count[ffb_gain]++]=b; }
+    else if (b.in_count) add_binding(&b);
 }
 static void input_load(void) {
     if (input_loaded) return;
@@ -244,6 +250,13 @@ static bool binding_down(const Binding *b, const bool *keys, SDL_MouseButtonFlag
         else if (!(mouse & SDL_BUTTON_MASK(b->in[i].code))) return false;
     }
     return b->in_count>0;
+}
+/* One of the per-car gain's keys is held (0: up, 1: down); the game's window has the keyboard. */
+static bool ffb_gain_key_down(int which) {
+    if (!ffb_gain_key_count[which]) return false;
+    const bool *keys=SDL_GetKeyboardState(NULL);
+    for (int i=0;i<ffb_gain_key_count[which];++i) if (binding_down(&ffb_gain_keys[which][i],keys,0)) return true;
+    return false;
 }
 /* A 0..255 stick value (128 centre) through the configured inner and outer dead zones. */
 static uint8_t dz_axis(int16_t v, int which) {
