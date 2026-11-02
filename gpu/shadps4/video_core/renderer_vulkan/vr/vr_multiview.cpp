@@ -295,8 +295,11 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
     // (formats R16G16B16A16 float and B10G11R11). One layer, it was built from the left eye alone and the right eye got
     // the left eye's glow (headlights, glints on the cars' paint in other places in each eye). Only that size: with
     // DLSS Quality it is 512, and its halvings were the game's own textures (64x64, 128x128...).
+    // It is square, from the height: 768x768 for 2688x2880 too (one layer there before: the left eye's glow in both).
     const s64 bloom_w = s64(sizes[0][0] * 4 / 15), bloom_h = s64(sizes[0][1] * 4 / 15);
-    if (std::abs(s64(info.size.width) - bloom_w) <= 1 && std::abs(s64(info.size.height) - bloom_h) <= 1 &&
+    const auto within = [](u32 a, s64 b) { return std::abs(s64(a) - b) <= 1; };
+    if (((within(info.size.width, bloom_w) && within(info.size.height, bloom_h)) ||
+         (within(info.size.width, bloom_h) && within(info.size.height, bloom_h))) &&
         (info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
          info.pixel_format == vk::Format::eB10G11R11UfloatPack32)) {
         return TwoLayers(info);
