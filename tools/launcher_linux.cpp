@@ -12,12 +12,12 @@
 //   driveclub-launcher --help
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_dialog.h>
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "prepare.h"
+#include "unlock_linux.h"
 
 #include <algorithm>
 #include <atomic>
@@ -39,6 +39,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -87,8 +88,8 @@ ImFont* g_font_body = nullptr;
 ImFont* g_font_title = nullptr;
 ImFont* g_font_small = nullptr;
 
-enum Tab { kTabGame, kTabDisplay, kTabDriving, kTabPatches, kTabLogs, kTabCount };
-const char* const kTabName[kTabCount] = {"GAME", "DISPLAY", "DRIVING", "PATCHES", "LOGS"};
+enum Tab { kTabGame, kTabDisplay, kTabGraphics, kTabDriving, kTabBenchmark, kTabPatches, kTabMods, kTabLogs, kTabCount };
+const char* const kTabName[kTabCount] = {"GAME", "DISPLAY", "GRAPHICS", "DRIVING", "BENCHMARK", "PATCHES", "MODS", "LOGS"};
 int g_tab = kTabGame;
 bool g_scroll_top = false;
 
@@ -127,6 +128,33 @@ struct Settings {
   int brake_assist = 0;   // In-game, Off, Low, Medium, High
   int hardcore = 0;       // In-game, Off, On
   int wheel_assist = 0;   // In-game, Off, On
+  int preset = 0;          // Custom, Handheld, Low, Medium, High, Ultra, PS4
+  int fsr_ver = 0;         // FSR 3.1, FSR 4, FSR (AMD driver)
+  int reflex = 0;          // Off, On, On + Boost
+  int model_lod = 0;       // Highest .. Lowest
+  int dynres = 1;          // Off, Automatic, On
+  int blur_ref = 0;        // Fast (60 Hz), Slow (30 Hz)
+  int prompts = 0;         // Automatic, PlayStation, Xbox, Keyboard
+  int xbox_buttons = 0;    // Xbox 360, Xbox One
+  int ps_buttons = 0;      // PS4, PS5
+  int online = 0;          // Off, Join a session
+  char online_host[64] = "127.0.0.1:8080";
+  int drive_preset = 0;    // Custom, Sim, Assisted, Game defaults
+  bool ffb_on = true;      // wheel_ffb in the runtime's input_config/default.ini
+  int ffb_model = 0;       // Game, Software, Reworked Physics
+  int ffb_gain = 100;      // game and software models, percent (0..2000)
+  int ffb_physics_gain = 100, ffb_physics_filter = 0, ffb_physics_min_force = 0,
+      ffb_physics_damper = 10, ffb_physics_effects = 100;
+  int ffb_soft_lock = 0;   // Game, Off, 540, 720, 900, 1080
+  int ffb_wave = 0;        // Square, Sine
+  bool ffb_invert = false;
+  bool present_thread = false;
+  bool neural = false;
+  int nr_preset = 0;       // Automatic, Original, Optimized
+  bool dlc_unlock = false; // serve the add-on lists without DLC ownership
+  bool unlock_all = false; // ... and every car and bike free of driver and club level
+  bool autoplay = false;
+  int btrack = 0, bcar = 5, bmode = 0, btod = 1, bweather = 0, brain = 0, blen = 1;
   std::map<std::string, bool> extras;  // patches not managed by the rows above
   bool dirty = false;
 };
@@ -179,14 +207,25 @@ const Choice kRender[6] = {
     {"8K (7680x4320)", "8K [7680x4320] Internal resolution [DEPTH BUG]"},
 };
 
-const Choice kWide[7] = {
+const Choice kWide[18] = {
     {"Off", ""},
+    {"2560x720 (32:9)", "720p 32:9 [2560x720] Internal + Output resolution"},
+    {"1280x800 (16:10)", "800p 16:10 [1280x800] Internal + Output resolution"},
+    {"1920x1200 (16:10)", "1200p 16:10 [1920x1200] Internal + Output resolution [DEPTH BUG]"},
+    {"2560x1600 (16:10)", "1600p 16:10 [2560x1600] Internal + Output resolution [DEPTH BUG]"},
     {"2560x1080 (21:9)", "1080p 21:9 [2560x1080] Internal + Output resolution [DEPTH BUG]"},
     {"3440x1080 (32:10)", "1080p 32:10 [3440x1080] Internal + Output resolution [DEPTH BUG]"},
     {"3840x1080 (32:9)", "1080p 32:9 [3840x1080] Internal + Output resolution [DEPTH BUG]"},
     {"3440x1440 (21:9)", "1440p 21:9 [3440x1440] Internal + Output resolution [DEPTH BUG]"},
     {"5120x1440 (32:9)", "1440p 32:9 [5120x1440] Internal + Output resolution [DEPTH BUG]"},
     {"5120x2160 (21:9)", "2160p 21:9 [5120x2160] Internal + Output resolution [DEPTH BUG]"},
+    {"7680x2160 (32:9)", "2160p 32:9 [7680x2160] Internal + Output resolution [DEPTH BUG]"},
+    {"1920x1280 (3:2)", "1280p 3:2 [1920x1280] Internal + Output resolution [DEPTH BUG]"},
+    {"2160x1440 (3:2)", "1440p 3:2 [2160x1440] Internal + Output resolution [DEPTH BUG]"},
+    {"1280x960 (4:3)", "960p 4:3 [1280x960] Internal + Output resolution"},
+    {"1440x1080 (4:3)", "1080p 4:3 [1440x1080] Internal + Output resolution [DEPTH BUG]"},
+    {"5760x1080 (48:9)", "1080p 48:9 [5760x1080] Internal + Output resolution [DEPTH BUG]"},
+    {"7680x1080 (64:9)", "1080p 64:9 [7680x1080] Internal + Output resolution [DEPTH BUG]"},
 };
 
 const char* const kFrameRateName[5] = {"30 FPS", "60 FPS (deltatime)", "60 FPS (fixed tick)",
@@ -196,8 +235,11 @@ const char* const kOutputName[7] = {"Default (1080p)", "720p (1280x720)", "1440p
                                     "8K (7680x4320)"};
 const char* const kRenderName[6] = {"Default (1080p)", "720p (1280x720)", "1440p (2560x1440)",
                                     "1800p (3200x1800)", "4K (3840x2160)", "8K (7680x4320)"};
-const char* const kWideName[7] = {"Off", "2560x1080 (21:9)", "3440x1080 (32:10)", "3840x1080 (32:9)",
-                                  "3440x1440 (21:9)", "5120x1440 (32:9)", "5120x2160 (21:9)"};
+const char* const kWideName[18] = {
+    "Off", "2560x720 (32:9)", "1280x800 (16:10)", "1920x1200 (16:10)", "2560x1600 (16:10)",
+    "2560x1080 (21:9)", "3440x1080 (32:10)", "3840x1080 (32:9)", "3440x1440 (21:9)",
+    "5120x1440 (32:9)", "5120x2160 (21:9)", "7680x2160 (32:9)", "1920x1280 (3:2)",
+    "2160x1440 (3:2)", "1280x960 (4:3)", "1440x1080 (4:3)", "5760x1080 (48:9)", "7680x1080 (64:9)"};
 const char* const kAaName[3] = {"Game (original)", "FSR 3.1", "DLSS (RTX)"};
 const char* const kUpscaleName[5] = {"Native", "Quality", "Balanced", "Performance", "Ultra Performance"};
 const char* const kAnisoName[6] = {"Automatic", "Off", "2x", "4x", "8x", "16x"};
@@ -213,6 +255,88 @@ const char* const kLanguageName[21] = {
     "Finnish", "Swedish", "Danish", "Norwegian", "Polish", "Portuguese (Brazil)",
     "English (UK)", "Turkish", "Spanish (Mexico)"};
 
+const char* const kPresetName[7] = {"Custom", "Handheld (720p)", "Low", "Medium", "High",
+                                    "Ultra", "PS4 (original)"};
+const char* const kFsrName[3] = {"FSR 3.1", "FSR 4", "FSR (AMD driver)"};
+const char* const kReflexName[3] = {"Off", "On", "On + Boost"};
+const char* const kLodName[5] = {"Highest", "High", "Default", "Low", "Lowest"};
+const char* const kDynResName[3] = {"Off", "Automatic", "On"};
+const char* const kBlurRefName[2] = {"Fast (60 Hz)", "Slow (30 Hz)"};
+const char* const kPromptName[4] = {"Automatic", "PlayStation", "Xbox", "Keyboard"};
+const char* const kXboxName[2] = {"Xbox 360", "Xbox One / Series"};
+const char* const kPsName[2] = {"PS4", "PS5"};
+const char* const kOnlineName[2] = {"Off", "Join a session"};
+const char* const kDrivePresetName[4] = {"Custom", "Sim", "Assisted", "Game defaults"};
+const char* const kFfbModelName[3] = {"Game (original)", "Software", "Reworked Physics"};
+const char* const kSoftLockName[6] = {"Game", "Off", "540°", "720°", "900°", "1080°"};
+const char* const kWaveName[2] = {"Square", "Sine"};
+const char* const kNrPresetName[3] = {"Automatic", "Original", "Optimized"};
+
+struct BenchEntry {
+  const char* id;
+  const char* name;
+  const char* group;
+};
+const BenchEntry kBenchTracks[] = {
+    {"canada_road_circuit_02_n", "Fraser Valley", "Canada"},
+    {"canada_road_circuit_01_n", "Oliver's Landing", "Canada"},
+    {"canada_dlc_road_circuit_03_n", "Sinclair Point", "Canada"},
+    {"canada_race_track_v1", "Maplewood Motorsport Park", "Canada"},
+    {"chile_road_circuit_01_n", "Chungara Lake", "Chile"},
+    {"chile_road_circuit_02_n", "Salar de Surire", "Chile"},
+    {"chile_race_track_v1", "Autodromo Frontera", "Chile"},
+    {"india_road_circuit_01_n", "Glenmorgan", "India"},
+    {"india_road_circuit_02_n", "Bandipur", "India"},
+    {"india_dlc_road_circuit_03_n", "Yedappalli", "India"},
+    {"india_race_track_v1", "Tamil Nadu Circuit", "India"},
+    {"norway_road_circuit_01_n", "Sentraltind", "Norway"},
+    {"norway_road_circuit_02_n", "Skjolden", "Norway"},
+    {"norway_dlc_road_circuit_03_n", "Atlanterhavsvegen", "Norway"},
+    {"norway_race_track_01_v1", "Sognefjord Raceway", "Norway"},
+    {"uk_road_circuit_01_n", "Loch Duich", "Scotland"},
+    {"uk_road_circuit_02_n", "Kinloch", "Scotland"},
+    {"uk_race_track_v1", "Black Hills Circuit", "Scotland"},
+    {"japan_road_circuit_01_n", "Takahagi Hills", "Japan"},
+    {"japan_road_circuit_02_n", "Lake Shoji", "Japan"},
+    {"japan_dlc_road_circuit_03_n", "Kobago", "Japan"},
+    {"japan_race_track_01_v1", "Asigiri Highland Raceway", "Japan"},
+};
+const BenchEntry kBenchCars[] = {
+    {"mc_p1", "McLaren P1", "Hyper"},
+    {"pa_hu", "Pagani Huayra", "Hyper"},
+    {"ko_ag", "Koenigsegg Agera R", "Hyper"},
+    {"he_ve_gt", "Hennessey Venom GT", "Hyper"},
+    {"pa_zo", "Pagani Zonda R", "Hyper"},
+    {"fe_458", "Ferrari 458 Italia", "Super"},
+    {"fe_f12", "Ferrari F12berlinetta", "Super"},
+    {"au_r8", "Audi R8 V10 plus", "Super"},
+    {"mc_mp_12", "McLaren 12C", "Super"},
+    {"as_ma_177", "Aston Martin One-77", "Super"},
+    {"me_sl_am", "Mercedes-Benz SLS AMG Black Series", "Super"},
+    {"bm_m4", "BMW M4", "Performance"},
+    {"me_gt_am", "Mercedes-AMG GT S", "Performance"},
+    {"au_rs6", "Audi RS 6 Avant", "Performance"},
+    {"ma_mc_st", "Maserati GranTurismo MC Stradale", "Performance"},
+    {"lo_ex", "Lotus Exige S", "Performance"},
+    {"au_rs5", "Audi RS 5 Coupe", "Sports"},
+    {"bm_m2", "BMW M235i", "Sports"},
+    {"ren_dez", "Renault DeZir", "Sports"},
+    {"vw_golf_gti", "Volkswagen Golf GTI", "Hot hatch"},
+    {"mi_jcw", "MINI John Cooper Works GP", "Hot hatch"},
+    {"ren_cl", "Renault Clio RS", "Hot hatch"},
+};
+constexpr int kBenchTrackCount = int(sizeof(kBenchTracks) / sizeof(kBenchTracks[0]));
+constexpr int kBenchCarCount = int(sizeof(kBenchCars) / sizeof(kBenchCars[0]));
+const char* const kBenchModeName[2] = {"Time trial", "Race"};
+const char* const kBenchModeSpec[2] = {"TimeTrial", "Race"};
+const char* const kBenchTodName[4] = {"Morning (8:00)", "Noon (12:00)", "Evening (18:00)", "Night (22:00)"};
+const int kBenchTod[4] = {8, 12, 18, 22};
+const char* const kBenchWeatherName[4] = {"Clear", "Cloudy", "Overcast", "Stormy"};
+const char* const kBenchRainName[4] = {"Dry", "Light rain", "Heavy rain", "Wet road"};
+const char* const kBenchRainSpec[4] = {"", "Light", "Heavy", "Wet"};
+const char* const kBenchLengthName[4] = {"30 seconds", "60 seconds", "2 minutes", "5 minutes"};
+const int kBenchSeconds[4] = {30, 60, 120, 300};
+
 // ------------------------------------------------------------------------------------------
 // forward declarations
 // ------------------------------------------------------------------------------------------
@@ -222,6 +346,14 @@ void Sanitize();
 void SyncFolderBuffers();
 void ValidateFolders();
 bool FoldersOk();
+void EndSession();
+void ApplyPreset(int preset);
+void BeginSession();
+void OpenPath(const fs::path& path);
+bool PrimaryButton(const char* label, const ImVec2& size);
+void OpenBrowser(int which);
+void PollBenchmark();
+void DrawBrowser();
 
 // ------------------------------------------------------------------------------------------
 // small helpers
@@ -559,6 +691,8 @@ fs::path CameraIni() { return g_paths.data / "user/camera.ini"; }
 fs::path DriveClubIni() { return g_paths.data / "user/driveclub.ini"; }
 fs::path HdrIni() { return g_paths.data / "user/hdr.ini"; }
 fs::path PictureIni() { return g_paths.data / "user/picture.ini"; }
+// The runtime's own input and force-feedback file; it creates it at the first start.
+fs::path InputDefaultIni() { return g_paths.data / "user/input_config/default.ini"; }
 
 std::string EffectiveUpdate() { return (g.update.empty() ? g.base : g.update); }
 
@@ -715,6 +849,31 @@ int FindChoice(const Choice* choices, int count, const std::set<std::string>& se
   return -1;
 }
 
+void LoadWheelSettings() {
+  const auto kv = ReadIni(InputDefaultIni());
+  if (kv.empty()) return;
+  ParseBool(kv, "wheel_ffb", g.ffb_on);
+  const auto model = kv.find("wheel_ffb_model");
+  if (model != kv.end()) {
+    g.ffb_model = model->second == "physics" ? 2 : model->second == "software" ? 1 : 0;
+  }
+  ParseInt(kv, "wheel_ffb_gain", g.ffb_gain);
+  ParseInt(kv, "wheel_ffb_physics_gain", g.ffb_physics_gain);
+  ParseInt(kv, "wheel_ffb_physics_filter", g.ffb_physics_filter);
+  ParseInt(kv, "wheel_ffb_physics_min_force", g.ffb_physics_min_force);
+  ParseInt(kv, "wheel_ffb_physics_damper", g.ffb_physics_damper);
+  ParseInt(kv, "wheel_ffb_physics_effects", g.ffb_physics_effects);
+  const auto soft = kv.find("wheel_ffb_soft_lock");
+  if (soft != kv.end()) {
+    const std::string& v = soft->second;
+    g.ffb_soft_lock = v == "game" ? 0 : v == "off" ? 1 : v == "540" ? 2 : v == "720" ? 3
+                      : v == "900" ? 4 : v == "1080" ? 5 : 0;
+  }
+  const auto wave = kv.find("wheel_ffb_vibration_wave");
+  if (wave != kv.end()) g.ffb_wave = wave->second == "sine" ? 1 : 0;
+  ParseBool(kv, "wheel_ffb_invert", g.ffb_invert);
+}
+
 void LoadSettings() {
   const auto kv = ReadIni(LauncherIni());
   const auto legacy = ReadIni(LegacyConfig());
@@ -744,7 +903,7 @@ void LoadSettings() {
 
   int output = FindChoice(kOutput, 7, g_selected);
   int render = FindChoice(kRender, 6, g_selected);
-  int wide = FindChoice(kWide, 7, g_selected);
+  int wide = FindChoice(kWide, 18, g_selected);
   if (output < 0 && !ParseInt(kv, "output", output)) output = 0;
   if (render < 0 && !ParseInt(kv, "render", render)) render = 0;
   if (wide < 0 && !ParseInt(kv, "wide", wide)) wide = 0;
@@ -782,6 +941,43 @@ void LoadSettings() {
   ParseInt(kv, "brake_assist", g.brake_assist);
   ParseInt(kv, "hardcore", g.hardcore);
   ParseInt(kv, "wheel_assist", g.wheel_assist);
+  ParseInt(kv, "preset", g.preset);
+  ParseInt(kv, "fsr_ver", g.fsr_ver);
+  ParseInt(kv, "reflex", g.reflex);
+  ParseInt(kv, "model_lod", g.model_lod);
+  ParseInt(kv, "dynres", g.dynres);
+  ParseInt(kv, "blur_ref", g.blur_ref);
+  ParseInt(kv, "prompts", g.prompts);
+  ParseInt(kv, "xbox_buttons", g.xbox_buttons);
+  ParseInt(kv, "ps_buttons", g.ps_buttons);
+  ParseInt(kv, "online", g.online);
+  if (kv.count("online_host"))
+    std::snprintf(g.online_host, sizeof g.online_host, "%s", kv.at("online_host").c_str());
+  ParseInt(kv, "drive_preset", g.drive_preset);
+  ParseBool(kv, "ffb_on", g.ffb_on);
+  ParseInt(kv, "ffb_model", g.ffb_model);
+  ParseInt(kv, "ffb_gain", g.ffb_gain);
+  ParseInt(kv, "ffb_physics_gain", g.ffb_physics_gain);
+  ParseInt(kv, "ffb_physics_filter", g.ffb_physics_filter);
+  ParseInt(kv, "ffb_physics_min_force", g.ffb_physics_min_force);
+  ParseInt(kv, "ffb_physics_damper", g.ffb_physics_damper);
+  ParseInt(kv, "ffb_physics_effects", g.ffb_physics_effects);
+  ParseInt(kv, "ffb_soft_lock", g.ffb_soft_lock);
+  ParseInt(kv, "ffb_wave", g.ffb_wave);
+  ParseBool(kv, "ffb_invert", g.ffb_invert);
+  ParseBool(kv, "present_thread", g.present_thread);
+  ParseBool(kv, "neural", g.neural);
+  ParseInt(kv, "nr_preset", g.nr_preset);
+  ParseBool(kv, "dlc_unlock", g.dlc_unlock);
+  ParseBool(kv, "unlock_all", g.unlock_all);
+  ParseBool(kv, "autoplay", g.autoplay);
+  ParseInt(kv, "bench_track", g.btrack);
+  ParseInt(kv, "bench_car", g.bcar);
+  ParseInt(kv, "bench_mode", g.bmode);
+  ParseInt(kv, "bench_tod", g.btod);
+  ParseInt(kv, "bench_weather", g.bweather);
+  ParseInt(kv, "bench_rain", g.brain);
+  ParseInt(kv, "bench_length", g.blen);
 
   // The files the game itself writes win over the launcher's last copy.
   const std::string hdr_paper = IniValue(HdrIni(), "paper");
@@ -798,6 +994,7 @@ void LoadSettings() {
   if (!show_fps.empty()) g.show_fps = show_fps != "0";
   const std::string show_pedals = IniValue(DriveClubIni(), "show_pedals");
   if (!show_pedals.empty()) g.show_pedals = show_pedals != "0";
+  LoadWheelSettings();
 
   g.extras.clear();
   for (const Patch& patch : g_patches) {
@@ -807,6 +1004,7 @@ void LoadSettings() {
   Sanitize();
   SyncFolderBuffers();
   ValidateFolders();
+  EndSession();
   g.dirty = false;
 }
 
@@ -816,7 +1014,7 @@ int MemoryTier() {
   else if (g.output >= 3) output = 2;
   else if (g.output == 2) output = 1;
   if (g.render >= 5) render = 3;
-  else if (g.wide == 6) render = 3;
+  else if (g.wide >= 10) render = 3;
   else if (g.wide > 0 || g.render >= 3) render = 2;
   else if (g.render == 2) render = 1;
   return std::max(output, render);
@@ -831,7 +1029,7 @@ void Sanitize() {
   g.frame_rate = std::clamp(g.frame_rate, 0, 4);
   g.output = std::clamp(g.output, 0, 6);
   g.render = std::clamp(g.render, 0, 5);
-  g.wide = std::clamp(g.wide, 0, 6);
+  g.wide = std::clamp(g.wide, 0, 17);
   if (g.wide > 0) g.output = g.render = 0;
   g.aa = std::clamp(g.aa, 0, 2);
   g.upscale = std::clamp(g.upscale, 0, 4);
@@ -851,8 +1049,60 @@ void Sanitize() {
   g.brake_assist = std::clamp(g.brake_assist, 0, 4);
   g.hardcore = std::clamp(g.hardcore, 0, 2);
   g.wheel_assist = std::clamp(g.wheel_assist, 0, 2);
+  g.preset = std::clamp(g.preset, 0, 6);
+  g.fsr_ver = std::clamp(g.fsr_ver, 0, 2);
+  g.reflex = std::clamp(g.reflex, 0, 2);
+  g.model_lod = std::clamp(g.model_lod, -2, 2);
+  g.dynres = std::clamp(g.dynres, 0, 2);
+  g.blur_ref = std::clamp(g.blur_ref, 0, 1);
+  g.prompts = std::clamp(g.prompts, 0, 3);
+  g.xbox_buttons = std::clamp(g.xbox_buttons, 0, 1);
+  g.ps_buttons = std::clamp(g.ps_buttons, 0, 1);
+  g.online = std::clamp(g.online, 0, 1);
+  g.drive_preset = std::clamp(g.drive_preset, 0, 3);
+  g.ffb_model = std::clamp(g.ffb_model, 0, 2);
+  g.ffb_gain = std::clamp(g.ffb_gain, 0, 2000);
+  g.ffb_physics_gain = std::clamp(g.ffb_physics_gain, 0, 300);
+  g.ffb_physics_filter = std::clamp(g.ffb_physics_filter, 0, 100);
+  g.ffb_physics_min_force = std::clamp(g.ffb_physics_min_force, 0, 30);
+  g.ffb_physics_damper = std::clamp(g.ffb_physics_damper, 0, 100);
+  g.ffb_physics_effects = std::clamp(g.ffb_physics_effects, 0, 100);
+  g.ffb_soft_lock = std::clamp(g.ffb_soft_lock, 0, 5);
+  g.ffb_wave = std::clamp(g.ffb_wave, 0, 1);
+  g.nr_preset = std::clamp(g.nr_preset, 0, 2);
+  g.btrack = std::clamp(g.btrack, 0, kBenchTrackCount - 1);
+  g.bcar = std::clamp(g.bcar, 0, kBenchCarCount - 1);
+  g.bmode = std::clamp(g.bmode, 0, 1);
+  g.btod = std::clamp(g.btod, 0, 3);
+  g.bweather = std::clamp(g.bweather, 0, 3);
+  g.brain = std::clamp(g.brain, 0, 3);
+  g.blen = std::clamp(g.blen, 0, 3);
+  if (g.online_host[0] == '\0')
+    std::snprintf(g.online_host, sizeof g.online_host, "127.0.0.1:8080");
   if (g.name[0] == '\0') std::snprintf(g.name, sizeof g.name, "Player");
   if (g.aa != 0 && g.extras.count(kBlurPatch)) g.extras[kBlurPatch] = false;
+}
+
+void ApplyPreset(int preset) {
+  g.preset = std::clamp(preset, 0, 6);
+  switch (g.preset) {
+    case 1: g.frame_rate = 2; g.output = 1; g.render = 1; g.wide = 0; g.aa = 0; g.upscale = 0;
+            g.aniso = 1; g.mirror = 1; g.hdr = false; break;
+    case 2: g.frame_rate = 1; g.output = 0; g.render = 1; g.wide = 0; g.aa = 0; g.upscale = 0;
+            g.aniso = 2; g.mirror = 1; break;
+    case 3: g.frame_rate = 1; g.output = 0; g.render = 0; g.wide = 0; g.aa = 1; g.fsr_ver = 0;
+            g.upscale = 1; g.aniso = 3; g.mirror = 0; break;
+    case 4: g.frame_rate = 1; g.output = 2; g.render = 0; g.wide = 0; g.aa = 1; g.upscale = 1;
+            g.aniso = 5; g.mirror = 0; break;
+    case 5: g.frame_rate = 3; g.fps_cap = EffectiveCap(); g.output = 4; g.render = 2; g.wide = 0;
+            g.aa = 1; g.upscale = 1; g.aniso = 5; g.mirror = 0; break;
+    case 6: g.frame_rate = 0; g.output = 0; g.render = 0; g.wide = 0; g.aa = 0; g.upscale = 0;
+            g.aniso = 0; g.mirror = 0; g.hdr = false; g.fov_fix = false; break;
+    default: break;
+  }
+  g.camera_patch = g.frame_rate != 0;
+  Sanitize();
+  g.dirty = true;
 }
 
 void SyncFolderBuffers() {
@@ -910,6 +1160,25 @@ std::map<std::string, std::string> EnvironmentForLaunch() {
   if (g.wheel_assist == 1) set("BB_WHEEL_ASSIST", "off");
   else if (g.wheel_assist == 2) set("BB_WHEEL_ASSIST", "on");
 
+  if (g.aa == 1)
+    set("BB_UPSCALER", g.fsr_ver == 0 ? "fsr3" : g.fsr_ver == 1 ? "fsr4" : "fsr_amd");
+  if (g.reflex > 0) set("BB_REFLEX", g.reflex == 1 ? "on" : "boost");
+  if (g.blur_ref == 1) set("BB_MOTION_BLUR_REFERENCE", "30");
+  if (g.prompts > 0)
+    set("BB_BUTTON_PROMPTS", g.prompts == 1 ? "playstation" : g.prompts == 2 ? "xbox" : "keyboard");
+  if (g.prompts == 2) set("BB_XBOX_BUTTONS", g.xbox_buttons ? "one" : "360");
+  if (g.prompts == 1) set("BB_PLAYSTATION_BUTTONS", g.ps_buttons ? "ps5" : "ps4");
+  if (g.online == 1) {
+    set("BB_ONLINE", "1");
+    set("BB_COOP_SERVER", g.online_host);
+    set("BB_NP_LOCAL", g.name);
+  }
+  if (g.present_thread) set("BB_PRESENT_THREAD", "1");
+  if (g.neural) {
+    set("BB_NEURAL", "1");
+    set("BB_NR_CONFIG", "nr_preset=" + std::to_string(g.nr_preset));
+  }
+
   const fs::path runner = Exists(g_paths.apprun) ? g_paths.apprun : g_paths.appimage;
   if (!runner.empty()) set("BB_RESTART_COMMAND", "exec " + ShellQuote(runner.string()) + " --play");
 
@@ -928,7 +1197,10 @@ void ApplyEnvironment(const std::map<std::string, std::string>& env) {
       "BB_LOCK_HORIZON", "BB_CAMERA_SHAKE", "BB_MIRROR_RATE", "BB_FRAME_GEN", "BB_AA", "BB_AA_SCALE",
       "BB_FSR_SHARPNESS", "BB_DMEM_MB", "BB_HDR", "BB_HDR_PAPER", "BB_HDR_PEAK", "BB_ANISO",
       "BB_FPS_LIMIT", "BB_PRESENT_MODE", "BB_GEARBOX", "BB_BRAKE_ASSIST", "BB_HARDCORE",
-      "BB_WHEEL_ASSIST", "BB_RESTART_COMMAND", "BB_SETTINGS_SUMMARY"};
+      "BB_WHEEL_ASSIST", "BB_RESTART_COMMAND", "BB_SETTINGS_SUMMARY", "BB_UPSCALER", "BB_REFLEX",
+      "BB_MOTION_BLUR_REFERENCE", "BB_BUTTON_PROMPTS", "BB_XBOX_BUTTONS", "BB_PLAYSTATION_BUTTONS",
+      "BB_ONLINE", "BB_COOP_SERVER", "BB_NP_LOCAL", "BB_PRESENT_THREAD", "BB_NEURAL",
+      "BB_NR_CONFIG"};
   for (const char* name : names) {
     if (!env.count(name)) unsetenv(name);
   }
@@ -973,6 +1245,29 @@ std::set<std::string> BuildSelection() {
     if (!IsKnownPatch(name)) out.insert(name);
   }
   return out;
+}
+
+bool SaveWheelSettings() {
+  const fs::path path = InputDefaultIni();
+  // The runtime writes the file at the first start; until then the values stay in launcher.ini.
+  if (!IsFile(path)) return true;
+  static const char* const soft[6] = {"game", "off", "540", "720", "900", "1080"};
+  bool ok = true;
+  auto write = [&](const char* key, const std::string& value) {
+    ok = SetIniValue(path, key, value) && ok;
+  };
+  write("wheel_ffb", g.ffb_on ? "on" : "off");
+  write("wheel_ffb_model", g.ffb_model == 0 ? "game" : g.ffb_model == 1 ? "software" : "physics");
+  write("wheel_ffb_gain", std::to_string(g.ffb_gain));
+  write("wheel_ffb_physics_gain", std::to_string(g.ffb_physics_gain));
+  write("wheel_ffb_physics_filter", std::to_string(g.ffb_physics_filter));
+  write("wheel_ffb_physics_min_force", std::to_string(g.ffb_physics_min_force));
+  write("wheel_ffb_physics_damper", std::to_string(g.ffb_physics_damper));
+  write("wheel_ffb_physics_effects", std::to_string(g.ffb_physics_effects));
+  write("wheel_ffb_soft_lock", soft[std::clamp(g.ffb_soft_lock, 0, 5)]);
+  write("wheel_ffb_vibration_wave", g.ffb_wave == 1 ? "sine" : "square");
+  write("wheel_ffb_invert", g.ffb_invert ? "true" : "false");
+  return ok;
 }
 
 bool SaveSettings() {
@@ -1026,7 +1321,43 @@ bool SaveSettings() {
       << "gearbox=" << g.gearbox << "\n"
       << "brake_assist=" << g.brake_assist << "\n"
       << "hardcore=" << g.hardcore << "\n"
-      << "wheel_assist=" << g.wheel_assist << "\n";
+      << "wheel_assist=" << g.wheel_assist << "\n"
+      << "preset=" << g.preset << "\n"
+      << "fsr_ver=" << g.fsr_ver << "\n"
+      << "reflex=" << g.reflex << "\n"
+      << "model_lod=" << g.model_lod << "\n"
+      << "dynres=" << g.dynres << "\n"
+      << "blur_ref=" << g.blur_ref << "\n"
+      << "prompts=" << g.prompts << "\n"
+      << "xbox_buttons=" << g.xbox_buttons << "\n"
+      << "ps_buttons=" << g.ps_buttons << "\n"
+      << "drive_preset=" << g.drive_preset << "\n"
+      << "ffb_on=" << (g.ffb_on ? 1 : 0) << "\n"
+      << "ffb_model=" << g.ffb_model << "\n"
+      << "ffb_gain=" << g.ffb_gain << "\n"
+      << "ffb_physics_gain=" << g.ffb_physics_gain << "\n"
+      << "ffb_physics_filter=" << g.ffb_physics_filter << "\n"
+      << "ffb_physics_min_force=" << g.ffb_physics_min_force << "\n"
+      << "ffb_physics_damper=" << g.ffb_physics_damper << "\n"
+      << "ffb_physics_effects=" << g.ffb_physics_effects << "\n"
+      << "ffb_soft_lock=" << g.ffb_soft_lock << "\n"
+      << "ffb_wave=" << g.ffb_wave << "\n"
+      << "ffb_invert=" << (g.ffb_invert ? 1 : 0) << "\n"
+      << "present_thread=" << (g.present_thread ? 1 : 0) << "\n"
+      << "neural=" << (g.neural ? 1 : 0) << "\n"
+      << "nr_preset=" << g.nr_preset << "\n"
+      << "dlc_unlock=" << (g.dlc_unlock ? 1 : 0) << "\n"
+      << "unlock_all=" << (g.unlock_all ? 1 : 0) << "\n"
+      << "online=" << g.online << "\n"
+      << "online_host=" << g.online_host << "\n"
+      << "autoplay=" << (g.autoplay ? 1 : 0) << "\n"
+      << "bench_track=" << g.btrack << "\n"
+      << "bench_car=" << g.bcar << "\n"
+      << "bench_mode=" << g.bmode << "\n"
+      << "bench_tod=" << g.btod << "\n"
+      << "bench_weather=" << g.bweather << "\n"
+      << "bench_rain=" << g.brain << "\n"
+      << "bench_length=" << g.blen << "\n";
   if (!WriteFileAtomic(LauncherIni(), ini.str())) {
     SetStatus("Could not write launcher.ini. The previous settings were kept.", true);
     return false;
@@ -1035,10 +1366,16 @@ bool SaveSettings() {
   SetIniValue(CameraIni(), "fov", std::to_string(g.fov));
   SetIniValue(DriveClubIni(), "show_fps", g.show_fps ? "1" : "0");
   SetIniValue(DriveClubIni(), "show_pedals", g.show_pedals ? "1" : "0");
+  SetIniValue(DriveClubIni(), "model_lod", std::to_string(g.model_lod));
+  SetIniValue(DriveClubIni(), "live_resolution", g.dynres == 1 ? "auto" : g.dynres == 2 ? "1" : "0");
   SetIniValue(HdrIni(), "paper", std::to_string(g.hdr_paper));
   SetIniValue(PictureIni(), "brightness", std::to_string(g.brightness));
   SetIniValue(PictureIni(), "contrast", std::to_string(g.contrast));
   SetIniValue(PictureIni(), "gamma", std::to_string(g.gamma));
+  if (!SaveWheelSettings()) {
+    SetStatus("Could not write the steering-wheel settings; the previous file was kept.", true);
+    return false;
+  }
 
   const auto env = EnvironmentForLaunch();
   if (!WriteLaunchEnv(env)) {
@@ -1092,10 +1429,12 @@ std::atomic<int> g_prep_step{0};
 std::mutex g_prep_mutex;
 std::string g_prep_text;
 std::string g_prep_error;
+std::string g_unlock_error;
+std::atomic<bool> g_unlock_ready{false};
 std::thread g_prep_thread;
 
 bool SpawnGame(const std::vector<std::string>& args, const fs::path& cwd, const fs::path& log_path,
-               std::string& error) {
+               std::string& error, pid_t* out_pid = nullptr) {
   std::vector<char*> argv;
   argv.reserve(args.size() + 1);
   for (const std::string& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
@@ -1149,10 +1488,16 @@ bool SpawnGame(const std::vector<std::string>& args, const fs::path& cwd, const 
     error = std::strerror(child_error);
     return false;
   }
+  if (out_pid) *out_pid = pid;
   return true;
 }
 
-bool LaunchGame() {
+bool g_bench_pending = false;
+bool g_bench_running = false;
+pid_t g_bench_pid = -1;
+std::string g_bench_result, g_bench_error;
+
+bool LaunchGame(bool benchmark) {
   std::vector<std::string> args;
   args.push_back(g_paths.probe.string());
   args.push_back((g_paths.data / "prep/boot-linked.bin").string());
@@ -1170,6 +1515,11 @@ bool LaunchGame() {
   args.push_back((g_paths.data / "user").string());
   args.push_back("--mods");
   args.push_back((g_paths.data / "mods").string());
+  // Add-on content is a second overlay, after the player's own mods so their files keep priority.
+  if (g_unlock_ready && (g.dlc_unlock || g.unlock_all)) {
+    args.push_back("--mods");
+    args.push_back((g_paths.data / "unlock").string());
+  }
   args.push_back("--stub-unresolved");
   args.push_back("--timeout");
   args.push_back("0");
@@ -1180,17 +1530,39 @@ bool LaunchGame() {
   }
   std::error_code ec;
   fs::create_directories(g_paths.data / "logs", ec);
+  if (benchmark) {
+    char spec[512];
+    std::snprintf(spec, sizeof spec,
+                  "track=%s,car=%s,mode=%s,tod=%d,weather=%s,rain=%s,laps=20,warmup=5,seconds=%d,timeout=420",
+                  kBenchTracks[g.btrack].id, kBenchCars[g.bcar].id, kBenchModeSpec[g.bmode],
+                  kBenchTod[g.btod], kBenchWeatherName[g.bweather], kBenchRainSpec[g.brain],
+                  kBenchSeconds[g.blen]);
+    std::error_code bench_ec;
+    fs::create_directories(g_paths.data / "benchmark", bench_ec);
+    setenv("BB_BENCHMARK", spec, 1);
+    setenv("BB_BENCHMARK_OUT", (g_paths.data / "benchmark/result.txt").c_str(), 1);
+  } else {
+    unsetenv("BB_BENCHMARK");
+    unsetenv("BB_BENCHMARK_OUT");
+    BeginSession();
+  }
   std::string error;
   AppendLog("starting " + g_paths.probe.string());
-  if (!SpawnGame(args, g_paths.share, g_paths.data / "logs/last-run.log", error)) {
+  if (!SpawnGame(args, g_paths.share, g_paths.data / "logs/last-run.log", error,
+                 benchmark ? &g_bench_pid : nullptr)) {
     SetStatus("Could not start the game: " + error, true);
     return false;
   }
   return true;
 }
 
-void StartPrepare() {
+void StartPrepare(bool benchmark = false) {
   if (g_preparing) return;
+  g_bench_pending = benchmark;
+  if (benchmark) {
+    g_bench_result.clear();
+    g_bench_error.clear();
+  }
   if (!SaveSettings()) return;
   if (!FoldersOk()) {
     SetStatus("Choose both game folders first.", true);
@@ -1206,15 +1578,19 @@ void StartPrepare() {
     std::lock_guard<std::mutex> lock(g_prep_mutex);
     g_prep_text = "Preparing the game files ...";
     g_prep_error.clear();
+    g_unlock_error.clear();
   }
   g_prep_done.store(false);
   g_prep_joined.store(false);
   g_preparing.store(true);
+  g_unlock_ready = false;
+  const bool unlock_dlc = g.dlc_unlock || g.unlock_all;
+  const bool unlock_all = g.unlock_all;
   const std::string update = EffectiveUpdate();
   const std::string base = g.base;
   const std::string data = g_paths.data.string();
   const std::string xml = g_paths.patch_xml.string();
-  g_prep_thread = std::thread([update, base, data, xml] {
+  g_prep_thread = std::thread([update, base, data, xml, unlock_dlc, unlock_all] {
     std::string error;
     try {
       error = PrepareGame(fs::path(update), fs::path(base), fs::path(data), fs::path(xml), false,
@@ -1228,10 +1604,21 @@ void StartPrepare() {
     } catch (...) {
       error = "unknown error";
     }
+    std::string unlock_problem;
+    if (error.empty() && unlock_dlc) {
+      {
+        std::lock_guard<std::mutex> lock(g_prep_mutex);
+        g_prep_text = "Building the add-on content ...";
+      }
+      unlock_problem = BuildUnlockFiles(update, base, data + "/unlock", unlock_all);
+      if (!unlock_problem.empty()) AppendLog("add-on content: " + unlock_problem);
+    }
     {
       std::lock_guard<std::mutex> lock(g_prep_mutex);
       g_prep_error = error;
+      g_unlock_error = unlock_problem;
     }
+    g_unlock_ready.store(error.empty() && unlock_dlc && unlock_problem.empty());
     g_prep_done.store(true);
   });
 }
@@ -1253,44 +1640,79 @@ void PollPrepare() {
   }
   g_preparing.store(false);
   AppendLog("prepare: ready");
-  if (LaunchGame()) {
-    g_quit = true;
+  if (LaunchGame(g_bench_pending)) {
+    if (g_bench_pending)
+      g_bench_running = true;
+    else
+      g_quit = true;
   } else {
     g_preparing.store(false);
   }
 }
 
 // ------------------------------------------------------------------------------------------
-// dialogs
+// folder browser
 // ------------------------------------------------------------------------------------------
-struct DialogResult {
-  std::mutex mutex;
-  bool done = false;
+// SDL_ShowOpenFolderDialog needs xdg-desktop-portal (or zenity/kdialog) on the host. Inside an
+// AppImage that is often missing, which is what made Browse fail with "Could not open the folder
+// dialog". This browser only uses the filesystem, so it always works.
+struct FolderBrowser {
+  bool open = false;
   int which = -1;
-  std::string path;
+  fs::path dir, selected;
+  std::vector<fs::path> entries;
   std::string error;
+  bool hidden = false;
 };
+FolderBrowser g_browser;
+char g_browser_path[1024] = {};
 
-DialogResult g_dialog;
-
-void SDLCALL FolderCallback(void* userdata, const char* const* files, int) {
-  const int which = int(reinterpret_cast<intptr_t>(userdata));
-  std::lock_guard<std::mutex> lock(g_dialog.mutex);
-  g_dialog.which = which;
-  g_dialog.done = true;
-  g_dialog.path.clear();
-  g_dialog.error.clear();
-  if (!files) {
-    g_dialog.error = SDL_GetError();
-  } else if (files[0]) {
-    g_dialog.path = files[0];
-  }
+bool IgnoreEntry(const fs::path& path) {
+  const std::string name = path.filename().string();
+  return name.empty() || name[0] == '.';
 }
 
-void OpenFolderDialog(int which) {
-  const std::string start = which == 0 ? g.update : which == 1 ? g.base : g_paths.data.string();
-  SDL_ShowOpenFolderDialog(FolderCallback, reinterpret_cast<void*>(intptr_t(which)), g_window,
-                           start.empty() ? nullptr : start.c_str(), false);
+void RefreshBrowser() {
+  g_browser.entries.clear();
+  g_browser.selected.clear();
+  std::snprintf(g_browser_path, sizeof g_browser_path, "%s", g_browser.dir.string().c_str());
+  std::error_code ec;
+  for (fs::directory_iterator it(g_browser.dir, fs::directory_options::skip_permission_denied, ec),
+       stop;
+       it != stop; it.increment(ec)) {
+    if (ec) break;
+    std::error_code type_ec;
+    if (!it->is_directory(type_ec)) continue;
+    if (!g_browser.hidden && IgnoreEntry(it->path())) continue;
+    g_browser.entries.push_back(it->path());
+  }
+  std::sort(g_browser.entries.begin(), g_browser.entries.end());
+}
+
+void BrowserGo(const fs::path& dir) {
+  if (!IsDir(dir)) {
+    g_browser.error = "That folder does not exist.";
+    return;
+  }
+  std::error_code ec;
+  g_browser.dir = fs::weakly_canonical(dir, ec);
+  if (ec) g_browser.dir = dir;
+  g_browser.error.clear();
+  RefreshBrowser();
+}
+
+void OpenBrowser(int which) {
+  fs::path start;
+  if (which == 0) start = g.update;
+  else if (which == 1) start = g.base;
+  else if (which == 2) start = g_paths.data;
+  if (!start.empty() && !IsDir(start)) start = start.parent_path();
+  if (!IsDir(start)) start = g_paths.data;
+  if (!IsDir(start)) start = fs::path("/");
+  g_browser.which = which;
+  g_browser.open = true;
+  g_browser.error.clear();
+  BrowserGo(start);
 }
 
 void SetFolder(int which, const std::string& path) {
@@ -1305,24 +1727,114 @@ void SetFolder(int which, const std::string& path) {
   g.dirty = true;
 }
 
-void PollDialog() {
-  DialogResult result;
-  {
-    std::lock_guard<std::mutex> lock(g_dialog.mutex);
-    if (!g_dialog.done) return;
-    result.which = g_dialog.which;
-    result.path = g_dialog.path;
-    result.error = g_dialog.error;
-    g_dialog.done = false;
-    g_dialog.which = -1;
+void AcceptBrowser() {
+  const fs::path chosen = g_browser.selected.empty() ? g_browser.dir : g_browser.selected;
+  if (!IsDir(chosen)) {
+    g_browser.error = "Choose a folder.";
+    return;
   }
-  if (result.which == 2 && !result.path.empty()) {
-    BeginDataFolderChange(result.path);
-  } else if (result.which >= 0 && !result.path.empty()) {
-    SetFolder(result.which, result.path);
-  } else if (!result.error.empty()) {
-    SetStatus("Could not open the folder dialog: " + result.error + " Type the path instead.", true);
+  const int which = g_browser.which;
+  g_browser.open = false;
+  if (which == 2) {
+    BeginDataFolderChange(chosen);
+  } else if (which == 0 || which == 1) {
+    SetFolder(which, chosen.string());
   }
+}
+
+void DrawBrowser() {
+  if (!g_browser.open) return;
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  // The dim is a plain window, not the foreground draw list: the foreground list paints over
+  // every window, which is what made the browser itself look dark.
+  ImGui::SetNextWindowPos(vp->Pos);
+  ImGui::SetNextWindowSize(vp->Size);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 150));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::Begin("##browser-dim", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoInputs);
+  ImGui::End();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
+  // Fit the display, so a short screen cannot push the buttons out of the window.
+  const float width = std::min(760.0f, std::max(460.0f, vp->WorkSize.x - 80.0f));
+  const float height = std::min(640.0f, std::max(380.0f, vp->WorkSize.y - 80.0f));
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+                                 vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                          ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(width, height));
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, kCard);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 16));
+  ImGui::Begin("##browser", nullptr,
+               ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_NoScrollWithMouse);
+  ImGui::TextColored(kAccent, "CHOOSE A FOLDER");
+  ImGui::TextDisabled("Pick the folder that contains the game files.");
+  ImGui::Spacing();
+  ImGui::SetNextItemWidth(-186.0f);
+  if (ImGui::InputText("##path", g_browser_path, sizeof g_browser_path,
+                       ImGuiInputTextFlags_EnterReturnsTrue)) {
+    BrowserGo(g_browser_path);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Go", ImVec2(48, 0))) BrowserGo(g_browser_path);
+  ImGui::SameLine();
+  if (ImGui::Button("Up", ImVec2(48, 0)) && g_browser.dir.has_parent_path() &&
+      g_browser.dir != g_browser.dir.root_path()) {
+    BrowserGo(g_browser.dir.parent_path());
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Home", ImVec2(60, 0))) {
+    const char* home = std::getenv("HOME");
+    if (home && *home) BrowserGo(fs::path(home));
+  }
+  if (ImGui::Button("Data folder")) BrowserGo(g_paths.data);
+  ImGui::SameLine();
+  if (ImGui::Button("Root")) BrowserGo(fs::path("/"));
+  ImGui::SameLine();
+  if (ImGui::Checkbox("Show hidden", &g_browser.hidden)) RefreshBrowser();
+  ImGui::Spacing();
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, kTrack);
+  // Reserve the footer first, so the buttons always stay inside the window.
+  const float footer = ImGui::GetTextLineHeightWithSpacing() * 2.0f + 38.0f +
+                       ImGui::GetStyle().ItemSpacing.y * 3.0f;
+  const float list_height = std::max(ImGui::GetContentRegionAvail().y - footer, 120.0f);
+  ImGui::BeginChild("##dirs", ImVec2(-1, list_height), ImGuiChildFlags_Borders);
+  if (g_browser.dir != g_browser.dir.root_path()) {
+    ImGui::PushStyleColor(ImGuiCol_Text, kMuted);
+    ImGui::Selectable("../", false, ImGuiSelectableFlags_AllowDoubleClick);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) BrowserGo(g_browser.dir.parent_path());
+    ImGui::PopStyleColor();
+  }
+  for (const fs::path& dir : g_browser.entries) {
+    const std::string label = dir.filename().string();
+    const bool selected = !g_browser.selected.empty() && SamePath(dir, g_browser.selected);
+    ImGui::Selectable(label.c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) {
+      g_browser.selected = dir;
+      BrowserGo(dir);
+    } else if (ImGui::IsItemClicked()) {
+      g_browser.selected = dir;
+    }
+  }
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
+  if (!g_browser.error.empty()) ImGui::TextColored(kBad, "%s", g_browser.error.c_str());
+  ImGui::Spacing();
+  ImGui::TextWrapped("Folder: %s",
+                     (g_browser.selected.empty() ? g_browser.dir : g_browser.selected).string().c_str());
+  ImGui::Spacing();
+  const bool usable = IsDir(g_browser.selected.empty() ? g_browser.dir : g_browser.selected);
+  ImGui::BeginDisabled(!usable);
+  if (PrimaryButton("Use this folder", ImVec2(180, 38))) AcceptBrowser();
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel", ImVec2(100, 38))) g_browser.open = false;
+  ImGui::End();
+  ImGui::PopStyleVar();
+  ImGui::PopStyleColor();
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1490,7 +2002,7 @@ void FolderRow(int which, const char* label, const char* hint, char* buffer, std
   }
   if (ImGui::IsItemDeactivatedAfterEdit()) ValidateFolders();
   ImGui::SameLine();
-  if (ImGui::Button("Browse...", ImVec2(96, 0))) OpenFolderDialog(which);
+  if (ImGui::Button("Browse...", ImVec2(96, 0))) OpenBrowser(which);
   if (path.empty()) {
     ImGui::TextDisabled("Not chosen.");
   } else if (ok) {
@@ -1511,13 +2023,278 @@ bool PrimaryButton(const char* label, const ImVec2& size) {
   return pressed;
 }
 
+
+// ------------------------------------------------------------------------------------------
+// sessions, saves, updates and the benchmark result
+// ------------------------------------------------------------------------------------------
+std::string RunCapture(const std::vector<std::string>& args, int& status) {
+  status = -1;
+  int fds[2];
+  if (pipe(fds) != 0) return {};
+  const pid_t pid = fork();
+  if (pid < 0) {
+    close(fds[0]);
+    close(fds[1]);
+    return {};
+  }
+  if (pid == 0) {
+    setsid();
+    dup2(fds[1], STDOUT_FILENO);
+    dup2(fds[1], STDERR_FILENO);
+    close(fds[0]);
+    close(fds[1]);
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (const std::string& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
+    argv.push_back(nullptr);
+    execvp(argv[0], argv.data());
+    _exit(127);
+  }
+  close(fds[1]);
+  std::string out;
+  char buf[4096];
+  for (;;) {
+    const ssize_t got = read(fds[0], buf, sizeof buf);
+    if (got > 0) {
+      out.append(buf, std::size_t(got));
+      continue;
+    }
+    break;
+  }
+  close(fds[0]);
+  int state = 0;
+  waitpid(pid, &state, 0);
+  status = WIFEXITED(state) ? WEXITSTATUS(state) : -1;
+  return out;
+}
+
+bool CopyTreeInto(const fs::path& from, const fs::path& to, std::string& error) {
+  std::error_code ec;
+  if (!IsDir(from)) {
+    error = from.string() + " does not exist.";
+    return false;
+  }
+  fs::create_directories(to, ec);
+  if (ec) {
+    error = "Could not create " + to.string() + ": " + ec.message();
+    return false;
+  }
+  for (fs::recursive_directory_iterator it(from, fs::directory_options::skip_permission_denied, ec), end;
+       it != end; it.increment(ec)) {
+    if (ec) {
+      error = "Could not read " + from.string() + ": " + ec.message();
+      return false;
+    }
+    const fs::path relative = fs::relative(it->path(), from, ec);
+    if (ec) {
+      error = "Could not copy " + it->path().string() + ": " + ec.message();
+      return false;
+    }
+    const fs::path target = to / relative;
+    if (it->is_directory(ec)) {
+      fs::create_directories(target, ec);
+    } else if (it->is_regular_file(ec)) {
+      fs::create_directories(target.parent_path(), ec);
+      if (!ec) fs::copy_file(it->path(), target, fs::copy_options::overwrite_existing, ec);
+    }
+    if (ec) {
+      error = "Could not copy " + it->path().string() + ": " + ec.message();
+      return false;
+    }
+  }
+  return true;
+}
+
+fs::path BackupsDir() { return g_paths.data / "backups"; }
+
+std::vector<fs::path> ListBackups() {
+  std::vector<fs::path> out;
+  std::error_code ec;
+  if (!IsDir(BackupsDir())) return out;
+  for (fs::directory_iterator it(BackupsDir(), fs::directory_options::skip_permission_denied, ec), end;
+       it != end; it.increment(ec)) {
+    if (ec) break;
+    if (it->is_directory(ec)) out.push_back(it->path());
+  }
+  std::sort(out.begin(), out.end());
+  std::reverse(out.begin(), out.end());
+  return out;
+}
+
+std::string Stamp() {
+  char buf[32] = {};
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+  if (localtime_r(&now, &local)) std::strftime(buf, sizeof buf, "%Y%m%d-%H%M%S", &local);
+  return buf[0] ? buf : std::to_string(long(now));
+}
+
+void BackupSaves() {
+  if (!FoldersOk()) {
+    SetStatus("Choose both game folders first.", true);
+    return;
+  }
+  std::string error;
+  const fs::path target = BackupsDir() / Stamp();
+  if (!CopyTreeInto(g_paths.data / "user", target / "user", error)) {
+    SetStatus("Could not back up the saves: " + error, true);
+    return;
+  }
+  const std::vector<fs::path> backups = ListBackups();
+  for (std::size_t i = 10; i < backups.size(); ++i) {
+    std::error_code ec;
+    fs::remove_all(backups[i], ec);
+  }
+  SetStatus("Saves backed up to " + target.string(), false);
+}
+
+void RestoreSaves() {
+  const std::vector<fs::path> backups = ListBackups();
+  if (backups.empty()) {
+    SetStatus("There is no save backup yet.", true);
+    return;
+  }
+  std::string error;
+  if (!CopyTreeInto(backups.front() / "user", g_paths.data / "user", error)) {
+    SetStatus("Could not restore the saves: " + error, true);
+    return;
+  }
+  SetStatus("Restored the saves from " + backups.front().filename().string() + ". Restart the game.", false);
+}
+
+fs::path PlayTimeIni() { return g_paths.data / "user/playtime.ini"; }
+
+long long PlayTimeSeconds() {
+  const std::string value = IniValue(PlayTimeIni(), "seconds");
+  return value.empty() ? 0 : std::atoll(value.c_str());
+}
+
+std::string PlayTimeText() {
+  const long long total = PlayTimeSeconds();
+  const long long hours = total / 3600, minutes = (total % 3600) / 60;
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%lld h %lld min", hours, minutes);
+  return buf;
+}
+
+void BeginSession() {
+  std::error_code ec;
+  fs::create_directories(g_paths.data / "user", ec);
+  WriteFileAtomic(g_paths.data / "user/session-start", std::to_string(static_cast<long long>(std::time(nullptr))));
+}
+
+void EndSession() {
+  const fs::path marker = g_paths.data / "user/session-start";
+  if (!IsFile(marker)) return;
+  const long long start = std::atoll(ReadTail(marker, 64).c_str());
+  struct stat st {};
+  long long end = static_cast<long long>(std::time(nullptr));
+  if (stat((g_paths.data / "logs/last-run.log").c_str(), &st) == 0) end = static_cast<long long>(st.st_mtime);
+  std::error_code ec;
+  fs::remove(marker, ec);
+  if (start <= 0 || end <= start || end - start > 24 * 3600) return;
+  const long long total = PlayTimeSeconds() + (end - start);
+  std::string error;
+  if (!WriteFileAtomic(PlayTimeIni(), "seconds=" + std::to_string(total) + "\n")) {
+    (void)error;
+  }
+}
+
+void MakeBugReport() {
+  std::error_code ec;
+  fs::create_directories(g_paths.data / "logs", ec);
+  int status = 0;
+  const std::string system = RunCapture({"sh", "-c", "uname -a; echo; id -un; echo; "
+                                                   "lspci 2>/dev/null | grep -Ei 'vga|3d' | head -4"},
+                                        status);
+  std::string text = "DriveClub Recomp Linux launcher\nversion " + g_version + "\ndata " +
+                     g_paths.data.string() + "\nupdate " + EffectiveUpdate() + "\nbase " + g.base +
+                     "\n\n" + system + "\n";
+  WriteFileAtomic(g_paths.data / "logs/system.txt", text);
+  const std::string out = (g_paths.data / "logs/bug-report.tar.gz").string();
+  std::error_code rm_ec;
+  fs::remove(out, rm_ec);
+  const std::string rc = RunCapture({"tar", "-czf", out, "-C", g_paths.data.string(), "launcher.ini",
+                                     "user", "logs"},
+                                    status);
+  (void)rc;
+  if (status == 0) {
+    SetStatus("Bug report written to " + out, false);
+    OpenPath(g_paths.data / "logs");
+  } else {
+    SetStatus("Could not write the bug report archive.", true);
+  }
+}
+
+struct ModEntry {
+  std::string name;
+  bool enabled = false;
+  bool directory = false;
+};
+
+std::vector<ModEntry> ListMods() {
+  std::vector<ModEntry> out;
+  std::error_code ec;
+  for (int pass = 0; pass < 2; ++pass) {
+    const fs::path dir = g_paths.data / (pass == 0 ? "mods" : "mods-disabled");
+    if (!IsDir(dir)) continue;
+    for (fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+         it != end; it.increment(ec)) {
+      if (ec) break;
+      ModEntry entry;
+      entry.name = it->path().filename().string();
+      entry.enabled = pass == 0;
+      entry.directory = it->is_directory(ec);
+      out.push_back(entry);
+    }
+  }
+  std::sort(out.begin(), out.end(), [](const ModEntry& a, const ModEntry& b) { return a.name < b.name; });
+  return out;
+}
+
+void SetModEnabled(const std::string& name, bool enabled) {
+  std::error_code ec;
+  const fs::path from = g_paths.data / (enabled ? "mods-disabled" : "mods") / name;
+  const fs::path to = g_paths.data / (enabled ? "mods" : "mods-disabled") / name;
+  fs::create_directories(to.parent_path(), ec);
+  fs::rename(from, to, ec);
+  if (ec) {
+    SetStatus("Could not move the mod: " + ec.message(), true);
+  } else {
+    SetStatus(std::string(enabled ? "Enabled " : "Disabled ") + name, false);
+  }
+}
+
+void PollBenchmark() {
+  if (!g_bench_running || g_bench_pid <= 0) return;
+  int state = 0;
+  const pid_t done = waitpid(g_bench_pid, &state, WNOHANG);
+  if (done != g_bench_pid) return;
+  g_bench_running = false;
+  g_bench_pid = -1;
+  g_bench_result = ReadTail(g_paths.data / "benchmark/result.txt", 64 * 1024);
+  if (g_bench_result.empty()) {
+    g_bench_error = "The benchmark ended without a result. Check the Logs tab.";
+    SetStatus(g_bench_error, true);
+  } else {
+    SetStatus("Benchmark finished.", false);
+  }
+  g_scroll_top = true;
+}
+
 void OpenPath(const fs::path& path) {
+  const std::string text = path.string();
+  if (text.rfind("http://", 0) == 0 || text.rfind("https://", 0) == 0) {
+    if (!SDL_OpenURL(text.c_str())) SetStatus("Could not open the link in a browser.", true);
+    return;
+  }
   const pid_t pid = fork();
   if (pid == 0) {
     setsid();
-    execlp("xdg-open", "xdg-open", path.c_str(), (char*)nullptr);
+    execlp("xdg-open", "xdg-open", text.c_str(), (char*)nullptr);
     _exit(127);
   }
+  if (pid < 0) SetStatus("Could not open the folder.", true);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1720,7 +2497,7 @@ void DrawDataFolderDialog() {
   if (!g_data_dialog_open) return;
   const ImVec2 pos = ImGui::GetWindowPos();
   const ImVec2 size = ImGui::GetWindowSize();
-  ImGui::GetForegroundDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+  ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
                                                 IM_COL32(0, 0, 0, 175));
   ImGui::SetNextWindowPos(ImVec2(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f), ImGuiCond_Always,
                           ImVec2(0.5f, 0.5f));
@@ -1809,12 +2586,80 @@ void GamePage() {
     if (ToggleRow("Show FPS counter", "Draws the frame rate in the top right corner while playing.", &g.show_fps)) g.dirty = true;
     if (ToggleRow("Show pedal inputs", "Draws the clutch, brake and throttle travel in the bottom left while playing.",
                   &g.show_pedals)) g.dirty = true;
+    if (ToggleRow("Start the game when this window opens",
+                  "Skip this launcher on the next start when both folders are already chosen.",
+                  &g.autoplay)) g.dirty = true;
+  }
+  EndCard();
+
+  if (BeginCard("ONLINE")) {
+    if (ComboRow("Session", "Off keeps the game offline. Join connects to a community co-op server; hosting "
+                            "needs the server program, which the Linux build does not ship.",
+                 &g.online, kOnlineName, 2)) g.dirty = true;
+    if (g.online == 1) {
+      RowLabel("Server", "host:port of the community server, for example 127.0.0.1:8080.");
+      ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+      if (ImGui::InputText("##server", g.online_host, sizeof g.online_host)) g.dirty = true;
+    } else {
+      ImGui::TextDisabled("Offline. The single-player game needs no server.");
+    }
+  }
+  EndCard();
+
+  if (BeginCard("ADD-ON CONTENT")) {
+    if (ToggleRow("Unlock DLC content",
+                  "Makes the add-on cars, bikes, tours and livery decals playable. The lists are built from "
+                  "your own game dump into the launcher data folder and served as a mods overlay; the game "
+                  "folders are never changed.",
+                  &g.dlc_unlock)) g.dirty = true;
+    if (ToggleRow("Unlock every car and bike",
+                  "Every car and bike is free from the first level, with no driver or club level needed. "
+                  "It includes the add-on content, so Unlock DLC content is not needed with it.",
+                  &g.unlock_all)) g.dirty = true;
+    if (g.dlc_unlock || g.unlock_all) {
+      std::string unlock_error;
+      {
+        std::lock_guard<std::mutex> lock(g_prep_mutex);
+        unlock_error = g_unlock_error;
+      }
+      ImGui::Spacing();
+      if (!unlock_error.empty()) {
+        ImGui::TextColored(kBad, "The add-on content could not be built: %s", unlock_error.c_str());
+        ImGui::TextDisabled("The game starts without it; the launcher log has the details.");
+      } else if (g_unlock_ready) {
+        ImGui::TextColored(kOk, "Built and served the next time the game starts.");
+      } else {
+        ImGui::TextDisabled("Built when you press Play, then served to the game as an extra mods folder.");
+      }
+      if (ImGui::Button("Open unlock folder")) OpenPath(g_paths.data / "unlock");
+    }
+  }
+  EndCard();
+
+
+  if (BeginCard("SAVES AND PLAY TIME")) {
+    ImGui::TextWrapped("Play time: %s", PlayTimeText().c_str());
+    ImGui::Spacing();
+    ImGui::TextWrapped("A backup copies the save folder. The newest ten are kept; restoring replaces the "
+                       "current saves with the newest backup, so close the game first.");
+    ImGui::Spacing();
+    if (ImGui::Button("Back up saves now")) BackupSaves();
+    ImGui::SameLine();
+    if (ImGui::Button("Restore newest backup")) RestoreSaves();
+    ImGui::SameLine();
+    if (ImGui::Button("Open backups")) OpenPath(BackupsDir());
+    const std::vector<fs::path> backups = ListBackups();
+    if (backups.empty()) {
+      ImGui::TextDisabled("No backups yet.");
+    } else {
+      ImGui::TextDisabled("Newest: %s", backups.front().filename().string().c_str());
+    }
   }
   EndCard();
 
   if (BeginCard("DATA FOLDER")) {
     ImGui::TextWrapped("%s", g_paths.data.string().c_str());
-    if (ImGui::Button("Change...")) OpenFolderDialog(2);
+    if (ImGui::Button("Change...")) OpenBrowser(2);
     if (!g_paths.default_data.empty() && !SamePath(g_paths.data, g_paths.default_data)) {
       ImGui::SameLine();
       if (ImGui::Button("Use AppImage folder")) BeginDataFolderChange(g_paths.default_data);
@@ -1832,9 +2677,19 @@ void GamePage() {
     if (ImGui::Button("Prepare again")) StartPrepare();
   }
   EndCard();
+
 }
 
 void DisplayPage() {
+  if (BeginCard("PRESET")) {
+    if (ComboRow("Quality preset", "Handheld and Low help a weak GPU; Medium and High keep 1080p internals "
+                                   "with FSR; Ultra renders more pixels; PS4 restores the original console look. "
+                                   "Adjust the rows below after picking one.",
+                 &g.preset, kPresetName, 7)) ApplyPreset(g.preset);
+    if (g.preset == 0) ImGui::TextDisabled("Custom settings.");
+  }
+  EndCard();
+
   if (BeginCard("FRAME RATE")) {
     if (ComboRow("Frame rate",
                  "30 FPS as on PS4; 60 FPS with deltatime; the engine's fixed 60 Hz tick; Unlocked for G-Sync/FreeSync; "
@@ -1854,6 +2709,9 @@ void DisplayPage() {
     } else if (g.frame_rate == 4) {
       ImGui::TextDisabled("Unlimited has no frame cap and no V-Sync; frames are shown as soon as they are done.");
     }
+    if (ComboRow("NVIDIA Reflex", "Cuts input latency on GeForce cards. On + Boost keeps the clocks high "
+                                 "between frames; it uses more power.",
+                 &g.reflex, kReflexName, 3)) g.dirty = true;
   }
   EndCard();
 
@@ -1875,7 +2733,7 @@ void DisplayPage() {
       g.dirty = true;
     }
     if (ComboRow("Widescreen", "Ultrawide sizes change both the render and the output size. Choosing one clears the sizes above.",
-                 &g.wide, kWideName, 7)) {
+                 &g.wide, kWideName, 18)) {
       if (g.wide > 0) g.output = g.render = 0;
       g.dirty = true;
     }
@@ -1888,6 +2746,10 @@ void DisplayPage() {
                  &g.aa, kAaName, 3)) {
       Sanitize();
       g.dirty = true;
+    }
+    if (g.aa == 1) {
+      if (ComboRow("FSR version", "FSR 3.1 works on any card. FSR 4 needs a Radeon RX 9000 series card. The AMD driver upscaler is the fallback.",
+                   &g.fsr_ver, kFsrName, 3)) g.dirty = true;
     }
     if (g.aa != 0) {
       if (ComboRow("Upscaling", "Native draws every pixel; Quality, Balanced, Performance and Ultra Performance "
@@ -1938,7 +2800,76 @@ void DisplayPage() {
   EndCard();
 }
 
+void WheelPage() {
+  if (BeginCard("STEERING WHEEL")) {
+    ImGui::TextWrapped("The runtime reads the wheel, pedals, shifter and buttons from its own input file:");
+    ImGui::TextWrapped("%s", InputDefaultIni().string().c_str());
+    if (!IsFile(InputDefaultIni())) {
+      ImGui::Spacing();
+      ImGui::TextColored(kMuted, "The first start of the game creates that file. The force feedback choices "
+                                 "below are kept in the launcher and written to it on the next save once it exists.");
+    }
+    ImGui::Spacing();
+    if (ToggleRow("Force feedback", "Sends the game's forces to the wheel. Off leaves it without forces.",
+                  &g.ffb_on)) g.dirty = true;
+    if (ComboRow("Force model",
+                 "Game: the game's own spring, as the PS4 version sends it. Software: the steering force is "
+                 "worked out by the runtime, smoothed between the game's frames. Reworked Physics: the force "
+                 "comes from the front tyres in the game's simulation, as in a racing sim.",
+                 &g.ffb_model, kFfbModelName, 3)) g.dirty = true;
+    if (ComboRow("Soft lock", "Stops the wheel where the car's own steering stops. Game follows each car; "
+                              "a number fixes the lock to lock rotation.",
+                 &g.ffb_soft_lock, kSoftLockName, 6)) g.dirty = true;
+    if (ComboRow("Vibration wave", "Square is what the game asks for. Sine feels smoother on a direct drive wheel.",
+                 &g.ffb_wave, kWaveName, 2)) g.dirty = true;
+    if (ToggleRow("Invert forces", "Only for a wheel that pulls away from the centre when you drive straight.",
+                  &g.ffb_invert)) g.dirty = true;
+  }
+  EndCard();
+
+  if (BeginCard("FORCE FEEDBACK")) {
+    if (g.ffb_model == 2) {
+      if (SliderRow("Gain", "How strong the steering force is overall. 100: a 1 g corner at about 60% of "
+                            "the wheel's maximum.",
+                    &g.ffb_physics_gain, 0, 300, "%d%%")) g.dirty = true;
+      if (SliderRow("Filter", "Smooths the force. Higher feels softer; lower feels more detailed.",
+                    &g.ffb_physics_filter, 0, 100, "%d%%")) g.dirty = true;
+      if (SliderRow("Minimum force", "Keeps small forces visible on gear and belt wheels. Keep it at 0 on a "
+                                    "direct drive wheel.",
+                    &g.ffb_physics_min_force, 0, 30, "%d%%")) g.dirty = true;
+      if (SliderRow("Damper", "How heavy the wheel is to turn; heaviest at a standstill. 10 to 30 stops a direct "
+                              "drive wheel wobbling.",
+                    &g.ffb_physics_damper, 0, 100, "%d%%")) g.dirty = true;
+      if (SliderRow("Tyre effects", "A buzz in the wheel when a tyre slides, locks under braking or spins. "
+                                    "0 turns it off.",
+                    &g.ffb_physics_effects, 0, 100, "%d%%")) g.dirty = true;
+    } else {
+      if (SliderRow("Gain", "Percent of the game's forces. The game's forces are light on most wheels, so "
+                            "several hundred is normal; the strongest clip at the wheel's maximum.",
+                    &g.ffb_gain, 0, 2000, "%d%%")) g.dirty = true;
+      ImGui::TextDisabled("Filter, minimum force, damper and tyre effects belong to Reworked Physics.");
+    }
+  }
+  EndCard();
+}
+
+int g_driving_sub = 0;  // 0 assists and view, 1 wheel and force feedback
+
 void DrivingPage() {
+  const char* const subs[2] = {"ASSISTS AND VIEW", "WHEEL AND FORCE FEEDBACK"};
+  for (int i = 0; i < 2; ++i) {
+    if (i) ImGui::SameLine();
+    const bool active = g_driving_sub == i;
+    ImGui::PushStyleColor(ImGuiCol_Button, active ? kAccent : kTrack);
+    ImGui::PushStyleColor(ImGuiCol_Text, active ? kWhite : kMuted);
+    if (ImGui::Button(subs[i], ImVec2(250, 34))) g_driving_sub = i;
+    ImGui::PopStyleColor(2);
+  }
+  ImGui::Dummy(ImVec2(0, 10));
+  if (g_driving_sub == 1) {
+    WheelPage();
+    return;
+  }
   if (BeginCard("VIEW AND CAMERA")) {
     if (SliderRow("Field of view", "How much of the road you see. 100% is the game's own view; F5 narrows it and F6 widens it while driving.",
                   &g.fov, 50, 150, "%d%%")) g.dirty = true;
@@ -1948,26 +2879,64 @@ void DrivingPage() {
                   &g.camera_shake, 0, 100, "%d%%")) g.dirty = true;
     if (ToggleRow("High-FPS camera fix", "Smooths camera and replay shake at high frame rates. On by default for 60 FPS and unlocked modes.",
                   &g.camera_patch)) g.dirty = true;
+    ImGui::Spacing();
+    ImGui::TextDisabled("In game: F2 pedals, F4 picture, F5 / F6 view, F7 mouse look, F9 / F10 "
+                        "anti-aliasing, F12 performance overlay.");
   }
   EndCard();
 
   if (BeginCard("ASSISTS")) {
+    if (ComboRow("Driving preset",
+                 "Sets the four rows below in one click. Sim: manual, no assists, hardcore handling. "
+                 "Assisted: automatic, medium brake assist, wheel assist on. Game defaults: the game's own options.",
+                 &g.drive_preset, kDrivePresetName, 4)) {
+      if (g.drive_preset > 0) {
+        const int kPreset[3][4] = {{2, 1, 2, 1}, {1, 3, 1, 2}, {0, 0, 0, 0}};
+        const int* p = kPreset[g.drive_preset - 1];
+        g.gearbox = p[0];
+        g.brake_assist = p[1];
+        g.hardcore = p[2];
+        g.wheel_assist = p[3];
+      }
+      g.dirty = true;
+    }
     if (ComboRow("Gearbox", "In-game leaves it to the game's Options menu. Manual is for paddles or a shifter.",
-                 &g.gearbox, kGearboxName, 3)) g.dirty = true;
-    if (ComboRow("Brake assist", "In-game leaves it to the game's Options menu.", &g.brake_assist, kBrakeName, 5)) g.dirty = true;
+                 &g.gearbox, kGearboxName, 3)) {
+      g.dirty = true;
+      g.drive_preset = 0;
+    }
+    if (ComboRow("Brake assist", "In-game leaves it to the game's Options menu.", &g.brake_assist, kBrakeName, 5)) {
+      g.dirty = true;
+      g.drive_preset = 0;
+    }
     if (ComboRow("Hardcore handling", "In-game leaves it to the game's Options menu. Recommended with a wheel.",
-                 &g.hardcore, kOnOffName, 3)) g.dirty = true;
+                 &g.hardcore, kOnOffName, 3)) {
+      g.dirty = true;
+      g.drive_preset = 0;
+    }
     if (ComboRow("Wheel assist", "In-game leaves it to the game's Options menu. Off is recommended with a wheel.",
-                 &g.wheel_assist, kOnOffName, 3)) g.dirty = true;
+                 &g.wheel_assist, kOnOffName, 3)) {
+      g.dirty = true;
+      g.drive_preset = 0;
+    }
   }
   EndCard();
 
-  if (BeginCard("STEERING WHEEL")) {
-    ImGui::TextWrapped("Steering wheels, pedals, shifters and force feedback work through SDL3. The Windows Wheel Setup "
-                       "tool is not part of the Linux build; the controls are mapped in data/user/input_config/default.ini "
-                       "after the first start. The force feedback settings live in the same file.");
+  if (BeginCard("BUTTON PROMPTS")) {
+    if (ComboRow("Prompts", "The icons the game shows for buttons. Automatic follows the controller that is "
+                            "connected; the others force a set.",
+                 &g.prompts, kPromptName, 4)) g.dirty = true;
+    if (g.prompts == 2) {
+      if (ComboRow("Xbox style", "Xbox 360 or Xbox One / Series icons.", &g.xbox_buttons, kXboxName, 2)) g.dirty = true;
+    } else if (g.prompts == 1) {
+      if (ComboRow("PlayStation style", "PS4 or PS5 icons.", &g.ps_buttons, kPsName, 2)) g.dirty = true;
+    }
+    if (g.prompts == 3) {
+      ImGui::TextDisabled("Keyboard prompts are for players without a controller; driving still needs a pad or wheel.");
+    }
   }
   EndCard();
+
 }
 
 void PatchesPage() {
@@ -2055,10 +3024,192 @@ void LogsPage() {
   }
   EndCard();
 
+  if (BeginCard("DIAGNOSTICS")) {
+    ImGui::TextWrapped("Play time: %s", PlayTimeText().c_str());
+    ImGui::Spacing();
+    ImGui::TextWrapped("The bug report collects the launcher settings, the save folder and the logs into one "
+                       "archive. It does not include the game dump.");
+    ImGui::Spacing();
+    if (ImGui::Button("Create bug report")) MakeBugReport();
+    ImGui::SameLine();
+    if (ImGui::Button("Open archive folder")) OpenPath(g_paths.data / "logs");
+  }
+  EndCard();
+
   if (BeginCard("LAUNCHER")) {
     ImGui::TextWrapped("Launcher log: %s", (g_paths.data / "logs/launcher.log").string().c_str());
     ImGui::TextWrapped("Game folders, settings and saves are never written to. The prepared image lives in %s.",
                        (g_paths.data / "prep").string().c_str());
+    ImGui::Spacing();
+    if (ImGui::Button("Join the Discord")) OpenPath("https://discord.gg/62b8jceumR");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Community help and builds.");
+  }
+  EndCard();
+}
+
+void GraphicsPage() {
+  if (BeginCard("MODEL DETAIL")) {
+    int lod = g.model_lod + 2;
+    if (ComboRow("Model detail", "How far from the camera the game keeps full-detail car and track models. "
+                                 "Lower helps a weak GPU; higher is sharper in the distance.",
+                 &lod, kLodName, 5)) {
+      g.model_lod = lod - 2;
+      g.dirty = true;
+    }
+    ImGui::TextDisabled(g.model_lod == 0 ? "The game's own setting." : "Applied when a race starts.");
+  }
+  EndCard();
+
+  if (BeginCard("DYNAMIC RESOLUTION")) {
+    if (ComboRow("Live resolution", "Automatic lets the runtime lower the render size to hold the frame rate. "
+                                    "Off always draws the full size; On lets it adjust.",
+                 &g.dynres, kDynResName, 3)) g.dirty = true;
+  }
+  EndCard();
+
+  if (BeginCard("MOTION BLUR")) {
+    if (ComboRow("Exposure reference", "Fast matches the game's 60 Hz look. Slow keeps the shutter open longer, "
+                                       "as the 30 Hz original does.",
+                 &g.blur_ref, kBlurRefName, 2)) g.dirty = true;
+  }
+  EndCard();
+
+  if (BeginCard("NEURAL RENDERING")) {
+    if (ToggleRow("Neural rendering (experimental)",
+                  "NVIDIA neural model touches up the picture after upscaling: style, tone and detail. "
+                  "Needs a GeForce RTX card and the nvngx_dlssnr.dll file beside the runtime; this release does not ship that file.",
+                  &g.neural)) g.dirty = true;
+    if (g.neural) {
+      if (ComboRow("Neural model", "Automatic uses the model the DLL offers. Optimized needs model "
+                                   "310.9.16.0 or newer; older ones fall back to Original.",
+                   &g.nr_preset, kNrPresetName, 3)) g.dirty = true;
+    }
+  }
+  EndCard();
+
+  if (BeginCard("ADVANCED")) {
+    if (ToggleRow("Two-thread rendering",
+                  "Presents finished frames from a thread of its own, apart from the frame the game draws. "
+                  "Turn it off again if the picture stutters or tears.",
+                  &g.present_thread)) g.dirty = true;
+  }
+  EndCard();
+
+}
+
+void BenchmarkPage() {
+  if (BeginCard("BENCHMARK")) {
+    ImGui::TextWrapped("The game's AI drives one event while the runtime records frame times. Use the same track, "
+                       "car and weather when comparing settings. Circuits only: a point-to-point route can end "
+                       "before the measurement does.");
+    ImGui::Spacing();
+    if (ImGui::BeginCombo("Track", kBenchTracks[g.btrack].name)) {
+      for (int i = 0; i < kBenchTrackCount; ++i) {
+        std::string label = std::string(kBenchTracks[i].name) + "  (" + kBenchTracks[i].group + ")";
+        if (ImGui::Selectable(label.c_str(), i == g.btrack)) {
+          g.btrack = i;
+          g.dirty = true;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (ImGui::BeginCombo("Car", kBenchCars[g.bcar].name)) {
+      for (int i = 0; i < kBenchCarCount; ++i) {
+        std::string label = std::string(kBenchCars[i].name) + "  (" + kBenchCars[i].group + ")";
+        if (ImGui::Selectable(label.c_str(), i == g.bcar)) {
+          g.bcar = i;
+          g.dirty = true;
+        }
+      }
+      ImGui::EndCombo();
+    }
+    if (ComboRow("Mode", "Time trial is one car against the clock; Race adds opponents.", &g.bmode,
+                 kBenchModeName, 2)) g.dirty = true;
+    if (ComboRow("Time of day", "Fixed so runs can be compared.", &g.btod, kBenchTodName, 4)) g.dirty = true;
+    if (ComboRow("Weather", "Fixed so runs can be compared.", &g.bweather, kBenchWeatherName, 4)) g.dirty = true;
+    if (ComboRow("Road", "Wet road is rain without falling rain.", &g.brain, kBenchRainName, 4)) g.dirty = true;
+    if (ComboRow("Length", "How long the frame times are recorded after the warm-up.", &g.blen,
+                 kBenchLengthName, 4)) g.dirty = true;
+    ImGui::Spacing();
+    ImGui::BeginDisabled(g_preparing || g_bench_running || !FoldersOk());
+    if (PrimaryButton("RUN BENCHMARK", ImVec2(200, 40))) StartPrepare(true);
+    ImGui::EndDisabled();
+    if (!FoldersOk()) {
+      ImGui::TextDisabled("Choose both game folders on the Game tab first.");
+    } else if (g_bench_running) {
+      ImGui::TextColored(kMuted, "Running ... the result appears here when the game closes.");
+    }
+  }
+  EndCard();
+
+  if (BeginCard("RESULT")) {
+    if (!g_bench_error.empty()) {
+      ImGui::TextColored(kBad, "%s", g_bench_error.c_str());
+    } else if (g_bench_result.empty()) {
+      ImGui::TextDisabled("No benchmark has run in this window yet.");
+    } else {
+      ImGui::PushStyleColor(ImGuiCol_ChildBg, kTrack);
+      ImGui::BeginChild("##bench", ImVec2(ImGui::GetContentRegionAvail().x, 240), ImGuiChildFlags_Borders);
+      ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+      ImGui::TextUnformatted(g_bench_result.c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::EndChild();
+      ImGui::PopStyleColor();
+    }
+    if (ImGui::Button("Open result file")) OpenPath(g_paths.data / "benchmark/result.txt");
+    ImGui::SameLine();
+    if (ImGui::Button("Open benchmark folder")) OpenPath(g_paths.data / "benchmark");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Saved to %s", (g_paths.data / "benchmark/result.txt").string().c_str());
+  }
+  EndCard();
+}
+
+void ModsPage() {
+  if (BeginCard("INSTALLED MODS")) {
+    ImGui::TextWrapped("Everything in %s is layered over the game when it starts. Disabling a mod moves it to "
+                       "mods-disabled, so the game sees the original files again.",
+                       (g_paths.data / "mods").string().c_str());
+    ImGui::Spacing();
+    const std::vector<ModEntry> mods = ListMods();
+    if (mods.empty()) {
+      ImGui::TextDisabled("No mods installed. Drop files or folders into the mods folder.");
+    } else if (ImGui::BeginTable("##mods", 3, ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch, 2.4f);
+      ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthStretch, 0.9f);
+      ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+      for (const ModEntry& mod : mods) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(mod.name.c_str());
+        if (mod.directory) {
+          ImGui::SameLine();
+          ImGui::TextDisabled("folder");
+        }
+        ImGui::TableSetColumnIndex(1);
+        ImGui::TextColored(mod.enabled ? kOk : kMuted, "%s", mod.enabled ? "enabled" : "disabled");
+        ImGui::TableSetColumnIndex(2);
+        ImGui::PushID(mod.name.c_str());
+        if (ImGui::Button(mod.enabled ? "Disable" : "Enable", ImVec2(100, 0))) {
+          SetModEnabled(mod.name, !mod.enabled);
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndTable();
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Open mods folder")) OpenPath(g_paths.data / "mods");
+    ImGui::SameLine();
+    if (ImGui::Button("Open disabled folder")) OpenPath(g_paths.data / "mods-disabled");
+  }
+  EndCard();
+
+  if (BeginCard("ABOUT MODS")) {
+    ImGui::TextWrapped("Mods are plain files named like the files inside the game: a folder that matches a game "
+                       "folder replaces its contents, and a file replaces a single file. The Windows launcher also "
+                       "downloads mods from a catalogue; the Linux build uses the same mods folder, so anything "
+                       "installed there works here too.");
   }
   EndCard();
 }
@@ -2228,8 +3379,11 @@ void DrawContent() {
   switch (g_tab) {
     case kTabGame: GamePage(); break;
     case kTabDisplay: DisplayPage(); break;
+    case kTabGraphics: GraphicsPage(); break;
     case kTabDriving: DrivingPage(); break;
+    case kTabBenchmark: BenchmarkPage(); break;
     case kTabPatches: PatchesPage(); break;
+    case kTabMods: ModsPage(); break;
     case kTabLogs: LogsPage(); break;
     default: break;
   }
@@ -2249,7 +3403,8 @@ void DrawFooter() {
   if (!g_status.empty() && !g_status_error && SDL_GetTicks() > g_status_until) g_status.clear();
 
   const float buttons = 140.0f + 12.0f + 100.0f + 12.0f + 170.0f;
-  const float status_width = std::max(120.0f, size.x - 2 * kMargin - buttons - 24.0f);
+  const float status_width = std::max(120.0f, size.x - kMargin - buttons - kMargin - 16.0f);
+
   ImGui::SetCursorScreenPos(ImVec2(pos.x + kMargin, pos.y + y + 24));
   ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + status_width);
   if (g_preparing) {
@@ -2282,7 +3437,7 @@ void DrawFooter() {
 void DrawPrepare() {
   const ImVec2 pos = ImGui::GetWindowPos();
   const ImVec2 size = ImGui::GetWindowSize();
-  ImGui::GetForegroundDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
+  ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y),
                                                 IM_COL32(0, 0, 0, 175));
   std::string text, error;
   int step = 0;
@@ -2338,6 +3493,7 @@ void DrawUI() {
   if (g_data_dialog_open) DrawDataFolderDialog();
   ImGui::End();
   ImGui::PopStyleVar();
+  if (g_browser.open) DrawBrowser();
 }
 
 // ------------------------------------------------------------------------------------------
@@ -2359,6 +3515,7 @@ int Run(int argc, char** argv) {
   }
 
   LoadSettings();
+  if (g.autoplay && FoldersOk()) StartPrepare();
 
   if (!SDL_Init(SDL_INIT_VIDEO)) {
     std::fprintf(stderr, "driveclub-launcher: could not start SDL: %s\n", SDL_GetError());
@@ -2417,12 +3574,12 @@ int Run(int argc, char** argv) {
     while (SDL_PollEvent(&event)) {
       ImGui_ImplSDL3_ProcessEvent(&event);
       if (event.type == SDL_EVENT_QUIT) {
-        if (!g_preparing) g_quit = true;
+        if (!g_preparing && !g_data_copying) g_quit = true;
       } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(g_window)) {
-        if (!g_preparing) g_quit = true;
+        if (!g_preparing && !g_data_copying) g_quit = true;
       }
     }
-    PollDialog();
+    PollBenchmark();
     PollPrepare();
     PollDataCopy();
     if (g_quit) break;
@@ -2438,6 +3595,8 @@ int Run(int argc, char** argv) {
     SDL_RenderPresent(renderer);
   }
 
+  if (g_prep_thread.joinable()) g_prep_thread.join();
+  if (g_data_copy_thread.joinable()) g_data_copy_thread.join();
   ImGui_ImplSDLRenderer3_Shutdown();
   ImGui_ImplSDL3_Shutdown();
   ImGui::DestroyContext();
