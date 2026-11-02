@@ -179,7 +179,7 @@ private:
     vk::UniquePipelineLayout copy_pipeline_layout;
     vk::UniquePipeline copy_pipeline;
     VideoCore::UniqueImage depth_copy_image;
-    vk::UniqueImageView depth_copy_view;
+    vk::UniqueImageView depth_copy_view, right_depth_copy_view; // VR true stereo: a layer per eye
     vk::UniqueDescriptorSetLayout dc_motion_desc_layout;
     vk::UniquePipelineLayout dc_motion_pipeline_layout;
     vk::UniquePipeline dc_motion_pipeline;

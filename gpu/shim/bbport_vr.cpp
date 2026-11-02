@@ -219,7 +219,8 @@ std::atomic<bool> active{false};
 std::atomic<int> reproject_mode{0};
 std::atomic<bool> hiding{true}; // hide_shader / hide_target in effect (the \ key)
 std::atomic<uint64_t> solo_hide{0}; // dump_each: the one shader hidden in the frame being saved
-std::atomic<bool> eye_dump{false}; // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
+std::atomic<bool> eye_dump{false};
+std::atomic<bool> dlss_capture{false}; // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture) // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
@@ -1794,6 +1795,15 @@ void ReadKeys() {
                     shifts);
     }
     was_shift = shift_down;
+    // The - key, draw_trace off: DLSS's inputs of the next 8 frames (colour, depth, motion; the left eye)
+    static bool was_capture = false;
+    const bool capture_down = !settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+    if (capture_down && !was_capture) {
+        dlss_capture = true;
+        std::printf("VR: DLSS capture asked for\n");
+        std::fflush(stdout);
+    }
+    was_capture = capture_down;
     // True stereo diagnostics: the = key saves one frame's two-layer render targets, both eyes (EyeDump)
     static bool was_dump = false;
     const bool dump_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
@@ -2190,6 +2200,10 @@ bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
 
 bool EyeDump() {
     return eye_dump.exchange(false);
+}
+
+bool DlssCapture() {
+    return dlss_capture.exchange(false);
 }
 
 uint64_t DumpHide(int step) {

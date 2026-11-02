@@ -69,6 +69,9 @@ bool HiddenTarget(uint64_t address);
 /// True stereo diagnostics: the = key was pressed (once): the next frame's two-layer render targets are saved, both
 /// eyes, as they are when the HUD starts (BB_GPU_USER_DIR/eye_dump).
 bool EyeDump();
+/// The - key (vr.ini draw_trace off) was pressed (once): DLSS's inputs of the next 8 frames are saved
+/// (BB_GPU_USER_DIR/dlss_capture, as dlss_capture.trigger does).
+bool DlssCapture();
 /// vr.ini dump_each = 1: the shader to hide alone in the dump's frame `step` (1.., hide_shader's list), 0 when the
 /// list is done (or without dump_each, or for step 0: the frame as it is).
 uint64_t DumpHide(int step);
