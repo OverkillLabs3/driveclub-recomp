@@ -1344,9 +1344,8 @@ void BuildModel() {
                      L"Race with friends.\n"
                      L"\x2022 Off: the game runs as always.\n"
                      L"\x2022 Host: a private server starts on this PC. Give your friends your IP address on the LAN or VPN (Tailscale, Hamachi, Radmin).\n"
-                     L"\x2022 Join: you connect to a friend who hosts; you are asked for their IP address.\n"
-                     L"\x2022 Public server: you connect to the community server, no setup needed.",
-                     {L"Off", L"Host a session", L"Join a session", L"Public server"}, {"@online", "@online", "@online", "@online"}, 0);
+                     L"\x2022 Join: you connect to a friend who hosts; you are asked for their IP address.",
+                     {L"Off", L"Host a session", L"Join a session"}, {"@online", "@online", "@online"}, 0);
   g_online_ip_row = [&] {
     auto addresses = LocalAddresses();
     if (addresses.empty()) addresses.push_back(L"(no network found)");
@@ -2003,7 +2002,7 @@ void LoadSettings() {
   }
   ShowBenchChoices();
   for (auto& c : g_c) if (c.patches[0] == "@name") c.items[0] = g_name;
-  if (g_online_row >= 0 && online_saved >= 0 && online_saved < 4) g_c[g_online_row].sel = online_saved;
+  if (g_online_row >= 0 && online_saved >= 0 && online_saved < 3) g_c[g_online_row].sel = online_saved;
   if (g_profile_row >= 0 && profile_saved >= 0 && profile_saved < 4) g_c[g_profile_row].sel = profile_saved;
   if (g_skip_intro_row >= 0) g_c[g_skip_intro_row].sel = skip_intro_saved ? 1 : 0;
   if (g_telemetry >= 0) g_c[g_telemetry].sel = telemetry_saved == 1 ? 1 : 0;

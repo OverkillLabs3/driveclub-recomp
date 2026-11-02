@@ -66,15 +66,15 @@ Json UiState(const std::wstring& error=L"") {
   Json controls=Json::array(),cards=Json::array();
   for(size_t i=0;i<g_c.size();++i){
     const auto& c=g_c[i];Json options=Json::array();int selected=c.sel;
-    const auto [hint,details]=SplitHint(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : std::wstring(c.hint),c.more);
+    const auto [hint,details]=SplitHint(NeuralRowLocked(c) ? NeuralMissingHint() : int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : std::wstring(c.hint),c.more);
     std::string kind=c.kind==Kind::Toggle?"Toggle":c.kind==Kind::Action?"Action":c.kind==Kind::Slider?"Slider":c.kind==Kind::Button?"Button":(c.patches[0]=="@name"||c.patches[0]=="@onhost")?"Text":"Choice";
     if(int(i)==g_lang){for(auto* n:kLangName)options.push_back(Narrow(n));selected=g_lang_id;}
     else if(int(i)==g_btrack){for(const auto& x:kBenchTracks)options.push_back(Narrow(std::wstring(x.name)+L" ("+x.group+L")"));selected=g_bench_track;}
     else if(int(i)==g_bcar){for(const auto& x:kBenchCars)options.push_back(Narrow(x.name));selected=g_bench_car;}
     else for(const auto& x:c.items)options.push_back(Narrow(x));
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
-    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(hint)},{"Kind",kind},{"Tag",c.patches[0]},
-      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
+    controls.push_back({{"Id",i},{"Label",Narrow(NeuralRowLocked(c) ? std::wstring(c.label)+L" (needs nvngx_dlssnr.dll)" : std::wstring(c.label))},{"Hint",Narrow(hint)},{"Kind",kind},{"Tag",c.patches[0]},
+      {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && !NeuralRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
       {"Options",options},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
       {"Details",Narrow(details)}});
   }
@@ -91,7 +91,7 @@ Json UiState(const std::wstring& error=L"") {
     {"BenchmarkFps",Narrow(g_bench_result.fps)},{"BenchmarkLows",Narrow(g_bench_result.lows)},{"BenchmarkAbout",Narrow(g_bench_result.about)},
     {"BenchmarkRanSummary",Narrow(g_bench_ran_short)},{"BenchmarkRanDetails",[&]{Json lines=Json::array();for(const auto& line:g_bench_ran_lines)lines.push_back(Narrow(line));return lines;}()},
     {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},
-    {"InstalledVersion",Narrow(UiInstalledVersion())},{"UpdateVersion",Narrow(g_ui_update_version)},
+    {"InstalledVersion",Narrow(UiInstalledVersion())},{"PlayTime",Narrow(PlayTimeText())},{"UpdateVersion",Narrow(g_ui_update_version)},
     {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required}};
 }
 void ImportUiState(const Json& input) {
@@ -169,6 +169,14 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-wheel-preset"){if(g_c[g_ffb_preset].sel>=0)ApplyWheelPreset(g_c[g_ffb_preset].sel);}
       else if(command==L"--ui-wheelsetup"){
         OpenWheelSetup();
+        if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
+      }
+      else if(command==L"--ui-bugreport"){
+        SaveBugReport();
+        if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
+      }
+      else if(command==L"--ui-benchhistory"){
+        OpenBenchHistory();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
       }
       else if(command==L"--ui-ffbtuner"){
