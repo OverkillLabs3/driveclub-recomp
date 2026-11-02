@@ -214,8 +214,12 @@ public:
         }
 
         physical_port = ntohs(actual.sin_port);
+        SetUpRelay();
         running.store(true, std::memory_order_release);
         receive_thread = std::thread(&P2PTransport::ReceiveMain, this);
+        if (relay_on) {
+            relay_thread = std::thread(&P2PTransport::RelayKeepAlive, this);
+        }
 
         LOG_INFO(Lib_Net,
                  "P2P transport ready: UDP physical_port={} (set SHADPS4_P2P_PORT to pin it)",
@@ -233,6 +237,9 @@ public:
 
         if (receive_thread.joinable()) {
             receive_thread.join();
+        }
+        if (relay_thread.joinable()) {
+            relay_thread.join();
         }
 
         CloseSocket(host_socket);
@@ -289,6 +296,66 @@ public:
         }
     }
 
+    // BB_COOP_RELAY=1 sends everything addressed to a virtual peer (10.254.x.x) through BB_COOP_SERVER, on the
+    // UDP port that has the server's HTTP port number.
+    void SetUpRelay() {
+        relay_on = false;
+        const char* flag = std::getenv("BB_COOP_RELAY");
+        const char* server = std::getenv("BB_COOP_SERVER");
+        if (flag == nullptr || *flag != '1' || server == nullptr || *server == '\0') {
+            return;
+        }
+        std::string host = server;
+        std::string port = "8080";
+        if (const auto colon = host.rfind(':'); colon != std::string::npos) {
+            port = host.substr(colon + 1);
+            host.resize(colon);
+        }
+        addrinfo hints{};
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
+        addrinfo* found = nullptr;
+        if (::getaddrinfo(host.c_str(), port.c_str(), &hints, &found) != 0 || found == nullptr) {
+            LOG_ERROR(Lib_Net, "P2P relay: cannot resolve '{}'", server);
+            return;
+        }
+        std::memcpy(&relay_addr, found->ai_addr, sizeof(relay_addr));
+        ::freeaddrinfo(found);
+        relay_on = true;
+        LOG_INFO(Lib_Net, "P2P relay on: frames to virtual peers go through {}", server);
+    }
+
+    void SetRelayName(const std::string& name) {
+        std::lock_guard lock(relay_name_mutex);
+        relay_name = name;
+    }
+
+    // Tells the relay who this game is, again every few seconds: the server learns the address, and the router
+    // keeps the path open.
+    void RelayKeepAlive() {
+        while (running.load(std::memory_order_acquire)) {
+            std::string name;
+            {
+                std::lock_guard lock(relay_name_mutex);
+                name = relay_name;
+            }
+            if (!name.empty()) {
+                std::string hello = "DCR1";
+                hello += '\x01';
+                hello += name;
+                (void)::sendto(host_socket, hello.data(), static_cast<int>(hello.size()), 0,
+                               reinterpret_cast<const sockaddr*>(&relay_addr), sizeof(relay_addr));
+            }
+            for (int i = 0; i < 20 && running.load(std::memory_order_acquire); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            }
+        }
+    }
+
+    static bool IsVirtualPeer(u32 addr_nbo) {
+        return (ntohl(addr_nbo) >> 16) == 0x0AFEu;
+    }
+
     int SendFrame(u16 source_vport_nbo, u16 dest_vport_nbo, const void* data, u32 len,
                   u32 dest_addr_nbo, u16 dest_port_nbo) {
 #if !defined(__linux__) && !defined(_WIN32)
@@ -311,6 +378,23 @@ public:
         dest.sin_family = AF_INET;
         dest.sin_addr.s_addr = dest_addr_nbo;
         dest.sin_port = dest_port_nbo;
+
+        if (IsVirtualPeer(dest_addr_nbo)) {
+            if (!relay_on) {
+                return -1;
+            }
+            const u16 id = static_cast<u16>(ntohl(dest_addr_nbo) & 0xFFFFu);
+            std::vector<u8> wrapped(7 + framed.size());
+            std::memcpy(wrapped.data(), "DCR1\x02", 5);
+            wrapped[5] = static_cast<u8>(id >> 8);
+            wrapped[6] = static_cast<u8>(id & 0xFF);
+            std::memcpy(wrapped.data() + 7, framed.data(), framed.size());
+            const auto sent = ::sendto(host_socket, reinterpret_cast<const char*>(wrapped.data()),
+                                       static_cast<int>(wrapped.size()), 0,
+                                       reinterpret_cast<const sockaddr*>(&relay_addr),
+                                       sizeof(relay_addr));
+            return sent == static_cast<decltype(sent)>(wrapped.size()) ? static_cast<int>(len) : -1;
+        }
 
         const auto rc = ::sendto(host_socket, reinterpret_cast<const char*>(framed.data()),
                                  static_cast<int>(framed.size()), 0,
@@ -422,28 +506,44 @@ private:
                 continue;
             }
 
-            if (rc < static_cast<decltype(rc)>(kVPortHeaderSize)) {
-                LOG_DEBUG(Lib_Net, "P2P dropping too-short UDP frame size={}", rc);
+            // From the relay: the sender is a virtual peer (10.254.<id>), the frame follows a 7 byte header.
+            const u8* base = buffer.data();
+            size_t total = static_cast<size_t>(rc);
+            u32 from_addr = from.sin_addr.s_addr;
+            u16 from_port = from.sin_port;
+            if (relay_on && from.sin_addr.s_addr == relay_addr.sin_addr.s_addr &&
+                from.sin_port == relay_addr.sin_port) {
+                if (total < 7 || std::memcmp(base, "DCR1\x02", 5) != 0) {
+                    continue; // the relay's acknowledgement of our announcement
+                }
+                const u32 id = (static_cast<u32>(base[5]) << 8) | base[6];
+                from_addr = htonl(0x0AFE0000u | id);
+                from_port = htons(40000);
+                base += 7;
+                total -= 7;
+            }
+
+            if (total < kVPortHeaderSize) {
+                LOG_DEBUG(Lib_Net, "P2P dropping too-short UDP frame size={}", total);
                 continue;
             }
 
             u16 source_vport_nbo = 0;
             u16 dest_vport_nbo = 0;
-            std::memcpy(&source_vport_nbo, buffer.data(), sizeof(source_vport_nbo));
-            std::memcpy(&dest_vport_nbo, buffer.data() + sizeof(source_vport_nbo),
-                        sizeof(dest_vport_nbo));
+            std::memcpy(&source_vport_nbo, base, sizeof(source_vport_nbo));
+            std::memcpy(&dest_vport_nbo, base + sizeof(source_vport_nbo), sizeof(dest_vport_nbo));
 
-            const u8* payload = buffer.data() + kVPortHeaderSize;
-            const size_t payload_size = static_cast<size_t>(rc) - kVPortHeaderSize;
+            const u8* payload = base + kVPortHeaderSize;
+            const size_t payload_size = total - kVPortHeaderSize;
 
             if (dest_vport_nbo == kSignalingVPortNbo) {
-                PushInternal(ClassifyInternal(payload, payload_size), from.sin_addr.s_addr,
-                             from.sin_port, payload, payload_size);
+                PushInternal(ClassifyInternal(payload, payload_size), from_addr, from_port, payload,
+                             payload_size);
                 continue;
             }
             if (dest_vport_nbo == kRudpVPortNbo) {
                 if (const auto receiver = g_rudp_receiver.load()) {
-                    receiver(from.sin_addr.s_addr, from.sin_port, payload, payload_size);
+                    receiver(from_addr, from_port, payload, payload_size);
                 }
                 continue;
             }
@@ -456,8 +556,8 @@ private:
             }
 
             P2PDatagram packet{};
-            packet.source_addr = from.sin_addr.s_addr;
-            packet.source_port = from.sin_port;
+            packet.source_addr = from_addr;
+            packet.source_port = from_port;
             packet.source_vport = source_vport_nbo;
             packet.payload.assign(payload, payload + payload_size);
             it->second->EnqueuePacket(std::move(packet));
@@ -468,6 +568,13 @@ private:
     mutable std::mutex start_mutex;
     std::atomic<bool> running{false};
     std::thread receive_thread;
+    std::thread relay_thread;
+    // The relay: a community server that forwards the P2P frames, for players whose routers do not allow
+    // direct connections. Peers are virtual addresses 10.254.<id high>.<id low>; the server maps them.
+    bool relay_on{false};
+    sockaddr_in relay_addr{};
+    std::mutex relay_name_mutex;
+    std::string relay_name;
 
     net_socket host_socket{kInvalidSocket};
     u16 physical_port{0};
@@ -956,6 +1063,10 @@ void P2PSocket::EnqueuePacket(P2PDatagram packet) {
     }
 #endif
     receive_cv.notify_all();
+}
+
+void P2PRelaySetName(const std::string& name) {
+    P2PTransport::Instance().SetRelayName(name);
 }
 
 u16 GetP2PConfiguredPort() {

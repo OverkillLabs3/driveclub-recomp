@@ -107,6 +107,7 @@ void StartLocalPeerDirectory() {
                 continue;
             }
             const u16 port = Net::GetP2PConfiguredPort();
+            Net::P2PRelaySetName(LocalNpName());
             httplib::Client cli(CoopServerUrl());
             cli.set_connection_timeout(3);
             cli.set_read_timeout(3);
