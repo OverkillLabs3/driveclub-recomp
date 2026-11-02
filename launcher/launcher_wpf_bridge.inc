@@ -55,20 +55,28 @@ bool UiReleaseVersion(std::wstring value) {
 }
 std::wstring g_ui_update_version, g_ui_update_note;
 bool g_ui_capture_cancelled = false, g_ui_restart_required = false;
+// A hint's first line says what the option does; the bullets, tips and notes after it are the details the (i) opens.
+std::pair<std::wstring,std::wstring> SplitHint(const std::wstring& hint,const wchar_t* more){
+  if(more)return {hint,more};
+  const size_t nl=hint.find(L'\n');
+  if(nl==std::wstring::npos)return {hint,L""};
+  return {hint.substr(0,nl),hint.substr(nl+1)};
+}
 Json UiState(const std::wstring& error=L"") {
   Json controls=Json::array(),cards=Json::array();
   for(size_t i=0;i<g_c.size();++i){
     const auto& c=g_c[i];Json options=Json::array();int selected=c.sel;
+    const auto [hint,details]=SplitHint(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : std::wstring(c.hint),c.more);
     std::string kind=c.kind==Kind::Toggle?"Toggle":c.kind==Kind::Action?"Action":c.kind==Kind::Slider?"Slider":c.kind==Kind::Button?"Button":(c.patches[0]=="@name"||c.patches[0]=="@onhost")?"Text":"Choice";
     if(int(i)==g_lang){for(auto* n:kLangName)options.push_back(Narrow(n));selected=g_lang_id;}
     else if(int(i)==g_btrack){for(const auto& x:kBenchTracks)options.push_back(Narrow(std::wstring(x.name)+L" ("+x.group+L")"));selected=g_bench_track;}
     else if(int(i)==g_bcar){for(const auto& x:kBenchCars)options.push_back(Narrow(x.name));selected=g_bench_car;}
     else for(const auto& x:c.items)options.push_back(Narrow(x));
     const bool listed=std::any_of(g_cards.begin(),g_cards.end(),[&](const Card& card){return std::find(card.ctls.begin(),card.ctls.end(),int(i))!=card.ctls.end();});
-    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(int(i)==g_camera_patch_row && !CameraPatchAvailable() ? L"This runtime does not expose the temporary camera/replay workaround. It may be unnecessary if native timing is already corrected." : int(i)==g_motion_blur ? MotionBlurHint(c.sel) : c.hint)},{"Kind",kind},{"Tag",c.patches[0]},
+    controls.push_back({{"Id",i},{"Label",Narrow(c.label)},{"Hint",Narrow(hint)},{"Kind",kind},{"Tag",c.patches[0]},
       {"Minimum",c.min},{"Maximum",c.max},{"Unit",Narrow(c.unit)},{"Hidden",!listed || RowHidden(c)},{"Enabled",!BlurRowLocked(c) && (int(i)!=g_camera_patch_row || CameraPatchAvailable())},
       {"Options",options},{"Selected",selected},{"Text",c.patches[0]=="@name"?Narrow(g_name):c.patches[0]=="@onhost"?Narrow(g_online_host):""},
-      {"Details",c.more?Narrow(c.more):""}});
+      {"Details",Narrow(details)}});
   }
   // The native model owns category/card membership, reset scopes and Driving subpages.
   for(const auto& c:g_cards) {
