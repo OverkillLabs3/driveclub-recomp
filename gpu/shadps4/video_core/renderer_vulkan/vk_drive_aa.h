@@ -153,6 +153,8 @@ private:
     /// DLSS writes here when the result is sharpened into result_image afterwards.
     VideoCore::UniqueImage raw_image;
     vk::UniqueImageView raw_view;
+    vk::UniqueDescriptorSetLayout sharpen_desc_layout;
+    vk::UniquePipelineLayout sharpen_pipeline_layout;
     vk::UniquePipeline sharpen_pipeline;
     /// Views of the result with the swizzles the game samples it with (Redirect).
     std::array<std::pair<vk::ComponentMapping, vk::UniqueImageView>, 4> swizzled_views{};

@@ -562,7 +562,48 @@ void DriveAA::CreatePipeline() {
         return pipeline;
     };
     copy_pipeline = compute(DRIVE_AA_COPY_COMP);
-    sharpen_pipeline = compute(DRIVE_AA_SHARPEN_COMP);
+
+    const std::array<vk::DescriptorSetLayoutBinding, 4> sharpen_bindings = {{
+        {.binding = 0,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 1,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 2,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 3,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+    }};
+    sharpen_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .bindingCount = static_cast<u32>(sharpen_bindings.size()),
+        .pBindings = sharpen_bindings.data(),
+    }));
+    const vk::PushConstantRange sharpen_range{.stageFlags = vk::ShaderStageFlagBits::eCompute,
+                                              .offset = 0,
+                                              .size = 4 * sizeof(float)};
+    sharpen_pipeline_layout = Check(device.createPipelineLayoutUnique({
+        .setLayoutCount = 1,
+        .pSetLayouts = &*sharpen_desc_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &sharpen_range,
+    }));
+    const auto sharpen_module = CompileSPV(DRIVE_AA_SHARPEN_COMP, device);
+    sharpen_pipeline = Check(device.createComputePipelineUnique(
+        {}, vk::ComputePipelineCreateInfo{
+                .stage = {.stage = vk::ShaderStageFlagBits::eCompute,
+                          .module = sharpen_module,
+                          .pName = "main"},
+                .layout = *sharpen_pipeline_layout,
+            }));
+    device.destroyShaderModule(sharpen_module);
 
     const std::array<vk::DescriptorSetLayoutBinding, 7> dc_bindings = {{
         {.binding = 0,
@@ -947,10 +988,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                                ? View(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eStencil)
                                : depth_view;
 
+    vk::ImageView gbuffer_view{};
     if (has_dc_inputs && current_gbuffer_id) {
         auto& gbuffer = texture_cache.GetImage(current_gbuffer_id);
         const auto gbuffer_format = gbuffer.info.pixel_format;
-        const auto gbuffer_view = View(gbuffer, gbuffer_format, vk::ImageAspectFlagBits::eColor);
+        gbuffer_view = View(gbuffer, gbuffer_format, vk::ImageAspectFlagBits::eColor);
         barrier(vk::Image(depth_copy_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
 
@@ -1118,8 +1160,9 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const auto& settings = BbSettings::Get();
     const float sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f;
     // DLSS ignores its sharpness since 2.5.1: RCAS sharpens its result afterwards (FSR has its own).
-    const bool sharpen_after = dlss && sharpness > 0.0f && raw_image;
-    if (sharpen_after) {
+    // Always route DLSS through raw_image so sharpen_pipeline sanitizes and clamps its output.
+    const bool dlss_sanitize = dlss && raw_image;
+    if (dlss_sanitize) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 all, rw);
     }
@@ -1142,14 +1185,14 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                            vk::ImageAspectFlagBits::eDepth, w, h},
                  .motion = {vk::Image(motion_image), *motion_view, vk::Format::eR16G16Sfloat,
                             vk::ImageAspectFlagBits::eColor, w, h},
-                 .output = {sharpen_after ? vk::Image(raw_image) : vk::Image(result_image),
-                            sharpen_after ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
+                 .output = {dlss_sanitize ? vk::Image(raw_image) : vk::Image(result_image),
+                            dlss_sanitize ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
                             vk::ImageAspectFlagBits::eColor, ow, oh},
                  .jitter_x = sign * frame_jitter[0],
                  .jitter_y = sign * frame_jitter[1],
                  .reset = reset,
                  .frame_ms = frame_ms,
-                 .sharpness = sharpness});
+                 .sharpness = dlss_sanitize ? 0.0f : sharpness});
         }
         if (!ok) {
             std::puts("Anti-aliasing: DLSS failed; using FSR 3.1");
@@ -1227,14 +1270,20 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     last_run = std::chrono::steady_clock::now();
     BbSettings::Get().aa_running = true;
 
-    if (sharpen_after) {
+    if (dlss_sanitize) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eGeneral, all, rw,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
         const vk::DescriptorImageInfo raw_info{.imageView = *raw_view,
                                                .imageLayout = vk::ImageLayout::eGeneral};
         const vk::DescriptorImageInfo result_info{.imageView = *result_view,
                                                   .imageLayout = vk::ImageLayout::eGeneral};
-        const std::array<vk::WriteDescriptorSet, 2> writes = {{
+        const vk::DescriptorImageInfo input_color_info{.imageView = color_view,
+                                                       .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo gbuffer_desc_info{
+            .imageView = gbuffer_view ? gbuffer_view : color_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const std::array<vk::WriteDescriptorSet, 4> writes = {{
             {.dstBinding = 0,
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageImage,
@@ -1243,12 +1292,31 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageImage,
              .pImageInfo = &result_info},
+            {.dstBinding = 2,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &input_color_info},
+            {.dstBinding = 3,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &gbuffer_desc_info},
         }};
-        const std::array<float, 2> strength{sharpness, 0.0f};
+        const float active_sharpness = settings.sharpen ? sharpness : 0.0f;
+        const struct {
+            float strength;
+            float pad;
+            float jitter_x;
+            float jitter_y;
+        } sharpen_push{
+            .strength = active_sharpness,
+            .pad = 0.0f,
+            .jitter_x = frame_jitter[0],
+            .jitter_y = frame_jitter[1],
+        };
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *sharpen_pipeline);
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
-        cmdbuf.pushConstants(*copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
-                             sizeof(strength), strength.data());
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *sharpen_pipeline_layout, 0, writes);
+        cmdbuf.pushConstants(*sharpen_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                             sizeof(sharpen_push), &sharpen_push);
         cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
         barrier(vk::Image(result_image), vk::ImageLayout::eGeneral,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all, rw);
