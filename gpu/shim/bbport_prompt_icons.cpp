@@ -846,12 +846,24 @@ void Back360(DcCanvas& c) {
 
 } // namespace
 
-std::vector<uint8_t> DrawDc(DcIcon icon, DcStyle style) {
+/// A key cap: a light cap on a darker side, the key's name on it (a chord such as "Shift+Z" is written smaller).
+static void KeyCapDc(DcCanvas& c, const std::string& label) {
+    const float m = 3.0f, depth = std::max(3.0f, c.h * 0.08f);
+    Rounded(c, m, m + depth, c.w - m, c.h - m, 7, 7, Color{74, 78, 90, 255}, Color{44, 48, 58, 255});
+    Rounded(c, m, m, c.w - m, c.h - m - depth, 7, 7, Color{244, 245, 248, 255}, Color{200, 204, 214, 255});
+    DcText(c, label, c.w / 2.0f, (c.h - depth) / 2, std::min(c.h * 0.46f, 26.0f), c.w - 2 * m - 8, Color{34, 36, 44, 255},
+           false);
+}
+
+std::vector<uint8_t> DrawDc(DcIcon icon, DcStyle style, const std::string& label) {
+    if (style == DcKeyboard && (label.empty() || icon == DcTouchpad || icon == DcTouchpadSmall)) return {};
     static const char* const xbox_names[] = {"LB", "RB", "LT", "RT"};
     static const char* const ps_names[] = {"L1", "R1", "L2", "R2"};
     const auto& t = DcTextures[icon];
     DcCanvas c(t.width, t.height);
-    switch (icon) {
+    if (style == DcKeyboard) {
+        KeyCapDc(c, label);
+    } else switch (icon) {
     case DcCross: case DcCircle: case DcSquare: case DcTriangle: {
         static const char* const letters[] = {"A", "B", "X", "Y"};
         static const Color light[] = {{120, 200, 60, 255}, {236, 74, 60, 255}, {70, 140, 236, 255}, {250, 206, 60, 255}};

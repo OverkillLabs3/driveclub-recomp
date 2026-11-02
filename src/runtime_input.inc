@@ -267,3 +267,59 @@ static uint8_t dz_axis(int16_t v, int which) {
     const float out=128.0f+(x<0 ? -m : m);
     return (uint8_t)(out<0 ? 0 : out>255 ? 255 : out);
 }
+
+/* The key cap text of a key, for the button prompts ("Enter", "Z", "F5"); false for a key without one. */
+static bool prompt_key_label(int code, char *out, size_t size) {
+    static const struct { SDL_Scancode sc; const char *text; } names[]={
+        {SDL_SCANCODE_RETURN,"Enter"},{SDL_SCANCODE_KP_ENTER,"Enter"},{SDL_SCANCODE_SPACE,"Space"},{SDL_SCANCODE_TAB,"Tab"},
+        {SDL_SCANCODE_BACKSPACE,"Bksp"},{SDL_SCANCODE_ESCAPE,"Esc"},{SDL_SCANCODE_LSHIFT,"Shift"},{SDL_SCANCODE_RSHIFT,"Shift"},
+        {SDL_SCANCODE_LCTRL,"Ctrl"},{SDL_SCANCODE_RCTRL,"Ctrl"},{SDL_SCANCODE_LALT,"Alt"},{SDL_SCANCODE_RALT,"Alt"},
+        {SDL_SCANCODE_CAPSLOCK,"Caps"},{SDL_SCANCODE_INSERT,"Ins"},{SDL_SCANCODE_DELETE,"Del"},{SDL_SCANCODE_HOME,"Home"},
+        {SDL_SCANCODE_END,"End"},{SDL_SCANCODE_PAGEUP,"PgUp"},{SDL_SCANCODE_PAGEDOWN,"PgDn"},
+        {SDL_SCANCODE_UP,"\xe2\x86\x91"},{SDL_SCANCODE_DOWN,"\xe2\x86\x93"},{SDL_SCANCODE_LEFT,"\xe2\x86\x90"},
+        {SDL_SCANCODE_RIGHT,"\xe2\x86\x92"},{SDL_SCANCODE_COMMA,","},{SDL_SCANCODE_PERIOD,"."},{SDL_SCANCODE_MINUS,"-"},
+        {SDL_SCANCODE_EQUALS,"="},{SDL_SCANCODE_SEMICOLON,";"},{SDL_SCANCODE_APOSTROPHE,"'"},{SDL_SCANCODE_SLASH,"/"},
+        {SDL_SCANCODE_BACKSLASH,"\\"},{SDL_SCANCODE_LEFTBRACKET,"["},{SDL_SCANCODE_RIGHTBRACKET,"]"},{SDL_SCANCODE_GRAVE,"`"},
+    };
+    char text[16]="";
+    if (code>=SDL_SCANCODE_A && code<=SDL_SCANCODE_Z) snprintf(text,sizeof text,"%c",'A'+(code-SDL_SCANCODE_A));
+    else if (code>=SDL_SCANCODE_1 && code<=SDL_SCANCODE_9) snprintf(text,sizeof text,"%c",'1'+(code-SDL_SCANCODE_1));
+    else if (code==SDL_SCANCODE_0) snprintf(text,sizeof text,"0");
+    else if (code>=SDL_SCANCODE_F1 && code<=SDL_SCANCODE_F12) snprintf(text,sizeof text,"F%d",code-SDL_SCANCODE_F1+1);
+    else if (code>=SDL_SCANCODE_KP_1 && code<=SDL_SCANCODE_KP_9) snprintf(text,sizeof text,"Num%d",code-SDL_SCANCODE_KP_1+1);
+    else if (code==SDL_SCANCODE_KP_0) snprintf(text,sizeof text,"Num0");
+    else for (size_t i=0;i<sizeof(names)/sizeof(*names);++i) if ((int)names[i].sc==code) { snprintf(text,sizeof text,"%s",names[i].text); break; }
+    if (!text[0]) return false;
+    snprintf(out,size,"%s",text);
+    return true;
+}
+
+/* The keys bound to a PS4 button, as the text for key caps joined by '+' when the line holds several together ("Shift+Z").
+ * A button can have several lines (Circle is Space for the handbrake and Backspace in the menus): the prompts are mostly
+ * in the menus, so a line with Enter, Backspace, Escape or Tab comes first, else the first line with a key. Empty when no
+ * key is bound to it or the bindings are not read yet. Used by the button prompts (gpu/shim/bbport_prompts.cpp); the
+ * bindings are not changed after they are read. */
+size_t runtime_input_keys_for_button(uint32_t button, char *out, size_t size) {
+    if (!size) return 0;
+    out[0]=0;
+    if (!input_loaded) return 0;
+    char first[64]="", menu[64]="";
+    for (int i=0;i<binding_count;++i) {
+        const Binding *b=&bindings[i];
+        if (b->out_kind!=OUT_BUTTON || b->button!=button) continue;
+        char text[64]=""; int keys=0; bool navigation=false;
+        for (int k=0;k<b->in_count;++k) {
+            char one[16];
+            if (b->in[k].kind!=IN_KEY || !prompt_key_label(b->in[k].code,one,sizeof one)) continue;
+            const int code=b->in[k].code;
+            if (code==SDL_SCANCODE_RETURN || code==SDL_SCANCODE_KP_ENTER || code==SDL_SCANCODE_BACKSPACE || code==SDL_SCANCODE_ESCAPE || code==SDL_SCANCODE_TAB) navigation=true;
+            if (keys++) strncat(text,"+",sizeof text-strlen(text)-1);
+            strncat(text,one,sizeof text-strlen(text)-1);
+        }
+        if (!keys) continue;
+        if (!first[0]) snprintf(first,sizeof first,"%s",text);
+        if (navigation && !menu[0]) snprintf(menu,sizeof menu,"%s",text);
+    }
+    snprintf(out,size,"%s",menu[0] ? menu : first);
+    return strlen(out);
+}

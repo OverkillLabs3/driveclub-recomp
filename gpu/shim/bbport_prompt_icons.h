@@ -87,9 +87,10 @@ extern const DcTexture DcTextures[DcCount];
 size_t DcBytes(DcIcon icon);
 /// The looks DCport draws: Xbox 360 and Xbox One buttons (Cross is A, Circle B, Square X,
 /// Triangle Y, the touchpad Back or View), and DualSense-style PlayStation symbols.
-enum DcStyle : int { DcXbox360, DcXboxOne, DcPs5, DcStyleCount };
+enum DcStyle : int { DcXbox360, DcXboxOne, DcPs5, DcKeyboard, DcStyleCount };
 /// `icon` in `style`, drawn at the icon's size: straight RGBA, width x height.
-std::vector<uint8_t> DrawDc(DcIcon icon, DcStyle style);
+/// DcKeyboard draws a key cap with `label` on it; with an empty label nothing is drawn (the game's own icon stays).
+std::vector<uint8_t> DrawDc(DcIcon icon, DcStyle style, const std::string& label = {});
 /// `rgba` (the icon's size) encoded into a copy of the game's texture `original` (DcBytes long):
 /// the padding blocks keep the game's bytes.
 std::vector<uint8_t> EncodeDc(DcIcon icon, const std::vector<uint8_t>& rgba,

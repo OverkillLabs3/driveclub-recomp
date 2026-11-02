@@ -22,6 +22,8 @@
 
 extern "C" const unsigned char bb_font_ttf[]; // bbport_overlay.cpp
 
+extern "C" size_t runtime_input_keys_for_button(uint32_t button, char* out, size_t size);
+
 namespace BbPrompts {
 namespace {
 
@@ -126,6 +128,15 @@ uint64_t Hash(const Bytes& data) {
     return XXH3_64bits(data.data(), data.size());
 }
 
+/// The key cap text for a DriveClub icon from the keyboard bindings ("Enter", "Shift+Z"); empty when nothing is bound.
+std::string KeyboardLabel(BbPromptIcons::DcIcon icon) {
+    static const uint32_t buttons[BbPromptIcons::DcCount] = {
+        0x4000, 0x2000, 0x8000, 0x1000, 0x400, 0x800, 0x100, 0x200, 0x2, 0x4, 0, 0}; // Cross Circle Square Triangle L1 R1 L2 R2 L3 R3
+    if (!buttons[icon]) return {};
+    char text[64];
+    return runtime_input_keys_for_button(buttons[icon], text, sizeof text) ? std::string{text} : std::string{};
+}
+
 void Add(uintptr_t base, int icon, int sprite, Bytes original, int dc = -1,
          std::array<Bytes, BbPromptIcons::DcStyleCount> looks = {}) {
     std::scoped_lock lock{mutex};
@@ -157,7 +168,9 @@ bool AddDriveclub(uintptr_t address, size_t size, uint32_t width, uint32_t heigh
         static const bool font = BbPromptIcons::SetFont(bb_font_ttf);
         std::array<Bytes, BbPromptIcons::DcStyleCount> looks;
         for (int style = 0; font && style < BbPromptIcons::DcStyleCount; ++style) {
-            looks[style] = BbPromptIcons::EncodeDc(icon, BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style)), bytes);
+            const auto pixels = BbPromptIcons::DrawDc(icon, BbPromptIcons::DcStyle(style),
+                                                      style == BbPromptIcons::DcKeyboard ? KeyboardLabel(icon) : std::string{});
+            if (!pixels.empty()) looks[style] = BbPromptIcons::EncodeDc(icon, pixels, bytes);
         }
         Add(address, -1, -1, std::move(bytes), i, std::move(looks));
         return true;
@@ -257,7 +270,8 @@ void Apply() {
     const auto& settings = BbSettings::Get();
     const int style = want == Xbox ? (settings.xbox_buttons ? BbPromptIcons::DcXboxOne : BbPromptIcons::DcXbox360)
                       : want == PlayStation && settings.playstation_buttons ? BbPromptIcons::DcPs5
-                                                                            : -1;
+                      : want == Keyboard ? BbPromptIcons::DcKeyboard
+                                         : -1;
     if (!dirty.exchange(false) && want == shown && style == shown_style) return;
     shown = want;
     shown_style = style;
