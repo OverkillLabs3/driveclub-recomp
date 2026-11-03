@@ -173,6 +173,13 @@ struct Settings {
     // ffr = 1: fixed foveated rendering in true stereo (Vr::Foveation): full rate within ffr_inner degrees of the
     // middle of each eye, 2x2 out to ffr_outer, 4x4 beyond. ffr_down < 1 brings the lower part nearer (the dials).
     bool ffr = false;
+    // exposure_log = 1: the game's auto-exposure value twice a second with the head's pitch (ExposureLog)
+    bool exposure_log = false;
+    // The game's auto-exposure in VR (FilterExposure): exposure_bias in EV (+ brighter, - darker; the [ and ] keys),
+    // exposure_time the seconds it takes to adapt, held while the head looks exposure_hold degrees up or down or more
+    // (the dark dash and the bright sky swung it by three stops and more). exposure_filter = 0: the game's own.
+    bool exposure_filter = true;
+    float exposure_bias = 0.0f, exposure_time = 1.0f, exposure_hold = 15.0f;
     float ffr_inner = 35.0f, ffr_outer = 42.0f, ffr_down = 0.8f;
     // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
     uint64_t hidden_targets[4]{};
@@ -334,7 +341,8 @@ int KeyCode(const char* name) {
     return 0;
 }
 
-// The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees. They come after vr.ini.
+// The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees, BB_VR_EXPOSURE_BIAS = EV.
+// They come after vr.ini.
 void LauncherSettings() {
     if (const char* v = std::getenv("BB_VR_FFR"); v && *v) {
         static constexpr float zones[4][2] = {{35.0f, 42.0f}, {40.0f, 48.0f}, {35.0f, 42.0f}, {28.0f, 36.0f}};
@@ -344,6 +352,9 @@ void LauncherSettings() {
     }
     if (const char* v = std::getenv("BB_VR_EDGE_MARGIN"); v && *v) {
         settings.edge_margin = std::clamp(float(std::atof(v)), 0.0f, 10.0f);
+    }
+    if (const char* v = std::getenv("BB_VR_EXPOSURE_BIAS"); v && *v) {
+        settings.exposure_bias = std::clamp(float(std::atof(v)), -4.0f, 4.0f);
     }
 }
 
@@ -438,6 +449,11 @@ void ReadSettings() {
         else if (k == "edge_margin" && value >= 0.0f && value <= 10.0f) settings.edge_margin = value;
         else if (k == "edge_margin_v" && value >= 0.0f && value <= 10.0f) settings.edge_margin_v = value;
         else if (k == "ffr") settings.ffr = value != 0;
+        else if (k == "exposure_log") settings.exposure_log = value != 0;
+        else if (k == "exposure_filter") settings.exposure_filter = value != 0;
+        else if (k == "exposure_bias" && value >= -4.0f && value <= 4.0f) settings.exposure_bias = value;
+        else if (k == "exposure_time" && value >= 0.0f && value <= 10.0f) settings.exposure_time = value;
+        else if (k == "exposure_hold" && value >= 0.0f && value <= 90.0f) settings.exposure_hold = value;
         else if (k == "ffr_inner" && value >= 5.0f && value <= 80.0f) settings.ffr_inner = value;
         else if (k == "ffr_outer" && value >= 5.0f && value <= 85.0f) settings.ffr_outer = value;
         else if (k == "ffr_down" && value >= 0.3f && value <= 2.0f) settings.ffr_down = value;
@@ -1881,6 +1897,17 @@ void ReadKeys() {
         std::fflush(stdout);
     }
     was_hide = hide_down;
+    // Without draw_trace: [ and ] make the picture a quarter stop darker and brighter (the auto-exposure's bias)
+    static bool was_bias[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        const bool down = !settings.draw_trace && BbVr::Active() && (GetAsyncKeyState(i == 0 ? VK_OEM_4 : VK_OEM_6) & 0x8000) != 0;
+        if (down && !was_bias[i]) {
+            settings.exposure_bias = std::clamp(settings.exposure_bias + (i == 0 ? -0.25f : 0.25f), -4.0f, 4.0f);
+            std::printf("VR: exposure %+.2f EV (the [ and ] keys; vr.ini exposure_bias)\n", settings.exposure_bias);
+            std::fflush(stdout);
+        }
+        was_bias[i] = down;
+    }
     // draw_trace: [ takes the shaders of the next frames as the normal ones, ] prints what the next frames draw beyond them
     static bool was_mark[2] = {};
     for (int i = 0; i < 2; ++i) {
@@ -2258,6 +2285,44 @@ bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
 
 bool EyeDump() {
     return eye_dump.exchange(false);
+}
+
+void FilterExposure(float* value) {
+    // value: the scene's average luminance and the exposure the game takes from it (their product is the game's key)
+    if (!Active() || !settings.exposure_filter || !(value[0] > 0.0f) || !(value[1] > 0.0f)) {
+        return;
+    }
+    const float key = value[0] * value[1];
+    static float held = 0.0f; // the log luminance used
+    static bool started = false;
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = std::min(std::chrono::duration<float>(now - last).count(), 0.5f);
+    last = now;
+    const float measured = std::log(value[0]);
+    if (!started) {
+        held = measured;
+        started = true;
+    }
+    // looking down at the dash or up at the sky: keep the road's exposure
+    if (std::fabs(HeadPitch()) < settings.exposure_hold) {
+        const float a = settings.exposure_time > 0.0f ? 1.0f - std::exp(-dt / settings.exposure_time) : 1.0f;
+        held += a * (measured - held);
+    }
+    const float luminance = std::exp(held) * std::exp2(-settings.exposure_bias);
+    value[0] = luminance;
+    value[1] = key / luminance;
+}
+
+bool ExposureLog() {
+    return Active() && settings.exposure_log;
+}
+
+float HeadPitch() {
+    const XrQuaternionf q = st.frame_pose.orientation;
+    // the head's forward (-z) turned by q: its y is the sine of the pitch
+    const float fy = 2.0f * (q.w * q.x - q.y * q.z);
+    return std::asin(std::clamp(fy, -1.0f, 1.0f)) * 180.0f / Pi;
 }
 
 bool FfrWanted() {

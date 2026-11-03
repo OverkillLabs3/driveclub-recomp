@@ -5,6 +5,7 @@
 #include <boost/container/small_vector.hpp>
 #include "bbport_toggles.h"
 #include "bbport_frametrace.h"
+#include "bbport_vr.h"
 #include "bbport_guest_call.h"
 #include "common/assert.h"
 #include "common/debug.h"
@@ -2151,6 +2152,25 @@ PS4_SYSV_ABI bool ExposureExactGet(void* obj, u32 frame, void** out, u32* count)
     }
     if (!g_exact_mismatches.empty()) {
         ResolveExactMismatches(*r);
+    }
+    if constexpr (Site == 2) {
+        // VR: the exposure as the headset needs it (BbVr::FilterExposure), on the copy the game is given
+        float v[2]{};
+        std::memcpy(v, *out, 8);
+        const float game[2] = {v[0], v[1]};
+        if (path == 'X') {
+            BbVr::FilterExposure(v);
+            std::memcpy(buf, v, 8);
+        }
+        // vr.ini exposure_log = 1: the game's value and the one used, twice a second, with the head's pitch
+        static std::chrono::steady_clock::time_point last{};
+        const auto now = std::chrono::steady_clock::now();
+        if (BbVr::ExposureLog() && now - last > std::chrono::milliseconds(500)) {
+            last = now;
+            std::printf("VR exposure: %.5g %.5g -> %.5g %.5g (%c), head pitch %+.0f\n", game[0], game[1], v[0], v[1],
+                        path, BbVr::HeadPitch());
+            std::fflush(stdout);
+        }
     }
     if (ExposureLog()) {
         u64 value = 0;

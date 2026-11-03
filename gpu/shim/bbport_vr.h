@@ -77,6 +77,13 @@ bool DlssCapture();
 bool GameTaaOff();
 /// vr.ini ffr = 1: fixed foveated rendering asked for (read before the device is made).
 bool FfrWanted();
+/// vr.ini exposure_log = 1 in VR: the auto-exposure value goes to the log (development).
+bool ExposureLog();
+/// The game's auto-exposure value as it reads it (average luminance, exposure; their product is kept): in VR it adapts
+/// over vr.ini exposure_time seconds, holds while the head looks up or down, and takes exposure_bias.
+void FilterExposure(float* value);
+/// The head's pitch in degrees (up positive), for the log.
+float HeadPitch();
 /// Foveated rendering now (asked for and not turned off with the ' key).
 bool FfrOn();
 /// Its zones in degrees from the middle of an eye (full rate inside `inner`, 2x2 to `outer`, 4x4 beyond) and the

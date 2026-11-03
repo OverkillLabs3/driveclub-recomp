@@ -193,7 +193,8 @@ bool g_vr_taa = true;      // "Game anti-aliasing in VR (TAA)" (vr_taa= in launc
 int g_vr_taa_row = -1;
 int g_vr_ffr = 0;           // "Foveated rendering" (vr_ffr= in launcher.ini): 0 off, 1 light, 2 medium, 3 strong (BB_VR_FFR)
 int g_vr_edge = 0;          // "Edge margin" (vr_edge= in launcher.ini): 0 off, 1 3, 2 5, 3 8 degrees (BB_VR_EDGE_MARGIN)
-int g_vr_ffr_row = -1, g_vr_edge_row = -1, g_vr_stereo_row = -1;
+int g_vr_exposure = 2;      // "Exposure in VR" (vr_exposure= in launcher.ini): -1, -0.5, 0, +0.5, +1 EV (BB_VR_EXPOSURE_BIAS)
+int g_vr_ffr_row = -1, g_vr_edge_row = -1, g_vr_stereo_row = -1, g_vr_exposure_row = -1;
 bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
 bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
 // A VR build: the official releases have no VR, so it neither offers them nor shows the switch.
@@ -647,6 +648,7 @@ void ApplyVrAntiAliasing() {
 bool RowHidden(const Ctl& c) {
   if (g_vr_fps >= 0 && &c == &g_c[g_vr_fps]) return !VrChosen();
   if (g_vr_taa_row >= 0 && &c == &g_c[g_vr_taa_row]) return !VrChosen() || (g_aa >= 0 && g_c[g_aa].sel != 0);
+  if (g_vr_exposure_row >= 0 && &c == &g_c[g_vr_exposure_row]) return !VrChosen();
   if ((g_vr_ffr_row >= 0 && &c == &g_c[g_vr_ffr_row]) || (g_vr_edge_row >= 0 && &c == &g_c[g_vr_edge_row]))
     return !VrChosen() || (g_vr_stereo_row >= 0 && g_c[g_vr_stereo_row].sel == 0);
   if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
@@ -1553,6 +1555,13 @@ void BuildModel() {
                         L"\x2022 Off: the sharpest picture, with jagged edges, and a few more FPS.\n"
                         L"Tip: DLSS at a big headset size (Balanced or Performance) is the sharpest and smoothest.",
                         "@vrtaa", true);
+  g_vr_exposure_row = seg(L"Exposure in VR",
+                          L"How bright the game's auto-exposure makes the picture in the headset.\n"
+                          L"\x2022 In VR it adapts over about a second and holds while you look down at the dash "
+                          L"or up at the sky, so they do not flash the picture.\n"
+                          L"\x2022 Lower if the sky and the road are too bright, higher if it is too dark.\n"
+                          L"In game: [ and ] change it by a quarter stop.",
+                          {L"-1 EV", L"-0.5", L"0", L"+0.5", L"+1 EV"}, {"@vrexposure", "", "", "", ""}, 2);
   g_vr_ffr_row = seg(L"Foveated rendering",
                      L"True stereo: the edges of each eye, which the lenses blur anyway, are drawn with less detail.\n"
                      L"\x2022 Light: only the far edges and corners.\n"
@@ -1892,13 +1901,14 @@ void BuildModel() {
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
   g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, vr_stereo, g_vrsize}, 0, kTabVr,
                      L"Setup and the headset apps: VR README.md next to the game."});
-  g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_taa_row, g_vr_ffr_row, g_vr_edge_row}, 0, kTabVr,
+  g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_exposure_row, g_vr_taa_row, g_vr_ffr_row, g_vr_edge_row}, 0, kTabVr,
                      L"Anti-aliasing itself is on the Display tab: Game (with its TAA here) or DLSS. A big headset "
                      L"size with DLSS Balanced or Performance is the sharpest."});
   g_cards.push_back({L"VR KEYS IN GAME", {}, 0, kTabVr,
                      L"0 recentres the view. 2 / 1 seat up / down, 5 / 6 left / right, 4 / 3 forward / back (Ctrl: "
                      L"bigger steps). 7 the DLSS model. 8 the eyes' offset off and on. 9 the eye the window shows. "
-                     L"' foveated rendering off and on. ; the game's TAA off and on. F12 the FPS on the monitor."});
+                     L"' foveated rendering off and on. ; the game's TAA off and on. [ / ] the exposure darker / brighter. "
+                     L"F12 the FPS on the monitor."});
   g_cards.push_back({L"SCENE DETAIL", {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery],
                                       g_gfx[kGfxShadows], g_gfx[kGfxParticles]}, 0, kTabDetail});
   g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
@@ -2080,6 +2090,7 @@ void LoadSettings() {
     if (line.rfind("vr_taa=", 0) == 0) g_vr_taa = line.substr(7) != "0";
     if (line.rfind("vr_ffr=", 0) == 0) g_vr_ffr = (std::clamp)(atoi(line.substr(7).c_str()), 0, 3);
     if (line.rfind("vr_edge=", 0) == 0) g_vr_edge = (std::clamp)(atoi(line.substr(8).c_str()), 0, 3);
+    if (line.rfind("vr_exposure=", 0) == 0) g_vr_exposure = (std::clamp)(atoi(line.substr(12).c_str()), 0, 4);
     if (line.rfind("draw_threads=", 0) == 0) g_two_thread = line.substr(13) == "1";
     if (line.rfind("hdr=", 0) == 0) hdr_saved = atoi(line.substr(4).c_str());
     if (line.rfind("hdr_paper=", 0) == 0) hdr_paper_saved = atoi(line.substr(10).c_str());
@@ -2174,6 +2185,10 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Segmented && c.patches[0] == "@vredge") {
       c.sel = g_vr_edge;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrexposure") {
+      c.sel = g_vr_exposure;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") {
@@ -2436,12 +2451,13 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@vrtaa") g_vr_taa = c.sel != 0;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vrffr") g_vr_ffr = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vredge") g_vr_edge = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrexposure") g_vr_exposure = c.sel;
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -3957,6 +3973,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     SetEnvironmentVariableW(L"BB_VR_FFR", g_vr && g_vr_stereo ? std::to_wstring(g_vr_ffr).c_str() : nullptr);
   if (!UserEnv(L"BB_VR_EDGE_MARGIN"))
     SetEnvironmentVariableW(L"BB_VR_EDGE_MARGIN", g_vr ? std::to_wstring(kEdgeDegrees[g_vr_edge]).c_str() : nullptr);
+  static const wchar_t* const kExposureBias[5] = {L"-1", L"-0.5", L"0", L"0.5", L"1"};
+  if (!UserEnv(L"BB_VR_EXPOSURE_BIAS"))
+    SetEnvironmentVariableW(L"BB_VR_EXPOSURE_BIAS", g_vr ? kExposureBias[g_vr_exposure] : nullptr);
   SetEnvironmentVariableW(L"BB_TOGGLE_FILE", (user + L"\\toggles.txt").c_str());
   const int tier = MemoryTier();
   SetEnvironmentVariableW(L"BB_DMEM_MB", tier == 3 ? L"17056" : tier == 2 ? L"10056" : tier == 1 ? L"8056" : L"5056");
