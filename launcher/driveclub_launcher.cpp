@@ -2066,6 +2066,18 @@ void LoadSettings() {
       c.sel = unlock_all_cars ? 1 : 0;
       continue;
     }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") {
+      c.sel = skip_intro_saved ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") {
+      c.sel = telemetry_saved == 1 ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") {
+      c.sel = triggers_saved == 1 ? 1 : 0;
+      continue;
+    }
     if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
@@ -2079,6 +2091,9 @@ void LoadSettings() {
     }
   }
   // After the loop above, which resets every row that has no patch of its own.
+  if (g_skip_intro_row >= 0) g_c[g_skip_intro_row].sel = skip_intro_saved ? 1 : 0;
+  if (g_telemetry >= 0) g_c[g_telemetry].sel = telemetry_saved == 1 ? 1 : 0;
+  if (g_triggers >= 0) g_c[g_triggers].sel = triggers_saved == 1 ? 1 : 0;
   if (g_mirror >= 0 && mirror_saved == 1) g_c[g_mirror].sel = mirror_saved;
   if (g_aniso >= 0 && aniso_saved >= 1 && aniso_saved <= 5) g_c[g_aniso].sel = aniso_saved;
   if (g_lang >= 0) {
@@ -2270,6 +2285,9 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") skip_intro_saved = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") telemetry_saved = c.sel != 0 ? 1 : 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
         << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
@@ -2358,6 +2376,9 @@ void ResetDefaults() {
     if (IsWheelRow(c)) continue;  // the player's wheel tuning stays (its presets are in its card)
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") skip_intro_saved = c.sel != 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") telemetry_saved = c.sel != 0 ? 1 : 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
   }
   g_bench_track = 0;
   g_bench_car = kBenchDefaultCar;
