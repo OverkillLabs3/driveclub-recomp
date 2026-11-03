@@ -334,10 +334,24 @@ int KeyCode(const char* name) {
     return 0;
 }
 
+// The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees. They come after vr.ini.
+void LauncherSettings() {
+    if (const char* v = std::getenv("BB_VR_FFR"); v && *v) {
+        static constexpr float zones[4][2] = {{35.0f, 42.0f}, {40.0f, 48.0f}, {35.0f, 42.0f}, {28.0f, 36.0f}};
+        const int level = std::clamp(std::atoi(v), 0, 3);
+        settings.ffr = level > 0;
+        settings.ffr_inner = zones[level][0], settings.ffr_outer = zones[level][1];
+    }
+    if (const char* v = std::getenv("BB_VR_EDGE_MARGIN"); v && *v) {
+        settings.edge_margin = std::clamp(float(std::atof(v)), 0.0f, 10.0f);
+    }
+}
+
 void ReadSettings() {
 #ifdef _WIN32
     FILE* f = _wfopen((ExeDir() + L"vr.ini").c_str(), L"rb");
     if (!f) {
+        LauncherSettings();
         return;
     }
     char line[256];
@@ -451,6 +465,7 @@ void ReadSettings() {
         else if (k == "screen_distance" && value > 0.3f) settings.screen_distance = value;
     }
     std::fclose(f);
+    LauncherSettings();
 #endif
 }
 
