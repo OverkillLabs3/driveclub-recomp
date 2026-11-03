@@ -911,6 +911,44 @@ static void tyre_grip_release(void) {
     if (grip.code) for (int i=0;i<4;++i) { grip.wheel[i]=0; ffb_grip_factor[i]=1.0f; }
     ffb_grip_live=false;
 }
+/* wheel_ffb_physics_countersteer = off: the game's steering help left out. With a person's input (the controller's +0x2ac
+ * set; the AI's input goes another way, so this is the player's car) the road wheels' angle leaves the wheel's on two
+ * counts, at guest +0x63cc18, after the angle the car state shows:
+ * - steering against the car's sideslip (vehicle+0x2ce0, radians) is multiplied by 1 + gain x smoothstep(sideslip / 45
+ *   degrees), the gain 0.333 from the table at +0x12df918 by the controller's +0x2b8: a player's traces top out at exactly
+ *   1.333 in slides, up to 14 degrees of road wheel more than the wheel asks;
+ * - past the limits at the controller's +0x4e8 and +0x4ec, only half of the rest of the angle goes through.
+ * off: the branch at +0x63cc34 always skips the first, and the second jumps over itself. */
+static struct { uint8_t *amp, *limit; bool off; } counter;
+static void countersteer_install(void) {
+    static bool done;
+    if (done || !runtime_image_base) return;
+    done=true;
+    uint8_t *amp=(uint8_t *)(runtime_image_base+0x63cc34), *limit=(uint8_t *)(runtime_image_base+0x63cc90);
+    static const uint8_t want_amp[]={0x73,0x5a};                                              /* jae +0x63cc90 */
+    static const uint8_t want_limit[]={0xc5,0xfa,0x10,0x83,0xe8,0x04,0x00,0x00};              /* vmovss xmm0, [rbx+0x4e8] */
+    if (memcmp(amp,want_amp,sizeof want_amp) || memcmp(limit,want_limit,sizeof want_limit)) { printf("Runtime: automatic countersteer: the game's code differs, the switch does nothing\n"); return; }
+    counter.amp=amp; counter.limit=limit;
+}
+/* Each physics step of the player's car. vehicle: 0 while no car is driven. Not on two wheels, which need it. */
+static void countersteer_step(uintptr_t vehicle) {
+    if (!counter.amp) return;
+    bool off=false;
+    if (vehicle && ffb_ph_countersteer_off && ffb_physics && __atomic_load_n(&pw.id,__ATOMIC_RELAXED)>=0) {
+        int32_t wheels; memcpy(&wheels,(const void *)(vehicle+0x29a0),4);
+        off=wheels!=2;
+    }
+    if (off==counter.off) return;
+    DWORD old;
+    const size_t span=(size_t)(counter.limit-counter.amp)+2;
+    if (!VirtualProtect(counter.amp,span,PAGE_EXECUTE_READWRITE,&old)) return;
+    __atomic_store_n(counter.amp,(uint8_t)(off ? 0xeb : 0x73),__ATOMIC_RELEASE);                  /* jmp, or the game's jae */
+    __atomic_store_n((uint16_t *)counter.limit,(uint16_t)(off ? 0x3ceb : 0xfac5),__ATOMIC_RELEASE);   /* jmp +0x63ccce, or the game's first bytes */
+    VirtualProtect(counter.amp,span,old,&old);
+    FlushInstructionCache(GetCurrentProcess(),counter.amp,span);
+    counter.off=off;
+    static unsigned n; if (n++<20) printf("Runtime: automatic countersteer %s on the player's car\n",off ? "off" : "as the game's");
+}
 /* Diagnostic builds with BB_FFB_TRACE: the surfaces under the player car's wheels. The tyre update (+0x7c5a40) takes a
  * wheel's grip from up to three surface objects, wheel+0x2e0 / +0x2e8 / +0x2f0, weighted by +0x2f8 / +0x2fc / +0x300
  * (+0x28 and +0x30 their grips); the first one is taken here. Each surface met for the first time is logged with its
@@ -988,6 +1026,7 @@ static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t
     if (ret!=runtime_image_base+0xd93c3e) return;
     if (!in[0]) {   /* no car under the player's control */
         tyre_grip_release();
+        countersteer_step(0);
         ffb_tex_amp[0]=ffb_tex_amp[1]=0.0f;
         surface_nknown=0;
         if (ffb_car.state) __atomic_store_n(&ffb_car.released,true,__ATOMIC_RELEASE);
@@ -1005,6 +1044,7 @@ static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t
     surface_watch(sim);
     surface_feel(sim,(const float *)state);
     { float speed; memcpy(&speed,in+0x18,4); tyre_grip_step(sim,(const float *)state,speed); }
+    countersteer_step(sim);
     { static bool armed;
       if (!armed && BB_DIAGNOSTIC_ENV("BB_CAR_WATCH")) {
           armed=true;
@@ -1033,6 +1073,7 @@ static void ffb_hook_install(void) {
     FlushInstructionCache(GetCurrentProcess(),at,32);
     printf("Runtime: FFB physics: reading the car's simulation\n");
     tyre_grip_install();   /* at boot, before any car's tyres run */
+    countersteer_install();
 }
 #else
 /* The physics force feedback model reads the car through a Windows-only hook for now. */
