@@ -405,6 +405,9 @@ int g_gfx[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 int g_motion_blur = -1;
 int g_prompts = -1, g_xbox_buttons = -1, g_ps_buttons = -1;
 int prompts_saved = 0, xbox_buttons_saved = 0, ps_buttons_saved = 0;
+int g_timelapse_row = -1, g_timelapse_rate_row = -1;
+bool g_timelapse = false;
+int g_timelapse_rate = 500;
 int g_camera_patch_row = -1;
 bool g_camera_patch = true;
 bool g_camera_patch_saved = false;
@@ -1318,6 +1321,18 @@ void BuildModel() {
       L"\x2022 On by itself for 60 FPS and the unlocked modes, off at 30 FPS.\n"
       L"Tip: turn it off if the camera looks wrong.",
       "@camera_patch", true);
+  g_timelapse_row = toggle(L"Timelapse",
+      L"Fast-forward or rewind the environment: time of day, sky, clouds, weather, lightning, scene animation and wind.\n"
+      L"Hold +/= or Numpad + to advance; hold - or Numpad - to rewind recorded history. Release for normal speed.\n"
+      L"Shift: x2 speed. Ctrl: x0.5 speed. Both modifiers cancel each other.\n"
+      L"Vehicle physics stays at normal speed; weather can affect grip. Reverse is limited to retained history; particles hold and audio is not rewound.",
+      "@timelapse", false);
+  {
+    Ctl c{L"Timelapse speed", L"Base environment playback speed while holding + or -.\nDefault: 500x. Shift: x2; Ctrl: x0.5.",
+          Kind::Slider, {}, {"@timelapse_rate"}, 500, 500};
+    c.min = 1; c.max = 3600; c.unit = L"x";
+    g_timelapse_rate_row = int(g_c.size()); g_c.push_back(std::move(c));
+  }
   const int blur = g_blur_patch = toggle(L"Disable motion blur and depth of field",
                           L"Turns off the game's motion blur and depth of field.\n"
                           L"\x2022 Both go together: they share one shader.\n"
@@ -1809,6 +1824,7 @@ void BuildModel() {
   g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"CAMERA", {camera_patch}, 0, kTabPatches,
                      L"Reduces camera and replay shake at high frame rates. Not needed at 30 FPS."});
+  g_cards.push_back({L"ENVIRONMENT", {g_timelapse_row, g_timelapse_rate_row}, 0, kTabPatches});
   g_cards.push_back({L"DISPLAY COMPATIBILITY", {fov}, 0, kTabPatches});
   g_cards.push_back({L"GAMEPLAY PATCHES", {reset, barrier}, 0, kTabPatches});
   g_cards.push_back({L"PHOTO MODE", {pcol, pproc}, 0, kTabPatches});
@@ -1944,6 +1960,8 @@ void LoadSettings() {
       const std::string v = line.substr(20);
       ps_buttons_saved = v == "ps5" ? 1 : 0;
     }
+    if (line.rfind("timelapse=",0)==0) g_timelapse=line.substr(10)=="1";
+    if (line.rfind("timelapse_rate=",0)==0) g_timelapse_rate=(std::clamp)(atoi(line.substr(15).c_str()),1,3600);
     if (line.rfind("camera_patch=",0)==0) { g_camera_patch=line.substr(13)=="1";g_camera_patch_saved=true; }
     if (line.rfind("lock_horizon=", 0) == 0) g_lock_horizon = (std::clamp)(atoi(line.substr(13).c_str()), 0, 2);
     if (line.rfind("camera_shake=", 0) == 0) camera_shake_saved = atoi(line.substr(13).c_str());
@@ -2041,6 +2059,8 @@ void LoadSettings() {
       c.sel = g_check_updates ? 1 : 0;
       continue;
     }
+    if (!c.patches.empty() && c.patches[0]=="@timelapse") {c.sel=g_timelapse?1:0;continue;}
+    if (!c.patches.empty() && c.patches[0]=="@timelapse_rate") {c.sel=g_timelapse_rate;continue;}
     if (c.kind == Kind::Toggle && c.patches[0] == "@camera_patch") { c.sel=g_camera_patch?1:0; continue; }
     if (c.kind == Kind::Segmented && c.patches[0] == "@lock_horizon") {
       c.sel = g_lock_horizon;
@@ -2298,6 +2318,8 @@ bool SaveSettings() {
     ini << "button_prompts=" << (g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto") << "\r\n";
     ini << "xbox_buttons=" << (g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? "360" : "one") << "\r\n";
     ini << "playstation_buttons=" << (g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? "ps5" : "ps4") << "\r\n";
+    ini << "timelapse=" << (g_c[g_timelapse_row].sel?1:0) << "\r\n";
+    ini << "timelapse_rate=" << g_c[g_timelapse_rate_row].sel << "\r\n";
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "lock_horizon=" << g_lock_horizon << "\r\n";
     ini << "camera_shake=" << (g_camera_shake >= 0 ? g_c[g_camera_shake].sel : 100) << "\r\n";
@@ -3624,6 +3646,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   SetEnvironmentVariableW(L"BB_BUTTON_PROMPTS", g_prompts >= 0 && g_c[g_prompts].sel == 1 ? L"playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? L"xbox" : L"auto");
   SetEnvironmentVariableW(L"BB_XBOX_BUTTONS", g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? L"360" : L"one");
   SetEnvironmentVariableW(L"BB_PLAYSTATION_BUTTONS", g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? L"ps5" : L"ps4");
+  SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE",g_c[g_timelapse_row].sel?L"1":L"0");
+  const std::wstring timelapse_rate = std::to_wstring(g_c[g_timelapse_rate_row].sel);
+  SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE_RATE",timelapse_rate.c_str());
   SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel ? L"1" : L"0");
   SetLockHorizonEnvironment();
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
