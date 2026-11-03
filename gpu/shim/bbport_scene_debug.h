@@ -1,5 +1,6 @@
 #pragma once
 #include "bbport_frame_stats.h"
+#include "bbport_scene_clock.h"
 #include "imgui.h"
 #include <algorithm>
 #include <array>
@@ -211,10 +212,9 @@ inline void Draw() {
   } else
     ImGui::Text("Time of Day: --");
   const float factor = live ? compression : state.compression;
-  if (std::isfinite(factor) && factor >= 0 && factor <= 10000)
-    ImGui::Text("Time Compression: %.2gx", factor);
-  else
-    ImGui::Text("Time Compression: --");
+  char compression_text[64];
+  bbport_scene_compression_text(compression_text, sizeof compression_text, factor, live);
+  ImGui::TextUnformatted(compression_text);
   ImGui::Text("Cloud Cover: %s",
               state.clouds.empty() ? "--" : state.clouds.c_str());
   if (state.rain >= 0)
