@@ -445,9 +445,6 @@ void DriveAA::NextFrame() {
     // scale instead (0: none).
     static const float forced_scale = [] {
         const char* env = std::getenv("BB_AA_JITTER");
-        if (!env || !*env) {
-            env = std::getenv("BB_DC_UPSCALE_JITTER");
-        }
         return env && *env ? float(std::atof(env)) : -1.0f;
     }();
     const float jitter_scale = forced_scale >= 0.0f ? forced_scale : 1.0f / factor;
@@ -1171,10 +1168,6 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         barrier(vk::Image(raw_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 all, rw);
     }
-    // The menu's invert-jitter option applies to FSR 3 and DLSS here too (A/B of the convention).
-    const float sign = BbToggle::Disabled(1u << 26) != BbSettings::Get().fsr4_invert_jitter.load()
-                           ? -1.0f
-                           : 1.0f;
     if (dlss) {
         bool ok = true;
         if (new_feature) {
@@ -1193,8 +1186,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                  .output = {dlss_sanitize ? vk::Image(raw_image) : vk::Image(result_image),
                             dlss_sanitize ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
                             vk::ImageAspectFlagBits::eColor, ow, oh},
-                 .jitter_x = sign * frame_jitter[0],
-                 .jitter_y = sign * frame_jitter[1],
+                 .jitter_x = frame_jitter[0],
+                 .jitter_y = frame_jitter[1],
                  .reset = reset,
                  .frame_ms = frame_ms,
                  .sharpness = dlss_sanitize ? 0.0f : sharpness});
@@ -1311,17 +1304,15 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         info.reactiveMask.structSize = sizeof(info.reactiveMask);
         info.transparencyAndCompositionMask.structSize =
             sizeof(info.transparencyAndCompositionMask);
-        info.jitterOffset = {sign * frame_jitter[0], sign * frame_jitter[1]};
+        info.jitterOffset = {frame_jitter[0], frame_jitter[1]};
         info.motionVectorScale = {1.0f, 1.0f};
         info.renderSize = {w, h};
         info.outputSize = {ow, oh};
         info.frameTimeMilliseconds = frame_ms;
         info.preExposure = 1.0f;
         info.cameraNear = motion.Near();
-        info.cameraFar = 1.0e6f;
-        info.cameraVerticalFovRadians = (has_dc_inputs && current_dc_inputs.tan_half_fov_y != 0.0f)
-                                            ? 2.0f * std::atan(std::abs(current_dc_inputs.tan_half_fov_y))
-                                            : motion.VerticalFov();
+        info.cameraFar = 3000.0f;
+        info.cameraVerticalFovRadians = motion.VerticalFov();
         info.viewSpaceToMeters = 1.0f;
         info.sharpness = sharpness;
         info.enableSharpening = settings.sharpen ? VK_TRUE : VK_FALSE;

@@ -41,7 +41,10 @@ void main() {
         const vec2 prev_uv = vec2(prev_ndc.x * 0.5 + 0.5, 0.5 - prev_ndc.y * 0.5);
         motion = (prev_uv - uv) * size;
     }
-
+    // The player's car, the hands and the other cars keep their place on the screen far better than the world does.
+    if (use_stencil > 0.5 && (texelFetch(mask_tex, src, 0).r & 130u) != 0u) {
+        motion = vec2(0.0);
+    }
     if (use_object > 0.5) {
         const vec4 object_motion = texelFetch(object_tex, pixel, 0);
         const float depth_tolerance = max(2.0e-7, abs(depth) * 0.01);

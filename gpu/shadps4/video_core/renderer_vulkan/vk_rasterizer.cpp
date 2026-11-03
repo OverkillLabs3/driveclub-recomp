@@ -1315,9 +1315,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 object_motion->InvalidateHistory();
                 camera_motion->InvalidateHistory();
             }
-            camera_motion->SetJitter(drive_aa->Active() ? drive_aa->Jitter()
-                                                        : (upscaler->Active() ? upscaler->Jitter()
-                                                                              : std::array<float, 2>{}));
+            camera_motion->SetJitter(upscaler->Enabled() ? upscaler->Jitter() : drive_aa->Jitter());
             static const char* scene_debug = BB_DIAGNOSTIC_ENV("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
@@ -1502,12 +1500,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
     draw_jitter = {};
-    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
+    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth() &&
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
-        draw_jitter = drive_aa->Jitter();
-    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth() &&
-               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = upscaler->Jitter();
+    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
+               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
+        draw_jitter = drive_aa->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -1902,10 +1900,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.yoffset *= target_scale[1];
     pipeline->BindResources(set_writes, push_data);
     draw_jitter = {};
-    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
-        draw_jitter = drive_aa->Jitter();
-    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth()) {
+    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
+    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
+        draw_jitter = drive_aa->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
