@@ -40,6 +40,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
+#include "video_core/renderer_vulkan/vr/vr_foveation.h" // VR foveated rendering
 #include <filesystem>
 #include <map>
 #include <vk_mem_alloc.h>
@@ -1693,6 +1694,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (frame_display) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
         NoteFrameStart();
+        vr_ffr_scene = false;
         drive_aa->NextFrame();
         if (camera_motion->Enabled()) {
             scene_started = false;
@@ -2521,6 +2523,9 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
                             taa_format(0) == vk::Format::eB10G11R11UfloatPack32 &&
                             taa_format(1) == vk::Format::eR8G8B8A8Unorm && taa_format(2) == vk::Format::eR32Sfloat &&
                             taa_format(u32(cs.images.size()) - 1) == vk::Format::eR32Sfloat));
+    if (taa_pass) {
+        vr_ffr_scene = false; // VR foveated rendering: the scene is done
+    }
     if (!drive_aa->Active() && BbVr::GameTaaOff() && taa_pass) {
         const auto& format = taa_format;
         constexpr auto hdr = vk::Format::eB10G11R11UfloatPack32;
@@ -4921,6 +4926,20 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
     state.view_mask = Vr::Multiview::PassViewMask(texture_cache, cb_descs, state.num_color_attachments,
                                                   db_desc); // VR multiview
+    // VR foveated rendering: the two-eye scene passes at the render size, from the G-buffer to the anti-aliasing
+    // (not the HUD, the post-processing or the half-size passes).
+    state.shading_rate_view = vk::ImageView{};
+    if (state.view_mask && Vr::Foveation::Supported()) {
+        u32 render_w = 0, render_h = 0;
+        const bool render_size = Vr::Fixes::RenderSize(render_w, render_h) && state.width == render_w &&
+                                 state.height == render_h;
+        if (render_size && std::popcount(key.mrt_mask & 0x7f) >= 3 && db_desc.first) {
+            vr_ffr_scene = true; // the G-buffer pass
+        }
+        if (render_size && vr_ffr_scene) {
+            state.shading_rate_view = Vr::Foveation::Prepare(instance, scheduler, state.width, state.height);
+        }
+    }
     if (FrameCapture::Active()) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {

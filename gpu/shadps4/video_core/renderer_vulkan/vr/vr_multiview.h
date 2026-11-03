@@ -35,6 +35,13 @@ class Runtime;
 class Scheduler;
 }
 
+namespace Vulkan::Vr::Fixes {
+/// The game's render size (its patched words): false before the game's image is there.
+bool RenderSize(u32& width, u32& height);
+/// The game's output size.
+bool OutputSize(u32& width, u32& height);
+} // namespace Vulkan::Vr::Fixes
+
 namespace Vulkan::Vr::Multiview {
 
 /// BB_VR_STEREO=mv was asked for (the device then enables multiview, the shaders are compiled for it).

@@ -164,6 +164,16 @@ struct Settings {
     bool dump_each = false;
     // game_taa = 0: the game's temporal anti-aliasing is left out (GameTaaOff); FXAA stays the launcher's row
     bool game_taa = true;
+    // edge_margin = <degrees>: the eyes are drawn this much wider to the left and the right than the runtime's field of
+    // view, and the layer states it: what reprojects the picture (frame generation, the runtime's turning) finds the
+    // scene there instead of black edges when the head turns. The same pixels cover more: at 45 degrees a side, about
+    // 11% less sharp across at 3 degrees, 19% at 5. Generated frames in the headset (SSW, ASW) do not get it.
+    // edge_margin_v: the same up and down (for nodding).
+    float edge_margin = 0.0f, edge_margin_v = 0.0f;
+    // ffr = 1: fixed foveated rendering in true stereo (Vr::Foveation): full rate within ffr_inner degrees of the
+    // middle of each eye, 2x2 out to ffr_outer, 4x4 beyond. ffr_down < 1 brings the lower part nearer (the dials).
+    bool ffr = false;
+    float ffr_inner = 35.0f, ffr_outer = 42.0f, ffr_down = 0.8f;
     // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
     uint64_t hidden_targets[4]{};
     // recentre, seat up, down, left, right, forward, back: the number row (on every keyboard); the keypad works too
@@ -221,9 +231,10 @@ std::atomic<bool> active{false};
 std::atomic<int> reproject_mode{0};
 std::atomic<bool> hiding{true}; // hide_shader / hide_target in effect (the \ key)
 std::atomic<uint64_t> solo_hide{0}; // dump_each: the one shader hidden in the frame being saved
-std::atomic<bool> eye_dump{false};
-std::atomic<bool> dlss_capture{false};
-std::atomic<int> game_taa_key{-1}; // the ; key: the game's TAA off and on in play (-1: as vr.ini says) // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture) // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
+std::atomic<bool> eye_dump{false};     // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
+std::atomic<bool> dlss_capture{false}; // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture)
+std::atomic<int> game_taa_key{-1};     // the ; key: the game's TAA off and on in play (-1: as vr.ini says)
+std::atomic<bool> ffr_key_off{false};  // the ' key: foveated rendering off to compare (FfrOn)
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
@@ -406,8 +417,16 @@ void ReadSettings() {
         else if (k == "draw_trace") settings.draw_trace = value != 0;
         // audit = 1: the multiview audit (BB_VR_AUDIT), the passes that give both eyes one eye's picture, in the log
         else if (k == "audit" && value != 0) _putenv("BB_VR_AUDIT=1");
+        // gpu_profile = 1: the GPU time of each pass in the log (BB_GPU_PROFILE; the diagnostics build only)
+        else if (k == "gpu_profile" && value != 0) _putenv("BB_GPU_PROFILE=1");
         else if (k == "dump_each") settings.dump_each = value != 0;
         else if (k == "game_taa") settings.game_taa = value != 0;
+        else if (k == "edge_margin" && value >= 0.0f && value <= 10.0f) settings.edge_margin = value;
+        else if (k == "edge_margin_v" && value >= 0.0f && value <= 10.0f) settings.edge_margin_v = value;
+        else if (k == "ffr") settings.ffr = value != 0;
+        else if (k == "ffr_inner" && value >= 5.0f && value <= 80.0f) settings.ffr_inner = value;
+        else if (k == "ffr_outer" && value >= 5.0f && value <= 85.0f) settings.ffr_outer = value;
+        else if (k == "ffr_down" && value >= 0.3f && value <= 2.0f) settings.ffr_down = value;
         else if (k == "frame_pose") settings.frame_pose = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
@@ -1808,6 +1827,16 @@ void ReadKeys() {
         std::fflush(stdout);
     }
     was_capture = capture_down;
+    // The ' key: foveated rendering off and on (to compare)
+    static bool was_ffr = false;
+    const bool ffr_pressed = settings.ffr && (GetAsyncKeyState(VK_OEM_7) & 0x8000) != 0;
+    if (ffr_pressed && !was_ffr) {
+        const bool off = !ffr_key_off.load();
+        ffr_key_off = off;
+        std::printf("VR: foveated rendering %s (the ' key)\n", off ? "off" : "on");
+        std::fflush(stdout);
+    }
+    was_ffr = ffr_pressed;
     // The ; key: the game's TAA off and on (to compare; vr.ini game_taa sets how it starts)
     static bool was_taa = false;
     const bool taa_down = BbVr::Wanted() && (GetAsyncKeyState(VK_OEM_1) & 0x8000) != 0;
@@ -2214,6 +2243,29 @@ bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash) {
 
 bool EyeDump() {
     return eye_dump.exchange(false);
+}
+
+bool FfrWanted() {
+    return Wanted() && settings.ffr;
+}
+
+bool FfrOn() {
+    return FfrWanted() && !ffr_key_off.load(std::memory_order_relaxed);
+}
+
+void FfrZones(float& inner, float& outer, float& down) {
+    inner = settings.ffr_inner;
+    outer = std::max(settings.ffr_outer, settings.ffr_inner);
+    down = settings.ffr_down;
+}
+
+bool DrawnTangents(float& right, float& up, float& down) {
+    XrFovf fov{};
+    if (!EyeFov(-1, fov)) {
+        return false;
+    }
+    right = std::tan(fov.angleRight), up = std::tan(fov.angleUp), down = std::tan(-fov.angleDown);
+    return right > 0.0f && up > 0.0f && down > 0.0f;
 }
 
 bool GameTaaOff() {
@@ -2851,8 +2903,16 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             st.eyes[0] = located[0], st.eyes[1] = located[1];
             {
                 std::scoped_lock lock{runtime_eye_mutex};
-                runtime_eye_fov[0] = SymmetricFov(located[0].fov), runtime_eye_fov[1] = SymmetricFov(located[1].fov);
-                runtime_eye_exact[0] = located[0].fov, runtime_eye_exact[1] = located[1].fov;
+                // edge_margin: wider on every side (drawn and stated)
+                const float m = settings.edge_margin * Pi / 180.0f, mv = settings.edge_margin_v * Pi / 180.0f;
+                const auto widen = [m, mv](XrFovf f) {
+                    f.angleLeft = std::max(f.angleLeft - m, -1.5f), f.angleRight = std::min(f.angleRight + m, 1.5f);
+                    f.angleUp = std::min(f.angleUp + mv, 1.5f), f.angleDown = std::max(f.angleDown - mv, -1.5f);
+                    return f;
+                };
+                runtime_eye_fov[0] = SymmetricFov(widen(located[0].fov));
+                runtime_eye_fov[1] = SymmetricFov(widen(located[1].fov));
+                runtime_eye_exact[0] = widen(located[0].fov), runtime_eye_exact[1] = widen(located[1].fov);
             }
             runtime_eye_known = located[0].fov.angleRight > located[0].fov.angleLeft;
             const XrVector3f a = located[0].pose.position, b = located[1].pose.position;
@@ -2875,6 +2935,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
                             located[1].fov.angleUp * d, located[1].fov.angleDown * d, dist * 1000.0f,
                             cockpit_x.load() > 0.1f ? std::atan(1.0f / cockpit_x.load()) * d : 0.0f,
                             settings.ipd * 1000.0f);
+                if (settings.edge_margin > 0.0f || settings.edge_margin_v > 0.0f) {
+                    std::printf("VR: the eyes drawn %.1f degrees wider to each side, %.1f up and down (vr.ini "
+                                "edge_margin, edge_margin_v)\n",
+                                settings.edge_margin, settings.edge_margin_v);
+                }
             }
         }
     }

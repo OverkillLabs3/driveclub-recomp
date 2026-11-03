@@ -75,6 +75,15 @@ bool DlssCapture();
 /// vr.ini game_taa = 0 (or BB_GAME_TAA=0, without VR too): the game's temporal anti-aliasing is left out, the frame
 /// goes on as drawn (with the Game anti-aliasing; FSR and DLSS replace it anyway).
 bool GameTaaOff();
+/// vr.ini ffr = 1: fixed foveated rendering asked for (read before the device is made).
+bool FfrWanted();
+/// Foveated rendering now (asked for and not turned off with the ' key).
+bool FfrOn();
+/// Its zones in degrees from the middle of an eye (full rate inside `inner`, 2x2 to `outer`, 4x4 beyond) and the
+/// factor that brings the lower part nearer.
+void FfrZones(float& inner, float& outer, float& down);
+/// The tangents of the field of view both eyes are drawn with (true stereo), or false before the runtime gives it.
+bool DrawnTangents(float& right, float& up, float& down);
 /// vr.ini dump_each = 1: the shader to hide alone in the dump's frame `step` (1.., hide_shader's list), 0 when the
 /// list is done (or without dump_each, or for step 0: the frame as it is).
 uint64_t DumpHide(int step);

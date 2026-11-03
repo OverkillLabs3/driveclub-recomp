@@ -23,6 +23,7 @@
 #include "bbport_vr.h"
 #include "bbport_neural_settings.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
+#include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -1067,6 +1068,26 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     runtime.FlushBarriers();
     const auto cmdbuf = scheduler.CommandBuffer();
 
+    // BB_GPU_PROFILE (the diagnostics build): this pass's parts get their own labels; without them they counted to
+    // the game's pass before (the lens flare's, when upscaling).
+    GpuProfiler* const profiler =
+        GpuProfiler::Get() && GpuProfiler::Get()->Records(&scheduler) ? GpuProfiler::Get() : nullptr;
+    struct ProfileResume {
+        GpuProfiler* profiler;
+        u64 label;
+        ~ProfileResume() {
+            if (profiler && label) {
+                profiler->Resume(label);
+            }
+        }
+    } const profile_resume{profiler, profiler ? profiler->Current() : 0};
+    const auto profile = [&](const char* what) {
+        if (profiler) {
+            profiler->Mark(u64(reinterpret_cast<uintptr_t>(what)) ^ 0xAA5Aull, [&] { return std::string(what); });
+        }
+    };
+    profile("DriveAA: motion vectors");
+
     const auto all = vk::PipelineStageFlagBits2::eAllCommands;
     const auto rw = vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite;
     const auto barrier = [&](vk::Image image, vk::ImageLayout old_layout,
@@ -1322,6 +1343,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const float sign = BbToggle::Disabled(1u << 26) != BbSettings::Get().fsr4_invert_jitter.load()
                            ? -1.0f
                            : 1.0f;
+    profile(dlss ? (stereo ? "DriveAA: DLSS, both eyes" : "DriveAA: DLSS") : "DriveAA: FSR");
     if (dlss) {
         bool ok = true;
         const bool any_new = new_feature || new_right;
@@ -1521,6 +1543,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     last_run = std::chrono::steady_clock::now();
     BbSettings::Get().aa_running = true;
 
+    profile("DriveAA: DLSS sanitize and sharpen");
     if (dlss_sanitize) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eGeneral, all, rw,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
@@ -1575,6 +1598,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all, rw);
     }
 
+    profile("DriveAA: after the upscale (neural rendering, copies)");
     // Optional neural rendering (off by default) on the upscaled picture. BB_NR_ENCODING: 0 sRGB, 1 linear SDR, 2 linear HDR.
     static const int nr_encoding = [] {
         const char* e = std::getenv("BB_NR_ENCODING");

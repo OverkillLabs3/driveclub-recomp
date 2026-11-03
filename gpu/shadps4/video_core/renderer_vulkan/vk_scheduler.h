@@ -61,6 +61,7 @@ struct RenderState {
     u16 num_color_attachments;
     u16 view_mask = 0; ///< VR multiview: 0b11 draws both eyes (vr_multiview.h)
     u16 vr_pad[3] = {};
+    vk::ImageView shading_rate_view{}; ///< VR foveated rendering: the pass's rate attachment (vr_foveation.h)
 
     bool operator==(const RenderState& other) const noexcept {
         return Common::BytesEqual<sizeof(RenderState)>(this, &other);

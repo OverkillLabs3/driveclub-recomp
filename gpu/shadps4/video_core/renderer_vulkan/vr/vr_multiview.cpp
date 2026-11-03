@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
+#include "video_core/renderer_vulkan/vr/vr_foveation.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
 
@@ -382,6 +383,18 @@ void OnPipelineCreated(vk::Device device, vk::PipelineCache cache, const vk::Gra
     multiview.viewMask = 0b11;
     vk::GraphicsPipelineCreateInfo twin_info = info;
     twin_info.pNext = &multiview;
+    // Foveated rendering: the twins take the pass's rate attachment (the pipeline's own rate stays 1x1, the
+    // attachment's replaces it; a pass without one draws at full rate).
+    vk::PipelineFragmentShadingRateStateCreateInfoKHR shading_rate{
+        .fragmentSize = {1, 1},
+        .combinerOps = std::array{vk::FragmentShadingRateCombinerOpKHR::eKeep,
+                                  vk::FragmentShadingRateCombinerOpKHR::eReplace},
+    };
+    if (Foveation::Supported()) {
+        shading_rate.pNext = multiview.pNext;
+        multiview.pNext = &shading_rate;
+        twin_info.flags |= vk::PipelineCreateFlagBits::eRenderingFragmentShadingRateAttachmentKHR;
+    }
     // Specialisation constant 200 = true: the vertex shader shifts each view (emit_spirv_vr.h).
     static const VkBool32 on = VK_TRUE;
     static const vk::SpecializationMapEntry entry{200, 0, sizeof(VkBool32)};
