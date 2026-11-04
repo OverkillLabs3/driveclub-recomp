@@ -4937,7 +4937,26 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             vr_ffr_scene = true; // the G-buffer pass
         }
         if (render_size && vr_ffr_scene) {
-            state.shading_rate_view = Vr::Foveation::Prepare(instance, scheduler, state.width, state.height);
+            // Only passes that draw the scene's geometry (with its depth). The full-screen passes after it stay at the
+            // full rate: without the game's TAA (VR leaves it out) nothing ends the scene before the post-processing,
+            // and the game's FXAA at the coarse rates darkened all but the middle. The passes left out are logged once.
+            const bool geometry = bool(db_desc.first);
+            if (geometry) {
+                state.shading_rate_view = Vr::Foveation::Prepare(instance, scheduler, state.width, state.height);
+            }
+            static std::mutex seen_mutex;
+            static std::vector<std::pair<u64, u64>> seen;
+            const u64 vs = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+            const Shader::Info* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+            const u64 ps = fs ? fs->pgm_hash : 0;
+            std::scoped_lock lock{seen_mutex};
+            if (!geometry && seen.size() < 32 && std::find(seen.begin(), seen.end(), std::pair{vs, ps}) == seen.end()) {
+                seen.emplace_back(vs, ps);
+                std::printf("VR: foveated rendering leaves out the full-screen pass vs %08x ps %08x (colour targets "
+                            "0x%02x)\n",
+                            u32(vs), u32(ps), u32(key.mrt_mask & 0xff));
+                std::fflush(stdout);
+            }
         }
     }
     if (FrameCapture::Active()) {
