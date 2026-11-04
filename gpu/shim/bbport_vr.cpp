@@ -71,6 +71,7 @@ void SetShift(float shift);
 #include "video_core/host_shaders/vr_hud_comp.h"
 #include "video_core/host_shaders/vr_window_comp.h"
 #include "video_core/host_shaders/vr_reproject_comp.h"
+#include "video_core/host_shaders/vr_resample_comp.h"
 
 #include <algorithm>
 #include <cctype>
@@ -86,6 +87,7 @@ void SetShift(float shift);
 #include <string>
 #include <utility>
 
+#include <miniz.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #ifdef _WIN32
@@ -151,6 +153,12 @@ struct Settings {
     bool window = true;
     int window_eye = 0;
     bool runtime_fov = true;
+    // resample = 1: in true stereo each eye goes to the runtime at its own angles and its own pixels per degree (the
+    // size it asks for), resampled here (Lanczos, linear light): the runtime shows it pixel for pixel. 0: the drawn
+    // picture's part the runtime sees, which it stretches itself (19% at a 5 degree edge margin). The / key.
+    bool resample = true;
+    // half_rate = 1: the game's frame limit is half the headset's rate (FrameLimitHz; the , key)
+    bool half_rate = false;
     bool ipd_set = false; // ipd given in vr.ini
     float screen_distance = 2.0f;
     int reproject = 0;
@@ -175,6 +183,7 @@ struct Settings {
     bool ffr = false;
     // exposure_log = 1: the game's auto-exposure value twice a second with the head's pitch (ExposureLog)
     bool exposure_log = false;
+    bool jitter_log = false; // JitterLog
     // The game's auto-exposure in VR (FilterExposure): exposure_bias in EV (+ brighter, - darker; the [ and ] keys),
     // exposure_time the seconds it takes to adapt, held while the head looks exposure_hold degrees up or down or more
     // (the dark dash and the bright sky swung it by three stops and more). exposure_filter = 0: the game's own.
@@ -196,6 +205,9 @@ struct State {
     XrSpace local = XR_NULL_HANDLE, view = XR_NULL_HANDLE;
     XrSwapchain swapchain = XR_NULL_HANDLE;
     int64_t swapchain_format = 0;
+    uint32_t recommended_width = 0, recommended_height = 0; // the runtime's picture size per eye
+    std::string system_name;      // the headset, as the runtime names it
+    bool extensions_given = false; // AppendInstanceExtensions ran (OpenXR may start before it: the Auto size)
     uint32_t swapchain_width = 0, swapchain_height = 0;
     std::vector<XrSwapchainImageVulkanKHR> images;
     // the HUD's panel (a quad layer)
@@ -218,6 +230,8 @@ struct State {
     XrView eyes[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}; // the runtime's eyes this frame (xrLocateViews, LOCAL space)
     float logged_eyes[6]{};  // what was logged last: both eyes' horizontal angles and their distance
     bool reproject_frame = false; // this frame's layer: both eyes at the frame's head
+    bool resampled_frame = false; // and each eye resampled to the runtime's angles (resample): `resampled_fov`
+    XrFovf resampled_fov[2]{};
     bool cockpit_shown = false;
     long long cockpit_left_us = 0; // when the cockpit view was left last
     long long tagged_us = 0;       // the last frame drawn from the driver's head camera (tagged)
@@ -241,6 +255,11 @@ std::atomic<uint64_t> solo_hide{0}; // dump_each: the one shader hidden in the f
 std::atomic<bool> eye_dump{false};     // True stereo: the = key asks for one frame's two-layer targets (EyeDump)
 std::atomic<bool> dlss_capture{false}; // the - key (without draw_trace): DLSS's inputs of 8 frames (DlssCapture)
 std::atomic<int> game_taa_key{-1};     // the ; key: the game's TAA off and on in play (-1: as vr.ini says)
+std::atomic<bool> hud_layer_off{false};    // the ` key: the HUD's own layer left out (only the scene's goes to the runtime)
+constexpr int kHeadsetSeries = 8;     // the . key: frames saved
+std::atomic<int> headset_shot{0};       // the . key: frames still to save (the first: both eyes as PNGs)
+std::atomic<bool> resample_key_off{false}; // the / key: the runtime's own stretch, to compare
+std::atomic<int> half_rate_key{-1};         // the , key: half the headset's rate on (1) or off (0); -1 vr.ini's
 std::atomic<bool> ffr_key_off{false};  // the ' key: foveated rendering off to compare (FfrOn)
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
@@ -312,6 +331,60 @@ bool SaveSeat() {
     return true;
 #else
     return false;
+#endif
+}
+
+// The headset's eye angles from the last session (vr_eyes.ini in the user folder, beside vr_seat.ini): the Auto
+// headset picture is chosen before a session can give them.
+#ifdef _WIN32
+std::wstring EyesPath() {
+    const wchar_t* user = _wgetenv(L"BB_GPU_USER_DIR");
+    return (user && *user ? std::wstring(user) + L"\\" : ExeDir()) + L"vr_eyes.ini";
+}
+#endif
+
+bool ReadEyes(XrFovf (&eyes)[2]) {
+#ifdef _WIN32
+    FILE* f = _wfopen(EyesPath().c_str(), L"rb");
+    if (!f) {
+        return false;
+    }
+    char line[256];
+    bool same = false;
+    int found = 0;
+    while (std::fgets(line, sizeof line, f)) {
+        if (!std::strncmp(line, "system = ", 9)) {
+            std::string name = line + 9;
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r')) name.pop_back();
+            same = name == st.system_name;
+        }
+        for (int e = 0; e < 2; ++e) {
+            XrFovf& v = eyes[e];
+            if (std::sscanf(line, e == 0 ? " left = %f %f %f %f" : " right = %f %f %f %f", &v.angleLeft, &v.angleRight,
+                            &v.angleUp, &v.angleDown) == 4) {
+                found |= 1 << e;
+            }
+        }
+    }
+    std::fclose(f);
+    return same && found == 3;
+#else
+    return false;
+#endif
+}
+
+void SaveEyes(const XrFovf (&eyes)[2]) {
+#ifdef _WIN32
+    FILE* f = _wfopen(EyesPath().c_str(), L"wb");
+    if (!f) {
+        return;
+    }
+    std::fprintf(f,
+                 "# VR: the headset's eyes as its runtime gave them last (radians: left right up down), for the Auto "
+                 "headset picture.\nsystem = %s\nleft = %.5f %.5f %.5f %.5f\nright = %.5f %.5f %.5f %.5f\n",
+                 st.system_name.c_str(), eyes[0].angleLeft, eyes[0].angleRight, eyes[0].angleUp, eyes[0].angleDown,
+                 eyes[1].angleLeft, eyes[1].angleRight, eyes[1].angleUp, eyes[1].angleDown);
+    std::fclose(f);
 #endif
 }
 
@@ -450,6 +523,7 @@ void ReadSettings() {
         else if (k == "edge_margin_v" && value >= 0.0f && value <= 10.0f) settings.edge_margin_v = value;
         else if (k == "ffr") settings.ffr = value != 0;
         else if (k == "exposure_log") settings.exposure_log = value != 0;
+        else if (k == "jitter_log") settings.jitter_log = value != 0;
         else if (k == "exposure_filter") settings.exposure_filter = value != 0;
         else if (k == "exposure_bias" && value >= -4.0f && value <= 4.0f) settings.exposure_bias = value;
         else if (k == "exposure_time" && value >= 0.0f && value <= 10.0f) settings.exposure_time = value;
@@ -460,6 +534,8 @@ void ReadSettings() {
         else if (k == "frame_pose") settings.frame_pose = value != 0;
         else if (k == "ipd" && value > 0.0f && value < 0.2f) settings.ipd = value, settings.ipd_set = true;
         else if (k == "runtime_fov") settings.runtime_fov = value != 0;
+        else if (k == "resample") settings.resample = value != 0;
+        else if (k == "half_rate") settings.half_rate = value != 0;
         else if (k == "seat_x") settings.seat[0] = value;
         else if (k == "seat_y") settings.seat[1] = value;
         else if (k == "seat_z") settings.seat[2] = value;
@@ -554,6 +630,22 @@ bool Start() {
                     XR_VERSION_MINOR(runtime.runtimeVersion), unsigned(XR_VERSION_PATCH(runtime.runtimeVersion)));
     }
     std::printf("VR: headset %s\n", props.systemName);
+    st.system_name = props.systemName;
+    // The picture size the runtime asks for per eye (Virtual Desktop: its quality setting) and the most it takes:
+    // a bigger picture is scaled down to it on the way to the headset.
+    PFN_xrEnumerateViewConfigurationViews views_fn = nullptr;
+    xr.GetInstanceProcAddr(st.instance, "xrEnumerateViewConfigurationViews",
+                           reinterpret_cast<PFN_xrVoidFunction*>(&views_fn));
+    uint32_t view_count = 0;
+    XrViewConfigurationView views[2]{{XR_TYPE_VIEW_CONFIGURATION_VIEW}, {XR_TYPE_VIEW_CONFIGURATION_VIEW}};
+    if (views_fn && XR_SUCCEEDED(views_fn(st.instance, st.system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2,
+                                          &view_count, views)) &&
+        view_count == 2) {
+        st.recommended_width = views[0].recommendedImageRectWidth;
+        st.recommended_height = views[0].recommendedImageRectHeight;
+        std::printf("VR: the runtime asks for %ux%u per eye (at most %ux%u)\n", views[0].recommendedImageRectWidth,
+                    views[0].recommendedImageRectHeight, views[0].maxImageRectWidth, views[0].maxImageRectHeight);
+    }
     return true;
 }
 
@@ -698,6 +790,10 @@ bool EnsureSwapchain(XrSwapchain& swapchain, uint32_t& swapchain_width, uint32_t
     swapchain_width = width;
     swapchain_height = height;
     std::printf("VR: swapchain %ux%u%s\n", width, height, &images == &st.hud_images ? " (the HUD)" : "");
+    if (&images != &st.hud_images && st.recommended_height) {
+        std::printf("VR: each eye's picture is %u pixels high, %.0f%% of the runtime's %u\n", height,
+                    100.0f * float(height) / float(st.recommended_height), st.recommended_height);
+    }
     return true;
 }
 
@@ -775,6 +871,7 @@ struct CameraState {
     int eye_shifts = 0; // the eye_shifts taken
     float diag_eye[3]{};
     long long diag_us = 0;
+    float written[16]{}; // jitter_log: the head camera as the hook left it (seen again: not the game's own)
 };
 std::mutex camera_state_mutex;
 CameraState camera_states[64];
@@ -828,6 +925,141 @@ void DiagHeadPoint(const float* camera, CameraState& state) {
                 std::sqrt(car[8] * car[8] + car[9] * car[9] + car[10] * car[10]));
 }
 
+// ---- vr.ini jitter_log = 1: how much the game's cameras shake (without a headset too) -------------------------------
+// Every 3 s, for each camera: how far it moved and turned from one frame to the next, and the shake: how much that
+// changed from the frame before (none for a camera standing still or moving evenly). The turns are in arc minutes,
+// split into pitch (up and down), yaw (left and right) and roll; a pixel is about 2' in the headset, 3' on a 1080p
+// screen.
+struct JitterTrack {
+    const char* name = nullptr;
+    const void* id = nullptr; // the game's camera object (the head hook), or none: told apart by projection and place
+    float p00 = 0.0f, p11 = 0.0f;
+    float world[16] = {};
+    float move[3] = {}, turn[3] = {}; // the last frame's (world metres; radians about the camera's own axes)
+    long long last_us = 0;
+    int run = 0; // frames in a row: from 3 on there is a shake
+    unsigned frames = 0, shakes = 0;
+    long long gap_lo = 0, gap_hi = 0;
+    double moved = 0.0, turned = 0.0, shake_move = 0.0, shake_up = 0.0, shake_turn[3] = {};
+    float shake_move_most = 0.0f, shake_turn_most = 0.0f;
+};
+std::mutex jitter_mutex;
+JitterTrack jitter_tracks[24];
+long long jitter_since_us = 0;
+
+void JitterReport(long long now) {
+    for (JitterTrack& t : jitter_tracks) {
+        if (!t.name || t.frames < 5) {
+            continue;
+        }
+        constexpr double am = 180.0 * 60.0 / 3.14159265358979; // arc minutes per radian
+        const double n = double(t.frames), s = double(std::max(t.shakes, 1u));
+        char shape[64] = "";
+        if (t.p11 > 0.0f) {
+            std::snprintf(shape, sizeof shape, " (%.0f deg high, P %.2f x %.2f)",
+                          2.0 * std::atan(1.0 / t.p11) * 180.0 / 3.14159265358979, t.p00, t.p11);
+        }
+        std::printf("VR jitter: %s %p%s at %.1f %.1f %.1f m: %u frames %.1f-%.1f ms apart; per frame it moves %.2f mm "
+                    "and turns %.2f'; shake %.3f mm (up-down %.3f, most %.2f), pitch %.3f' yaw %.3f' roll %.3f' "
+                    "(most %.2f')\n",
+                    t.name, t.id, shape, t.world[12], t.world[13], t.world[14], t.frames, t.gap_lo / 1000.0,
+                    t.gap_hi / 1000.0, t.moved / n * 1000.0, t.turned / n * am, t.shake_move / s * 1000.0,
+                    t.shake_up / s * 1000.0, t.shake_move_most * 1000.0, t.shake_turn[0] / s * am,
+                    t.shake_turn[1] / s * am, t.shake_turn[2] / s * am, t.shake_turn_most * am);
+        t.frames = t.shakes = 0;
+        t.gap_lo = t.gap_hi = 0;
+        t.moved = t.turned = t.shake_move = t.shake_up = 0.0;
+        t.shake_turn[0] = t.shake_turn[1] = t.shake_turn[2] = 0.0;
+        t.shake_move_most = t.shake_turn_most = 0.0f;
+    }
+    std::fflush(stdout);
+    jitter_since_us = now;
+}
+
+// A camera's world matrix (rows: its x, y and z axes, then its place) as the game set it up for a frame.
+void JitterNote(const char* name, const void* id, const float* world, float p00 = 0.0f, float p11 = 0.0f) {
+    if (!settings.jitter_log) {
+        return;
+    }
+    const long long now = NowUs();
+    std::scoped_lock lock{jitter_mutex};
+    if (!jitter_since_us) {
+        jitter_since_us = now;
+    }
+    JitterTrack* track = nullptr;
+    JitterTrack* spare = nullptr;
+    for (JitterTrack& t : jitter_tracks) {
+        if (!t.name) {
+            spare = spare ? spare : &t;
+            continue;
+        }
+        if (t.name != name || t.id != id || std::fabs(t.p00 - p00) > 1e-3f || std::fabs(t.p11 - p11) > 1e-3f) {
+            continue;
+        }
+        const float dx = world[12] - t.world[12], dy = world[13] - t.world[13], dz = world[14] - t.world[14];
+        if (id || dx * dx + dy * dy + dz * dz < 0.5f * 0.5f) {
+            track = &t;
+            break;
+        }
+    }
+    if (!track && !spare) {
+        // the oldest one goes (cameras that are gone)
+        spare = &jitter_tracks[0];
+        for (JitterTrack& t : jitter_tracks) spare = t.last_us < spare->last_us ? &t : spare;
+    }
+    if (!track) {
+        *spare = {};
+        spare->name = name, spare->id = id, spare->p00 = p00, spare->p11 = p11;
+        std::memcpy(spare->world, world, sizeof spare->world);
+        spare->last_us = now, spare->run = 1;
+        return;
+    }
+    JitterTrack& t = *track;
+    const long long gap = now - t.last_us;
+    if (gap < 1500 && std::memcmp(t.world, world, sizeof t.world) == 0) {
+        return; // the same frame's camera again
+    }
+    if (gap > 250000) {
+        t.run = 0; // a pause: it starts again
+    }
+    float move[3], turn[3];
+    for (int k = 0; k < 3; ++k) move[k] = world[12 + k] - t.world[12 + k];
+    // The turn since the last frame about the camera's own axes: d[i][j] = new axis i . old axis j.
+    float d[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            d[i][j] = world[i * 4] * t.world[j * 4] + world[i * 4 + 1] * t.world[j * 4 + 1] +
+                      world[i * 4 + 2] * t.world[j * 4 + 2];
+    turn[0] = 0.5f * (d[1][2] - d[2][1]), turn[1] = 0.5f * (d[2][0] - d[0][2]), turn[2] = 0.5f * (d[0][1] - d[1][0]);
+    if (t.run >= 1) {
+        ++t.frames;
+        t.gap_lo = t.gap_lo ? std::min(t.gap_lo, gap) : gap;
+        t.gap_hi = std::max(t.gap_hi, gap);
+        t.moved += std::sqrt(move[0] * move[0] + move[1] * move[1] + move[2] * move[2]);
+        t.turned += std::sqrt(turn[0] * turn[0] + turn[1] * turn[1] + turn[2] * turn[2]);
+    }
+    if (t.run >= 2) {
+        float m[3], r[3];
+        for (int k = 0; k < 3; ++k) m[k] = move[k] - t.move[k], r[k] = turn[k] - t.turn[k];
+        const float ml = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+        const float up = std::fabs(m[0] * world[4] + m[1] * world[5] + m[2] * world[6]);
+        const float rl = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+        ++t.shakes;
+        t.shake_move += ml, t.shake_up += up;
+        for (int k = 0; k < 3; ++k) t.shake_turn[k] += std::fabs(r[k]);
+        t.shake_move_most = std::max(t.shake_move_most, ml);
+        t.shake_turn_most = std::max(t.shake_turn_most, rl);
+    }
+    std::memcpy(t.move, move, sizeof move);
+    std::memcpy(t.turn, turn, sizeof turn);
+    std::memcpy(t.world, world, sizeof t.world);
+    t.last_us = now;
+    ++t.run;
+    if (now - jitter_since_us > 3000000) {
+        JitterReport(now);
+    }
+}
+
 extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     if (drawn_camera.load() && drawn_camera.load() != camera && NowUs() - drawn_camera_us.load() < 1000000) {
         return; // another car's camera, not drawn
@@ -835,6 +1067,12 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
     std::unique_lock state_lock{camera_state_mutex};
     CameraState& state = StateOf(camera);
     state.last_us = NowUs();
+    if (settings.jitter_log) {
+        JitterNote("car body", camera, camera + 0x2d0 / 4);
+        if (std::memcmp(state.written, camera + 0x270 / 4, sizeof state.written) != 0) {
+            JitterNote("game's head", camera, camera + 0x270 / 4); // before the headset's turn goes in
+        }
+    }
     if (settings.diag) {
         DiagHeadPoint(camera, state);
     }
@@ -910,6 +1148,7 @@ extern "C" __attribute__((sysv_abi)) void bbvr_head_hook(float* camera) {
         const float side = eye == 0 ? settings.ipd * 0.5f : -settings.ipd * 0.5f;
         for (int k = 0; k < 3; ++k) cam[12 + k] += side * cam[k];
     }
+    std::memcpy(state.written, cam, sizeof state.written);
     state_lock.unlock();
     std::scoped_lock lock{head_mutex};
     HookCall& call = head_history[head_next++ % 64];
@@ -992,11 +1231,20 @@ std::atomic<uint32_t> camera_copy_next{0};
 // of view, and the layer states it.
 std::mutex runtime_eye_mutex;
 XrFovf runtime_eye_fov[2]{};   // drawn with: SymmetricFov of the runtime's
-XrFovf runtime_eye_exact[2]{}; // the runtime's own
+XrFovf runtime_eye_exact[2]{}; // the runtime's own (with the edge margin)
+XrFovf runtime_eye_raw[2]{};   // the runtime's own, as it gives them
 std::atomic<bool> runtime_eye_known{false};
 std::atomic<float> game_vfov{90.0f};         // the head camera's vertical angle the game is asked for (the FOV float)
 std::atomic<long long> eye_fov_us{0};        // the scene hook last drew the head camera with the runtime's eyes
 std::atomic<float> eye_x{0}, eye_y{0}, eye_z22{0}, eye_z32{0}; // that projection's terms
+
+// An eye's field of view with the edge margin (edge_margin, edge_margin_v) on each side.
+XrFovf WidenFov(XrFovf f) {
+    const float m = settings.edge_margin * Pi / 180.0f, mv = settings.edge_margin_v * Pi / 180.0f;
+    f.angleLeft = std::max(f.angleLeft - m, -1.5f), f.angleRight = std::min(f.angleRight + m, 1.5f);
+    f.angleUp = std::min(f.angleUp + mv, 1.5f), f.angleDown = std::max(f.angleDown - mv, -1.5f);
+    return f;
+}
 
 // An eye's field of view made symmetric, each side as wide as its wider one: the game's shaders take the projection's
 // centre for the picture's (an off-centre one lost the power lines in the left eye, and things rebuilt from depth were
@@ -1147,6 +1395,9 @@ extern "C" __attribute__((ms_abi)) uint64_t bbvr_camera_cull_hook(uint64_t block
 
 extern "C" __attribute__((ms_abi)) uint64_t bbvr_scene_camera_hook(uint64_t camera) {
     const float* proj = reinterpret_cast<const float*>(camera) + 16;
+    if (settings.jitter_log && proj[11] == -1.0f && proj[0] > 0.0f && proj[5] > 0.0f) {
+        JitterNote("scene camera", nullptr, reinterpret_cast<const float*>(camera), proj[0], proj[5]);
+    }
     const float aspect = GameAspect(), render = RenderAspect();
     const bool own_fov = settings.runtime_fov && runtime_eye_known.load();
     if (!aspect || !render || (!own_fov && std::fabs(render / aspect - 1.0f) < 0.01f)) {
@@ -1463,6 +1714,9 @@ struct Gpu {
     VkDescriptorSetLayout reproject_set = VK_NULL_HANDLE;
     VkPipelineLayout reproject_layout = VK_NULL_HANDLE;
     VkPipeline reproject_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSetLayout resample_set = VK_NULL_HANDLE;
+    VkPipelineLayout resample_layout = VK_NULL_HANDLE;
+    VkPipeline resample_pipeline = VK_NULL_HANDLE;
     std::mutex mutex;              // the pictures: made on the renderer's thread, read on the present thread
     std::vector<GpuImage> retired; // replaced by a resize (rare), kept: the GPU may still read them
     // The display buffer of each presenter frame, keyed by the frame's image, with the frame's camera.
@@ -1476,6 +1730,8 @@ struct Gpu {
         GpuImage right;   // mode 2: the right eye
         bool reprojected = false;
         bool both = false; // mode 2: both eyes made (other, right)
+        bool resampled = false; // multiview: other and right at the runtime's angles (`fov`) and pixels per degree
+        XrFovf fov[2]{};
         uint32_t width = 0, height = 0;
         bool valid = false;
         unsigned last_use = 0;
@@ -1523,6 +1779,15 @@ CopyPush PicturePush(float width, float height, bool encode) {
     return {{width, height}, encode ? 1.0f : 0.0f, float(picture.picture_gamma.load()) / 220.0f,
             float(picture.picture_contrast.load()) / 100.0f, float(picture.picture_brightness.load()) / 400.0f};
 }
+
+struct ResamplePush {
+    float size[2];
+    float scene_size[2];
+    float scale[2];  // scene pixels per pixel
+    float offset[2]; // the scene position of the left top corner
+    float encode;
+    float power, contrast, brightness;
+};
 
 struct WindowPush {
     float size[2];
@@ -1581,6 +1846,8 @@ void GpuInit(VkPhysicalDevice physical, VkDevice device) {
     MakeCompute(VR_WINDOW_COMP, 2, 1, gpu.window_set, gpu.window_layout, gpu.window_pipeline, sizeof(WindowPush));
     MakeCompute(VR_REPROJECT_COMP, 1, 4, gpu.reproject_set, gpu.reproject_layout, gpu.reproject_pipeline,
                 sizeof(ReprojectPush));
+    MakeCompute(VR_RESAMPLE_COMP, 1, 1, gpu.resample_set, gpu.resample_layout, gpu.resample_pipeline,
+                sizeof(ResamplePush));
     gpu.ready = gpu.copy_pipeline != VK_NULL_HANDLE;
 }
 
@@ -1792,6 +2059,8 @@ struct PictureDump {
     VkDeviceSize size = 0;
     std::string path;
     int wait = 0;
+    uint32_t width = 0, height = 0;
+    bool png = false; // written as a PNG (the RGBA8 holds sRGB values), else raw
 };
 std::vector<PictureDump> picture_dumps;
 
@@ -1858,6 +2127,49 @@ void ReadKeys() {
         std::fflush(stdout);
     }
     was_capture = capture_down;
+    // The ` key: the HUD's layer off and on (to compare the scene alone, one layer, as most games send it)
+    static bool was_hud = false;
+    const bool hud_down = BbVr::Active() && (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+    if (hud_down && !was_hud) {
+        const bool off = !hud_layer_off.load();
+        hud_layer_off = off;
+        std::printf("VR: the HUD's layer %s (the ` key)\n", off ? "off: the scene alone goes to the runtime" : "on");
+        std::fflush(stdout);
+    }
+    was_hud = hud_down;
+    // The . key: the next frame's two eyes as the runtime gets them, saved as PNGs (to compare with the headset's view)
+    static bool was_shot = false;
+    const bool shot_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0;
+    if (shot_down && !was_shot) {
+        headset_shot = kHeadsetSeries;
+        std::printf("VR: headset shot asked for (the . key)\n");
+        std::fflush(stdout);
+    }
+    was_shot = shot_down;
+    // The , key: half the headset's rate off and on (to compare)
+    static bool was_half = false;
+    const bool half_down = BbVr::Active() && (GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0;
+    if (half_down && !was_half) {
+        const int key = half_rate_key.load();
+        const bool on = !(key < 0 ? settings.half_rate : key != 0);
+        half_rate_key = on ? 1 : 0;
+        std::printf("VR: the game's frame limit %u FPS, %s the headset's %u Hz (the , key)\n",
+                    on ? BbVr::HeadsetHz() / 2 : BbVr::HeadsetHz(), on ? "half" : "all of", BbVr::HeadsetHz());
+        std::fflush(stdout);
+    }
+    was_half = half_down;
+    // The / key: the resample to the runtime's angles off and on (to compare)
+    static bool was_resample = false;
+    const bool resample_down = settings.resample && Vulkan::Vr::Multiview::Requested() &&
+                               (GetAsyncKeyState(VK_OEM_2) & 0x8000) != 0;
+    if (resample_down && !was_resample) {
+        const bool off = !resample_key_off.load();
+        resample_key_off = off;
+        std::printf("VR: %s (the / key)\n", off ? "the runtime stretches the drawn picture itself"
+                                                 : "each eye resampled to the runtime's own angles and pixels");
+        std::fflush(stdout);
+    }
+    was_resample = resample_down;
     // The ' key: foveated rendering off and on (to compare)
     static bool was_ffr = false;
     const bool ffr_pressed = settings.ffr && (GetAsyncKeyState(VK_OEM_7) & 0x8000) != 0;
@@ -1949,9 +2261,19 @@ uint32_t HeadsetHz() {
     return Active() ? headset_hz.load(std::memory_order_relaxed) : 0;
 }
 
-void AppendInstanceExtensions(std::vector<const char*>& extensions) {
-    if (!Wanted() || st.instance || st.failed) {
-        return;
+uint32_t FrameLimitHz() {
+    const uint32_t hz = HeadsetHz();
+    const int key = half_rate_key.load();
+    return (key < 0 ? settings.half_rate : key != 0) ? hz / 2 : hz;
+}
+
+// OpenXR's instance and the headset, once (the Auto headset picture may start it before Vulkan).
+bool StartOnce() {
+    if (st.instance) {
+        return true;
+    }
+    if (!Wanted() || st.failed) {
+        return false;
     }
     ReadSettings();
     ReadSeat();
@@ -1965,8 +2287,16 @@ void AppendInstanceExtensions(std::vector<const char*>& extensions) {
     if (!Start() || !xr.GetVulkanInstanceExtensionsKHR) {
         st.failed = true;
         std::printf("VR: off\n");
+        return false;
+    }
+    return true;
+}
+
+void AppendInstanceExtensions(std::vector<const char*>& extensions) {
+    if (!Wanted() || st.failed || st.extensions_given || !StartOnce()) {
         return;
     }
+    st.extensions_given = true;
     uint32_t size = 0;
     xr.GetVulkanInstanceExtensionsKHR(st.instance, st.system, 0, &size, nullptr);
     instance_extension_storage.assign(size, '\0');
@@ -1994,7 +2324,7 @@ void AppendDeviceExtensions(VkInstance instance, VkPhysicalDevice physical_devic
 
 void OnDevice(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, uint32_t queue_family,
               uint32_t queue_index) {
-    if (Wanted() && settings.diag) {
+    if (Wanted() && (settings.diag || settings.jitter_log)) {
         InstallHeadHook(); // without a headset too: the hook only logs then
     }
     if (!st.instance || st.failed) {
@@ -2318,6 +2648,10 @@ bool ExposureLog() {
     return Active() && settings.exposure_log;
 }
 
+bool JitterLog() {
+    return Wanted() && settings.jitter_log;
+}
+
 float HeadPitch() {
     const XrQuaternionf q = st.frame_pose.orientation;
     // the head's forward (-z) turned by q: its y is the sine of the pitch
@@ -2587,6 +2921,8 @@ bool Reproject(VkCommandBuffer cmd, Gpu::FramePicture& entry, GpuImage& depth, G
     return true;
 }
 
+void QueueDump(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height, const std::string& path, bool png);
+
 // DLSS capture: the files of earlier dumps whose copies are done; a copy of this picture (in TRANSFER_SRC) if asked.
 void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, uint32_t height, int eye) {
     for (auto it = picture_dumps.begin(); it != picture_dumps.end();) {
@@ -2596,10 +2932,23 @@ void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, 
         }
         void* data = nullptr;
         if (VKF.vkMapMemory(gpu.device, it->memory, 0, it->size, 0, &data) == VK_SUCCESS) {
+            size_t png_size = 0;
+            void* png = it->png ? tdefl_write_image_to_png_file_in_memory_ex(data, int(it->width), int(it->height), 4,
+                                                                             &png_size, 3, MZ_FALSE)
+                                : nullptr;
             if (FILE* f = std::fopen(it->path.c_str(), "wb")) {
-                std::fwrite(data, 1, size_t(it->size), f);
+                if (png) {
+                    std::fwrite(png, 1, png_size, f);
+                } else {
+                    std::fwrite(data, 1, size_t(it->size), f);
+                }
                 std::fclose(f);
+                if (it->png) {
+                    std::printf("VR: saved %s\n", it->path.c_str());
+                    std::fflush(stdout);
+                }
             }
+            mz_free(png);
             VKF.vkUnmapMemory(gpu.device, it->memory);
         }
         VKF.vkDestroyBuffer(gpu.device, it->buffer, nullptr);
@@ -2614,12 +2963,19 @@ void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, 
     if (path.empty() || !cmd || !picture.image) {
         return;
     }
-    PictureDump dump;
-    dump.size = VkDeviceSize(width) * height * 4;
     char suffix[64];
     std::snprintf(suffix, sizeof suffix, "_eye%d_%ux%u_rgba8.raw", eye, width, height);
-    dump.path = path + suffix;
+    QueueDump(cmd, picture.image, width, height, path + suffix, false);
+}
+
+// A copy of `image` (RGBA8, TRANSFER_SRC_OPTIMAL) written to `path` a few frames later (DumpPictures).
+void QueueDump(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height, const std::string& path, bool png) {
+    PictureDump dump;
+    dump.size = VkDeviceSize(width) * height * 4;
+    dump.path = path;
     dump.wait = 8;
+    dump.width = width, dump.height = height;
+    dump.png = png;
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = dump.size;
     bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -2648,7 +3004,7 @@ void DumpPictures(VkCommandBuffer cmd, const GpuImage& picture, uint32_t width, 
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {width, height, 1};
-    VKF.vkCmdCopyImageToBuffer(cmd, picture.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dump.buffer, 1, &region);
+    VKF.vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dump.buffer, 1, &region);
     picture_dumps.push_back(std::move(dump));
 }
 
@@ -2708,6 +3064,98 @@ VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView s
     if (window_width) *window_width = width;
     if (window_height) *window_height = band;
     return window_view;
+}
+
+// Multiview, resample: `eye`'s picture at the runtime's own angles for it (with the edge margin; `fov` gets them) and
+// at the pixels per degree of the size it asks for, from its scene (`scene_view`, `width` x `height`, drawn with
+// SymmetricFov). RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL, as ScenePicture's.
+bool ResampledPicture(VkCommandBuffer cmd, VkImageView scene_view, GpuImage& out, bool encode, uint32_t width,
+                      uint32_t height, int eye, XrFovf& fov) {
+    if (!settings.resample || resample_key_off.load() || !gpu.resample_pipeline || !settings.runtime_fov ||
+        !runtime_eye_known.load() || !st.recommended_width || !st.recommended_height) {
+        return false;
+    }
+    XrFovf drawn, raw;
+    {
+        std::scoped_lock lock{runtime_eye_mutex};
+        drawn = runtime_eye_fov[eye], fov = runtime_eye_exact[eye], raw = runtime_eye_raw[eye];
+    }
+    // tangents: the scene from -sx to sx (left to right) and sy to -sy (top to bottom)
+    const float sx = std::tan(drawn.angleRight), sy = std::tan(drawn.angleUp);
+    const float l = std::tan(fov.angleLeft), r = std::tan(fov.angleRight);
+    const float u = std::tan(fov.angleUp), d = std::tan(fov.angleDown);
+    const float raw_x = std::tan(raw.angleRight) - std::tan(raw.angleLeft);
+    const float raw_y = std::tan(raw.angleUp) - std::tan(raw.angleDown);
+    if (sx <= 0.0f || sy <= 0.0f || r <= l || u <= d || raw_x <= 0.0f || raw_y <= 0.0f) {
+        return false;
+    }
+    // the runtime's pixels per tangent, over the angles shown (wider with the edge margin)
+    uint32_t w = uint32_t(std::lround(float(st.recommended_width) * (r - l) / raw_x));
+    uint32_t h = uint32_t(std::lround(float(st.recommended_height) * (u - d) / raw_y));
+    if (w < 64 || h < 64 || w > 16384 || h > 16384) {
+        return false;
+    }
+    const float shown_w = float(width) * (r - l) / (2.0f * sx), shown_h = float(height) * (u - d) / (2.0f * sy);
+    float scale_x = shown_w / float(w), scale_y = shown_h / float(h);
+    float offset_x = (l + sx) / (2.0f * sx) * float(width), offset_y = (sy - u) / (2.0f * sy) * float(height);
+    // drawn at the runtime's pixels per degree (the Auto headset picture): its own pixels as they are, at their angles
+    const bool whole = std::fabs(scale_x - 1.0f) < 0.01f && std::fabs(scale_y - 1.0f) < 0.01f;
+    if (whole) {
+        const int32_t x0 = std::clamp(int32_t(std::lround(offset_x)), 0, int32_t(width) - 64);
+        const int32_t y0 = std::clamp(int32_t(std::lround(offset_y)), 0, int32_t(height) - 64);
+        w = std::min(uint32_t(std::lround(shown_w)), width - uint32_t(x0));
+        h = std::min(uint32_t(std::lround(shown_h)), height - uint32_t(y0));
+        fov.angleLeft = std::atan(-sx + 2.0f * sx * float(x0) / float(width));
+        fov.angleRight = std::atan(-sx + 2.0f * sx * float(x0 + int32_t(w)) / float(width));
+        fov.angleUp = std::atan(sy - 2.0f * sy * float(y0) / float(height));
+        fov.angleDown = std::atan(sy - 2.0f * sy * float(y0 + int32_t(h)) / float(height));
+        scale_x = scale_y = 1.0f;
+        offset_x = float(x0), offset_y = float(y0);
+    }
+    if (!MakeImage(out, w, h, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+        return false;
+    }
+    static uint32_t logged[4]{};
+    if (logged[0] != w || logged[1] != h || logged[2] != width || logged[3] != height) {
+        logged[0] = w, logged[1] = h, logged[2] = width, logged[3] = height;
+        if (whole) {
+            std::printf("VR: each eye goes to the runtime at %ux%u, pixel for pixel (the drawn %ux%u has the runtime's "
+                        "own pixels per degree; resample, the / key)\n",
+                        w, h, width, height);
+        } else {
+            std::printf("VR: each eye goes to the runtime at %ux%u, its own pixels per degree (the drawn %ux%u has "
+                        "%.0fx%.0f of them: %s %.2fx across, %.2fx down; resample, the / key)\n",
+                        w, h, width, height, shown_w, shown_h, shown_w >= float(w) ? "supersampled" : "stretched",
+                        shown_w / float(w), shown_h / float(h));
+        }
+        std::fflush(stdout);
+    }
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT);
+    VkDescriptorImageInfo infos[2] = {{VK_NULL_HANDLE, scene_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                      {VK_NULL_HANDLE, out.view, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet writes[2]{};
+    for (uint32_t i = 0; i < 2; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i == 1 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[i].pImageInfo = &infos[i];
+    }
+    ResamplePush push{};
+    push.size[0] = float(w), push.size[1] = float(h);
+    push.scene_size[0] = float(width), push.scene_size[1] = float(height);
+    push.scale[0] = scale_x, push.scale[1] = scale_y;
+    push.offset[0] = offset_x, push.offset[1] = offset_y;
+    push.encode = encode ? 1.0f : 0.0f;
+    push.power = 1.0f, push.contrast = 1.0f, push.brightness = 0.0f;
+    VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.resample_pipeline);
+    VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.resample_layout, 0, 2, writes);
+    VKF.vkCmdPushConstants(cmd, gpu.resample_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+    VKF.vkCmdDispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+    Barrier(cmd, out.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT);
+    return true;
 }
 
 // Multiview: an eye's picture (RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL) from its scene (`scene_view`, sampled).
@@ -2775,6 +3223,7 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
     entry->split = false;
     entry->reprojected = false;
     entry->both = false;
+    entry->resampled = false;
     if (!MakeImage(entry->picture, display_width, display_height,
                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
         return VK_NULL_HANDLE;
@@ -2833,9 +3282,42 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                 gpu.scenes_right[scene_index].width == display_width) {
                 // multiview: the left eye's scene (layer 0) and the right eye's (layer 1), both drawn this frame
                 const VkImageView right_view = SampleView(gpu.scenes_right[scene_index], display_format);
-                entry->both = right_view && ScenePicture(cmd, scene_view, entry->other, encode, display_width,
-                                                         display_height) &&
-                              ScenePicture(cmd, right_view, entry->right, encode, display_width, display_height);
+                entry->resampled =
+                    right_view &&
+                    ResampledPicture(cmd, scene_view, entry->other, encode, display_width, display_height, 0,
+                                     entry->fov[0]) &&
+                    ResampledPicture(cmd, right_view, entry->right, encode, display_width, display_height, 1,
+                                     entry->fov[1]);
+                entry->both = right_view && (entry->resampled ||
+                                             (ScenePicture(cmd, scene_view, entry->other, encode, display_width,
+                                                           display_height) &&
+                                              ScenePicture(cmd, right_view, entry->right, encode, display_width,
+                                                           display_height)));
+                if (const int left = headset_shot.load(); entry->both && left > 0) {
+                    // the . key: both eyes exactly as the runtime gets them (BB_GPU_USER_DIR/headset_shots), then the
+                    // left eye of the next frames raw (kHeadsetSeries in all: what moves from frame to frame)
+                    headset_shot = left - 1;
+                    const char* user = std::getenv("BB_GPU_USER_DIR");
+                    const std::string dir = std::string(user && *user ? user : ".") + "/headset_shots";
+                    static char stamp[16];
+                    const int k = kHeadsetSeries - left;
+                    if (k == 0) {
+                        CreateDirectoryA(dir.c_str(), nullptr);
+                        SYSTEMTIME t;
+                        GetLocalTime(&t);
+                        std::snprintf(stamp, sizeof stamp, "%02u%02u%02u", t.wHour, t.wMinute, t.wSecond);
+                    }
+                    char name[96];
+                    for (int e = 0; e < (k == 0 ? 2 : 0); ++e) {
+                        const GpuImage& img = e == 0 ? entry->other : entry->right;
+                        std::snprintf(name, sizeof name, "/%s_%s_%ux%u.png", stamp, e == 0 ? "left" : "right",
+                                      img.width, img.height);
+                        QueueDump(cmd, img.image, img.width, img.height, dir + name, true);
+                    }
+                    std::snprintf(name, sizeof name, "/%s_seq%d_left_%ux%u_rgba8.raw", stamp, k, entry->other.width,
+                                  entry->other.height);
+                    QueueDump(cmd, entry->other.image, entry->other.width, entry->other.height, dir + name, false);
+                }
                 if (entry->both && settings.window_eye == 1) {
                     window_scene = right_view; // key 9: the right eye on the monitor
                 }
@@ -2984,15 +3466,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             {
                 std::scoped_lock lock{runtime_eye_mutex};
                 // edge_margin: wider on every side (drawn and stated)
-                const float m = settings.edge_margin * Pi / 180.0f, mv = settings.edge_margin_v * Pi / 180.0f;
-                const auto widen = [m, mv](XrFovf f) {
-                    f.angleLeft = std::max(f.angleLeft - m, -1.5f), f.angleRight = std::min(f.angleRight + m, 1.5f);
-                    f.angleUp = std::min(f.angleUp + mv, 1.5f), f.angleDown = std::max(f.angleDown - mv, -1.5f);
-                    return f;
-                };
+                const auto widen = WidenFov;
                 runtime_eye_fov[0] = SymmetricFov(widen(located[0].fov));
                 runtime_eye_fov[1] = SymmetricFov(widen(located[1].fov));
                 runtime_eye_exact[0] = widen(located[0].fov), runtime_eye_exact[1] = widen(located[1].fov);
+                runtime_eye_raw[0] = located[0].fov, runtime_eye_raw[1] = located[1].fov;
             }
             runtime_eye_known = located[0].fov.angleRight > located[0].fov.angleLeft;
             const XrVector3f a = located[0].pose.position, b = located[1].pose.position;
@@ -3006,6 +3484,8 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
             }
             if (changed) {
                 std::copy(now, now + 6, st.logged_eyes);
+                const XrFovf seen[2] = {located[0].fov, located[1].fov};
+                SaveEyes(seen); // for the next start's Auto headset picture
                 const float d = 180.0f / Pi;
                 std::printf("VR: the runtime's eyes: left %.1f/%.1f/%.1f/%.1f, right %.1f/%.1f/%.1f/%.1f degrees "
                             "(left/right/up/down), %.1f mm apart; our picture: %.1f degrees each side, eyes %.1f mm "
@@ -3079,6 +3559,12 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         }
     }
     const int eye = settings.afr && cockpit && made && made->tagged ? made->eye : -1;
+    // resampled eyes: the swapchain at their size
+    const bool resampled = cockpit && made && made->tagged && made->both && made->resampled &&
+                           made->other.width == made->right.width && made->other.height == made->right.height;
+    if (resampled) {
+        width = made->other.width, height = made->other.height;
+    }
     if (!st.frame_state.shouldRender ||
         !EnsureSwapchain(st.swapchain, st.swapchain_width, st.swapchain_height, st.images,
                          settings.afr ? width * 2 : width, height)) {
@@ -3133,6 +3619,10 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     st.afr_frame = settings.afr && cockpit &&
                    (both || ((gpu.eye_valid[0] || gpu.eye_valid[1]) && reproject_mode.load() != 2));
     st.reproject_frame = st.afr_frame && ((eye >= 0 && made->reprojected && made->other.width == width) || both);
+    st.resampled_frame = both && resampled;
+    if (st.resampled_frame) {
+        st.resampled_fov[0] = made->fov[0], st.resampled_fov[1] = made->fov[1];
+    }
     if (both) {
         // both eyes made from this frame, drawn between them
         Copy(cmd, made->other.image, target, width, height, 0);
@@ -3306,6 +3796,11 @@ void AfterSubmit() {
                     }
                 }
             }
+            if (cockpit && st.frame_tagged && st.reproject_frame && st.resampled_frame) {
+                // already at the runtime's own angles, whole
+                v.fov = st.resampled_fov[e];
+                v.subImage.imageRect = {{int32_t(e * st.width), 0}, {int32_t(st.width), int32_t(st.height)}};
+            }
             v.subImage.swapchain = st.swapchain;
         }
         layer.space = st.local;
@@ -3327,7 +3822,7 @@ void AfterSubmit() {
             screen.size = {2.0f * settings.screen_distance * tan_x, 2.0f * settings.screen_distance * tan_y};
             layers[0] = reinterpret_cast<XrCompositionLayerBaseHeader*>(&screen);
         }
-        if (cockpit && st.hud_swapchain && NowUs() - st.hud_us < 500000) {
+        if (cockpit && st.hud_swapchain && NowUs() - st.hud_us < 500000 && !hud_layer_off.load()) {
             // the HUD: a panel fixed ahead of the seat (the recentred head), level, facing the player; its last
             // picture stays up through a frame without one
             const float aspect = GameAspect() ? GameAspect() : 16.0f / 9.0f;
@@ -3349,3 +3844,42 @@ void AfterSubmit() {
 }
 
 } // namespace BbVr
+
+// The Auto headset picture (bbgpu.h): the drawn picture is SymmetricFov of each eye with the edge margin, of which the
+// runtime shows its own angles; its pixels per tangent there are the recommended size's over the runtime's own angles.
+extern "C" int bbgpu_vr_auto_size(uint32_t* width, uint32_t* height) {
+    const char* want = std::getenv("BB_VR_AUTO_SIZE");
+    if (!want || std::atoi(want) == 0 || !BbVr::StartOnce() || !st.recommended_width ||
+        !st.recommended_height) {
+        return 0;
+    }
+    float w = float(st.recommended_width), h = float(st.recommended_height);
+    XrFovf eyes[2]{};
+    const bool known = ReadEyes(eyes);
+    if (known) {
+        for (const XrFovf& raw : eyes) {
+            const XrFovf drawn = SymmetricFov(WidenFov(raw));
+            const float raw_x = std::tan(raw.angleRight) - std::tan(raw.angleLeft);
+            const float raw_y = std::tan(raw.angleUp) - std::tan(raw.angleDown);
+            if (raw_x > 0.0f && raw_y > 0.0f) {
+                w = std::max(w, float(st.recommended_width) * 2.0f * std::tan(drawn.angleRight) / raw_x);
+                h = std::max(h, float(st.recommended_height) * 2.0f * std::tan(drawn.angleUp) / raw_y);
+            }
+        }
+    }
+    // the game's sizes are multiples of 8
+    *width = std::clamp((uint32_t(std::ceil(w)) + 7u) / 8u * 8u, 640u, 16384u);
+    *height = std::clamp((uint32_t(std::ceil(h)) + 7u) / 8u * 8u, 640u, 8640u);
+    if (known) {
+        std::printf("VR: Auto headset picture: %ux%u per eye, so that the runtime's %ux%u are drawn pixel for pixel "
+                    "(the eyes of %s from vr_eyes.ini)\n",
+                    *width, *height, st.recommended_width, st.recommended_height,
+                    st.system_name.c_str());
+    } else {
+        std::printf("VR: Auto headset picture: %ux%u per eye, the runtime's own size: this headset's eyes are not known "
+                    "yet; from the next start the game draws the exact size (vr_eyes.ini)\n",
+                    *width, *height);
+    }
+    std::fflush(stdout);
+    return 1;
+}

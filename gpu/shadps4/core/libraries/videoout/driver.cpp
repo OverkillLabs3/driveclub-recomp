@@ -1003,7 +1003,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
         u32 effective_limit = BbIntroPacing::EffectiveLimit(configured_limit);
         // VR: never faster than the headset. Frames made ahead of it wait in bursts and the world moves unevenly in
         // them, though the FPS looks right.
-        if (const u32 headset = BbVr::HeadsetHz(); headset && effective_limit > headset) {
+        if (const u32 headset = BbVr::FrameLimitHz(); headset && effective_limit > headset) {
             effective_limit = headset;
         }
         if (effective_limit != frame_limit) {

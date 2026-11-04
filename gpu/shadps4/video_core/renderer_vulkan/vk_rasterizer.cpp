@@ -85,6 +85,45 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
     if (slot == 1) {
         BbVr::NoteProjection(f[48], f[48 + 5], f[48 + 10], f[48 + 14]); // VR: tells the driver's head camera apart
     }
+    if (slot == 1 && BbVr::JitterLog()) {
+        // every 3 s: the projections of each shape (x and y scale) and the off-centre terms they came with (row
+        // vectors: [56] and [57] shift the picture; a TAA jitter gives many values a fraction of a pixel apart)
+        struct Shape {
+            float x = 0, y = 0;
+            int calls = 0;
+            std::vector<std::pair<float, float>> shifts;
+        };
+        static std::vector<Shape> shapes;
+        static auto since = std::chrono::steady_clock::now();
+        Shape* shape = nullptr;
+        for (auto& sh : shapes) {
+            if (std::fabs(sh.x - f[48]) < 1e-4f && std::fabs(sh.y - f[53]) < 1e-4f) shape = &sh;
+        }
+        if (!shape && shapes.size() < 16) {
+            shapes.push_back({f[48], f[53]});
+            shape = &shapes.back();
+        }
+        if (shape) {
+            ++shape->calls;
+            const std::pair<float, float> shift{f[56], f[57]};
+            if (shape->shifts.size() < 64 &&
+                std::find(shape->shifts.begin(), shape->shifts.end(), shift) == shape->shifts.end()) {
+                shape->shifts.push_back(shift);
+            }
+        }
+        if (std::chrono::steady_clock::now() - since > std::chrono::seconds(3)) {
+            since = std::chrono::steady_clock::now();
+            for (const auto& sh : shapes) {
+                float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
+                for (const auto& [a, b] : sh.shifts) lx = std::min(lx, a), hx = std::max(hx, a), ly = std::min(ly, b), hy = std::max(hy, b);
+                std::printf("VR jitter: projection %.4f x %.4f (%.0f deg high), %d calls, %zu shifts: x %.6f..%.6f, y "
+                            "%.6f..%.6f\n",
+                            sh.x, sh.y, 2.0 * std::atan(1.0 / sh.y) * 57.2958, sh.calls, sh.shifts.size(), lx, hx, ly, hy);
+            }
+            std::fflush(stdout);
+            shapes.clear();
+        }
+    }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
 // Validate the motion-blur pass independently of resolution / shader permutation.

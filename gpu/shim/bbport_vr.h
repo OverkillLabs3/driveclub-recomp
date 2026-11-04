@@ -24,6 +24,9 @@ bool Wanted();
 bool Active();
 /// The headset's refresh rate (from its frame timing), 0 before its first frame or without a headset.
 uint32_t HeadsetHz();
+/// The game's frame limit in VR: the headset's rate, or half of it (vr.ini half_rate = 1, the , key): each frame then
+/// shows for exactly two of the headset's refreshes instead of one or two in turn. 0 without a headset.
+uint32_t FrameLimitHz();
 
 /// Before vkCreateInstance: starts OpenXR and adds the instance extensions its runtime needs.
 void AppendInstanceExtensions(std::vector<const char*>& extensions);
@@ -79,6 +82,10 @@ bool GameTaaOff();
 bool FfrWanted();
 /// vr.ini exposure_log = 1 in VR: the auto-exposure value goes to the log (development).
 bool ExposureLog();
+/// vr.ini jitter_log = 1 (without a headset too): the game's anti-aliasing constants that move by a fraction of a
+/// pixel from frame to frame (a TAA jitter) go to the log, and how much each of the game's cameras (the car body, the
+/// game's head, the mirrors) shakes from frame to frame.
+bool JitterLog();
 /// The game's auto-exposure value as it reads it (average luminance, exposure; their product is kept): in VR it adapts
 /// over vr.ini exposure_time seconds, holds while the head looks up or down, and takes exposure_bias.
 void FilterExposure(float* value);
