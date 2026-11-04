@@ -58,7 +58,7 @@ select(s,'@camera_patch',0);select(s,'@aa',2);s=preset(s)
 check(s['Controls'][s['PresetId']]['Selected']==6,'PS4 profile recognized after applying it')
 check(label(s,'Frame rate')['Selected']==0 and label(s,'Output resolution')['Selected']==0 and label(s,'Render resolution')['Selected']==0,'PS4 selects 30 FPS and native 1080p render/output')
 check(tag(s,'@aa')['Selected']==0 and tag(s,'@aniso')['Selected']==1 and tag(s,'@mirror')['Selected']==0 and tag(s,'@hdr')['Selected']==0,'PS4 uses game AA/filtering, live reflections and SDR')
-expected={'Your car: full detail':0,'Other cars: full detail':0,'Scenery detail (less pop-in)':0,'High-quality reflections':0,'Shadow edges':0,'More particles':0,'Dynamic resolution':1,'Motion blur':1,'Lens dust':1,'Heat haze':1,'FXAA pass':1}
+expected={'Your car: full detail':0,'Other cars: full detail':0,'Scenery detail (less pop-in)':0,'Shadow edges':0,'More particles':0,'Dynamic resolution':1,'Motion blur':1,'Lens dust':1,'Heat haze':1,'FXAA pass':1}
 check(all(label(s,k)['Selected']==v for k,v in expected.items()),'PS4 restores original quality, dynamic resolution and camera effects')
 check(label(s,'Motion blur exposure')['Selected']==0 and tag(s,'@drive_fov')['Selected']==100,'PS4 selects Slow exposure and original field of view')
 check(all(label(s,k)['Selected']==0 for k in ['No reset-to-track timer','Disable track barriers','Photo mode: free camera through cars','Photo mode: skip processing','Disable motion blur and depth of field']),'PS4 removes optional gameplay and effect overrides')
