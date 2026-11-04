@@ -228,7 +228,7 @@ std::vector<Edit> Edits(const GraphicsChoice& c) {
     e.push_back({"OnePlayer2DHQ", nullptr, "ground", {{"cullThreshold", "0.001"}}});
   }
   if (c.high_quality_ssr) {
-    e.push_back({"default", "General", nullptr, {{"highQualitySSR", "true"}}});
+    //e.push_back({"default", "General", nullptr, {{"highQualitySSR", "true"}}});
     e.push_back({"OnePlayer2D", "General", nullptr, {{"highQualitySSR", "true"}}});
   }
   // Shadows: the race views filter the nearest of the four shadow cascades (4 m) with 32 samples and the others
