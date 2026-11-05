@@ -190,7 +190,7 @@ public partial class MainWindow
             }
             else button.IsEnabled = false;
             bool saves = setting.Tag is "@savebackup" or "@saverestore";
-            var response = await backend.Call(gain || saves ? setting.Tag[1..] : "wheelsetup", state,
+            var response = await backend.Call(gain || saves || setting.Tag is "@ffbtuner" or "@benchhistory" or "@bugreport" ? setting.Tag[1..] : "wheelsetup", state,
                 captureCommand: gain ? () => wheelCaptureCommand : null);
             if (gain)
             {

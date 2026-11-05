@@ -18,6 +18,7 @@
 
 #include "bbport_settings.h"
 #include "bbport_toggles.h"
+#include "bbport_vr.h"
 #include "ffx_vk_portable.h"
 #include "video_core/host_shaders/upscale_merge_comp.h"
 #include "video_core/host_shaders/upscale_reactive_comp.h"
@@ -172,7 +173,7 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     {
         const Dlss* dlss = Dlss::Get();
         static std::string problem;
-        problem = !dlss ? "bbport_dlss.dll and nvngx_dlss.dll are not installed"
+        problem = !dlss ? "driveclub_dlss.dll and nvngx_dlss.dll are not installed"
                         : dlss->Problem();
         BbSettings::ConfigureDlssSupport(dlss && dlss->Available(), problem.c_str());
     }
@@ -231,8 +232,12 @@ TemporalUpscaler::~TemporalUpscaler() {
 }
 
 bool TemporalUpscaler::Active() const {
-    // Toggle 1 << 24 switches it off at run time (A/B); history restarts after.
-    return enabled && !failed &&
+    // Toggle 1 << 24 switches it off at run time (A/B); history restarts after. Not in VR: the
+    // launcher names an FSR version (BB_UPSCALER) for its anti-aliasing row whatever is chosen, and
+    // this upscaler then shifts the scene's geometry by a fraction of a pixel each frame for a
+    // resolve that VR does not run (without the game's TAA its trigger never comes): the whole
+    // picture shook and its edges smeared. DriveAA (FSR or DLSS anti-aliasing) is separate.
+    return enabled && !failed && !BbVr::Wanted() &&
            (BbSettings::Get().upscaler == BbSettings::UpscalerFsr3 ||
             BbSettings::IsFsr4(BbSettings::Get().upscaler) ||
             BbSettings::Get().upscaler == BbSettings::UpscalerTaa ||

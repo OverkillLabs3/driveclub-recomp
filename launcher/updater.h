@@ -2,6 +2,8 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace Updater {
 
@@ -37,5 +39,12 @@ int RunDeferred(int argc, wchar_t** argv);
 // Removes the leftovers of an earlier update (the folder is in use while the script still runs). A folder that
 // holds anything the updater did not write there (a game dump named "update", say) is left alone.
 void CleanUp(const std::wstring& home);
+
+// SHA-256 of a file as 64 lower case hex digits; false when it cannot be read.
+bool FileSha256(const std::wstring& path, std::string& hex);
+
+// A zip of the given files (path on disk, name in the zip) and one text file made from `note`.
+bool MakeZip(const std::wstring& zip_path, const std::vector<std::pair<std::wstring, std::string>>& files,
+             const std::string& note);
 
 }  // namespace Updater

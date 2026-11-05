@@ -21,14 +21,10 @@ $settings = @(
        Help='Smooths the force (100: 40 ms). 0 on a direct drive for every detail; raise it if the wheel feels grainy.' }
     @{ Key='wheel_ffb_physics_min_force'; Label='Minimum force %';         Kind='slider'; Min=0; Max=30;   Default=0;   Group='physics'
        Help='Lifts the smallest forces, for wheels that cannot make small forces (gear and belt wheels). 0 on a direct drive.' }
-    @{ Key='wheel_ffb_physics_kerbs';  Label='Kerb effects %';             Kind='slider'; Min=0; Max=200;  Default=50;  Group='physics'
-       Help='The kerb and rumble strip vibration (100: 30% of the wheel at the strongest kerb).' }
-    @{ Key='wheel_ffb_physics_road';   Label='Road effects %';             Kind='slider'; Min=0; Max=200;  Default=50;  Group='physics'
-       Help='Bumps from the front tyres'' loads and the road surface vibration.' }
-    @{ Key='wheel_ffb_physics_slip';   Label='Slip effects %';             Kind='slider'; Min=0; Max=200;  Default=30;  Group='physics'
-       Help='A buzz when the tyres slide past their grip, spin or lock (100: 25% of the wheel).' }
     @{ Key='wheel_ffb_physics_damper'; Label='Damper %';                   Kind='slider'; Min=0; Max=100;  Default=10;  Group='physics'
        Help='Resistance to turning the wheel quickly: strongest at a standstill (the tyres scrub), a third of that at speed. Steadies a direct drive.' }
+    @{ Key='wheel_ffb_physics_effects'; Label='Tyre effects %';            Kind='slider'; Min=0; Max=100;  Default=100; Group='physics'
+       Help='A light buzz when a tyre slides past its grip: a front sliding or locking, the rear spinning or sliding; faster the faster it slides. 0: off (only the steering force). Lower it if it is too strong on your wheel.' }
     @{ Key='wheel_ffb_strength';       Label='Steering strength %';        Kind='slider'; Min=0; Max=500;  Default=100; Group='classic'
        Help='Overall steering force (software model). Keep the log''s "FFB clipping" lines low.' }
     @{ Key='wheel_ffb_center';         Label='Centre weight %';            Kind='slider'; Min=0; Max=100;  Default=0; Group='classic'
@@ -61,8 +57,8 @@ $settings = @(
        Help='In the changes mode: how much of a steady surface (gravel) stays. 0 removes it.' }
     @{ Key='wheel_ffb_long_rumble';    Label='Long rumble kept %';         Kind='slider'; Min=0; Max=100;  Default=25; Group='classic'
        Help='Wheelspin and burnouts: the kerb vibration fades to this after half a second, so the wheel does not shake itself loose. Short kerbs keep their full strength.' }
-    @{ Key='wheel_ffb_vibration_wave'; Label='Vibration wave';             Kind='choice'; Choices=@('sine','square'); Default='sine'
-       Help='sine: smooth texture. square: harsher, as the game asks.' }
+    @{ Key='wheel_ffb_vibration_wave'; Label='Vibration wave';             Kind='choice'; Choices=@('sine','square'); Default='sine'; Group='classic'
+       Help='sine: smooth texture. square: harsher, as the game asks. (The physics model has no vibrations: the road comes at its full strength.)' }
     @{ Key='wheel_ffb_invert';         Label='Invert forces';              Kind='check';  Default='false'
        Help='Only if the wheel pulls the wrong way.' }
 )
@@ -162,12 +158,10 @@ function Show-Value($key, $value) {
 $presets = [ordered]@{
     'Physics model, direct drive (sim style)' = @{
         wheel_ffb_model='physics'; wheel_ffb_physics_gain=100; wheel_ffb_physics_filter=0; wheel_ffb_physics_min_force=0
-        wheel_ffb_physics_kerbs=50; wheel_ffb_physics_road=50; wheel_ffb_physics_slip=30; wheel_ffb_physics_damper=10
-        wheel_ffb_soft_lock='game'; wheel_ffb_vibration_wave='sine' }
+        wheel_ffb_physics_damper=10; wheel_ffb_soft_lock='game' }
     'Physics model, gear or belt wheel - untested' = @{
         wheel_ffb_model='physics'; wheel_ffb_physics_gain=130; wheel_ffb_physics_filter=10; wheel_ffb_physics_min_force=8
-        wheel_ffb_physics_kerbs=80; wheel_ffb_physics_road=80; wheel_ffb_physics_slip=50; wheel_ffb_physics_damper=0
-        wheel_ffb_soft_lock='game'; wheel_ffb_vibration_wave='square' }
+        wheel_ffb_physics_damper=0; wheel_ffb_soft_lock='game' }
     'Direct drive (8 Nm Fanatec baseline)' = @{
         wheel_ffb_model='software'; wheel_ffb_strength=200; wheel_ffb_center=100; wheel_ffb_slide=2; wheel_ffb_falloff=5
         wheel_ffb_smoothing=0; wheel_ffb_soft_lock='game'; wheel_ffb_spring=90; wheel_ffb_spring_limit=100; wheel_ffb_damper=10

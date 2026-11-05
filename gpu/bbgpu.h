@@ -21,6 +21,9 @@ void bbgpu_register_kernel(void);
 void bbnet_configure(const char *app0, const char *serial, const char *title, const char *app_ver);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
+/* VR, BB_VR_AUTO_SIZE=1 (the launcher's Auto headset picture), before bbgpu_init: starts OpenXR and gives the size
+ * each eye is drawn at so that the part the runtime shows has exactly the pixels it asks for (1), else 0. */
+int bbgpu_vr_auto_size(uint32_t *width, uint32_t *height);
 /* After guest finalizers: join presentation/GPU/window threads and destroy their owners. */
 void bbgpu_shutdown(void);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */
@@ -64,6 +67,14 @@ uintptr_t bbgpu_exposure_exact_hook(uintptr_t real_getter, int site);
 uintptr_t bbgpu_cloud_hook(uintptr_t image_base);
 uintptr_t bbgpu_query_hook(uintptr_t image_base);
 uintptr_t bbgpu_crowd_hook(uintptr_t image_base);
+/* NVIDIA Reflex: called before pad input sampling (driver frame pacing). */
+void bbgpu_reflex_pre_input_sample(void);
+/* NVIDIA Reflex: called immediately after pad input has been sampled. */
+void bbgpu_reflex_on_input_sampled(void);
+/* NVIDIA Reflex: called when a simulation cycle ends (e.g. at flip submission). */
+void bbgpu_reflex_on_simulation_end(void);
+/* Returns the current monotonic simulation frame ID (0 if not active/supported). */
+uint64_t bbgpu_reflex_current_sim_frame_id(void);
 #ifdef __cplusplus
 }
 #endif

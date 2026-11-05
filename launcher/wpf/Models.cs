@@ -64,6 +64,7 @@ public sealed class LauncherState
     public bool CaptureCancelled { get; set; }
     public bool CaptureClear { get; set; }
     public string InstalledVersion { get; set; } = "";
+    public string PlayTime { get; set; } = "";
     public string UpdateVersion { get; set; } = "";
     public string UpdateNote { get; set; } = "";
     public uint ShellProcessId { get; set; }

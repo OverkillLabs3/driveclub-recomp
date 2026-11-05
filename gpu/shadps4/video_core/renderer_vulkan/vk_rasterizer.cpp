@@ -40,6 +40,11 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
+#include "video_core/renderer_vulkan/vr/vr_foveation.h" // VR foveated rendering
+#include <filesystem>
+#include <map>
+#include <vk_mem_alloc.h>
+#include <vulkan/vulkan_format_traits.hpp>
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -79,6 +84,45 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
     }
     if (slot == 1) {
         BbVr::NoteProjection(f[48], f[48 + 5], f[48 + 10], f[48 + 14]); // VR: tells the driver's head camera apart
+    }
+    if (slot == 1 && BbVr::JitterLog()) {
+        // every 3 s: the projections of each shape (x and y scale) and the off-centre terms they came with (row
+        // vectors: [56] and [57] shift the picture; a TAA jitter gives many values a fraction of a pixel apart)
+        struct Shape {
+            float x = 0, y = 0;
+            int calls = 0;
+            std::vector<std::pair<float, float>> shifts;
+        };
+        static std::vector<Shape> shapes;
+        static auto since = std::chrono::steady_clock::now();
+        Shape* shape = nullptr;
+        for (auto& sh : shapes) {
+            if (std::fabs(sh.x - f[48]) < 1e-4f && std::fabs(sh.y - f[53]) < 1e-4f) shape = &sh;
+        }
+        if (!shape && shapes.size() < 16) {
+            shapes.push_back({f[48], f[53]});
+            shape = &shapes.back();
+        }
+        if (shape) {
+            ++shape->calls;
+            const std::pair<float, float> shift{f[56], f[57]};
+            if (shape->shifts.size() < 64 &&
+                std::find(shape->shifts.begin(), shape->shifts.end(), shift) == shape->shifts.end()) {
+                shape->shifts.push_back(shift);
+            }
+        }
+        if (std::chrono::steady_clock::now() - since > std::chrono::seconds(3)) {
+            since = std::chrono::steady_clock::now();
+            for (const auto& sh : shapes) {
+                float lx = 1e9f, hx = -1e9f, ly = 1e9f, hy = -1e9f;
+                for (const auto& [a, b] : sh.shifts) lx = std::min(lx, a), hx = std::max(hx, a), ly = std::min(ly, b), hy = std::max(hy, b);
+                std::printf("VR jitter: projection %.4f x %.4f (%.0f deg high), %d calls, %zu shifts: x %.6f..%.6f, y "
+                            "%.6f..%.6f\n",
+                            sh.x, sh.y, 2.0 * std::atan(1.0 / sh.y) * 57.2958, sh.calls, sh.shifts.size(), lx, hx, ly, hy);
+            }
+            std::fflush(stdout);
+            shapes.clear();
+        }
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
@@ -330,6 +374,16 @@ VideoCore::ImageId Rasterizer::FindTargetMemoized(VideoCore::TextureCache::Image
     return image_id;
 }
 
+// VR eye dump (the = key, BbVr::EyeDump): one frame's two-layer render targets by guest address, with the vertex shaders
+// that drew into them, saved when the HUD starts.
+struct EyeDumpTarget {
+    VideoCore::ImageId id;
+    std::string writers;
+};
+static bool eye_dump_armed = false;
+static int eye_dump_step = 0; // dump_each: the frame of the sequence being saved (0: nothing hidden)
+static std::map<u64, EyeDumpTarget> eye_dump_targets;
+
 void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     // Prefetch render targets to handle overlaps with bound textures (e.g. mipgen)
     const auto& key = pipeline->GetGraphicsKey();
@@ -355,6 +409,20 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             col_buf, hint));
         auto& image = texture_cache.GetImage(image_id);
         image.binding.is_target = 1u;
+        if (eye_dump_armed && Vr::Multiview::Stereo(image)) {
+            auto& target = eye_dump_targets[col_buf.Address()];
+            target.id = image_id;
+            char vs[64]; // the vertex shader and its viewport's half size, offset and the scissor's size
+            const auto& vp = regs.viewports[0];
+            std::snprintf(vs, sizeof(vs), " %llx[%gx%g+%g+%g s%ux%u]",
+                          (unsigned long long)pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash, vp.xscale,
+                          vp.yscale, vp.xoffset, vp.yoffset,
+                          u32(regs.screen_scissor.bottom_right_x - regs.screen_scissor.top_left_x),
+                          u32(regs.screen_scissor.bottom_right_y - regs.screen_scissor.top_left_y));
+            if (target.writers.find(vs) == std::string::npos && target.writers.size() < 6000) {
+                target.writers += vs;
+            }
+        }
     }
 
     if ((regs.depth_control.depth_enable && regs.depth_buffer.DepthValid()) ||
@@ -372,6 +440,16 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             tag, regs.depth_buffer, regs.depth_view, regs.depth_control, htile_address, hint));
         auto& image = texture_cache.GetImage(image_id);
         image.binding.is_target = 1u;
+        if (eye_dump_armed && Vr::Multiview::Stereo(image)) { // the eye dump: depth too
+            auto& target = eye_dump_targets[regs.depth_buffer.DepthAddress()];
+            target.id = image_id;
+            char vs[24];
+            std::snprintf(vs, sizeof(vs), " %llx",
+                          (unsigned long long)pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash);
+            if (target.writers.find(vs) == std::string::npos && target.writers.size() < 6000) {
+                target.writers += vs;
+            }
+        }
     } else {
         db_desc.first = {};
     }
@@ -1414,6 +1492,32 @@ private:
                 use.draws[kind] += f.draws;
                 use.indices[kind] += f.indices;
             }
+            // [ then ]: the shaders of the frames after ] that the frames after [ did not draw
+            if (const int mark = BbVr::TraceMark()) {
+                compare_kind = mark, compare_left = 120;
+                (mark == 1 ? normal : extra).clear();
+                std::printf("VR trace: %s frames for 120 frames\n", mark == 1 ? "taking the normal" : "comparing the");
+            }
+            if (compare_left) {
+                auto& set = compare_kind == 1 ? normal : extra;
+                for (const auto& [key, f] : frame) {
+                    auto& use = set[key];
+                    use.vs = f.vs, use.ps = f.ps, use.draws = std::max(use.draws, f.draws);
+                    use.indices = std::max(use.indices, f.indices);
+                }
+                if (--compare_left == 0 && compare_kind == 2) {
+                    std::printf("VR trace: drawn now and not in the normal frames:\n");
+                    for (const auto& [key, f] : extra) {
+                        const auto it = normal.find(key);
+                        if (it == normal.end()) {
+                            std::printf("VR trace:   vs %llx ps %llx, up to %u draws, %llu indices a frame\n",
+                                        (unsigned long long)f.vs, (unsigned long long)f.ps, f.draws,
+                                        (unsigned long long)f.indices);
+                        }
+                    }
+                    std::printf("VR trace: end of the list\n");
+                }
+            }
             if (now - last_sequence > std::chrono::seconds(10)) {
                 last_sequence = now;
                 logging = true;
@@ -1473,6 +1577,9 @@ private:
     }
 
     std::unordered_map<u64, FrameUse> frame;
+    std::unordered_map<u64, FrameUse> normal, extra; ///< the [ and ] keys' frames
+    int compare_kind = 0;
+    u32 compare_left = 0;
     std::unordered_map<u64, Use> uses;
     u32 frames[2]{};
     u64 frame_index = 0;
@@ -1483,6 +1590,142 @@ private:
     u32 recent_next = 0, recent_count = 0;
     std::chrono::steady_clock::time_point last_sequence{};
 };
+
+// The VR audit's names for a draw: its vertex and pixel shaders.
+static void AuditNames(const GraphicsPipeline* pipeline) {
+    const auto stages = pipeline->GetStages();
+    const Shader::Info* vs = stages[u32(Shader::SwStage::Vertex)];
+    const Shader::Info* ps = stages[u32(Shader::SwStage::Fragment)];
+    Vr::Multiview::SetDrawHash(vs ? vs->pgm_hash : 0, ps ? ps->pgm_hash : 0);
+}
+
+// VR: the game's glow at BbVr::GlowScale, in place (both eyes' layers in true stereo). The composite then adds less.
+void Rasterizer::VrScaleGlow() {
+    const VideoCore::ImageId id = std::exchange(vr_glow, VideoCore::ImageId{});
+    const float scale = BbVr::GlowScale();
+    if (!id || scale >= 1.0f) {
+        return;
+    }
+    VideoCore::Image* image = texture_cache.TryGetImage(id, vr_glow_uid);
+    const char* problem = !image                                                         ? "its image is gone"
+                          : image->info.pixel_format != vk::Format::eB10G11R11UfloatPack32 ? "another format"
+                          : !(image->usage_flags & vk::ImageUsageFlagBits::eStorage)       ? "no storage use"
+                                                                                           : nullptr;
+    if (problem) {
+        static std::atomic<int> told{0};
+        if (told++ < 4) {
+            std::printf("VR: the glow is left as the game draws it (%s)\n", problem);
+            std::fflush(stdout);
+        }
+        return;
+    }
+    const auto& ci = image->backing->image.image_ci;
+    const u32 width = ci.extent.width, height = ci.extent.height, layers = ci.arrayLayers;
+    scheduler.EndRendering();
+    runtime.Transit(image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite);
+    runtime.FlushBarriers();
+    const auto device = instance.GetDevice();
+    const vk::ImageView view = Check(device.createImageView({
+        .image = image->GetImage(),
+        .viewType = vk::ImageViewType::e2DArray,
+        .format = vk::Format::eB10G11R11UfloatPack32,
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, layers},
+    }));
+    scheduler.DeferOperation([device, view] { device.destroyImageView(view); });
+    scheduler.Record([view, width, height, layers, scale](vk::CommandBuffer cmdbuf) {
+        BbVr::ScaleGlow(cmdbuf, view, width, height, layers, scale);
+    });
+    static std::atomic<int> last{-1};
+    const int percent = int(scale * 100.0f + 0.5f);
+    if (last.exchange(percent * 4 + int(std::min(layers, 3u))) != percent * 4 + int(std::min(layers, 3u))) {
+        std::printf("VR: the game's glow at %d%% (%ux%u, %u eyes)\n", percent, width, height, layers);
+        std::fflush(stdout);
+    }
+}
+
+// Both layers of each target the frame drew into (raw pixels, the Vulkan format's bytes; the list in targets.txt).
+void Rasterizer::DumpEyeTargets(int step) {
+    const char* user = std::getenv("BB_GPU_USER_DIR");
+    const u64 hidden = BbVr::DumpHide(step);
+    char sub[48];
+    std::snprintf(sub, sizeof(sub), "step%02d_%llx", step, (unsigned long long)hidden);
+    const std::filesystem::path directory =
+        std::filesystem::path(user && *user ? user : ".") / "eye_dump" / sub;
+    static const u64 only = [] { // dump_target = <hex>: that target alone
+        const char* v = std::getenv("BB_VR_DUMP_TARGET");
+        return v ? std::strtoull(v, nullptr, 16) : 0ull;
+    }();
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    std::string list;
+    scheduler.EndRendering();
+    std::vector<std::pair<VideoCore::Image*, std::string>> images;
+    for (const auto& [address, target] : eye_dump_targets) {
+        auto& image = texture_cache.GetImage(target.id);
+        if ((only && address != only) || !Vr::Multiview::Stereo(image)) {
+            continue;
+        }
+        runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                        vk::AccessFlagBits2::eTransferRead);
+        char name[96];
+        // the host image's size (scaled targets are larger than the guest's)
+        const auto& extent = image.backing->image.image_ci.extent;
+        std::snprintf(name, sizeof(name), "%llx_%ux%u_fmt%d", (unsigned long long)address, extent.width, extent.height,
+                      int(image.info.pixel_format));
+        images.emplace_back(&image, name);
+        list += std::string(name) + " drawn by vs" + target.writers + "\n";
+    }
+    runtime.FlushBarriers();
+    const vk::CommandBuffer cmdbuf = scheduler.CommandBuffer();
+    for (const auto& [image, name] : images) {
+        const u32 w = image->backing->image.image_ci.extent.width, h = image->backing->image.image_ci.extent.height;
+        // depth: its depth aspect alone (four bytes a pixel for D32 and D32S8)
+        const bool depth = image->aspect_mask & vk::ImageAspectFlagBits::eDepth ? true : false;
+        const VkDeviceSize size = VkDeviceSize(w) * h * (depth ? 4 : vk::blockSize(image->info.pixel_format));
+        for (u32 eye = 0; eye < 2; ++eye) {
+            const VkBufferCreateInfo buffer_ci{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = size,
+                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            };
+            const VmaAllocationCreateInfo alloc_ci{
+                .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+                .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+            };
+            VkBuffer buffer{};
+            VmaAllocation allocation{};
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation, &info) !=
+                VK_SUCCESS) {
+                continue;
+            }
+            const vk::BufferImageCopy region{
+                .imageSubresource = {depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor, 0,
+                                     eye, 1},
+                .imageExtent = {w, h, 1},
+            };
+            cmdbuf.copyImageToBuffer(image->GetImage(), vk::ImageLayout::eTransferSrcOptimal, buffer, region);
+            const std::string file = (directory / (name + "_eye" + std::to_string(eye) + ".raw")).string();
+            scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info, size,
+                                              file] {
+                vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+                if (FILE* f = std::fopen(file.c_str(), "wb")) {
+                    std::fwrite(info.pMappedData, 1, size, f);
+                    std::fclose(f);
+                }
+                vmaDestroyBuffer(allocator, buffer, allocation);
+            });
+        }
+    }
+    if (FILE* f = std::fopen((directory / "targets.txt").string().c_str(), "w")) {
+        std::fputs(list.c_str(), f);
+        std::fclose(f);
+    }
+    std::printf("VR: eye dump: %zu targets, both eyes, in %s\n", images.size(), directory.string().c_str());
+    std::fflush(stdout);
+    eye_dump_targets.clear();
+}
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                             bool is_indexed, u32 index_offset) {
@@ -1535,6 +1778,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (frame_display) {
         // The frame counter also drives the mirror update rate: it must not depend on the upscaler.
         NoteFrameStart();
+        vr_ffr_scene = false;
         drive_aa->NextFrame();
         if (camera_motion->Enabled()) {
             scene_started = false;
@@ -1543,7 +1787,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 object_motion->InvalidateHistory();
                 camera_motion->InvalidateHistory();
             }
-            camera_motion->SetJitter(upscaler->Enabled() ? upscaler->Jitter() : drive_aa->Jitter());
+            camera_motion->SetJitter(drive_aa->Active() ? drive_aa->Jitter()
+                                                        : (upscaler->Active() ? upscaler->Jitter()
+                                                                              : std::array<float, 2>{}));
             static const char* scene_debug = BB_DIAGNOSTIC_ENV("BB_SCENE_DEBUG");
             scene_debug_frame = scene_debug && std::remove(scene_debug) == 0;
             scene_targets->debug = scene_debug_frame;
@@ -1564,6 +1810,19 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                                fragment ? fragment->pgm_hash : 0)) {
             return; // VR diagnostics: hide_shader
         }
+        for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+            if (regs.color_buffers[cb] && BbVr::HiddenTarget(regs.color_buffers[cb].Address())) {
+                return; // VR diagnostics: hide_target
+            }
+        }
+    }
+    // VR: the game's glow, made by vs 611c6f6a and added over the picture by the composite (vs 8d52ab95, the first
+    // display draw), is scaled just before the composite reads it
+    const u64 draw_vs = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+    if (draw_vs == 0x8d52ab95) {
+        VrScaleGlow();
+    } else if (frame_display) {
+        vr_glow = {};
     }
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
@@ -1572,6 +1831,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
         PrepareRenderState(pipeline);
+    }
+    if (draw_vs == 0x611c6f6a && cb_descs[0].first && BbVr::GlowScale() < 1.0f) {
+        vr_glow = cb_descs[0].first;
+        vr_glow_uid = texture_cache.GetImage(vr_glow).image_uid;
     }
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
@@ -1586,6 +1849,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     bool bound;
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[3]};
+        AuditNames(pipeline); // VR audit
         bound = BindResources(pipeline);
     }
     bind_prepared = nullptr; // indirect draws and dispatches bind without prepared sharps
@@ -1601,6 +1865,24 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     if (vr_hud_pending && !BbVr::SceneOverlay(pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash)) {
         // VR: the first HUD draw: the scene is copied out and the display buffer cleared, so the HUD draws alone
         vr_hud_pending = false;
+        if (eye_dump_armed) {
+            eye_dump_armed = false;
+            DumpEyeTargets(eye_dump_step);
+            // dump_each: the next frame with the next shader of the list hidden alone
+            const u64 next = BbVr::DumpHide(eye_dump_step + 1);
+            BbVr::SetSoloHide(next);
+            if (next) {
+                ++eye_dump_step;
+                eye_dump_armed = true;
+                eye_dump_targets.clear();
+            }
+        }
+        if (!eye_dump_armed && BbVr::EyeDump()) {
+            eye_dump_armed = true;
+            eye_dump_step = 0;
+            BbVr::DumpHide(0);
+            eye_dump_targets.clear();
+        }
         const VideoCore::ImageId scene_depth = std::exchange(vr_depth, VideoCore::ImageId{});
         vr_depth_area = 0;
         if (BbVr::SceneDrawn() && cb_descs[0].first) {
@@ -1657,6 +1939,31 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
+    {
+        // BB_RT_STATS=1: how much geometry the scene's G-buffer draws carry per second (what a ray tracing
+        // acceleration structure would have to hold). Only counts; nothing is captured.
+        static const bool rt_stats = std::getenv("BB_RT_STATS") != nullptr;
+        static u64 draws = 0, triangles = 0, instanced = 0, indexed = 0, frames = 0;
+        static auto window_start = std::chrono::steady_clock::now();
+        if (rt_stats && frame_display) {
+            ++frames;
+        }
+        if (rt_stats && motion_draw) {
+            ++draws;
+            indexed += is_indexed ? 1 : 0;
+            instanced += regs.num_instances.NumInstances() > 1 ? 1 : 0;
+            triangles += u64(regs.num_indices) / 3 * regs.num_instances.NumInstances();
+            const auto now = std::chrono::steady_clock::now();
+            if (now - window_start >= std::chrono::seconds(5)) {
+                const u64 f = frames ? frames : 1;
+                std::printf("RT stats: per frame %llu G-buffer draws (%llu indexed, %llu instanced), %llu triangles\n",
+                            (unsigned long long)(draws / f), (unsigned long long)(indexed / f),
+                            (unsigned long long)(instanced / f), (unsigned long long)(triangles / f));
+                draws = triangles = instanced = indexed = frames = 0;
+                window_start = now;
+            }
+        }
+    }
     if (motion_draw && motion_geometry) {
         const auto& vs = pipeline->GetStage(Shader::SwStage::Vertex);
         const auto [base_vertex, first_instance] =
@@ -1743,12 +2050,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
     draw_jitter = {};
-    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth() &&
+    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
         (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
-        draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth &&
-               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
         draw_jitter = drive_aa->Jitter();
+    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth() &&
+               (regs.num_indices > 6 || regs.num_instances.NumInstances() > 1)) {
+        draw_jitter = upscaler->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -2112,6 +2419,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
                          cb_descs[0].first, db_desc.first,
                          UiComposition::NativeViewport(viewport.xscale * 2, viewport.yscale * 2));
     }
+    AuditNames(pipeline); // VR audit
     if (!BindResources(pipeline)) {
         return;
     }
@@ -2144,10 +2452,10 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.yoffset *= target_scale[1];
     pipeline->BindResources(set_writes, push_data);
     draw_jitter = {};
-    if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
-        draw_jitter = upscaler->Jitter();
-    } else if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
+    if (drive_aa->Active() && db_desc.first && db_desc.first == fg_depth) {
         draw_jitter = drive_aa->Jitter();
+    } else if (upscaler->Active() && db_desc.first && db_desc.first == camera_motion->Depth()) {
+        draw_jitter = upscaler->Jitter();
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
@@ -2289,6 +2597,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         }
     }
 
+    Vr::Multiview::SetDrawHash(cs.pgm_hash); // VR audit
+    Vr::Multiview::SetDispatchHash(cs.pgm_hash); // VR multiview: the computes that run per eye (EyeCompute)
     if (!BindResources(pipeline)) {
         return;
     }
@@ -2297,6 +2607,84 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
         if constexpr (BB_DIAGNOSTICS) BbStats::mirror_dispatch_skipped.fetch_add(1, std::memory_order_relaxed);
         ResetBindings(true);
         return;
+    }
+    // vr.ini game_taa = 0: the game's temporal anti-aliasing (its resolve, cs 0x403f86d4: the lit HDR picture in,
+    // the anti-aliased one out) gives the picture as drawn: a copy of its input into its output. Variants that write
+    // anything else (the menu cameras' masks for later passes) still run. FSR and DLSS replace the result anyway.
+    // The resolve is known as DriveAA knows it (OnTaa below): 6 to 8 images, the lit HDR picture first, the G-buffer's
+    // RGBA8, depth (R32) and its history last (R32); the hash is only DCPort's.
+    const auto taa_format = [&](u32 i) { return texture_cache.GetImage(bound_images[i]).info.pixel_format; };
+    const bool taa_pass = bound_images.size() == cs.images.size() &&
+                          (cs.pgm_hash == 0x403f86d4 ||
+                           (cs.images.size() >= 6 && cs.images.size() <= 8 &&
+                            taa_format(0) == vk::Format::eB10G11R11UfloatPack32 &&
+                            taa_format(1) == vk::Format::eR8G8B8A8Unorm && taa_format(2) == vk::Format::eR32Sfloat &&
+                            taa_format(u32(cs.images.size()) - 1) == vk::Format::eR32Sfloat));
+    if (taa_pass) {
+        vr_ffr_scene = false; // VR foveated rendering: the scene is done
+    }
+    if (!drive_aa->Active() && BbVr::GameTaaOff() && taa_pass) {
+        const auto& format = taa_format;
+        constexpr auto hdr = vk::Format::eB10G11R11UfloatPack32;
+        u32 out = 0, written_hdr = 0, written_other = 0;
+        std::string list;
+        for (u32 i = 0; i < cs.images.size(); ++i) {
+            if (cs.images[i].is_written) {
+                ++(format(i) == hdr ? written_hdr : written_other);
+            }
+            if (cs.images[i].is_written && format(i) == hdr && !out) {
+                out = i;
+            }
+            list += fmt::format(" [{} {}]", vk::to_string(format(i)), cs.images[i].is_written ? "written" : "read");
+        }
+        // one HDR picture out, nothing else but R32 (its depth history): the masks of the menu cameras' variants are
+        // for later passes, those run
+        bool masks = false;
+        for (u32 i = 0; i < cs.images.size(); ++i) {
+            masks |= cs.images[i].is_written && format(i) != hdr && format(i) != vk::Format::eR32Sfloat;
+        }
+        const bool leave_out = out && written_hdr == 1 && !masks;
+        static std::mutex told_mutex;
+        static std::set<std::string> told;
+        {
+            std::scoped_lock lock{told_mutex};
+            if (told.insert(list).second) {
+                std::printf("Anti-aliasing: the game's TAA, cs %#llx (%zu images:%s)%s\n",
+                            (unsigned long long)cs.pgm_hash, cs.images.size(), list.c_str(),
+                            leave_out ? ": left out" : ": kept (it makes masks for later passes)");
+                std::fflush(stdout);
+            }
+        }
+        if (leave_out) {
+            auto& src = texture_cache.GetImage(bound_images[0]);
+            auto& dst = texture_cache.GetImage(bound_images[out]);
+            const auto& src_ci = src.backing->image.image_ci;
+            const auto& dst_ci = dst.backing->image.image_ci;
+            if (src_ci.extent == dst_ci.extent) {
+                static std::atomic_flag told = ATOMIC_FLAG_INIT;
+                if (!told.test_and_set()) {
+                    std::printf("Anti-aliasing: the game's TAA is off (game_taa = 0): the frame goes on as drawn\n");
+                }
+                scheduler.EndRendering();
+                runtime.Transit(&src, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                                vk::AccessFlagBits2::eTransferRead);
+                runtime.Transit(&dst, vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                                vk::AccessFlagBits2::eTransferWrite);
+                runtime.FlushBarriers();
+                const u32 layers = std::min(src_ci.arrayLayers, dst_ci.arrayLayers); // VR multiview: both eyes
+                const vk::ImageCopy region{
+                    .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers},
+                    .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, layers},
+                    .extent = src_ci.extent,
+                };
+                scheduler.Record([from = src.GetImage(), to = dst.GetImage(), region](vk::CommandBuffer cmdbuf) {
+                    cmdbuf.copyImage(from, vk::ImageLayout::eTransferSrcOptimal, to,
+                                     vk::ImageLayout::eTransferDstOptimal, region);
+                });
+                ResetBindings(true);
+                return;
+            }
+        }
     }
 
     if (needs_barrier) {
@@ -2352,7 +2740,41 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
             const u32 out = two_masks ? 5 : one_mask ? 4 :
                 cs.images[3].is_written ? 3 : cs.images[4].is_written ? 4 : 0;
             if (valid_mask && out && cs.images[out].is_written && format(out) == hdr) {
-                drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out]);
+                DriveAA::DcInputs dc_inputs{};
+                bool dc_ok = false;
+                if (cs.buffers.size() >= 3 &&
+                    !cs.buffers[0].IsSpecial() && !cs.buffers[1].IsSpecial() && !cs.buffers[2].IsSpecial()) {
+                    const u64 alignment = instance.StorageMinAlignment();
+                    dc_ok = true;
+                    for (u32 b = 0; b < 3; ++b) {
+                        const auto sharp = cs.buffers[b].GetSharp(cs);
+                        const VAddr addr = sharp.base_address;
+                        const u32 size = sharp.GetSize();
+                        if (!addr || !size) {
+                            dc_ok = false;
+                            break;
+                        }
+                        auto [buf, offset] = buffer_cache.ObtainBuffer(addr, size, false);
+                        if (!buf) {
+                            dc_ok = false;
+                            break;
+                        }
+                        const u64 offset_aligned = Common::AlignDown(offset, alignment);
+                        const u64 adjust = offset - offset_aligned;
+                        dc_inputs.buffers[b] = {
+                            .buffer = buf->Handle(),
+                            .offset = offset_aligned,
+                            .size = size + adjust,
+                        };
+                        dc_inputs.dword_offsets[b] = static_cast<u32>(adjust / 4);
+                    }
+                    if (dc_ok && memory->IsValidGpuMapping(cs.buffers[0].GetSharp(cs).base_address, 0)) {
+                        const auto* f0 = reinterpret_cast<const float*>(cs.buffers[0].GetSharp(cs).base_address);
+                        dc_inputs.tan_half_fov_y = f0[93];
+                    }
+                }
+                drive_aa->OnTaa(bound_images[0], fg_depth, bound_images[out], bound_images[1],
+                                dc_ok ? &dc_inputs : nullptr);
             }
         }
     }
@@ -2387,6 +2809,8 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     scheduler.PopPendingOperations();
     const u32 offset = 0;
 
+    Vr::Multiview::SetDrawHash(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash); // VR audit
+    Vr::Multiview::SetDispatchHash(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash); // VR multiview: EyeCompute
     if (!BindResources(pipeline)) {
         return;
     }
@@ -4600,6 +5024,39 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
     state.view_mask = Vr::Multiview::PassViewMask(texture_cache, cb_descs, state.num_color_attachments,
                                                   db_desc); // VR multiview
+    // VR foveated rendering: the scene passes at the render size (two-eye ones in true stereo; in AFR each frame is
+    // one eye), from the G-buffer to the anti-aliasing (not the HUD, the post-processing or the half-size passes).
+    state.shading_rate_view = vk::ImageView{};
+    if ((state.view_mask || !Vr::Multiview::Requested()) && Vr::Foveation::Supported()) {
+        u32 render_w = 0, render_h = 0;
+        const bool render_size = Vr::Fixes::RenderSize(render_w, render_h) && state.width == render_w &&
+                                 state.height == render_h;
+        if (render_size && std::popcount(key.mrt_mask & 0x7f) >= 3 && db_desc.first) {
+            vr_ffr_scene = true; // the G-buffer pass
+        }
+        if (render_size && vr_ffr_scene) {
+            // Only passes that draw the scene's geometry (with its depth). The full-screen passes after it stay at the
+            // full rate: without the game's TAA (VR leaves it out) nothing ends the scene before the post-processing,
+            // and the game's FXAA at the coarse rates darkened all but the middle. The passes left out are logged once.
+            const bool geometry = bool(db_desc.first);
+            if (geometry) {
+                state.shading_rate_view = Vr::Foveation::Prepare(instance, scheduler, state.width, state.height);
+            }
+            static std::mutex seen_mutex;
+            static std::vector<std::pair<u64, u64>> seen;
+            const u64 vs = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+            const Shader::Info* fs = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+            const u64 ps = fs ? fs->pgm_hash : 0;
+            std::scoped_lock lock{seen_mutex};
+            if (!geometry && seen.size() < 32 && std::find(seen.begin(), seen.end(), std::pair{vs, ps}) == seen.end()) {
+                seen.emplace_back(vs, ps);
+                std::printf("VR: foveated rendering leaves out the full-screen pass vs %08x ps %08x (colour targets "
+                            "0x%02x)\n",
+                            u32(vs), u32(ps), u32(key.mrt_mask & 0xff));
+                std::fflush(stdout);
+            }
+        }
+    }
     if (FrameCapture::Active()) {
         std::array<const VideoCore::ImageInfo*, AmdGpu::NUM_COLOR_BUFFERS> colors{};
         for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {

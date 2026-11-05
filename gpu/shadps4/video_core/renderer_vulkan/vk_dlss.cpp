@@ -30,7 +30,7 @@ int Dlss::QualityForScale(float scale) {
 #ifdef _WIN32
 
 namespace {
-constexpr wchar_t BridgeName[] = L"bbport_dlss.dll";
+constexpr wchar_t BridgeName[] = L"driveclub_dlss.dll";
 constexpr wchar_t NgxName[] = L"nvngx_dlss.dll";
 
 std::filesystem::path ExecutableDirectory() {
@@ -119,7 +119,7 @@ Dlss::Dlss() : impl{std::make_unique<Impl>()} {
     impl->api = get_api ? get_api() : nullptr;
     // ABI 1 bridges (DLSS only) still work; Frame Generation needs ABI 2.
     if (!impl->api || impl->api->abi < 1 || impl->api->abi > BBPORT_DLSS_BRIDGE_ABI) {
-        impl->Disable("bbport_dlss.dll is missing or from another version");
+        impl->Disable("driveclub_dlss.dll is missing or from another version");
         return;
     }
     // NGX writes its logs and model updates here: beside the saves and shader caches.
@@ -195,7 +195,7 @@ void Dlss::Initialize(vk::Instance instance, vk::PhysicalDevice physical, vk::De
     if (impl->api->abi >= 2) {
         impl->frame_gen_max = std::max(0, impl->api->FrameGenMaxCount());
     } else {
-        std::printf("DLSS: bbport_dlss.dll predates Frame Generation (rebuild it with "
+        std::printf("DLSS: driveclub_dlss.dll predates Frame Generation (rebuild it with "
                     "packaging/windows/build_dlss.sh)\n");
     }
     std::printf("DLSS: ready\n");

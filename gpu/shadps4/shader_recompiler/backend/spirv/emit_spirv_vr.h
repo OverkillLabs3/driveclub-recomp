@@ -21,7 +21,7 @@ namespace Shader::Backend::SPIRV::Vr {
 /// Multiview shaders are compiled (BB_VR_STEREO=mv; fixed for the session).
 bool MultiviewShaders();
 
-/// Whether an image of this view type is declared as a 2D array.
+/// Whether an image of this view type is declared as a 2D array (2D, multisampled or not).
 bool ArrayedImage(AmdGpu::ImageType view_type);
 
 /// Per-eye buffers: guest storage buffers are declared as two-element descriptor arrays (element = the eye: the view

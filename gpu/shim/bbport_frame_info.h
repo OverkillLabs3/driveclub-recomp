@@ -7,6 +7,12 @@
 namespace BbFrame {
 inline std::atomic<uint32_t> scene_w{0}, scene_h{0};
 inline std::atomic<uint32_t> output_w{0}, output_h{0};  // the game's display buffer (what is presented)
+inline std::atomic<uint32_t> display_w{0}, display_h{0};  // the swapchain extent (the panel size)
+
+inline void NoteDisplay(uint32_t w, uint32_t h) {
+    display_w.store(w, std::memory_order_relaxed);
+    display_h.store(h, std::memory_order_relaxed);
+}
 
 inline void NoteOutput(uint32_t w, uint32_t h) {
     output_w.store(w, std::memory_order_relaxed);
@@ -25,10 +31,17 @@ inline void NoteRender(uint32_t w, uint32_t h) {
     if (w == 0 || h == 0 || w > 8192 || h > 8192) {
         return;  // passes without a real extent report huge sizes
     }
-    if (w * 9 * 100 < h * 16 * 95 || w * 9 * 100 > h * 16 * 105) {
+    const uint32_t ow = output_w.load(std::memory_order_relaxed);
+    const uint32_t oh = output_h.load(std::memory_order_relaxed);
+    if (ow > 0 && oh > 0) {
+        if (uint64_t(w) * oh * 100 < uint64_t(h) * ow * 95 ||
+            uint64_t(w) * oh * 100 > uint64_t(h) * ow * 105) {
+            return;  // atlases and cube faces are not the scene
+        }
+    } else if (w * 9 * 100 < h * 16 * 95 || w * 9 * 100 > h * 16 * 105) {
         return;  // atlases and cube faces are not the scene
     }
-    if (w == output_w.load(std::memory_order_relaxed) && h == output_h.load(std::memory_order_relaxed)) {
+    if (w == ow && h == oh) {
         return;  // the finished picture (menus, HUD), not the scene; with nothing else drawn the overlay shows the output size
     }
     const uint64_t area = uint64_t(w) * h;

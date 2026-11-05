@@ -1036,7 +1036,11 @@ Id ImageType(EmitContext& ctx, const ImageResource& desc, Id sampled_type) {
     case AmdGpu::ImageType::Color2DArray:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, true, false, sampled, format);
     case AmdGpu::ImageType::Color2DMsaa:
-        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, false, true, sampled, format);
+        if (Vr::ArrayedImage(type) && sampled == 2) { // VR
+            ctx.AddCapability(spv::Capability::ImageMSArray);
+        }
+        return ctx.TypeImage(sampled_type, spv::Dim::Dim2D, false, Vr::ArrayedImage(type), true, sampled, // VR
+                             format);
     case AmdGpu::ImageType::Color3D:
         return ctx.TypeImage(sampled_type, spv::Dim::Dim3D, false, false, false, sampled, format);
     default:

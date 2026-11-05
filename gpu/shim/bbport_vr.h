@@ -24,6 +24,9 @@ bool Wanted();
 bool Active();
 /// The headset's refresh rate (from its frame timing), 0 before its first frame or without a headset.
 uint32_t HeadsetHz();
+/// The game's frame limit in VR: the headset's rate, or half of it (vr.ini half_rate = 1, the , key): each frame then
+/// shows for exactly two of the headset's refreshes instead of one or two in turn. 0 without a headset.
+uint32_t FrameLimitHz();
 
 /// Before vkCreateInstance: starts OpenXR and adds the instance extensions its runtime needs.
 void AppendInstanceExtensions(std::vector<const char*>& extensions);
@@ -59,8 +62,53 @@ bool SceneOverlay(uint64_t vs_hash);
 /// Diagnostics (vr.ini, without a headset too): draw_trace = 1 logs one frame's draws into the display buffer every
 /// 10 s and the shaders drawn in only one eye's frames (without VR: only every other frame).
 bool DrawTrace();
+/// draw_trace: 1 once after the [ key, 2 once after the ] key, else 0: which frames to compare.
+int TraceMark();
 /// vr.ini hide_shader = <hex> ...: draws with one of these vertex or pixel shaders are skipped.
 bool HiddenShader(uint64_t vs_hash, uint64_t ps_hash);
+/// vr.ini hide_target = <hex> ...: draws into a render target at one of these guest addresses are skipped. The \ key
+/// turns hide_shader and hide_target off and on.
+bool HiddenTarget(uint64_t address);
+/// True stereo diagnostics: the = key was pressed (once): the next frame's two-layer render targets are saved, both
+/// eyes, as they are when the HUD starts (BB_GPU_USER_DIR/eye_dump).
+bool EyeDump();
+/// The - key (vr.ini draw_trace off) was pressed (once): DLSS's inputs of the next 8 frames are saved
+/// (BB_GPU_USER_DIR/dlss_capture, as dlss_capture.trigger does).
+bool DlssCapture();
+/// vr.ini game_taa = 0 (or BB_GAME_TAA=0, without VR too): the game's temporal anti-aliasing is left out, the frame
+/// goes on as drawn (with the Game anti-aliasing; FSR and DLSS replace it anyway).
+bool GameTaaOff();
+/// VR: how much of the game's glow (its bloom) the frame keeps, 1 as the game draws it (vr.ini glow, BB_VR_GLOW;
+/// Shift and the \ key give the game's own for a comparison).
+float GlowScale();
+/// The glow scaled in place: `view` a storage view (GENERAL) of its B10G11R11 image, `layers` the eyes. False without
+/// the pipeline.
+bool ScaleGlow(VkCommandBuffer cmd, VkImageView view, uint32_t width, uint32_t height, uint32_t layers, float scale);
+/// vr.ini ffr = 1: fixed foveated rendering asked for (read before the device is made).
+bool FfrWanted();
+/// vr.ini exposure_log = 1 in VR: the auto-exposure value goes to the log (development).
+bool ExposureLog();
+/// vr.ini jitter_log = 1 (without a headset too): the game's anti-aliasing constants that move by a fraction of a
+/// pixel from frame to frame (a TAA jitter) go to the log, and how much each of the game's cameras (the car body, the
+/// game's head, the mirrors) shakes from frame to frame.
+bool JitterLog();
+/// The game's auto-exposure value as it reads it (average luminance, exposure; their product is kept): in VR it adapts
+/// over vr.ini exposure_time seconds, holds while the head looks up or down, and takes exposure_bias.
+void FilterExposure(float* value);
+/// The head's pitch in degrees (up positive), for the log.
+float HeadPitch();
+/// Foveated rendering now (asked for and not turned off with the ' key).
+bool FfrOn();
+/// Its zones in degrees from the middle of an eye (full rate inside `inner`, 2x2 to `outer`, 4x4 beyond) and the
+/// factor that brings the lower part nearer.
+void FfrZones(float& inner, float& outer, float& down);
+/// The tangents of the field of view both eyes are drawn with (true stereo), or false before the runtime gives it.
+bool DrawnTangents(float& right, float& up, float& down);
+/// vr.ini dump_each = 1: the shader to hide alone in the dump's frame `step` (1.., hide_shader's list), 0 when the
+/// list is done (or without dump_each, or for step 0: the frame as it is).
+uint64_t DumpHide(int step);
+/// Draws with this vertex or pixel shader are skipped (0: none), whatever hide_shader says.
+void SetSoloHide(uint64_t hash);
 bool SceneDrawn();
 /// `depth` (TRANSFER_SRC_OPTIMAL, stays so; may be null): the frame's scene depth, for reproject.
 /// `stereo`: the display buffer has the right eye in layer 1 (multiview): it is copied out too.

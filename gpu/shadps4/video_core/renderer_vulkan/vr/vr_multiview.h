@@ -35,6 +35,13 @@ class Runtime;
 class Scheduler;
 }
 
+namespace Vulkan::Vr::Fixes {
+/// The game's render size (its patched words): false before the game's image is there.
+bool RenderSize(u32& width, u32& height);
+/// The game's output size.
+bool OutputSize(u32& width, u32& height);
+} // namespace Vulkan::Vr::Fixes
+
 namespace Vulkan::Vr::Multiview {
 
 /// BB_VR_STEREO=mv was asked for (the device then enables multiview, the shaders are compiled for it).
@@ -196,8 +203,8 @@ void NoteRingBuffer(u64 address, u64 size);
 /// Development audit (BB_VR_AUDIT=1): an image copy (`what`) touching a two-layer image, once per kind.
 void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::Image& dst);
 
-/// Development log (BB_VR_MONO_COMPUTE): the draw's vertex shader.
-void SetDrawHash(u64 hash);
+/// The audit's names (BB_VR_AUDIT): before a draw binds, its vertex and pixel shaders; before a dispatch, its compute.
+void SetDrawHash(u64 hash, u64 ps_hash = 0);
 
 /// Runtime::ResolveImage: the layers to resolve or copy (`layers`, the source's and the destination's): both eyes when
 /// both images have them.

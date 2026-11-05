@@ -1,3 +1,7 @@
+#include <algorithm>
+#include <map>
+#include <tuple>
+#include <vector>
 #include "../../../shim/bbport_diagnostics.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -23,6 +27,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/host_compatibility.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include "bbport_prompts.h"
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
@@ -1032,6 +1037,10 @@ void TextureCache::RefreshImage(Image& image) {
     RENDERER_TRACE;
     TRACE_HINT(fmt::format("{:x}:{:x}", image.info.guest_address, image.info.guest_size));
 
+    // DCport: button prompts that follow the input device (bbport_prompts.cpp)
+    BbPrompts::OnUpload(image.info.guest_address, image.info.mips_layout[0].size, image.info.size.width,
+                        image.info.size.height, image.info.resources.levels, image.info.num_bits);
+
     if (True(image.flags & ImageFlagBits::MaybeCpuDirty) &&
         False(image.flags & ImageFlagBits::CpuDirty)) {
         // The image size should be less than page size to be considered MaybeCpuDirty
@@ -1139,6 +1148,14 @@ void TextureCache::RegisterImage(ImageId image_id) {
     ++registry_generation;
     ++membership_generation;
     total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    {
+        // For the pressure report: what is being created, to tell a pile-up from images made again and again.
+        static std::mutex created_mutex;
+        std::scoped_lock lock{created_mutex};
+        auto& slot = bb_created[{image.info.size.width, image.info.size.height, int(image.info.pixel_format)}];
+        ++slot.first;
+        slot.second += image.info.guest_size;
+    }
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     image.lru_touched_tick = gc_tick;
     ForEachPage(image.info.guest_address, image.info.guest_size,
@@ -1408,6 +1425,48 @@ void TextureCache::GarbageCollectImages() {
                         (unsigned long long)(critical_gc_memory >> 20),
                         (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
                         (unsigned long long)gc_skipped);
+            {
+                // What the cache holds: the biggest groups of images by size, format and kind, to see what piles up.
+                struct Group { u64 bytes = 0, count = 0; u32 w = 0, h = 0; int format = 0; bool tiled = false, download = false; };
+                std::map<std::tuple<u32, u32, int, bool, bool>, Group> groups;
+                for (auto& image : slot_images) {
+                    const bool tiled = image.info.IsTiled(), download = image.SafeToDownload();
+                    auto& g = groups[{image.info.size.width, image.info.size.height, int(image.info.pixel_format), tiled, download}];
+                    g.bytes += image.info.guest_size;
+                    ++g.count;
+                    g.w = image.info.size.width;
+                    g.h = image.info.size.height;
+                    g.format = int(image.info.pixel_format);
+                    g.tiled = tiled;
+                    g.download = download;
+                }
+                std::vector<Group> sorted;
+                for (const auto& entry : groups) {
+                    sorted.push_back(entry.second);
+                }
+                std::sort(sorted.begin(), sorted.end(), [](const Group& a, const Group& b) { return a.bytes > b.bytes; });
+                for (size_t i = 0; i < sorted.size() && i < 4; ++i) {
+                    std::printf("Texture cache: group %zu: %llu images %ux%u format %d%s%s, %llu MiB\n", i + 1,
+                                (unsigned long long)sorted[i].count, sorted[i].w, sorted[i].h, sorted[i].format,
+                                sorted[i].tiled ? " tiled" : "", sorted[i].download ? " GPU-written" : "",
+                                (unsigned long long)(sorted[i].bytes >> 20));
+                }
+            }
+            {
+                std::vector<std::pair<std::tuple<u32, u32, int>, std::pair<u64, u64>>> made(bb_created.begin(), bb_created.end());
+                u64 made_count = 0;
+                for (const auto& m : made) {
+                    made_count += m.second.first;
+                }
+                std::sort(made.begin(), made.end(), [](const auto& a, const auto& b) { return a.second.second > b.second.second; });
+                std::printf("Texture cache: %llu images made since the last report\n", (unsigned long long)made_count);
+                for (size_t i = 0; i < made.size() && i < 3; ++i) {
+                    std::printf("Texture cache: made %llu of %ux%u format %d, %llu MiB\n", (unsigned long long)made[i].second.first,
+                                std::get<0>(made[i].first), std::get<1>(made[i].first), std::get<2>(made[i].first),
+                                (unsigned long long)(made[i].second.second >> 20));
+                }
+                bb_created.clear();
+            }
             gc_report_time = now;
             gc_evictions = gc_downloads = gc_skipped = 0;
         }

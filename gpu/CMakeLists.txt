@@ -36,10 +36,9 @@ if (BB_PGO STREQUAL "generate")
 elseif (BB_PGO STREQUAL "use" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Clang: code without recorded counts is optimized normally, and functions changed since the profile
     # (or built differently for it, bbgpu_init) are compiled without it.
-    # bbport VR: functions this build changes since the profile (main inlines the VR-aware horizon lock) are
-    # reported through -Wbackend-plugin, which -Werror would stop on.
     add_compile_options(-fprofile-use=${BB_PGO_DIR} -Wno-profile-instr-missing
-                        -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin)
+                        -Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled
+                        -Wno-error=backend-plugin)
 elseif (BB_PGO STREQUAL "use")
     # GCC (Linux, .gcda files): partial training keeps unprofiled code optimized normally; counters from
     # concurrent threads can be slightly inconsistent (correction).
@@ -132,12 +131,18 @@ add_host_shader(hdr_output.frag hdr_output_frag)
 add_host_shader(hdr_exposure.comp hdr_exposure_comp)
 add_host_shader(camera_motion.comp camera_motion_comp)
 add_host_shader(drive_motion.comp drive_motion_comp)
+add_host_shader(dc_motion.comp dc_motion_comp)
 add_host_shader(drive_aa_copy.comp drive_aa_copy_comp)
 # VR (bbport_vr.cpp): the game's picture for the headset.
 add_host_shader(vr_copy.comp vr_copy_comp)
 add_host_shader(vr_hud.comp vr_hud_comp)
 add_host_shader(vr_window.comp vr_window_comp)
 add_host_shader(vr_reproject.comp vr_reproject_comp)
+add_host_shader(vr_resample.comp vr_resample_comp)
+add_host_shader(vr_smaa.comp vr_smaa_edges_comp SMAA_PASS=0)
+add_host_shader(vr_smaa.comp vr_smaa_weights_comp SMAA_PASS=1)
+add_host_shader(vr_smaa.comp vr_smaa_blend_comp SMAA_PASS=2)
+add_host_shader(vr_glow.comp vr_glow_comp)
 add_host_shader(taa_sharpen.comp drive_aa_sharpen_comp HALF_INPUT=1)
 add_host_shader(upscale_merge.comp upscale_merge_comp)
 add_host_shader(upscale_reactive.comp upscale_reactive_comp)
@@ -270,7 +275,7 @@ target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     BB_EXIT_HEADING_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/fonts/004russian-webfont.ttf")
 set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
     OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf)
-target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
+target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include third_party/ffx-api)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_definitions(bbgpu PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)

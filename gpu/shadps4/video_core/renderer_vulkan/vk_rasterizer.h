@@ -70,6 +70,38 @@ public:
     DrawPreparation& GetDrawPreparation() {
         return *draw_prep;
     }
+
+    /// The port's own anti-aliasing and upscaling pass, for the presenter to ask what it produced.
+    DriveAA* GetDriveAA() noexcept {
+        return drive_aa.get();
+    }
+
+    /// bbport: stamp the guest simulation identity captured at submit acceptance onto the
+    /// draw recording batch. Called by Liverpool on the GPU command thread before any command
+    /// buffer of the submission is allocated.
+    ///
+    /// The draw-recording thread (stage B) records into the scheduler's current command buffer
+    /// while this thread decodes PM4, so the identity must be compared here using a
+    /// producer-only value and the scheduler only touched after stage B has been drained.
+    /// Draining on every DCB would serialize the pipeline; it is needed only when the identity
+    /// actually changes (including the first capture), because that is when the scheduler
+    /// flushes the still-open buffer under the previous identity.
+    void SetSubmissionFrameId(u64 frame_id) {
+        // Reflex off or unsupported: leave the legacy pacing path completely untouched. The
+        // retag, drain and boundary flush exist only for Reflex attribution.
+        if (!Reflex::IsActive()) {
+            return;
+        }
+        if (captured_submission_id_valid && captured_submission_id == frame_id) {
+            return;
+        }
+        captured_submission_id = frame_id;
+        captured_submission_id_valid = true;
+        // A mode change from Off to On can leave a legacy command tail recorded without any
+        // Reflex identity; drain it before the scheduler changes ids so it is not misattributed.
+        DrainDrawPipe(DrawPipe::ReasonCommands);
+        scheduler.SetSubmissionFrameId(frame_id);
+    }
     void DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 size, u32 max_count,
                       VAddr count_address, u16 vertex_sgpr_offset, u16 instance_sgpr_offset);
 
@@ -444,8 +476,15 @@ private:
     bool fg_in_display = false;
     u32 fg_display_draws = 0; ///< draws into the display buffer since other work
     bool fg_capture_pending = false;
+    void DumpEyeTargets(int step); ///< VR eye dump (BbVr::EyeDump)
+    bool vr_ffr_scene = false;   ///< VR foveated rendering: from the G-buffer pass to the anti-aliasing (the scene)
     bool vr_hud_pending = false; ///< VR: the next display draw that is not a scene overlay starts the HUD
     VideoCore::ImageId vr_depth{}; ///< VR: this frame's scene depth (the biggest G-buffer pass's)
+    /// VR: the game's glow (its bloom, drawn by vs 611c6f6a) this frame, scaled before the composite (vs 8d52ab95)
+    /// reads it (BbVr::GlowScale)
+    VideoCore::ImageId vr_glow{};
+    u64 vr_glow_uid = 0;
+    void VrScaleGlow();
     u64 vr_depth_area = 0;
     /// A compute pass writes one of the mirror scene's targets while that scene is skipped: it would filter
     /// an already filtered picture again, so the dispatch is dropped as well.
@@ -455,6 +494,11 @@ private:
     std::array<float, 2> target_scale{1.0f, 1.0f}; ///< pass drawn into the upscaler's output-size images
     const bool host_markers_enabled;
     const bool guest_markers_enabled;
+    /// bbport: last guest simulation identity stamped onto a submission. Written and read only
+    /// on the GPU command thread (the PM4 producer), never concurrently with the draw-recording
+    /// thread, so it can be compared without the scheduler lock.
+    u64 captured_submission_id = 0;
+    bool captured_submission_id_valid = false;
 
     using RenderTargetInfo = std::pair<VideoCore::ImageId, VideoCore::TextureCache::ImageDesc>;
     std::array<RenderTargetInfo, AmdGpu::NUM_COLOR_BUFFERS> cb_descs;

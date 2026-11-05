@@ -1,7 +1,8 @@
 /* Lock to horizon and camera shake (the launcher's Driving tab), DriveClub 1.28, Windows x86-64 only.
 
-   BB_LOCK_HORIZON=1: the cockpit (driver's head) camera keeps the horizon level while the car rolls and pitches, as
-   Assetto Corsa's option does; =2: the bonnet, bumper, dash and chase cameras too. BB_CAMERA_SHAKE=<0..100>: percent
+   BB_LOCK_HORIZON=1: the cockpit (driver's head) camera is steadied as a driver's head is: it follows the car's slow
+   pitch and roll (hills, banking) and takes out most of the quick ones (horizon_follow), much as Assetto Corsa's lock
+   to horizon does; =2: the bonnet, bumper, dash and chase cameras too. BB_CAMERA_SHAKE=<0..200>: percent
    of the game's camera shake (100 as made).
 
    Cockpit: in the driver's head camera update (guest +0xb916d0, `this` in r15), at +0xb92420, +0x270..+0x2a0 hold the
@@ -17,8 +18,9 @@
    earlier in the same call.
 
    A camera fixed to the car (cockpit, bonnet, bumper, dash) keeps its turn relative to the car (the head looking into
-   corners, its sway on the game's springs, the view down the road) and has it put on the car levelled: its heading
-   only, without roll and pitch. A chase camera follows the car's roll only partly (its ROLL_PERCENTAGE), so its own
+   corners, its sway on the game's springs, the view down the road) and has it put on the car steadied as a driver's
+   head does it: the heading as it is, the pitch and roll followed slowly (horizon_follow: hills, crests and banking
+   come through, bumps, dive and body roll mostly not). A chase camera follows the car's roll only partly (its ROLL_PERCENTAGE), so its own
    tilt is taken out instead; it still looks down at the car. Positions stay. The game's camera shake comes after both.
 
    What still tips a fixed camera then is the head swaying on the game's springs (its tilt and nod relative to the car).
@@ -56,6 +58,11 @@ static void horizon_rows(const float f[3], float roll, float hand, float out[3][
     out[0][1]=hand*(up[2]*f[0]-up[0]*f[2]);
     out[0][2]=hand*(up[0]*f[1]-up[1]*f[0]);
 }
+/* An angle to -pi..pi */
+static float horizon_wrap(float a) {
+    const float pi=3.14159265f;
+    return a>pi ? a-2.0f*pi : a<-pi ? a+2.0f*pi : a;
+}
 /* A fixed camera's rows with their nod (pitch) and tilt (roll) smoothed; `key`: the camera. */
 static void horizon_smooth(const void *key, float out[3][3], float hand) {
     static struct { const void *key; LONGLONG last; float pitch, roll; } state[64];
@@ -75,30 +82,64 @@ static void horizon_smooth(const void *key, float out[3][3], float hand) {
         else if (state[i].last<state[oldest].last) oldest=i;
     }
     if (slot<0) { slot=oldest; state[slot].key=key; state[slot].last=0; }
-    const float dt=state[slot].last ? (float)(now.QuadPart-state[slot].last)/(float)frequency.QuadPart : 1.0f;
+    float dt=state[slot].last ? (float)(now.QuadPart-state[slot].last)/(float)frequency.QuadPart : 10.0f;
     state[slot].last=now.QuadPart;
-    if (dt>0.2f) { state[slot].pitch=pitch; state[slot].roll=roll; return; }   /* first call, or after a pause */
+    if (dt>2.0f) { state[slot].pitch=pitch; state[slot].roll=roll; return; }   /* first call, or after a pause */
+    dt=fminf(dt,0.1f);   /* a stutter: on from where it was, not a jump */
     const float k=1.0f-expf(-dt/horizon_smooth_s);
     state[slot].pitch+=(pitch-state[slot].pitch)*k;
-    state[slot].roll+=(roll-state[slot].roll)*k;
+    state[slot].roll=horizon_wrap(state[slot].roll+horizon_wrap(roll-state[slot].roll)*k);
     /* rebuilt from the heading as it is and the smoothed nod and tilt */
     const float horizontal=sqrtf(f[0]*f[0]+f[2]*f[2]), cp=cosf(state[slot].pitch);
     const float fw[3]={f[0]/horizontal*cp,sinf(state[slot].pitch),f[2]/horizontal*cp};
     horizon_rows(fw,state[slot].roll,hand,out);
 }
-/* A camera fixed to the car: rows cam (stride 4) put on the car (rows, stride 4) levelled. */
+/* The driver's head steadies the view as a real one does: it follows the car's slow pitch and roll (a hill, a crest, a
+   banked or cambered road: going downhill the driver is tipped forward with the car and sees the road fall away) and
+   takes out the quick ones (bumps, the dive under braking, the body rocking), all but a little of them. So the car is
+   put on its own pitch and roll followed over horizon_follow_pitch_s and horizon_follow_roll_s, plus horizon_jolt of
+   what is quicker; its heading always as it is. (It was put on the world's horizon before: perfectly level downhill.) */
+static const float horizon_follow_pitch_s=0.8f, horizon_follow_roll_s=1.2f, horizon_jolt=0.15f;
+static void horizon_follow(const void *key, float *pitch, float *roll) {
+    static struct { const void *key; LONGLONG last; float pitch, roll; } state[64];
+    static LARGE_INTEGER frequency;
+    if (!frequency.QuadPart) QueryPerformanceFrequency(&frequency);
+    LARGE_INTEGER now; QueryPerformanceCounter(&now);
+    int slot=-1, oldest=0;
+    for (int i=0;i<64 && slot<0;++i) {
+        if (state[i].key==key) slot=i;
+        else if (state[i].last<state[oldest].last) oldest=i;
+    }
+    if (slot<0) { slot=oldest; state[slot].key=key; state[slot].last=0; }
+    float dt=state[slot].last ? (float)(now.QuadPart-state[slot].last)/(float)frequency.QuadPart : 10.0f;
+    state[slot].last=now.QuadPart;
+    if (dt>2.0f) { state[slot].pitch=*pitch; state[slot].roll=*roll; return; }   /* first call, or after a pause */
+    dt=fminf(dt,0.1f);   /* a stutter: on from where it was, not a jump to the car's roll and dive */
+    state[slot].pitch+=(*pitch-state[slot].pitch)*(1.0f-expf(-dt/horizon_follow_pitch_s));
+    /* roll the short way round (a car on its roof is at +-180 degrees) */
+    state[slot].roll=horizon_wrap(state[slot].roll+horizon_wrap(*roll-state[slot].roll)*(1.0f-expf(-dt/horizon_follow_roll_s)));
+    *pitch=state[slot].pitch+(*pitch-state[slot].pitch)*horizon_jolt;
+    *roll=horizon_wrap(state[slot].roll+horizon_wrap(*roll-state[slot].roll)*horizon_jolt);
+}
+/* A camera fixed to the car: rows cam (stride 4) put on the car (rows, stride 4) steadied. */
 static void horizon_level(float *cam, const float *car, const void *key, const char *what) {
     float row[3][3];   /* the car's axes, unit length */
     for (int i=0;i<3;++i) { for (int k=0;k<3;++k) row[i][k]=car[i*4+k]; horizon_normalize(row[i]); }
-    /* The car levelled: its forward axis on the ground plane, up straight up, left from those two with the car's own
-       handedness. A car pointing (nearly) straight up or down has no heading: left as it is. */
-    float level[3][3]={{0,0,0},{0,1,0},{row[2][0],0,row[2][2]}};
-    if (level[2][0]*level[2][0]+level[2][2]*level[2][2]<0.01f) return;
-    horizon_normalize(level[2]);
+    /* The car steadied: its heading, with its pitch and roll as the head follows them (horizon_follow), left from those
+       with the car's own handedness. A car pointing (nearly) straight up or down has no heading: left as it is. */
+    float f[3]={row[2][0],row[2][1],row[2][2]};
+    if (f[0]*f[0]+f[2]*f[2]<0.01f || fabsf(f[1])>0.95f) return;
     const float hand=horizon_hand(row);
-    level[0][0]=hand*(level[1][1]*level[2][2]-level[1][2]*level[2][1]);
-    level[0][1]=hand*(level[1][2]*level[2][0]-level[1][0]*level[2][2]);
-    level[0][2]=hand*(level[1][0]*level[2][1]-level[1][1]*level[2][0]);
+    float flat[3][3];
+    horizon_rows(f,0.0f,hand,flat);
+    float pitch=asinf(f[1]);
+    float roll=atan2f(row[1][0]*flat[0][0]+row[1][1]*flat[0][1]+row[1][2]*flat[0][2],
+                      row[1][0]*flat[1][0]+row[1][1]*flat[1][1]+row[1][2]*flat[1][2]);
+    horizon_follow(key,&pitch,&roll);
+    const float horizontal=sqrtf(f[0]*f[0]+f[2]*f[2]), cp=cosf(pitch);
+    const float fw[3]={f[0]/horizontal*cp,sinf(pitch),f[2]/horizontal*cp};
+    float level[3][3];
+    horizon_rows(fw,roll,hand,level);
     /* the camera's rows in the car's axes, then on the levelled car */
     float rel[3][3], out[3][3];
     for (int i=0;i<3;++i) for (int j=0;j<3;++j) rel[i][j]=cam[i*4]*row[j][0]+cam[i*4+1]*row[j][1]+cam[i*4+2]*row[j][2];
@@ -110,7 +151,8 @@ static void horizon_level(float *cam, const float *car, const void *key, const c
         if (logged[i]==what) break;
         if (!logged[i]) {
             logged[i]=what;
-            printf("Runtime: lock to horizon: first %s camera, car up axis %.3f %.3f %.3f (world up is +y)\n",what,row[1][0],row[1][1],row[1][2]);
+            printf("Runtime: lock to horizon: first %s camera, car up axis %.3f %.3f %.3f (world up is +y); the head follows the car's pitch over %.1f s and roll over %.1f s, %.0f%% of quicker movement\n",
+                   what,row[1][0],row[1][1],row[1][2],(double)horizon_follow_pitch_s,(double)horizon_follow_roll_s,(double)horizon_jolt*100.0);
             break;
         }
     }
@@ -267,8 +309,8 @@ static void horizon_lock_install(void) {
     const char *mode=getenv("BB_LOCK_HORIZON"), *smooth=getenv("BB_LOCK_HORIZON_SMOOTH"), *shake=getenv("BB_CAMERA_SHAKE");
     horizon_mode=mode && (mode[0]=='1' || mode[0]=='2') && !mode[1] ? mode[0]-'0' : 0;
     if (smooth && *smooth) horizon_smooth_s=(float)atoi(smooth)/1000.0f;
-    if (shake && *shake) camera_shake=(float)(atoi(shake)<0 ? 0 : atoi(shake)>100 ? 100 : atoi(shake))/100.0f;
-    if (camera_shake<0.999f) {
+    if (shake && *shake) camera_shake=(float)(atoi(shake)<0 ? 0 : atoi(shake)>200 ? 200 : atoi(shake))/100.0f;
+    if (camera_shake<0.999f || camera_shake>1.001f) {
         /* the 18 bytes of the effect call (mov rax,[r12+0x78]; mov rdi,[rax+rbx*8]; mov rax,[rdi]; mov rsi,r15;
            call [rax+0x10]): jmp [rip] to the bridge, then four bytes never reached */
         static const unsigned char call[18]={0x49,0x8b,0x44,0x24,0x78,0x48,0x8b,0x3c,0xd8,0x48,0x8b,0x07,0x4c,0x89,0xfe,0xff,0x50,0x10};
@@ -302,7 +344,7 @@ static void horizon_lock_install(void) {
         return;
     }
     const int others=horizon_mode==2 && horizon_patch(0xcc8a57,cameras,(uintptr_t)horizon_cameras_bridge,&horizon_cameras_resume);
-    printf("Runtime: lock to horizon on: the cockpit view%s keeps the horizon level, smoothing %d ms\n",
+    printf("Runtime: lock to horizon on: the cockpit view%s steadied (follows the car's slow pitch and roll), smoothing %d ms\n",
            others ? ", bonnet, bumper, dash and chase views" : horizon_mode==2 ? " (the other views do not fit this game version)" : "",
            (int)lroundf(horizon_smooth_s*1000.0f));
 }

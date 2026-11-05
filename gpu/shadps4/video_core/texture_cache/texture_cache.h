@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <map>
+#include <mutex>
+#include <tuple>
 #include <atomic>
 #include <chrono>
 #include "bbport_toggles.h"
@@ -414,6 +417,7 @@ private:
     std::unordered_set<ImageId> download_images;
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0, gc_skipped = 0; ///< bbport: pressure report
+    std::map<std::tuple<u32, u32, int>, std::pair<u64, u64>> bb_created; ///< images registered since the last report: count, bytes
     std::chrono::steady_clock::time_point gc_report_time{};
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;

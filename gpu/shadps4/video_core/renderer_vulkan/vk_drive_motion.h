@@ -33,7 +33,8 @@ public:
     void Record(vk::CommandBuffer cmdbuf, vk::ImageView depth_view, vk::ImageView mask_view,
                 vk::ImageView motion_view,
                 u32 width, u32 height, u32 src_width, u32 src_height, bool normalized,
-                vk::ImageView object_view = {}, vk::ImageView color_view = {}, float eye_shift = 0.0f);
+                vk::ImageView object_view = {}, vk::ImageView color_view = {},
+                std::array<float, 2> jitter = {}, float eye_shift = 0.0f);
 
     /// VR with alternate frames: the motion goes back two frames, to the same eye's last frame (the previous one is
     /// the other eye's): the game's moves of this frame and the last are chained.

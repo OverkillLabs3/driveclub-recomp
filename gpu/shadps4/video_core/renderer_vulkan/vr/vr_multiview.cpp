@@ -19,6 +19,7 @@
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h"
+#include "video_core/renderer_vulkan/vr/vr_foveation.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
 
@@ -86,6 +87,8 @@ std::vector<AuditRes> g_left_only; // resources written for the left eye only fr
 std::vector<AuditRes> g_mono_targets; // one-layer images a one-eye draw rendered into (shadow maps, mirrors, masks...)
 std::string g_audit_mono_target_reads; // such images the bindings read
 std::mutex g_audit_mutex;
+u64 g_draw_hash = 0; // the shader being bound: a draw's vertex shader or the dispatch's compute (the audit's names)
+u64 g_draw_ps = 0;   // a draw's pixel shader
 
 std::string AuditName(const VideoCore::Image& image) {
     char text[128];
@@ -130,6 +133,11 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
     const bool camera_draw = !compute && g_audit_main_camera;
     const bool from_eyes = g_audit_reads_stereo || !g_audit_left_reads.empty() || camera_draw;
     static std::unordered_map<u64, bool> seen;
+    const u64 key = hash * 0x9e3779b97f4a7c15ull + (compute ? 0 : g_draw_ps) * 8; // each finding once per shader pair
+    char ps[32] = "";
+    if (!compute) {
+        std::snprintf(ps, sizeof(ps), " ps %#llx", (unsigned long long)g_draw_ps);
+    }
     // BB_VR_AUDIT_VS=<hex>: every pass with that shader hash, its reads and writes (a few times).
     static const u64 watch = [] {
         const char* v = std::getenv("BB_VR_AUDIT_VS");
@@ -146,7 +154,7 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
                                   [](const AuditRes& r) { return r.address <= watch_addr && watch_addr < r.address + std::max<u64>(r.size, 1); });
     if (((watch && hash == watch) || writes_watched) && watch_left > 0) {
         --watch_left;
-        std::printf("VR audit: VS %#llx %s reads%s; writes%s\n", (unsigned long long)hash,
+        std::printf("VR audit: VS %#llx%s %s reads%s; writes%s\n", (unsigned long long)hash, ps,
                     per_eye ? "both eyes" : "ONE EYE", AuditList(g_audit_reads).c_str(), AuditList(outputs).c_str());
         std::fflush(stdout);
     }
@@ -159,9 +167,9 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
             marked.name += tag;
             g_left_only.push_back(marked);
         }
-        if (seen.emplace(hash ^ 1, true).second) {
-            std::printf("VR audit: ONE EYE %s %#llx writes%s from%s%s%s\n", compute ? "compute" : "draw vs",
-                        (unsigned long long)hash, AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str(),
+        if (seen.emplace(key ^ 1, true).second) {
+            std::printf("VR audit: ONE EYE %s %#llx%s writes%s from%s%s%s\n", compute ? "compute" : "draw vs",
+                        (unsigned long long)hash, ps, AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str(),
                         g_audit_left_reads.empty() ? "" : (" | left-eye-only:" + g_audit_left_reads).c_str(),
                         camera_draw ? " | with the player camera" : "");
             std::fflush(stdout);
@@ -186,14 +194,14 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
             }
         }
     }
-    if (per_eye && !g_audit_mono_target_reads.empty() && seen.emplace(hash ^ 4, true).second) {
-        std::printf("VR audit: BOTH EYES READ ONE-LAYER RENDER %s %#llx reads%s; writes%s\n", compute ? "compute" : "draw vs",
-                    (unsigned long long)hash, g_audit_mono_target_reads.c_str(), AuditList(outputs).c_str());
+    if (per_eye && !g_audit_mono_target_reads.empty() && seen.emplace(key ^ 4, true).second) {
+        std::printf("VR audit: BOTH EYES READ ONE-LAYER RENDER %s %#llx%s reads%s; writes%s\n",
+                    compute ? "compute" : "draw vs", (unsigned long long)hash, ps, g_audit_mono_target_reads.c_str(), AuditList(outputs).c_str());
         std::fflush(stdout);
     }
-    if (per_eye && !g_audit_left_reads.empty() && seen.emplace(hash ^ 2, true).second) {
-        std::printf("VR audit: BOTH EYES READ LEFT %s %#llx reads%s; writes%s; also reads%s\n",
-                    compute ? "compute" : "draw vs", (unsigned long long)hash, g_audit_left_reads.c_str(),
+    if (per_eye && !g_audit_left_reads.empty() && seen.emplace(key ^ 2, true).second) {
+        std::printf("VR audit: BOTH EYES READ LEFT %s %#llx%s reads%s; writes%s; also reads%s\n",
+                    compute ? "compute" : "draw vs", (unsigned long long)hash, ps, g_audit_left_reads.c_str(),
                     AuditList(outputs).c_str(), AuditList(g_audit_reads).c_str());
         std::fflush(stdout);
     }
@@ -204,7 +212,6 @@ void AuditFinish(bool compute, u64 hash, bool per_eye) {
     g_audit_mono_target_reads.clear();
     g_audit_left_reads.clear();
 }
-u64 g_draw_hash = 0;        // the draw's vertex shader (BB_VR_MONO_COMPUTE)
 bool g_second_eye = false;    // the dispatch being recorded runs again for the right eye
 
 void Log(const char* text) {
@@ -219,14 +226,18 @@ bool Enabled() {
 }
 
 const char* CacheSuffix() {
-    // Multiview shaders (2D images as arrays, per-eye buffers, the eye shift) are cached apart.
-    return Requested() ? "_mv" : "";
+    // Multiview shaders (2D images as arrays, per-eye buffers, the eye shift) are cached apart. _mv2: multisampled
+    // images are arrays too.
+    return Requested() ? "_mv2" : "";
 }
 
 void OnDevice(VkDevice device, bool supported) {
     g_device = device;
     g_enabled = Requested() && supported;
     g_audit = g_enabled && std::getenv("BB_VR_AUDIT") != nullptr;
+    if (g_audit) {
+        Log("audit on: passes that give both eyes one eye's picture are logged");
+    }
     if (Requested()) {
         Log(supported ? "on" : "requested, but the device has no multiview");
     }
@@ -290,12 +301,27 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
             }
         }
     }
+    // The same glow images at other eye sizes: a quarter of the render size, the width rounded up to 256 and the
+    // height to 128 (3200x3440 -> 1024x896 as above, 3064x3280 -> 768x896, 2784x2984 -> 768x768). At 768x896 they had
+    // one layer: the right eye got the left eye's glow (a faint second pair of hands, glows out of place). The other
+    // roundings (128 across, 64 down) are taken too.
+    if (info.pixel_format == vk::Format::eB10G11R11UfloatPack32 || info.pixel_format == vk::Format::eR16G16B16A16Sfloat) {
+        const auto up = [](u32 v, u32 a) { return (v + a - 1) / a * a; };
+        const u32 qw = (sizes[0][0] + 3) / 4, qh = (sizes[0][1] + 3) / 4;
+        if ((info.size.width == up(qw, 256) || info.size.width == up(qw, 128)) &&
+            (info.size.height == up(qh, 128) || info.size.height == up(qh, 64))) {
+            return TwoLayers(info);
+        }
+    }
     // The bloom: 4/15 of the render size (2880 -> 768, within a pixel: the game's rounding), one image with its mips
     // (formats R16G16B16A16 float and B10G11R11). One layer, it was built from the left eye alone and the right eye got
     // the left eye's glow (headlights, glints on the cars' paint in other places in each eye). Only that size: with
     // DLSS Quality it is 512, and its halvings were the game's own textures (64x64, 128x128...).
+    // It is square, from the height: 768x768 for 2688x2880 too (one layer there before: the left eye's glow in both).
     const s64 bloom_w = s64(sizes[0][0] * 4 / 15), bloom_h = s64(sizes[0][1] * 4 / 15);
-    if (std::abs(s64(info.size.width) - bloom_w) <= 1 && std::abs(s64(info.size.height) - bloom_h) <= 1 &&
+    const auto within = [](u32 a, s64 b) { return std::abs(s64(a) - b) <= 1; };
+    if (((within(info.size.width, bloom_w) && within(info.size.height, bloom_h)) ||
+         (within(info.size.width, bloom_h) && within(info.size.height, bloom_h))) &&
         (info.pixel_format == vk::Format::eR16G16B16A16Sfloat ||
          info.pixel_format == vk::Format::eB10G11R11UfloatPack32)) {
         return TwoLayers(info);
@@ -308,7 +334,7 @@ bool Stereo(const VideoCore::Image& image) {
 }
 
 bool ArrayView(AmdGpu::ImageType type) {
-    return Requested() && type == AmdGpu::ImageType::Color2D;
+    return Requested() && (type == AmdGpu::ImageType::Color2D || type == AmdGpu::ImageType::Color2DMsaa);
 }
 
 void AdjustView(const VideoCore::Image& image, const VideoCore::ImageViewInfo& info, vk::ImageViewType& type,
@@ -369,6 +395,18 @@ void OnPipelineCreated(vk::Device device, vk::PipelineCache cache, const vk::Gra
     multiview.viewMask = 0b11;
     vk::GraphicsPipelineCreateInfo twin_info = info;
     twin_info.pNext = &multiview;
+    // Foveated rendering: the twins take the pass's rate attachment (the pipeline's own rate stays 1x1, the
+    // attachment's replaces it; a pass without one draws at full rate).
+    vk::PipelineFragmentShadingRateStateCreateInfoKHR shading_rate{
+        .fragmentSize = {1, 1},
+        .combinerOps = std::array{vk::FragmentShadingRateCombinerOpKHR::eKeep,
+                                  vk::FragmentShadingRateCombinerOpKHR::eReplace},
+    };
+    if (Foveation::Supported()) {
+        shading_rate.pNext = multiview.pNext;
+        multiview.pNext = &shading_rate;
+        twin_info.flags |= vk::PipelineCreateFlagBits::eRenderingFragmentShadingRateAttachmentKHR;
+    }
     // Specialisation constant 200 = true: the vertex shader shifts each view (emit_spirv_vr.h).
     static const VkBool32 on = VK_TRUE;
     static const vk::SpecializationMapEntry entry{200, 0, sizeof(VkBool32)};
@@ -606,8 +644,9 @@ void AuditCopy(const char* what, const VideoCore::Image& src, const VideoCore::I
     }
 }
 
-void SetDrawHash(u64 hash) {
+void SetDrawHash(u64 hash, u64 ps_hash) {
     g_draw_hash = hash;
+    g_draw_ps = ps_hash;
 }
 
 // Per-eye buffers (vr_multiview.h): the computes that run per eye (BB_VR_EYE_COMPUTES=hex,hex to replace the list,
@@ -775,9 +814,8 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
         g_second_eye = g_writes_stereo || g_eye_dispatch; // a per-eye buffer: the right eye's dispatch writes its copy
         if (g_audit) {
             std::scoped_lock lock{g_audit_mutex};
-            AuditFinish(true, g_dispatch_hash, g_second_eye);
+            AuditFinish(true, g_draw_hash, g_second_eye);
         }
-        g_dispatch_hash = 0; // draws bind with no compute's hash (EyeCompute)
         static const bool log = std::getenv("BB_VR_HASHES") != nullptr;
         static std::unordered_map<u64, bool> seen;
         if (log && seen.emplace(g_dispatch_hash ^ (u64(g_second_eye) << 63), true).second) {
@@ -785,6 +823,7 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
                         g_second_eye ? "both eyes" : "once");
             std::fflush(stdout);
         }
+        g_dispatch_hash = 0; // draws bind with no compute's hash (EyeCompute)
     } else {
         out.vr_shift = {g_shift, -g_shift};
         if (g_audit) {

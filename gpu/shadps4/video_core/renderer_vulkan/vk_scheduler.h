@@ -19,6 +19,7 @@
 #include <queue>
 
 #include "bbport_toggles.h"
+#include "video_core/renderer_vulkan/vk_reflex.h"
 #include "common/assert.h"
 #include "common/interval_set.h"
 #include "common/unique_function.h"
@@ -60,6 +61,7 @@ struct RenderState {
     u16 num_color_attachments;
     u16 view_mask = 0; ///< VR multiview: 0b11 draws both eyes (vr_multiview.h)
     u16 vr_pad[3] = {};
+    vk::ImageView shading_rate_view{}; ///< VR foveated rendering: the pass's rate attachment (vr_foveation.h)
 
     bool operator==(const RenderState& other) const noexcept {
         return Common::BytesEqual<sizeof(RenderState)>(this, &other);
@@ -716,6 +718,34 @@ public:
     /// Ends current rendering scope.
     void EndRendering();
 
+    /// bbport: Reflex frame attribution associated with this scheduler / recording batch.
+    void SetFrameId(u64 frame_id) {
+        recording_id.SetFrameId(frame_id);
+    }
+    [[nodiscard]] u64 GetFrameId() const noexcept {
+        return recording_id.RecordingId();
+    }
+
+    /// bbport: adopt the guest simulation identity captured when a top-level graphics
+    /// submission was accepted (see Liverpool::SubmitGfx). The accepted value applies
+    /// immediately to the currently open buffer and persistently to every command buffer
+    /// allocated for that submission, instead of the live counter that the guest may already
+    /// have advanced past. A new source boundary is the only thing that replaces it.
+    void SetSubmissionFrameId(u64 frame_id);
+
+    /// bbport: Out-of-band queue marker configuration for compositor / presentation blits.
+    void SetOutOfBand(bool oob) {
+        is_out_of_band = oob;
+    }
+    // Latency attribution and queue routing are separate: CPU flip preparation
+    // remains ordered with game draws even when its markers are out of band.
+    void SetPresentQueue(bool use_present) {
+        use_present_queue = use_present;
+    }
+    [[nodiscard]] bool IsOutOfBand() const noexcept {
+        return is_out_of_band;
+    }
+
     /// Sets a function to be called on every scheduler submission.
     void SetSubmitCallback(SubmitFunc&& on_submit) {
         this->on_submit = std::move(on_submit);
@@ -742,6 +772,9 @@ public:
             direct_recordings.fetch_add(1, std::memory_order_relaxed);
             TraceDirectRecording(__builtin_return_address(0));
         }
+        // bbport: a caller that takes the raw command buffer may record into it. Conservative:
+        // over-approximating only keeps the Reflex boundary flush, never drops recorded work.
+        has_recorded_work = true;
         return current_cmdbuf;
     }
 
@@ -753,6 +786,8 @@ public:
     template <typename Func>
     void Record(Func&& func) {
         BB_PIPE_CHECK_OBJ("Scheduler::Record", static_cast<const void*>(this));
+        // bbport: any deferred or direct command counts as recorded work for the boundary flush.
+        has_recorded_work = true;
         if (!recording_threaded || direct_mode) {
             func(current_cmdbuf);
             return;
@@ -933,6 +968,13 @@ private:
     DynamicState dynamic_state;
     SubmitFunc on_submit{};
     vk::CommandBuffer current_cmdbuf;
+    /// bbport: the recording identity state machine (see vk_reflex.h). It applies an accepted
+    /// submission identity immediately and keeps it across every allocation of that submission.
+    Reflex::RecordingIdentity recording_id;
+    /// bbport: set by Record()/CommandBuffer(), cleared when a new command buffer is allocated.
+    bool has_recorded_work = false;
+    bool is_out_of_band = false;
+    bool use_present_queue = false;
     std::condition_variable_any event_cv;
     struct PendingOp {
         Common::UniqueFunction<void> callback;

@@ -24,7 +24,7 @@ online status work. Public matchmaking and ghosts do not yet. Details: [README.m
 
 ## Play
 
-1. **Host:** in the launcher, **Gameplay**, **ONLINE**, choose **Host a session**, then press Play. The server starts
+1. **Host:** in the launcher, **General**, **ONLINE**, choose **Host a session**, then press Play. The server starts
    and the launcher shows your IP addresses (Tailscale `100.x`, Hamachi `25.x`, Radmin `26.x`, home network
    `192.168.x`). Give one of them to your friends.
 2. **Friends:** **ONLINE**, **Join a session**, type the host's IP address under **Host's IP address**, then press Play.
