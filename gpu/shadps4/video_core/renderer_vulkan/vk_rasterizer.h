@@ -480,6 +480,11 @@ private:
     bool vr_ffr_scene = false;   ///< VR foveated rendering: from the G-buffer pass to the anti-aliasing (the scene)
     bool vr_hud_pending = false; ///< VR: the next display draw that is not a scene overlay starts the HUD
     VideoCore::ImageId vr_depth{}; ///< VR: this frame's scene depth (the biggest G-buffer pass's)
+    /// VR: the game's glow (its bloom, drawn by vs 611c6f6a) this frame, scaled before the composite (vs 8d52ab95)
+    /// reads it (BbVr::GlowScale)
+    VideoCore::ImageId vr_glow{};
+    u64 vr_glow_uid = 0;
+    void VrScaleGlow();
     u64 vr_depth_area = 0;
     /// A compute pass writes one of the mirror scene's targets while that scene is skipped: it would filter
     /// an already filtered picture again, so the dispatch is dropped as well.

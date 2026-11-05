@@ -72,6 +72,12 @@ void SetShift(float shift);
 #include "video_core/host_shaders/vr_window_comp.h"
 #include "video_core/host_shaders/vr_reproject_comp.h"
 #include "video_core/host_shaders/vr_resample_comp.h"
+#include "video_core/host_shaders/vr_glow_comp.h"
+#include "video_core/host_shaders/vr_smaa_blend_comp.h"
+#include "video_core/host_shaders/vr_smaa_edges_comp.h"
+#include "video_core/host_shaders/vr_smaa_weights_comp.h"
+#include "../third_party/smaa/AreaTex.h"
+#include "../third_party/smaa/SearchTex.h"
 
 #include <algorithm>
 #include <cctype>
@@ -181,6 +187,11 @@ struct Settings {
     // ffr = 1: fixed foveated rendering in true stereo (Vr::Foveation): full rate within ffr_inner degrees of the
     // middle of each eye, 2x2 out to ffr_outer, 4x4 beyond. ffr_down < 1 brings the lower part nearer (the dials).
     bool ffr = false;
+    // smaa = 1: SMAA on each eye's scene before it goes to the runtime (SmaaPicture; BB_VR_SMAA, the \ key)
+    bool smaa = false;
+    // glow = <percent>: the game's glow (its bloom, a blurred copy of the picture added over it) in true stereo, 100 as
+    // the game draws it (GlowScale; BB_VR_GLOW, Shift and the \ key)
+    int glow = 100;
     // exposure_log = 1: the game's auto-exposure value twice a second with the head's pitch (ExposureLog)
     bool exposure_log = false;
     bool jitter_log = false; // JitterLog
@@ -261,6 +272,8 @@ std::atomic<int> headset_shot{0};       // the . key: frames still to save (the 
 std::atomic<bool> resample_key_off{false}; // the / key: the runtime's own stretch, to compare
 std::atomic<int> half_rate_key{-1};         // the , key: half the headset's rate on (1) or off (0); -1 vr.ini's
 std::atomic<bool> ffr_key_off{false};  // the ' key: foveated rendering off to compare (FfrOn)
+std::atomic<int> glow_key{-1};         // Shift and the \ key: the glow as the game draws it (1) or as set (0)
+std::atomic<int> smaa_key{-1};         // the \ key: SMAA on (1) or off (0); -1 vr.ini's / the launcher's
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
 std::atomic<int> trace_mark{0}; // draw_trace: 1 the [ key was pressed, 2 the ] key
 // draw_trace: the minus key moves the eyes' order by one frame (the next call draws the same eye again)
@@ -414,9 +427,15 @@ int KeyCode(const char* name) {
     return 0;
 }
 
-// The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees, BB_VR_EXPOSURE_BIAS = EV.
-// They come after vr.ini.
+// The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees, BB_VR_EXPOSURE_BIAS = EV,
+// BB_VR_SMAA = 0 or 1, BB_VR_GLOW = percent. They come after vr.ini.
 void LauncherSettings() {
+    if (const char* v = std::getenv("BB_VR_GLOW"); v && *v) {
+        settings.glow = std::clamp(std::atoi(v), 0, 100);
+    }
+    if (const char* v = std::getenv("BB_VR_SMAA"); v && *v) {
+        settings.smaa = *v != '0';
+    }
     if (const char* v = std::getenv("BB_VR_FFR"); v && *v) {
         static constexpr float zones[4][2] = {{35.0f, 42.0f}, {40.0f, 48.0f}, {35.0f, 42.0f}, {28.0f, 36.0f}};
         const int level = std::clamp(std::atoi(v), 0, 3);
@@ -522,6 +541,8 @@ void ReadSettings() {
         else if (k == "edge_margin" && value >= 0.0f && value <= 10.0f) settings.edge_margin = value;
         else if (k == "edge_margin_v" && value >= 0.0f && value <= 10.0f) settings.edge_margin_v = value;
         else if (k == "ffr") settings.ffr = value != 0;
+        else if (k == "smaa") settings.smaa = value != 0;
+        else if (k == "glow" && value >= 0.0f && value <= 100.0f) settings.glow = int(value + 0.5f);
         else if (k == "exposure_log") settings.exposure_log = value != 0;
         else if (k == "jitter_log") settings.jitter_log = value != 0;
         else if (k == "exposure_filter") settings.exposure_filter = value != 0;
@@ -1717,7 +1738,23 @@ struct Gpu {
     VkDescriptorSetLayout resample_set = VK_NULL_HANDLE;
     VkPipelineLayout resample_layout = VK_NULL_HANDLE;
     VkPipeline resample_pipeline = VK_NULL_HANDLE;
-    std::mutex mutex;              // the pictures: made on the renderer's thread, read on the present thread
+    // SMAA (SmaaPicture): its three passes, a linear sampler, its two tables (SHADER_READ_ONLY_OPTIMAL once
+    // uploaded from `smaa_staging`), the edges and weights (shared by the eyes, drawn one after the other) and each
+    // eye's result
+    VkDescriptorSetLayout smaa_set = VK_NULL_HANDLE;
+    VkPipelineLayout smaa_layout = VK_NULL_HANDLE;
+    VkPipeline smaa_pipeline[3]{};
+    VkSampler smaa_sampler = VK_NULL_HANDLE;
+    GpuImage smaa_area, smaa_search;
+    bool smaa_tables = false;
+    VkBuffer smaa_staging = VK_NULL_HANDLE;
+    VkDeviceMemory smaa_staging_memory = VK_NULL_HANDLE;
+    GpuImage smaa_edges, smaa_weights, smaa_out[2];
+    // the game's glow scaled in place (ScaleGlow)
+    VkDescriptorSetLayout glow_set = VK_NULL_HANDLE;
+    VkPipelineLayout glow_layout = VK_NULL_HANDLE;
+    VkPipeline glow_pipeline = VK_NULL_HANDLE;
+    std::mutex mutex;             // the pictures: made on the renderer's thread, read on the present thread
     std::vector<GpuImage> retired; // replaced by a resize (rare), kept: the GPU may still read them
     // The display buffer of each presenter frame, keyed by the frame's image, with the frame's camera.
     struct FramePicture {
@@ -1798,6 +1835,27 @@ struct WindowPush {
     float pad;
 };
 
+template <size_t N>
+VkPipeline MakePipeline(const uint32_t (&code)[N], VkPipelineLayout layout) {
+    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    mi.codeSize = sizeof(code);
+    mi.pCode = code;
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (VKF.vkCreateShaderModule(gpu.device, &mi, nullptr, &module) != VK_SUCCESS) {
+        return VK_NULL_HANDLE;
+    }
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = module;
+    ci.stage.pName = "main";
+    ci.layout = layout;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VKF.vkCreateComputePipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline);
+    VKF.vkDestroyShaderModule(gpu.device, module, nullptr);
+    return pipeline;
+}
+
 // A compute pipeline with push descriptors: `sampled` sampled images, then `storage` storage images, and CopyPush.
 template <size_t N>
 void MakeCompute(const uint32_t (&code)[N], uint32_t sampled, uint32_t storage, VkDescriptorSetLayout& set,
@@ -1821,21 +1879,53 @@ void MakeCompute(const uint32_t (&code)[N], uint32_t sampled, uint32_t storage, 
     li.pushConstantRangeCount = 1;
     li.pPushConstantRanges = &range;
     VKF.vkCreatePipelineLayout(gpu.device, &li, nullptr, &layout);
-    VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof(code);
-    mi.pCode = code;
-    VkShaderModule module = VK_NULL_HANDLE;
-    if (VKF.vkCreateShaderModule(gpu.device, &mi, nullptr, &module) != VK_SUCCESS) {
+    pipeline = MakePipeline(code, layout);
+}
+
+// SMAA's pipelines: its five tables and pictures sampled through gpu.smaa_sampler, then the storage image it writes.
+struct SmaaPush {
+    float rt_metrics[4]; // 1 / width, 1 / height, width, height
+    float encode;
+    float pad[3];
+};
+
+struct GlowPush {
+    uint32_t size[2];
+    float scale;
+    float pad;
+};
+
+void MakeSmaa() {
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxLod = 0.0f;
+    if (VKF.vkCreateSampler(gpu.device, &sci, nullptr, &gpu.smaa_sampler) != VK_SUCCESS) {
         return;
     }
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    ci.stage.module = module;
-    ci.stage.pName = "main";
-    ci.layout = layout;
-    VKF.vkCreateComputePipelines(gpu.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline);
-    VKF.vkDestroyShaderModule(gpu.device, module, nullptr);
+    VkDescriptorSetLayoutBinding b[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
+        b[i].binding = i;
+        b[i].descriptorType = i < 5 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        b[i].descriptorCount = 1;
+        b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo si{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    si.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    si.bindingCount = 6;
+    si.pBindings = b;
+    VKF.vkCreateDescriptorSetLayout(gpu.device, &si, nullptr, &gpu.smaa_set);
+    const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SmaaPush)};
+    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    li.setLayoutCount = 1;
+    li.pSetLayouts = &gpu.smaa_set;
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges = &range;
+    VKF.vkCreatePipelineLayout(gpu.device, &li, nullptr, &gpu.smaa_layout);
+    gpu.smaa_pipeline[0] = MakePipeline(VR_SMAA_EDGES_COMP, gpu.smaa_layout);
+    gpu.smaa_pipeline[1] = MakePipeline(VR_SMAA_WEIGHTS_COMP, gpu.smaa_layout);
+    gpu.smaa_pipeline[2] = MakePipeline(VR_SMAA_BLEND_COMP, gpu.smaa_layout);
 }
 
 void GpuInit(VkPhysicalDevice physical, VkDevice device) {
@@ -1848,6 +1938,8 @@ void GpuInit(VkPhysicalDevice physical, VkDevice device) {
                 sizeof(ReprojectPush));
     MakeCompute(VR_RESAMPLE_COMP, 1, 1, gpu.resample_set, gpu.resample_layout, gpu.resample_pipeline,
                 sizeof(ResamplePush));
+    MakeSmaa();
+    MakeCompute(VR_GLOW_COMP, 0, 1, gpu.glow_set, gpu.glow_layout, gpu.glow_pipeline, sizeof(GlowPush));
     gpu.ready = gpu.copy_pipeline != VK_NULL_HANDLE;
 }
 
@@ -2180,6 +2272,30 @@ void ReadKeys() {
         std::fflush(stdout);
     }
     was_ffr = ffr_pressed;
+    // The \ key: SMAA off and on (to compare); with Shift the glow as set and as the game draws it. With vr.ini
+    // hide_shader or hide_target the key is theirs (below)
+    const bool backslash = Vulkan::Vr::Multiview::Requested() && !settings.hidden[0] && !settings.hidden_targets[0] &&
+                           (GetAsyncKeyState(VK_OEM_5) & 0x8000) != 0;
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    static bool was_glow = false;
+    const bool glow_down = backslash && shift;
+    if (glow_down && !was_glow) {
+        const bool game = glow_key.load() != 1;
+        glow_key = game ? 1 : 0;
+        std::printf("VR: the glow at %d%% (Shift and the \\ key)\n", game ? 100 : settings.glow);
+        std::fflush(stdout);
+    }
+    was_glow = glow_down;
+    static bool was_smaa = false;
+    const bool smaa_down = backslash && !shift;
+    if (smaa_down && !was_smaa) {
+        const int key = smaa_key.load();
+        const bool on = !(key < 0 ? settings.smaa : key != 0);
+        smaa_key = on ? 1 : 0;
+        std::printf("VR: SMAA %s (the \\ key)\n", on ? "on" : "off");
+        std::fflush(stdout);
+    }
+    was_smaa = smaa_down;
     // The ; key: the game's TAA off and on (to compare; vr.ini game_taa sets how it starts)
     static bool was_taa = false;
     const bool taa_down = BbVr::Wanted() && (GetAsyncKeyState(VK_OEM_1) & 0x8000) != 0;
@@ -2682,6 +2798,13 @@ bool DrawnTangents(float& right, float& up, float& down) {
     return right > 0.0f && up > 0.0f && down > 0.0f;
 }
 
+float GlowScale() {
+    if (!Vulkan::Vr::Multiview::Requested() || glow_key.load(std::memory_order_relaxed) == 1) {
+        return 1.0f;
+    }
+    return float(std::clamp(settings.glow, 0, 100)) / 100.0f;
+}
+
 bool GameTaaOff() {
     static const bool env_off = [] {
         const char* v = std::getenv("BB_GAME_TAA");
@@ -3069,6 +3192,164 @@ VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView s
 // Multiview, resample: `eye`'s picture at the runtime's own angles for it (with the edge margin; `fov` gets them) and
 // at the pixels per degree of the size it asks for, from its scene (`scene_view`, `width` x `height`, drawn with
 // SymmetricFov). RGBA8 holding sRGB values, TRANSFER_SRC_OPTIMAL, as ScenePicture's.
+bool ScaleGlow(VkCommandBuffer cmd, VkImageView view, uint32_t width, uint32_t height, uint32_t layers, float scale) {
+    if (!gpu.glow_pipeline) {
+        return false;
+    }
+    const VkDescriptorImageInfo info{VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    write.pImageInfo = &info;
+    const GlowPush push{{width, height}, scale, 0.0f};
+    VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.glow_pipeline);
+    VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.glow_layout, 0, 1, &write);
+    VKF.vkCmdPushConstants(cmd, gpu.glow_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+    VKF.vkCmdDispatch(cmd, (width + 7) / 8, (height + 7) / 8, layers);
+    return true;
+}
+
+bool SmaaOn() {
+    const int key = smaa_key.load(std::memory_order_relaxed);
+    return gpu.smaa_pipeline[0] && gpu.smaa_pipeline[1] && gpu.smaa_pipeline[2] && (key < 0 ? settings.smaa : key != 0);
+}
+
+// SMAA's area and search tables, recorded into `cmd` once (the host copy stays: the GPU reads it later).
+bool SmaaTables(VkCommandBuffer cmd) {
+    if (gpu.smaa_tables) {
+        return true;
+    }
+    if (!MakeImage(gpu.smaa_area, AREATEX_WIDTH, AREATEX_HEIGHT,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_FORMAT_R8G8_UNORM) ||
+        !MakeImage(gpu.smaa_search, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_FORMAT_R8_UNORM) ||
+        !SampleView(gpu.smaa_area, VK_FORMAT_R8G8_UNORM) || !SampleView(gpu.smaa_search, VK_FORMAT_R8_UNORM)) {
+        return false;
+    }
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = AREATEX_SIZE + SEARCHTEX_SIZE;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    if (VKF.vkCreateBuffer(gpu.device, &bi, nullptr, &gpu.smaa_staging) != VK_SUCCESS) {
+        return false;
+    }
+    VkMemoryRequirements req;
+    VKF.vkGetBufferMemoryRequirements(gpu.device, gpu.smaa_staging, &req);
+    VkPhysicalDeviceMemoryProperties props;
+    VKF.vkGetPhysicalDeviceMemoryProperties(gpu.physical, &props);
+    const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uint32_t type = UINT32_MAX;
+    for (uint32_t i = 0; i < props.memoryTypeCount && type == UINT32_MAX; ++i) {
+        if ((req.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags & want) == want) {
+            type = i;
+        }
+    }
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = type;
+    void* data = nullptr;
+    if (type == UINT32_MAX || VKF.vkAllocateMemory(gpu.device, &ai, nullptr, &gpu.smaa_staging_memory) != VK_SUCCESS) {
+        VKF.vkDestroyBuffer(gpu.device, gpu.smaa_staging, nullptr);
+        gpu.smaa_staging = VK_NULL_HANDLE;
+        return false;
+    }
+    VKF.vkBindBufferMemory(gpu.device, gpu.smaa_staging, gpu.smaa_staging_memory, 0);
+    if (VKF.vkMapMemory(gpu.device, gpu.smaa_staging_memory, 0, VK_WHOLE_SIZE, 0, &data) != VK_SUCCESS) {
+        return false;
+    }
+    std::memcpy(data, areaTexBytes, AREATEX_SIZE);
+    std::memcpy(static_cast<uint8_t*>(data) + AREATEX_SIZE, searchTexBytes, SEARCHTEX_SIZE);
+    VKF.vkUnmapMemory(gpu.device, gpu.smaa_staging_memory);
+    const struct {
+        GpuImage& img;
+        VkDeviceSize offset;
+    } tables[2] = {{gpu.smaa_area, 0}, {gpu.smaa_search, AREATEX_SIZE}};
+    for (const auto& t : tables) {
+        Barrier(cmd, t.img.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkBufferImageCopy region{};
+        region.bufferOffset = t.offset;
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {t.img.width, t.img.height, 1};
+        VKF.vkCmdCopyBufferToImage(cmd, gpu.smaa_staging, t.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                                   &region);
+        Barrier(cmd, t.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    }
+    gpu.smaa_tables = true;
+    return true;
+}
+
+// Multiview: SMAA 1x on an eye's scene (`scene_view`, sampled, SHADER_READ_ONLY_OPTIMAL; `encode`: the view decodes
+// sRGB) into gpu.smaa_out[eye]. Its sampled view, of the scene's kind (sRGB or not, SHADER_READ_ONLY_OPTIMAL), takes
+// the scene's place; null when SMAA is off or could not be made.
+VkImageView SmaaPicture(VkCommandBuffer cmd, VkImageView scene_view, bool encode, uint32_t width, uint32_t height,
+                        int eye) {
+    if (!SmaaOn() || !SmaaTables(cmd)) {
+        return VK_NULL_HANDLE;
+    }
+    constexpr VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    GpuImage& out = gpu.smaa_out[eye];
+    if (!MakeImage(gpu.smaa_edges, width, height, usage) || !MakeImage(gpu.smaa_weights, width, height, usage) ||
+        !MakeImage(out, width, height, usage, VK_FORMAT_R8G8B8A8_UNORM, true)) {
+        return VK_NULL_HANDLE;
+    }
+    const VkImageView edges = SampleView(gpu.smaa_edges, VK_FORMAT_R8G8B8A8_UNORM);
+    const VkImageView weights = SampleView(gpu.smaa_weights, VK_FORMAT_R8G8B8A8_UNORM);
+    const VkImageView result = SampleView(out, encode ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+    if (!edges || !weights || !result) {
+        return VK_NULL_HANDLE;
+    }
+    static bool told = false;
+    if (!told) {
+        told = true;
+        std::printf("VR: SMAA on each eye at %ux%u (High preset; the \\ key)\n", width, height);
+        std::fflush(stdout);
+    }
+    SmaaPush push{};
+    push.rt_metrics[0] = 1.0f / float(width), push.rt_metrics[1] = 1.0f / float(height);
+    push.rt_metrics[2] = float(width), push.rt_metrics[3] = float(height);
+    push.encode = encode ? 1.0f : 0.0f;
+    const auto sampled = [](uint32_t binding, VkImageView view, VkDescriptorImageInfo& info) {
+        info = {gpu.smaa_sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstBinding = binding;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &info;
+        return w;
+    };
+    // One pass: its inputs (binding, view), then `target` written (GENERAL), left SHADER_READ_ONLY_OPTIMAL.
+    const auto pass = [&](int index, std::initializer_list<std::pair<uint32_t, VkImageView>> inputs, GpuImage& target) {
+        Barrier(cmd, target.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT);
+        VkDescriptorImageInfo infos[5]{};
+        VkWriteDescriptorSet writes[5]{};
+        uint32_t n = 0;
+        for (const auto& [binding, view] : inputs) {
+            writes[n] = sampled(binding, view, infos[n]);
+            ++n;
+        }
+        infos[n] = {VK_NULL_HANDLE, target.view, VK_IMAGE_LAYOUT_GENERAL};
+        writes[n] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[n].dstBinding = 5;
+        writes[n].descriptorCount = 1;
+        writes[n].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[n].pImageInfo = &infos[n];
+        ++n;
+        VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.smaa_pipeline[index]);
+        VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.smaa_layout, 0, n, writes);
+        VKF.vkCmdPushConstants(cmd, gpu.smaa_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
+        VKF.vkCmdDispatch(cmd, (width + 7) / 8, (height + 7) / 8, 1);
+        Barrier(cmd, target.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    };
+    pass(0, {{0, scene_view}}, gpu.smaa_edges);
+    pass(1, {{1, edges}, {2, gpu.smaa_area.sample_view}, {3, gpu.smaa_search.sample_view}}, gpu.smaa_weights);
+    pass(2, {{0, scene_view}, {4, weights}}, out);
+    return result;
+}
+
 bool ResampledPicture(VkCommandBuffer cmd, VkImageView scene_view, GpuImage& out, bool encode, uint32_t width,
                       uint32_t height, int eye, XrFovf& fov) {
     if (!settings.resample || resample_key_off.load() || !gpu.resample_pipeline || !settings.runtime_fov ||
@@ -3281,15 +3562,27 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
             if (Vulkan::Vr::Multiview::Enabled() && camera.found && camera.eye < 0 && gpu.right_ok[scene_index] &&
                 gpu.scenes_right[scene_index].width == display_width) {
                 // multiview: the left eye's scene (layer 0) and the right eye's (layer 1), both drawn this frame
-                const VkImageView right_view = SampleView(gpu.scenes_right[scene_index], display_format);
+                VkImageView left_view = scene_view;
+                VkImageView right_view = SampleView(gpu.scenes_right[scene_index], display_format);
+                if (right_view && SmaaOn()) {
+                    // SMAA on each eye's scene first (the HUD is apart): the eyes are then made from its result
+                    const VkImageView left_smaa =
+                        SmaaPicture(cmd, left_view, encode, display_width, display_height, 0);
+                    const VkImageView right_smaa =
+                        left_smaa ? SmaaPicture(cmd, right_view, encode, display_width, display_height, 1)
+                                  : VK_NULL_HANDLE;
+                    if (left_smaa && right_smaa) {
+                        left_view = left_smaa, right_view = right_smaa;
+                    }
+                }
                 entry->resampled =
                     right_view &&
-                    ResampledPicture(cmd, scene_view, entry->other, encode, display_width, display_height, 0,
+                    ResampledPicture(cmd, left_view, entry->other, encode, display_width, display_height, 0,
                                      entry->fov[0]) &&
                     ResampledPicture(cmd, right_view, entry->right, encode, display_width, display_height, 1,
                                      entry->fov[1]);
                 entry->both = right_view && (entry->resampled ||
-                                             (ScenePicture(cmd, scene_view, entry->other, encode, display_width,
+                                             (ScenePicture(cmd, left_view, entry->other, encode, display_width,
                                                            display_height) &&
                                               ScenePicture(cmd, right_view, entry->right, encode, display_width,
                                                            display_height)));

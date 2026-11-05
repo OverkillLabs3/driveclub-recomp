@@ -1599,6 +1599,51 @@ static void AuditNames(const GraphicsPipeline* pipeline) {
     Vr::Multiview::SetDrawHash(vs ? vs->pgm_hash : 0, ps ? ps->pgm_hash : 0);
 }
 
+// VR (true stereo): the game's glow at BbVr::GlowScale, in place, both eyes. The composite then adds less of it.
+void Rasterizer::VrScaleGlow() {
+    const VideoCore::ImageId id = std::exchange(vr_glow, VideoCore::ImageId{});
+    const float scale = BbVr::GlowScale();
+    if (!id || scale >= 1.0f) {
+        return;
+    }
+    VideoCore::Image* image = texture_cache.TryGetImage(id, vr_glow_uid);
+    const char* problem = !image                                                         ? "its image is gone"
+                          : image->info.pixel_format != vk::Format::eB10G11R11UfloatPack32 ? "another format"
+                          : !(image->usage_flags & vk::ImageUsageFlagBits::eStorage)       ? "no storage use"
+                                                                                           : nullptr;
+    if (problem) {
+        static std::atomic<int> told{0};
+        if (told++ < 4) {
+            std::printf("VR: the glow is left as the game draws it (%s)\n", problem);
+            std::fflush(stdout);
+        }
+        return;
+    }
+    const auto& ci = image->backing->image.image_ci;
+    const u32 width = ci.extent.width, height = ci.extent.height, layers = ci.arrayLayers;
+    scheduler.EndRendering();
+    runtime.Transit(image, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                    vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite);
+    runtime.FlushBarriers();
+    const auto device = instance.GetDevice();
+    const vk::ImageView view = Check(device.createImageView({
+        .image = image->GetImage(),
+        .viewType = vk::ImageViewType::e2DArray,
+        .format = vk::Format::eB10G11R11UfloatPack32,
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, layers},
+    }));
+    scheduler.DeferOperation([device, view] { device.destroyImageView(view); });
+    scheduler.Record([view, width, height, layers, scale](vk::CommandBuffer cmdbuf) {
+        BbVr::ScaleGlow(cmdbuf, view, width, height, layers, scale);
+    });
+    static std::atomic<int> last{-1};
+    const int percent = int(scale * 100.0f + 0.5f);
+    if (last.exchange(percent * 4 + int(std::min(layers, 3u))) != percent * 4 + int(std::min(layers, 3u))) {
+        std::printf("VR: the game's glow at %d%% (%ux%u, %u eyes)\n", percent, width, height, layers);
+        std::fflush(stdout);
+    }
+}
+
 // Both layers of each target the frame drew into (raw pixels, the Vulkan format's bytes; the list in targets.txt).
 void Rasterizer::DumpEyeTargets(int step) {
     const char* user = std::getenv("BB_GPU_USER_DIR");
@@ -1771,6 +1816,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             }
         }
     }
+    // VR: the game's glow, made by vs 611c6f6a and added over the picture by the composite (vs 8d52ab95, the first
+    // display draw), is scaled just before the composite reads it
+    const u64 draw_vs = pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash;
+    if (draw_vs == 0x8d52ab95) {
+        VrScaleGlow();
+    } else if (frame_display) {
+        vr_glow = {};
+    }
     bind_prepared = used_prepared;
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
     motion_geometry = 0;
@@ -1778,6 +1831,10 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     {
         BbStats::PhaseTimer timer{BbStats::phase_ns[2]};
         PrepareRenderState(pipeline);
+    }
+    if (draw_vs == 0x611c6f6a && cb_descs[0].first && BbVr::GlowScale() < 1.0f) {
+        vr_glow = cb_descs[0].first;
+        vr_glow_uid = texture_cache.GetImage(vr_glow).image_uid;
     }
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
@@ -2541,6 +2598,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     }
 
     Vr::Multiview::SetDrawHash(cs.pgm_hash); // VR audit
+    Vr::Multiview::SetDispatchHash(cs.pgm_hash); // VR multiview: the computes that run per eye (EyeCompute)
     if (!BindResources(pipeline)) {
         return;
     }
@@ -2752,6 +2810,7 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
     const u32 offset = 0;
 
     Vr::Multiview::SetDrawHash(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash); // VR audit
+    Vr::Multiview::SetDispatchHash(pipeline->GetStage(Shader::SwStage::Compute).pgm_hash); // VR multiview: EyeCompute
     if (!BindResources(pipeline)) {
         return;
     }

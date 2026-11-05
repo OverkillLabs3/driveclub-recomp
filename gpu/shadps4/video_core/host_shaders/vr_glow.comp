@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR, true stereo: the game's glow (its bloom: a blurred copy of the picture the composite adds over it, about one to
+// one) scaled in place before the composite reads it (vr.ini glow, the launcher's "Glow in VR"). Both eyes' layers.
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0, r11f_g11f_b10f) uniform image2DArray glow;
+
+layout(push_constant) uniform Constants {
+    uvec2 size;
+    float scale;
+};
+
+void main() {
+    const ivec3 p = ivec3(gl_GlobalInvocationID);
+    if (p.x >= int(size.x) || p.y >= int(size.y)) {
+        return;
+    }
+    imageStore(glow, p, imageLoad(glow, p) * scale);
+}

@@ -301,6 +301,18 @@ u32 BackingLayers(const VideoCore::ImageInfo& info, u32 layers) {
             }
         }
     }
+    // The same glow images at other eye sizes: a quarter of the render size, the width rounded up to 256 and the
+    // height to 128 (3200x3440 -> 1024x896 as above, 3064x3280 -> 768x896, 2784x2984 -> 768x768). At 768x896 they had
+    // one layer: the right eye got the left eye's glow (a faint second pair of hands, glows out of place). The other
+    // roundings (128 across, 64 down) are taken too.
+    if (info.pixel_format == vk::Format::eB10G11R11UfloatPack32 || info.pixel_format == vk::Format::eR16G16B16A16Sfloat) {
+        const auto up = [](u32 v, u32 a) { return (v + a - 1) / a * a; };
+        const u32 qw = (sizes[0][0] + 3) / 4, qh = (sizes[0][1] + 3) / 4;
+        if ((info.size.width == up(qw, 256) || info.size.width == up(qw, 128)) &&
+            (info.size.height == up(qh, 128) || info.size.height == up(qh, 64))) {
+            return TwoLayers(info);
+        }
+    }
     // The bloom: 4/15 of the render size (2880 -> 768, within a pixel: the game's rounding), one image with its mips
     // (formats R16G16B16A16 float and B10G11R11). One layer, it was built from the left eye alone and the right eye got
     // the left eye's glow (headlights, glints on the cars' paint in other places in each eye). Only that size: with
@@ -804,7 +816,6 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
             std::scoped_lock lock{g_audit_mutex};
             AuditFinish(true, g_draw_hash, g_second_eye);
         }
-        g_dispatch_hash = 0; // draws bind with no compute's hash (EyeCompute)
         static const bool log = std::getenv("BB_VR_HASHES") != nullptr;
         static std::unordered_map<u64, bool> seen;
         if (log && seen.emplace(g_dispatch_hash ^ (u64(g_second_eye) << 63), true).second) {
@@ -812,6 +823,7 @@ Shader::PushData Adjust(const Shader::PushData& push_data, bool compute) {
                         g_second_eye ? "both eyes" : "once");
             std::fflush(stdout);
         }
+        g_dispatch_hash = 0; // draws bind with no compute's hash (EyeCompute)
     } else {
         out.vr_shift = {g_shift, -g_shift};
         if (g_audit) {
