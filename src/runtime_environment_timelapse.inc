@@ -3,7 +3,7 @@
 #ifdef _WIN32
 #include <math.h>
 static int env_timelapse_enabled, env_action, env_hooks_ready;
-static double env_hold_rate=600.0,env_key_factor=1.0;
+static double env_hold_rate=500.0,env_key_factor=1.0;
 static uint64_t env_cursor_bits, env_oldest_bits, env_native_elapsed_bits,env_frame_scale_bits,env_light_oldest_bits,env_cloud_oldest_bits;
 static unsigned env_generation;
 static double env_load_double(uint64_t *bits) {
