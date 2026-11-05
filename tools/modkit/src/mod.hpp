@@ -16,6 +16,7 @@ struct Mod {
     std::string id, name, version, author, description, game;
     std::vector<ModDep> requires_;
     std::vector<std::string> conflicts, after, before;
+    std::vector<std::string> scripts;  // Lua files (game paths) that run at start-up, in this order
     Json patches = Json::Array();
     fs::path files_dir;  // loose files; empty when the mod has none
 };
@@ -30,6 +31,10 @@ std::vector<size_t> OrderMods(const std::vector<Mod>& mods, std::vector<std::str
 
 // Applies the mods (already in load order) to the game files and returns the files that changed.
 std::map<std::string, Bytes> BuildMods(const std::vector<Mod>& ordered, FileSource& source, PatchReport& report);
+
+// Adds the boot script wrapper when mods list scripts (see scripts.cpp).
+void AddScriptLoader(Workspace& ws, const std::vector<Mod>& ordered);
+std::string BootWrapper(const std::string& original, const std::vector<std::string>& scripts);
 
 // A new mod folder with a manifest and one example patch.
 void NewMod(const fs::path& dir, const std::string& id, const std::string& name);

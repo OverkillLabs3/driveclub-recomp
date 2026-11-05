@@ -86,6 +86,7 @@ Mod LoadMod(const fs::path& dir, const std::string& fallback_id) {
     m.conflicts = Strings(j, "conflicts");
     m.after = Strings(j, "after");
     m.before = Strings(j, "before");
+    m.scripts = Strings(j, "scripts");
     if (const Json* r = j.Find("requires")) {
         for (const Json& d : r->Items()) {
             ModDep dep;
@@ -188,6 +189,7 @@ std::map<std::string, Bytes> BuildMods(const std::vector<Mod>& ordered, FileSour
             throw Error(m.id + ": " + e.what());
         }
     }
+    AddScriptLoader(ws, ordered);
     return ws.Finish();
 }
 

@@ -26,3 +26,13 @@ Each line has the instruction, the source line and the constant it refers to, fo
 
 - **A value**: `lua.const` replaces a number or string constant, in the whole script or one function. It needs no Lua source, and it keeps the rest of the script exactly.
 - **A whole script**: put Lua source text in `files/scripts/...` at the same path. The game loads Lua text as well as compiled code. The compiled script can be decompiled with a tool such as unluac, which is not part of this kit.
+
+## Scripts that run at start-up
+
+A mod can list Lua files, supplied in its `files` folder, under `"scripts"`:
+
+```json
+{ "id": "me.hello", "scripts": [ "scripts/mods/hello/main.lua" ] }
+```
+
+When any mod lists scripts, the build replaces the game's boot scripts (`scripts/bootscripts/defaultbootscript.lua.bin` and `releasebootscript.lua.bin`, the two names the game's executable refers to) with a short Lua text. It runs the original boot script, kept beside it as `..._dcmod_original.lua.bin`, and then each mod script in load order. A script that fails to load or raises an error prints a line starting with `dcmod:` and the others still run. The globals the scripts of the game use are listed in [lua-names.md](lua-names.md).
