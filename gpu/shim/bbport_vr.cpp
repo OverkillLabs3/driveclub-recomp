@@ -87,7 +87,9 @@ void SetShift(float shift);
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
+#include <filesystem>
 #include <initializer_list>
 #include <mutex>
 #include <string>
@@ -3624,10 +3626,12 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                     static char stamp[16];
                     const int k = kHeadsetSeries - left;
                     if (k == 0) {
-                        CreateDirectoryA(dir.c_str(), nullptr);
-                        SYSTEMTIME t;
-                        GetLocalTime(&t);
-                        std::snprintf(stamp, sizeof stamp, "%02u%02u%02u", t.wHour, t.wMinute, t.wSecond);
+                        std::error_code ignored;
+                        std::filesystem::create_directories(dir, ignored);
+                        const std::time_t now = std::time(nullptr);
+                        if (const std::tm* t = std::localtime(&now)) {
+                            std::snprintf(stamp, sizeof stamp, "%02d%02d%02d", t->tm_hour, t->tm_min, t->tm_sec);
+                        }
                     }
                     char name[96];
                     for (int e = 0; e < (k == 0 ? 2 : 0); ++e) {
