@@ -227,8 +227,8 @@ std::vector<Edit> Edits(const GraphicsChoice& c) {
     e.push_back({"default", nullptr, "transient", {{"lodBias", "-3"}, {"shadowCullThreshold", "0.001"}}});
     e.push_back({"OnePlayer2DHQ", nullptr, "ground", {{"cullThreshold", "0.001"}}});
   }
-  if (c.reflections) {
-    e.push_back({"default", "General", nullptr, {{"highQualitySSR", "true"}}});
+  if (c.high_quality_ssr) {
+    //e.push_back({"default", "General", nullptr, {{"highQualitySSR", "true"}}});
     e.push_back({"OnePlayer2D", "General", nullptr, {{"highQualitySSR", "true"}}});
   }
   // Shadows: the race views filter the nearest of the four shadow cascades (4 m) with 32 samples and the others
@@ -261,7 +261,7 @@ std::string Describe(const GraphicsChoice& c) {
   // The runtime's benchmark report reads the first five (runtime_benchmark.c).
   snprintf(s, sizeof s,
            "car %d opponents %d scenery %d reflections %d dynres %d shadows %d particles %d blur %d dust %d haze %d fxaa %d",
-           c.own_car, c.opponents, c.scenery, c.reflections, c.dynamic_res, c.shadows, c.particles, c.motion_blur,
+           c.own_car, c.opponents, c.scenery, c.high_quality_ssr, c.dynamic_res, c.shadows, c.particles, c.motion_blur,
            c.lens_dust, c.heat_haze, c.fxaa);
   return s;
 }

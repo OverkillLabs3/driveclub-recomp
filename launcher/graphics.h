@@ -7,7 +7,7 @@ struct GraphicsChoice {
   bool own_car = false;       // your car's full-detail model in races
   bool opponents = false;     // full-detail models for the other cars up close
   int scenery = 0;            // 0 game, 1 more detail further away (less pop-in), 2 photo mode's detail
-  bool reflections = false;   // the higher-quality screen-space reflections of photo mode
+  bool high_quality_ssr = false;  // enabled automatically above 1080p render resolution
   int shadows = 0;            // shadow edge filtering beyond 4 m: 0 game (8 samples), 1 16 samples, 2 32 samples
   bool particles = false;     // distant spray, smoke and dust kept, more particles
   bool dynamic_res = true;    // the game's dynamic resolution scaling (on in the game)
@@ -16,7 +16,7 @@ struct GraphicsChoice {
   bool heat_haze = true;      // heat shimmer over hot roads
   bool fxaa = true;           // the FXAA pass after the game's own anti-aliasing
   bool Default() const {
-    return !own_car && !opponents && !scenery && !reflections && !shadows && !particles && dynamic_res &&
+    return !own_car && !opponents && !scenery && !high_quality_ssr && !shadows && !particles && dynamic_res &&
            motion_blur && lens_dust && heat_haze && fxaa;
   }
 };
