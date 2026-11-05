@@ -206,8 +206,6 @@ int g_vr_smooth_row = -1;
 int g_vr_ffr_row = -1, g_vr_edge_row = -1, g_vr_stereo_row = -1, g_vr_exposure_row = -1;
 bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
 bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
-// A VR build: the official releases have no VR, so it neither offers them nor shows the switch.
-constexpr bool kOfficialUpdates = false;
 std::atomic<bool> g_update_ready{false};  // a newer release was found (g_update)
 Updater::Release g_update;
 RectF g_update_btn;  // the Update button, left of Reset to defaults (drawn while g_update_ready)
@@ -5163,7 +5161,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   const bool asked = wcsstr(GetCommandLineW(), L"--play") != nullptr;
   const bool play_now = asked || g_auto_play;  // the row that starts the game straight away
   Updater::CleanUp(g_home);
-  if (kOfficialUpdates && g_check_updates && !play_now && !wcsstr(GetCommandLineW(), L"--snapshot")) StartUpdateCheck();
+  if (g_check_updates && !play_now && !wcsstr(GetCommandLineW(), L"--snapshot")) StartUpdateCheck();
   if (play_now) {
     const std::wstring stop = [] {
       if (!FoldersOk()) return std::wstring(L"Open DriveClub.exe once and choose the game folders.");
