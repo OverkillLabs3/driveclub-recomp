@@ -39,5 +39,6 @@ std::string HumanSize(uint64_t bytes);
 
 using Command = std::function<int(const std::vector<std::string>& argv)>;
 int RunArchive(const std::vector<std::string>& argv);
+int RunRpk(const std::vector<std::string>& argv);
 
 }  // namespace dcmod
