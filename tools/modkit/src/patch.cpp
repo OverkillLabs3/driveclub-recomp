@@ -3,6 +3,7 @@
 
 #include "csv.hpp"
 #include "lua.hpp"
+#include "image.hpp"
 #include "tex.hpp"
 #include "xml.hpp"
 
@@ -631,7 +632,7 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
             p.Done();
             if (res.Type() != kRpkPixelBuffer) throw Error("the resource " + ref + " is not a texture");
             PixelBuffer pb = PixelBuffer::Parse(res.data);
-            pb.SetData(DdsToTexData(pb, Dds::Parse(c)));
+            pb.SetData(DdsToTexData(pb, TextureSource(pb, c)));
             res.data = pb.payload;
         } else if (name == "rpk.set") {
             const Bytes c = Content(p, env);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // dcmod tex ...: textures of resource packs as DDS files.
 #include "cli.hpp"
+#include "image.hpp"
 #include "rpk.hpp"
 #include "tex.hpp"
 
@@ -122,7 +123,7 @@ int RunTex(const std::vector<std::string>& argv) {
         if (!r) r = pack.FindByName(t);
         if (!r || r->Type() != kRpkPixelBuffer) throw Error("no texture named or numbered " + t);
         PixelBuffer pb = PixelBuffer::Parse(r->data);
-        pb.SetData(DdsToTexData(pb, Dds::Parse(ReadFile(args.positional[3]))));
+        pb.SetData(DdsToTexData(pb, TextureSource(pb, ReadFile(args.positional[3]))));
         r->data = pb.payload;
         WriteFile(out, pack.Write());
         std::printf("%s replaced; written to %s\n", r->DisplayName().c_str(), out.c_str());

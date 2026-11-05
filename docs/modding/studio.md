@@ -43,7 +43,9 @@ dcmod tex extract @helmets.rpk -o textures "helmetlivery_16*"    # DDS files
 dcmod tex import @helmets.rpk helmetlivery_16.tif edited.dds -o helmets-new.rpk
 ```
 
-In a mod, `{ "op": "tex.set", "file": "helmets.rpk", "resource": "helmetlivery_16.tif", "from": "textures/mine.dds" }` replaces a texture. The DDS needs the texture's size and block format and all its mip levels; texconv, Compressonator, GIMP and Paint.NET write such files (BC1 for DXT1, BC7 for BC7). About 8000 of the textures in packs under 100 MB convert and tile back byte for byte. Textures whose largest levels are stored in the separate `*_topmips.rpk` packs (most car textures), volume and cube textures, and a few BC7 textures with an unexplained size (63) are reported and left alone.
+A PNG picture works as well as a DDS for textures stored as BC1 (DXT1), BC7 or plain 8 bit RGBA: the kit makes the mip levels and compresses them itself. The picture must have the texture's size (for example 512x512 for the helmet liveries), 8 or 16 bit, not interlaced. Other formats need a DDS.
+
+In a mod, `{ "op": "tex.set", "file": "helmets.rpk", "resource": "helmetlivery_16.tif", "from": "textures/mine.png" }` replaces a texture. The DDS needs the texture's size and block format and all its mip levels; texconv, Compressonator, GIMP and Paint.NET write such files (BC1 for DXT1, BC7 for BC7). About 8000 of the textures in packs under 100 MB convert and tile back byte for byte. Textures whose largest levels are stored in the separate `*_topmips.rpk` packs (most car textures), volume and cube textures, and a few BC7 textures with an unexplained size (63) are reported and left alone.
 
 ## Editor help
 
