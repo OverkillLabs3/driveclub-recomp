@@ -1,5 +1,7 @@
 # Making mods
 
+For patches, the command line kit and the file format references, see [modding/README.md](modding/README.md). This page describes how the game finds files.
+
 A mod is a set of files that replace the game's own files. When the game opens a file by name, DriveClub Recomp looks in the `mods` folder first, and uses your file if it is there. The game's folders are never changed, and removing a mod puts the original back.
 
 This page says what is known to work. What is only reported by players is marked.
@@ -71,7 +73,7 @@ Any file the game opens by name can be replaced the same way; the table lists th
 - Replace the whole pack with a pack you built.
 - Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`.
 
-This project does not include tools to unpack or build packs. Tools published by others (not part of this project; check their licences and limits):
+The mod kit (`dcmod`, see [modding/README.md](modding/README.md)) lists, extracts, rebuilds and patches packs, and a mod can change the inside of a pack with patches instead of shipping the pack. Tools published by others (not part of this project; check their licences and limits):
 
 - [DriveClubFS](https://github.com/Nenkai/DriveClubFS) by Nenkai unpacks the `.ndx` and `.dat` archives and extracts textures, binary resources and XML from `.rpk` files. Its README lists versions 1.00 and 1.28 as tested. It is an unpacker and has no function to rebuild an archive or a pack.
 - [010GameTemplates](https://github.com/Nenkai/010GameTemplates/tree/main/Evolution%20Studios/DriveClub) has 010 Editor templates for the archive, index, tour and save formats.
