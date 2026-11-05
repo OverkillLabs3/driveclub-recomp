@@ -9,6 +9,7 @@ The mod kit has three parts:
 | Page | Contents |
 |---|---|
 | [Getting started](getting-started.md) | Set up the kit and make a first mod |
+| [Studio and the easy way](studio.md) | The web page for modding, making a mod from edited files, textures |
 | [Mod format](mod-format.md) | `mod.json`, load order, requirements, conflicts |
 | [Patch operations](patches.md) | Every operation with examples |
 | [dcmod reference](dcmod.md) | All commands |
@@ -33,6 +34,6 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 
 ## Limits
 
-- Textures and models inside packs can be extracted and replaced as raw payloads (`dcmod rpk`), but there is no converter to and from common image and model formats yet.
+- Textures convert to and from DDS (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models have no converter yet; their resources can be extracted and replaced as raw payloads (`dcmod rpk`).
 - Scripts that are compiled can be read as an assembly listing, not as Lua source. Replacing a script with new Lua source works because the game loads plain Lua text.
 - Mods are not signed or checked. Only use mods from people you trust.

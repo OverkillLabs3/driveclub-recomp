@@ -1,4 +1,5 @@
 {
+  "$schema": "../../mod.schema.json",
   // The id is unique: a-z, 0-9, '.', '-' and '_'.
   "id": "example.hot-hatch",
   "name": "Hot Hatch (example)",

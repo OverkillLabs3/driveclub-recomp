@@ -206,7 +206,7 @@ void NewMod(const fs::path& dir, const std::string& id, const std::string& name)
     patch.Set("file", "newdata/vehicles.csv");
     patch.Set("key", "Vehicle Name");
     Json match = Json::Array();
-    match.Push("Ferrari 458 Italia");
+    match.Push("a45_amg");
     patch.Set("match", match);
     Json set = Json::Object();
     set.Set("TopSpeed", 300);

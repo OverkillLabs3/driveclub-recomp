@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Checks of the mod kit on made-up data (no game files needed).
 #include "../src/csv.hpp"
+#include "../src/diff.hpp"
 #include "../src/patch.hpp"
 #include "../src/tex.hpp"
 #include "../src/xml.hpp"
@@ -129,6 +130,25 @@ int main() {
         bool refused = false;
         try { DdsToTexData(pb, wrong); } catch (const Error&) { refused = true; }
         CHECK(refused);
+    }
+    // diff: the patches made from two versions of a file turn the first into the second
+    {
+        const std::string a = "a,1\nb,2\nc,3\nd,4\ne,5\nf,6\ng,7\nh,8\nrepeat\nrepeat\n";
+        const std::string b = "a,1\nb,22\nc,3\nd,4\ne,5\nf,6\nNEW\ng,7\nh,8\nrepeat\nrepeat\nlast\n";
+        const auto ops = DiffText("x.txt", B(a), B(b));
+        CHECK(ops && ops->size() >= 2);
+        MemorySource src;
+        src.files["x.txt"] = B(a);
+        Json list = Json::Array();
+        for (const Json& op : *ops) list.Push(op);
+        CHECK(Run(src, "x.txt", list.Dump()) == b);
+        const std::string t1 = "Id,V\n1,a\n2,b\n3,c\n", t2 = "Id,V\n1,a\n2,x\n4,d\n";
+        src.files["t.csv"] = B(t1);
+        const auto cops = DiffText("t.csv", B(t1), B(t2));
+        CHECK(cops.has_value());
+        Json clist = Json::Array();
+        for (const Json& op : *cops) clist.Push(op);
+        CHECK(Run(src, "t.csv", clist.Dump()) == t2);
     }
     // two mods that set the same cell are reported
     {

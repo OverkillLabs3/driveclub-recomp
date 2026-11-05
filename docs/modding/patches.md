@@ -76,6 +76,8 @@ For these, `file` is a pack such as `global.rpk`, and `resource` is a name from 
 
 `rpk.add`: `file`, `type` (`xml`, `bin`, or another name from `dcmod rpk info`, or `type_N`), `id` (16 hex digits; the first four are the type number, `0027` for xml), `name`, `from` or `text`, optional `sources`, `deps`, `version`.
 
+`tex.set`: `file`, `resource`, `from` (a DDS file). Replaces a texture; see [studio.md](studio.md) for the DDS requirements.
+
 `rpk.remove`: `file`, `resource`. Dependencies on it are dropped from the other resources of the pack.
 
 ```json

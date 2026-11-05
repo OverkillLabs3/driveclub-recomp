@@ -13,6 +13,7 @@ int Usage() {
         "  dcmod archive ...   look into the game's own archive (list, extract, verify)\n"
         "  dcmod rpk ...       resource packs: list, extract, build, replace, verify\n"
         "  dcmod lua ...       the game's compiled Lua scripts: disassemble, survey the names they use\n"
+        "  dcmod studio        a web page to browse the game files, edit them and make mods from the edits\n"
         "  dcmod tex ...       textures: extract to DDS, import from DDS\n"
         "  dcmod mod ...     mods: new, check, build (patches applied to the game files)\n"
         "\n"
@@ -33,6 +34,7 @@ int main(int argc, char** argv) {
         if (cmd == "lua") return dcmod::RunLua(rest);
         if (cmd == "mod") return dcmod::RunMod(rest);
         if (cmd == "tex") return dcmod::RunTex(rest);
+        if (cmd == "studio") return dcmod::RunStudio(rest);
         std::fprintf(stderr, "dcmod: unknown command \"%s\"\n", cmd.c_str());
         return Usage();
     } catch (const std::exception& e) {

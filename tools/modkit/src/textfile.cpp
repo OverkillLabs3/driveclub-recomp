@@ -22,6 +22,19 @@ bool IsValidUtf8(std::string_view s) {
     return true;
 }
 
+std::string Latin1ToUtf8(const std::string& s) {
+    std::string out;
+    for (unsigned char c : s) {
+        if (c < 0x80) {
+            out.push_back(char(c));
+        } else {
+            out.push_back(char(0xC0 | (c >> 6)));
+            out.push_back(char(0x80 | (c & 0x3F)));
+        }
+    }
+    return out;
+}
+
 TextFile TextFile::Load(const Bytes& bytes) {
     TextFile t;
     std::string s(bytes.begin(), bytes.end());

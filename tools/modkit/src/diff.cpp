@@ -194,20 +194,6 @@ std::optional<std::vector<Json>> CsvPatches(const std::string& file, const std::
     return ops;
 }
 
-// Patches are UTF-8; a Latin-1 file's text is converted here and converted back when the patch is applied.
-std::string Latin1ToUtf8(const std::string& s) {
-    std::string out;
-    for (unsigned char c : s) {
-        if (c < 0x80) {
-            out.push_back(char(c));
-        } else {
-            out.push_back(char(0xC0 | (c >> 6)));
-            out.push_back(char(0x80 | (c & 0x3F)));
-        }
-    }
-    return out;
-}
-
 bool LooksLikeText(const Bytes& b) {
     for (size_t i = 0; i < b.size() && i < 8192; ++i) {
         if (b[i] == 0) return false;
@@ -218,6 +204,17 @@ bool LooksLikeText(const Bytes& b) {
 std::string Rel(const fs::path& root, const fs::path& p) { return p.lexically_relative(root).generic_string(); }
 
 }  // namespace
+
+std::optional<std::vector<Json>> DiffText(const std::string& canon, const Bytes& before, const Bytes& now) {
+    if (!LooksLikeText(before) || !LooksLikeText(now)) return std::nullopt;
+    const TextFile a = TextFile::Load(before), b = TextFile::Load(now);
+    if (a.crlf != b.crlf || a.latin1 != b.latin1 || a.bom != b.bom || a.raw || b.raw) return std::nullopt;
+    const std::string from = a.latin1 ? Latin1ToUtf8(a.text) : a.text, to = b.latin1 ? Latin1ToUtf8(b.text) : b.text;
+    std::optional<std::vector<Json>> ops;
+    if (EndsWith(Lower(canon), ".csv")) ops = CsvPatches(canon, from, to);
+    if (!ops) ops = TextPatches(canon, from, to);
+    return ops;
+}
 
 DiffResult MakeModFromEdits(FileSource& source, const fs::path& edited, const fs::path& out, const std::string& id, const std::string& name) {
     DiffResult res;
@@ -252,15 +249,7 @@ DiffResult MakeModFromEdits(FileSource& source, const fs::path& edited, const fs
             continue;
         }
         expected[Lower(canon)] = now;
-        std::optional<std::vector<Json>> ops;
-        if (LooksLikeText(before) && LooksLikeText(now)) {
-            const TextFile a = TextFile::Load(before), b = TextFile::Load(now);
-            if (a.crlf == b.crlf && a.latin1 == b.latin1 && a.bom == b.bom && !a.raw && !b.raw) {
-                const std::string from = a.latin1 ? Latin1ToUtf8(a.text) : a.text, to = b.latin1 ? Latin1ToUtf8(b.text) : b.text;
-                if (EndsWith(Lower(canon), ".csv")) ops = CsvPatches(canon, from, to);
-                if (!ops) ops = TextPatches(canon, from, to);
-            }
-        }
+        const std::optional<std::vector<Json>> ops = DiffText(canon, before, now);
         if (ops) {
             for (const Json& op : *ops) {
                 patches.Push(op);

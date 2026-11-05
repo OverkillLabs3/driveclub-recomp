@@ -9,7 +9,7 @@ cxx=${CXX:-clang++}
 command -v "$cxx" >/dev/null || cxx=g++
 if [[ ${OS:-} == Windows_NT ]]; then
     exe=out/dcmod.exe
-    link=(-static)
+    link=(-static -lws2_32)
 else
     exe=out/dcmod
     link=(-static-libstdc++ -static-libgcc)

@@ -13,6 +13,7 @@ The game's `game.ndx` and `gameNNN.dat` files.
 | `extract PATTERN... -o DIR [--verify]` | Writes files under `DIR` with their game paths. `--verify` checks the MD5 of the index. |
 | `cat PATH` | One file to standard output. |
 | `verify [--md5] [PATTERN...]` | Checks that every name matches its hash; with `--md5` reads and checks every file. |
+| `grep TEXT [PATTERN...] [--limit N]` | Lines of the game's text files that contain TEXT, any case. |
 | `names -o FILE` | Writes the list of all paths. |
 
 ## dcmod rpk
@@ -40,11 +41,20 @@ Compiled Lua 5.1 scripts. `SCRIPT` is a file, a folder, or `@pattern` in the arc
 | `strings SCRIPT...` | Every string constant. |
 | `verify SCRIPT...` | Read and write again; the bytes must match. |
 
+## dcmod tex
+
+Textures of packs as DDS. `info PACK`, `extract PACK -o DIR [PATTERN...]`, `import PACK TARGET FILE.dds -o OUT`, `verify PACK... [--max-mb N]`. See [studio.md](studio.md).
+
+## dcmod studio
+
+`dcmod studio [--mods DIR] [--port N]` starts the local web page described in [studio.md](studio.md).
+
 ## dcmod mod
 
 | Command | Does |
 |---|---|
 | `new DIR [--id ID] [--name NAME]` | A mod folder with an example. |
+| `diff EDITED -o MODFOLDER [--id ID] [--name NAME]` | Makes a mod from files you edited, and checks that building it gives those files. |
 | `check DIR...` | Reads the mods, orders them, tries all patches on the game files, writes nothing. |
 | `build DIR... -o OUT` | Applies the mods in the order given (after requirement and order rules) and writes the changed files and `dcmod-report.json` (which mod did what to which file). |
 

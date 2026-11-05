@@ -22,5 +22,6 @@ struct TextFile {
 };
 
 bool IsValidUtf8(std::string_view s);
+std::string Latin1ToUtf8(const std::string& s);
 
 }  // namespace dcmod

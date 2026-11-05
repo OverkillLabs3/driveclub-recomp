@@ -5,7 +5,12 @@
 
 #include "mod.hpp"
 
+#include <optional>
+
 namespace dcmod {
+
+// The patches that turn the text file `before` into `after`, or null when that cannot be done reliably.
+std::optional<std::vector<Json>> DiffText(const std::string& canon, const Bytes& before, const Bytes& after);
 
 struct DiffResult {
     size_t patches = 0, loose_files = 0, unchanged = 0;

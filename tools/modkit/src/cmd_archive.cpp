@@ -40,6 +40,7 @@ int Usage() {
         "  dcmod archive extract PATTERN... -o DIR  write the files under DIR with their game paths (--verify checks MD5)\n"
         "  dcmod archive cat PATH                   write one file to the standard output\n"
         "  dcmod archive verify [--md5] [PATTERN..] check names, hashes and (with --md5) every file's MD5\n"
+        "  dcmod archive grep TEXT [PATTERN...]     lines of the game's text files that contain TEXT (any case)\n"
         "  dcmod archive names -o FILE              write the list of file paths\n"
         "\n"
         "The game folders come from --update DIR --base DIR (update first), the environment variables\n"
@@ -77,6 +78,36 @@ int RunArchive(const std::vector<std::string>& argv) {
             else std::printf("%s\n", e->name.c_str());
         }
         return 0;
+    }
+    if (cmd == "grep") {
+        // dcmod archive grep TEXT [PATTERN...]: lines of the text files that contain TEXT (any case)
+        if (args.positional.empty()) throw Error("grep needs the text to look for");
+        const std::string needle = Lower(args.positional[0]);
+        const std::vector<std::string> patterns(args.positional.begin() + 1, args.positional.end());
+        size_t hits = 0, shown = 0;
+        const size_t limit = args.Has("--limit") ? size_t(std::stoull(args.Get("--limit"))) : 200;
+        for (const IndexEntry* e : Select(a, patterns)) {
+            if (e->size > 8u << 20 || EndsWith(Lower(e->name), ".rpk")) continue;
+            const Bytes data = a.Read(*e);
+            bool text = true;
+            for (size_t i = 0; i < data.size() && i < 4096; ++i) text = text && data[i] != 0;
+            if (!text) continue;
+            size_t line = 1, start = 0;
+            const std::string s(data.begin(), data.end());
+            for (size_t i = 0; i <= s.size(); ++i) {
+                if (i == s.size() || s[i] == '\n') {
+                    const std::string l = s.substr(start, i - start);
+                    if (Lower(l).find(needle) != std::string::npos) {
+                        ++hits;
+                        if (shown++ < limit) std::printf("%s:%zu: %.200s\n", e->name.c_str(), line, l.c_str());
+                    }
+                    ++line;
+                    start = i + 1;
+                }
+            }
+        }
+        std::printf("%zu matching lines%s\n", hits, hits > shown ? " (use --limit N to see more)" : "");
+        return hits ? 0 : 1;
     }
     if (cmd == "names") {
         const std::string out = args.Get("-o", args.Get("--output"));
