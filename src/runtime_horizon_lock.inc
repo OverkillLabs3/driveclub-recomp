@@ -349,6 +349,7 @@ static void horizon_lock_install(void) {
            (int)lroundf(horizon_smooth_s*1000.0f));
 }
 #else
+static int horizon_vr_wanted(void) { return 0; } /* VR is Windows only */
 static void horizon_lock_install(void) {}
 int runtime_vehicle_camera_at(const float *position) { (void)position; return 0; }
 #endif
