@@ -52,3 +52,7 @@ For each mod in turn: its loose files are written first, then its patches are ap
 ## What a mod must not contain
 
 Do not include the game's own files, dumps or saves. Patches exist so that a mod only carries what it changes.
+
+## In the launcher
+
+The **Mods** page imports a ZIP or folder. A mod with a non-empty `patches` list keeps its whole folder in the library; only the files in its `files` folder count as loose game files. When any enabled mod has patches, enabling, disabling or moving a mod makes the launcher run `dcmod.exe` (next to the launcher) on all enabled mods and put the result in `mods`. The mod at the top of the list wins, as with plain file mods. Problems (a missing requirement, a patch that no longer fits the game files) are shown as the reason enabling failed, and `data\mod-manager\last-build.txt` keeps the output of the last run, including `conflict:` lines.

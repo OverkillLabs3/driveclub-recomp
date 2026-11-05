@@ -15,6 +15,7 @@ int Usage() {
         "  dcmod mod check DIR...                      read the mods and try their patches on the game's files\n"
         "  dcmod mod build DIR... -o OUT               apply the mods, in the order given, and write the changed files to OUT\n"
         "\n"
+        "A mod folder may be written ID=FOLDER to give it that id when its mod.json has none.\n"
         "OUT is a folder in the shape of the game's files; used as a mods folder it makes the game use the result.\n"
         "The game folders come from --update DIR --base DIR, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR, or launcher.ini.");
     return 2;
@@ -22,7 +23,13 @@ int Usage() {
 
 int Run(const Args& args, bool write) {
     std::vector<Mod> mods;
-    for (size_t i = 1; i < args.positional.size(); ++i) mods.push_back(LoadMod(args.positional[i]));
+    for (size_t i = 1; i < args.positional.size(); ++i) {
+        // ID=FOLDER gives a mod without an id in its manifest that id
+        const std::string& a = args.positional[i];
+        const size_t eq = a.find('=');
+        const bool named = eq != std::string::npos && eq > 0 && a.find_first_of("/\\:", 0) > eq;
+        mods.push_back(named ? LoadMod(a.substr(eq + 1), a.substr(0, eq)) : LoadMod(a));
+    }
     if (mods.empty()) throw Error("no mod folders given");
     std::vector<std::string> problems;
     std::vector<Mod> ordered;

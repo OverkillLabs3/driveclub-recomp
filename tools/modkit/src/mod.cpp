@@ -67,7 +67,7 @@ bool IsMetadata(const std::string& name) {
 
 }  // namespace
 
-Mod LoadMod(const fs::path& dir) {
+Mod LoadMod(const fs::path& dir, const std::string& fallback_id) {
     Mod m;
     m.dir = dir;
     Json j = Json::Object();
@@ -76,7 +76,7 @@ Mod LoadMod(const fs::path& dir) {
     for (char& c : fallback) {
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) c = '-';
     }
-    m.id = j.GetString("id", fallback);
+    m.id = j.GetString("id", fallback_id.empty() ? fallback : fallback_id);
     if (!ValidId(m.id)) throw Error(dir.string() + ": the mod id \"" + m.id + "\" may only use a-z, 0-9, '.', '-' and '_'");
     m.name = j.GetString("name", m.id);
     m.version = j.GetString("version", "1.0");

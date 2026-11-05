@@ -21,7 +21,8 @@ struct Mod {
 };
 
 // Reads and checks a mod folder. Throws an Error that says what is wrong with mod.json.
-Mod LoadMod(const fs::path& dir);
+// `fallback_id` names a mod that has no id in its manifest (default: the folder name).
+Mod LoadMod(const fs::path& dir, const std::string& fallback_id = {});
 
 // Puts the mods in load order: the order given, moved only as far as requirements and after/before need. Problems
 // (missing requirements, conflicts, cycles) are added to `problems`; a cycle also throws.

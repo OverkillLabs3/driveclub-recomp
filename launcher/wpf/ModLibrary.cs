@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
@@ -13,6 +14,8 @@ public sealed class ModPackage
     public string Author { get; set; } = "";
     public string Description { get; set; } = "";
     public bool Enabled { get; set; }
+    /// <summary>The mod has patches (mod.json "patches"); its source is kept in .dcmod-src and built by dcmod.</summary>
+    public bool Patched { get; set; }
     public Dictionary<string, string> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -99,22 +102,27 @@ public sealed class ModLibrary
             string manifest = Path.Combine(content, "mod.json");
             var package = File.Exists(manifest) ? JsonSerializer.Deserialize<ModPackage>(File.ReadAllText(manifest), Json) ?? new() : new ModPackage();
             package.Id = Guid.NewGuid().ToString("N"); package.Enabled = false;
+            package.Patched = HasPatches(manifest);
             if (string.IsNullOrWhiteSpace(package.Name)) package.Name = Path.GetFileNameWithoutExtension(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             string payload = content;
             foreach (string container in new[] { "files", "mods", "app0" })
                 if (Directory.Exists(Path.Combine(content, container)) && (File.Exists(manifest) || !Directory.EnumerateFiles(content).Any()) && Directory.GetDirectories(content).Length == 1)
                 { payload = Path.Combine(content, container); break; }
             package.Files = new(StringComparer.OrdinalIgnoreCase);
-            foreach (string file in Files(payload))
+            // A mod with patches keeps its whole folder for dcmod; only its "files" folder counts as loose game files.
+            if (package.Patched) payload = Path.Combine(content, "files");
+            foreach (string file in package.Patched && !Directory.Exists(payload) ? [] : Files(payload))
             {
                 if (file.Equals(manifest, StringComparison.OrdinalIgnoreCase)) continue;
                 string relative = Path.GetRelativePath(payload, file).Replace('\\', '/');
                 if (!package.Files.TryAdd(relative, Hash(file))) throw new InvalidDataException("Duplicate mod path: " + relative);
             }
-            if (package.Files.Count == 0) throw new InvalidDataException("The mod contains no game files.");
+            if (package.Files.Count == 0 && !package.Patched) throw new InvalidDataException("The mod contains no game files.");
             string destinationPackage = PackageDirectory(package);
             Directory.CreateDirectory(destinationPackage);
             foreach (string relative in package.Files.Keys) Copy(Under(payload, relative), Under(destinationPackage, relative));
+            if (package.Patched)
+                foreach (string file in Files(content)) Copy(file, Under(destinationPackage, SourceFolder + "/" + Path.GetRelativePath(content, file).Replace('\\', '/')));
             state.Packages.Add(package);
             WriteState(state); // Imported mods start disabled; applying them is an explicit action.
             return state;
@@ -155,6 +163,58 @@ public sealed class ModLibrary
         return state;
     }
 
+    private const string SourceFolder = ".dcmod-src";
+    private const string GeneratedId = "00000000000000000000000000000001";
+
+    private static bool HasPatches(string manifest)
+    {
+        if (!File.Exists(manifest)) return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(manifest), new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            return doc.RootElement.TryGetProperty("patches", out var patches) && patches.ValueKind == JsonValueKind.Array && patches.GetArrayLength() > 0;
+        }
+        catch (JsonException) { return false; }
+    }
+
+    /// <summary>With patched mods every enabled mod goes through dcmod, so patches see the files of the mods below them.</summary>
+    private Dictionary<string, (ModPackage Package, string Hash)> Generate(ModLibraryState next)
+    {
+        string exe = Environment.GetEnvironmentVariable("DCMOD_EXE") ?? Path.Combine(AppContext.BaseDirectory, "dcmod.exe");
+        if (!File.Exists(exe)) throw new IOException("dcmod.exe is missing, so mods with patches cannot be applied.");
+        var generated = new ModPackage { Id = GeneratedId, Name = "Generated", Enabled = true };
+        string output = PackageDirectory(generated);
+        if (Directory.Exists(output)) Directory.Delete(output, true);
+        var start = new ProcessStartInfo(exe) { WorkingDirectory = home, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
+        start.ArgumentList.Add("mod"); start.ArgumentList.Add("build");
+        foreach (var package in next.Packages.Where(p => p.Enabled).Reverse()) // lowest priority first: dcmod lets later mods win
+        {
+            string folder = PackageDirectory(package);
+            start.ArgumentList.Add(package.Id + "=" + (package.Patched ? Under(folder, SourceFolder) : folder));
+        }
+        start.ArgumentList.Add("-o"); start.ArgumentList.Add(output);
+        using var process = Process.Start(start) ?? throw new IOException("dcmod could not be started.");
+        var errors = process.StandardError.ReadToEndAsync();
+        string text = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        text += errors.Result;
+        Directory.CreateDirectory(store);
+        File.WriteAllText(Path.Combine(store, "last-build.txt"), text);
+        if (process.ExitCode != 0) throw new IOException("Applying the mods failed: " + text.Trim());
+        File.Delete(Path.Combine(output, "dcmod-report.json"));
+        var result = new Dictionary<string, (ModPackage Package, string Hash)>(StringComparer.OrdinalIgnoreCase);
+        if (Directory.Exists(output))
+            foreach (string file in Files(output))
+            {
+                string relative = Path.GetRelativePath(output, file).Replace('\\', '/');
+                ValidateRelative(relative);
+                string hash = Hash(file);
+                generated.Files[relative] = hash;
+                result[relative] = (generated, hash);
+            }
+        return result;
+    }
+
     private sealed class Operation
     {
         public string Path { get; set; } = "";
@@ -166,8 +226,10 @@ public sealed class ModLibrary
     {
         var old = Read();
         var winners = new Dictionary<string, (ModPackage Package, string Hash)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var package in next.Packages.Where(p => p.Enabled).Reverse())
-            foreach (var file in package.Files) winners[file.Key] = (package, file.Value);
+        if (next.Packages.Any(p => p.Enabled && p.Patched)) winners = Generate(next);
+        else
+            foreach (var package in next.Packages.Where(p => p.Enabled).Reverse())
+                foreach (var file in package.Files) winners[file.Key] = (package, file.Value);
         var operations = new List<Operation>();
         foreach (string relative in old.Deployed.Keys.Union(winners.Keys, StringComparer.OrdinalIgnoreCase))
         {

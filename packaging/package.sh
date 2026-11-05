@@ -24,6 +24,7 @@ clang -O2 -o out/FfbTest.exe tools/ffb_test.c -static $sdl_static -mconsole
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime/patches"
 cp out/launcher/DriveClub.exe out/WheelSetup.exe out/FfbTest.exe "$OUT/"
+bash tools/modkit/build.sh >/dev/null && cp out/dcmod.exe "$OUT/"   # the mod kit; the launcher runs it to apply mods that have patches
 # The WPF launcher: its bootstrapper replaces DriveClub.exe; the Win32 launcher stays as DriveClub.Native.exe for
 # Wine and for PCs without the .NET 8 desktop runtime. Needs the .NET 8 SDK (dotnet) on PATH.
 WPF_OUT="${WPF_DIR:-out/wpf}"   # a folder built earlier with launcher/build-wpf.ps1, or built here
