@@ -64,8 +64,6 @@ public:
     /// The display pass: the next frame's jitter.
     void NextFrame();
 
-    /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
-    /// scene depth and `output` the image it wrote.
     struct DcBuffer {
         vk::Buffer buffer;
         u64 offset = 0, size = 0;
@@ -76,6 +74,8 @@ public:
         float tan_half_fov_y = 0.0f;
     };
 
+    /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
+    /// scene depth and `output` the image it wrote.
     void OnTaa(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
                VideoCore::ImageId gbuffer = {}, const DcInputs* dc_inputs = nullptr);
 
