@@ -23,11 +23,10 @@ DriveClub 1.28.
 3. **Launcher, VR tab**, card *VR headset (experimental)*:
    - **VR headset** on;
    - *Stereo mode*: **True stereo** or **AFR** (see below);
-   - *Headset picture*: **Auto** draws each eye at the size your headset's app asks for (Virtual Desktop's quality,
+   - *Headset picture scale*: each eye is drawn at the size your headset's app asks for (Virtual Desktop's quality,
      SteamVR's resolution), in the shape of that headset's eye, so the headset gets it pixel for pixel. The first
-     start with a new headset learns its eyes (`data\user\vr_eyes.ini`), the next ones draw the exact size. *Off*
-     draws the flat game's render size, not in the eye's shape;
-   - *Headset picture scale*: 100% is what the headset gets. Above it the eyes are drawn bigger and brought down to
+     start with a new headset learns its eyes (`data\user\vr_eyes.ini`), the next ones draw the exact size.
+     100% is what the headset gets. Above it the eyes are drawn bigger and brought down to
      the headset's size: cleaner edges and distant detail, for about a fifth more work at 110%, half more at 125%.
      Below it: more FPS, softer;
    - *Head smoothing in VR*: see *Picture* below.
@@ -39,8 +38,7 @@ reads **Follows the headset**: the game takes its limit from the headset's refre
 
 ## Stereo mode
 - **True stereo** (experimental): both eyes in every frame, drawn together. It is sharper and steadier than AFR, at a
-  lower FPS. Everything on the VR tab below is made for it. The first start compiles its own shaders, so the first
-  minutes stutter more.
+  lower FPS. The first start compiles its own shaders, so the first minutes stutter more.
 - **AFR**: one eye per frame, in turn. The higher FPS, but each eye gets half of it: you need about 90-100 FPS or more
   to be comfortable, and moving things can look doubled in turns whatever the FPS.
 
@@ -50,13 +48,13 @@ road in a turn, other cars) look doubled. A headset rate above the FPS does no h
 doubling back.
 
 ## Picture
-The VR tab's card *VR picture and frame rate* (True stereo):
+The VR tab's card *VR picture and frame rate*, in both stereo modes:
 
 - **Anti-aliasing in VR**:
   - *TAA*: the game's own. Fewer jagged edges, a softer picture.
   - *Off*: the sharpest picture, with jagged edges; a few more FPS.
-  - *SMAA*: smooths the edges in every frame with hardly any blur, for 2 to 5 FPS. True stereo only. Thin detail far
-    away still shimmers; a bigger *Headset picture scale* helps.
+  - *SMAA*: smooths the edges in every frame with hardly any blur, for 2 to 5 FPS. Thin detail far away still
+    shimmers; a bigger *Headset picture scale* helps.
   - *DLSS (RTX)*: NVIDIA's, per eye (each eye its own history and motion), the steadiest picture far away. *DLSS
     quality in VR* picks how big it draws each eye: DLAA (every pixel) to Ultra Performance. A big *Headset picture
     scale* with Balanced or Performance is the sharpest. DLSS's sharpness is the Display tab's row.
@@ -88,7 +86,7 @@ while VR is on.
 What the test PC (RTX 4070 Ti Super, Quest 2 through Virtual Desktop) plays with, at about 55-60 FPS in races and the
 headset at 72 Hz or a little below the FPS:
 
-- *VR tab*: True stereo, Headset picture **Auto** at **110%**, Anti-aliasing in VR **DLSS** Quality (or **SMAA** for
+- *VR tab*: True stereo, Headset picture scale **110%**, Anti-aliasing in VR **DLSS** Quality (or **SMAA** for
   the sharpest picture without DLSS), Glow in VR **20%**, Exposure 0, Foveated rendering **Medium**, Edge margin Off,
   Head smoothing **Off** or Light.
 - *Display*: Two-thread rendering as the launcher sets it (on, but **off on AMD cards**: slower there, and it lost the
@@ -177,8 +175,8 @@ key_recentre = 0   # and key_up = 2, key_down = 1, key_left = 5, key_right = 6, 
 - True stereo: a lower FPS than AFR. Far away the picture gets soft and thin detail shimmers (DLSS or a bigger
   *Headset picture scale* help). Menus stay flat.
 - AFR: each eye gets half the game's frame rate, so the picture can shake a little, most of all near objects while
-  turning. Below about 90 game FPS (45 per eye) it feels laggy when you move your head. SMAA, the glow and the eye's
-  own light data are True stereo only.
+  turning. Below about 90 game FPS (45 per eye) it feels laggy when you move your head. The game's TAA blends each
+  frame with the one before, which in AFR is the other eye: SMAA, Off or DLSS suit AFR better.
 - Meta Link: the picture judders in True stereo (not solved). Use Virtual Desktop or SteamVR; ALVR goes through
   SteamVR too (not tested here).
 - DriveClub Recomp is heavy on the CPU: a lower headset picture helps little when the CPU is the limit.

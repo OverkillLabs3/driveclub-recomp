@@ -12,8 +12,8 @@ LAUNCHER: THE VR TAB (the test PC's settings)
   VR headset            ON
   Stereo mode           True stereo (both eyes every frame; 55-60 FPS on the test PC)
                         AFR: one eye per frame, needs about 90-100 FPS or more
-  Headset picture       Auto: the size your headset's app asks for, pixel for pixel
-  Headset picture scale 110% (100% = what the headset gets; more = cleaner, slower)
+  Headset picture scale 110% (100% = the size your headset's app asks for, pixel for pixel;
+                        more = cleaner, slower)
   Head smoothing        Off for steady tracking, Light (default), Strong (lags a little)
   Anti-aliasing in VR   TAA (game's, soft) / Off (sharp, jagged) / SMAA (sharp, smooth edges)
                         / DLSS (RTX, steadiest far away; its quality on the next row)

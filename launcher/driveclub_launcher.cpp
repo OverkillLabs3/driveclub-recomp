@@ -407,7 +407,7 @@ bool g_vr_auto = false;         // Auto chosen (vr_auto= in launcher.ini: it has
 bool g_vr_auto_saved = false;   // launcher.ini has vr_auto= (else Auto, the default)
 int g_vr_scale_row = -1;        // "Headset picture scale" with Auto: percent per side (BB_VR_SCALE)
 int g_vr_scale = 100;           // launcher.ini vr_scale=
-int g_vr_glow_row = -1;         // "Glow in VR" in true stereo: percent of the game's glow (BB_VR_GLOW)
+int g_vr_glow_row = -1;         // "Glow in VR": percent of the game's glow (BB_VR_GLOW)
 int g_vr_glow = 100;            // launcher.ini vr_glow=
 std::wstring g_online_host;       // address of the host to join, from "online_host=" in launcher.ini
 std::wstring UiInstalledVersion();  // version.txt next to the launcher (launcher_wpf_bridge.inc)
@@ -681,12 +681,12 @@ bool RowHidden(const Ctl& c) {
     return true;
   if (g_vr_exposure_row >= 0 && &c == &g_c[g_vr_exposure_row]) return !VrChosen();
   if (g_vr_glow_row >= 0 && &c == &g_c[g_vr_glow_row])
-    return !VrChosen() || (g_vr_stereo_row >= 0 && g_c[g_vr_stereo_row].sel == 0);
-  if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row])
-    return !VrChosen() || g_vrsize < 0 || g_c[g_vrsize].sel != kVrSizeAuto;
+    return !VrChosen();
+  if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) return true; // always Auto (see LoadSettings)
+  if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) return !VrChosen();
   if (g_vr_smooth_row >= 0 && &c == &g_c[g_vr_smooth_row]) return !VrChosen();
   if ((g_vr_ffr_row >= 0 && &c == &g_c[g_vr_ffr_row]) || (g_vr_edge_row >= 0 && &c == &g_c[g_vr_edge_row]))
-    return !VrChosen() || (g_vr_stereo_row >= 0 && g_c[g_vr_stereo_row].sel == 0);
+    return !VrChosen();
   if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap] && VrChosen()) return true;
   if (VrHidesRow(c)) return true;
@@ -1584,7 +1584,9 @@ void BuildModel() {
                  {L"Off", L"Auto"}, {"", ""}, kVrSizeAuto);
   {
     Ctl c{L"Headset picture scale",
-          L"How big the game draws each eye, per side, against Auto's size.\n"
+          L"How big the game draws each eye, per side. It starts from the size your headset's app asks for "
+          L"(Virtual Desktop's quality, SteamVR's resolution), in the shape of the headset's eye; the menus and the "
+          L"HUD keep their 16:9 shape. The first start with a new headset learns its eyes.\n"
           L"\x2022 100%: what the headset gets, pixel for pixel.\n"
           L"\x2022 Above 100%: supersampled, then brought down to the headset's size: cleaner edges and distant "
           L"detail. 110% costs about a fifth more, 125% about half more, 150% over twice as much.\n"
@@ -1600,8 +1602,8 @@ void BuildModel() {
                     L"How the headset's picture is smoothed (the Display tab's choice stays for flat play).\n"
                     L"\x2022 TAA: the game's own. Fewer jagged edges, a softer picture.\n"
                     L"\x2022 Off: the sharpest picture, with jagged edges; a few more FPS.\n"
-                    L"\x2022 SMAA: smooths the edges in every frame with hardly any blur, for 2 to 5 FPS. True stereo "
-                    L"only (Off otherwise). Thin detail far away still shimmers: a bigger Headset picture scale helps.\n"
+                    L"\x2022 SMAA: smooths the edges in every frame with hardly any blur, for 2 to 5 FPS. Thin "
+                    L"detail far away still shimmers: a bigger Headset picture scale helps.\n"
                     L"\x2022 DLSS (RTX): NVIDIA's, the steadiest picture far away. Its quality is the next row.",
                     {L"TAA", L"Off", L"SMAA", L"DLSS (RTX)"}, {"@vraa", "", "", ""}, 0);
   g_vr_up_row = seg(L"DLSS quality in VR",
@@ -1613,7 +1615,7 @@ void BuildModel() {
                     {L"DLAA", L"Quality", L"Balanced", L"Performance", L"Ultra Perf."}, {"@vrup", "", "", "", ""}, 1);
   {
     Ctl c{L"Glow in VR",
-          L"In true stereo: how much of the game's glow the headset gets. The game lays a blurred copy of the "
+          L"How much of the game's glow the headset gets. The game lays a blurred copy of the "
           L"picture over it (its bloom): on a screen it looks like haze and light, in the headset like a soft film "
           L"over every edge.\n"
           L"\x2022 100%: as the game draws it.\n"
@@ -1639,7 +1641,7 @@ void BuildModel() {
                         L"\x2022 Strong: the steadiest, but leaning and moving the head lag a little behind.",
                         {L"Off", L"Light", L"Strong"}, {"@vrsmooth", "", ""}, 1);
   g_vr_ffr_row = seg(L"Foveated rendering",
-                     L"True stereo: the edges of each eye, which the lenses blur anyway, are drawn with less detail.\n"
+                     L"The edges of each eye, which the lenses blur anyway, are drawn with less detail.\n"
                      L"\x2022 Light: only the far edges and corners.\n"
                      L"\x2022 Medium: full detail within about 35 degrees of the middle (the windscreen and the dials).\n"
                      L"\x2022 Strong: a smaller sharp middle, the most FPS.\n"
@@ -2236,10 +2238,9 @@ void LoadSettings() {
   const bool has_selection = !lines.empty() || Exists(SelectionPath());
   for (auto& c : g_c) {
     if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) {
-      // Auto, unless Off was saved; the fixed sizes of earlier versions ("VR eye ..." patches) become Auto too
-      const bool fixed = std::any_of(lines.begin(), lines.end(),
-                                     [](const std::string& l) { return l.rfind("VR eye ", 0) == 0; });
-      c.sel = g_vr_auto || fixed || !g_vr_auto_saved ? kVrSizeAuto : 0;
+      // always Auto now (its row is hidden): Off only drew the flat 16:9 size for the headset to stretch, and the
+      // fixed sizes of earlier versions ("VR eye ..." patches) are gone; Headset picture scale sizes it
+      c.sel = kVrSizeAuto;
       continue;
     }
     if (c.kind == Kind::Slider && c.patches[0] == "@vrglow") {
@@ -4087,18 +4088,18 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   // VR tab: foveated rendering and the edge margin (they come after vr.ini)
   static const int kEdgeDegrees[4] = {0, 3, 5, 8};
   if (!UserEnv(L"BB_VR_SMAA")) {
-    const bool smaa = g_vr && g_vr_stereo && VrAa() == kVrAaSmaa;
+    const bool smaa = g_vr && VrAa() == kVrAaSmaa;
     SetEnvironmentVariableW(L"BB_VR_SMAA", g_vr ? (smaa ? L"1" : L"0") : nullptr);
   }
   if (!UserEnv(L"BB_VR_SMOOTHING"))
     SetEnvironmentVariableW(L"BB_VR_SMOOTHING", g_vr ? std::to_wstring(g_vr_smooth).c_str() : nullptr);
   if (!UserEnv(L"BB_VR_FFR"))
-    SetEnvironmentVariableW(L"BB_VR_FFR", g_vr && g_vr_stereo ? std::to_wstring(g_vr_ffr).c_str() : nullptr);
+    SetEnvironmentVariableW(L"BB_VR_FFR", g_vr ? std::to_wstring(g_vr_ffr).c_str() : nullptr);
   if (!UserEnv(L"BB_VR_AUTO_SIZE"))
     SetEnvironmentVariableW(L"BB_VR_AUTO_SIZE",
                             g_vr && g_vrsize >= 0 && g_c[g_vrsize].sel == kVrSizeAuto ? L"1" : nullptr);
   if (!UserEnv(L"BB_VR_GLOW")) {
-    const bool glow = g_vr && g_vr_stereo && g_vr_glow_row >= 0;
+    const bool glow = g_vr && g_vr_glow_row >= 0;
     SetEnvironmentVariableW(L"BB_VR_GLOW", glow ? std::to_wstring(g_c[g_vr_glow_row].sel).c_str() : nullptr);
   }
   if (!UserEnv(L"BB_VR_SCALE")) {
