@@ -10,6 +10,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv_quad_rect.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vr/vr_foveation.h" // VR foveated rendering
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -423,12 +424,25 @@ GraphicsPipeline::GraphicsPipeline(
         .layout = *pipeline_layout,
     };
 
+    // VR foveated rendering in AFR (no multiview twins there): the pipeline itself takes the pass's rate attachment
+    // (its own rate stays 1x1, the attachment's replaces it; a pass without one draws at the full rate).
+    vk::GraphicsPipelineCreateInfo create_info = pipeline_info;
+    vk::PipelineFragmentShadingRateStateCreateInfoKHR shading_rate{
+        .fragmentSize = {1, 1},
+        .combinerOps = std::array{vk::FragmentShadingRateCombinerOpKHR::eKeep,
+                                  vk::FragmentShadingRateCombinerOpKHR::eReplace},
+    };
+    if (Vr::Foveation::Supported() && !Vr::Multiview::Requested()) {
+        shading_rate.pNext = create_info.pNext;
+        create_info.pNext = &shading_rate;
+        create_info.flags |= vk::PipelineCreateFlagBits::eRenderingFragmentShadingRateAttachmentKHR;
+    }
     auto [pipeline_result, pipe] =
-        device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+        device.createGraphicsPipelineUnique(pipeline_cache, create_info);
     for (u32 attempt = 1; pipeline_result != vk::Result::eSuccess &&
                           RetryPipelineCreation(pipeline_result, attempt, "graphics", debug_str.c_str());
          ++attempt) {
-        auto retried = device.createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+        auto retried = device.createGraphicsPipelineUnique(pipeline_cache, create_info);
         pipeline_result = retried.result;
         pipe = std::move(retried.value);
     }

@@ -1784,7 +1784,8 @@ struct Gpu {
         GpuImage right;   // mode 2: the right eye
         bool reprojected = false;
         bool both = false; // mode 2: both eyes made (other, right)
-        bool resampled = false; // multiview: other and right at the runtime's angles (`fov`) and pixels per degree
+        bool resampled = false; // multiview: other and right at the runtime's angles (`fov`) and pixels per degree;
+                                // AFR: other is this frame's eye (`fov[eye]`) so
         XrFovf fov[2]{};
         uint32_t width = 0, height = 0;
         bool valid = false;
@@ -1810,6 +1811,9 @@ struct Gpu {
     XrPosef eye_head[2]{};
     float eye_car[2][9]{};
     bool eye_valid[2]{};
+    // and whether it was resampled to the runtime's angles and pixels (resample): then `eye_fov`, shown whole
+    bool eye_resampled[2]{};
+    XrFovf eye_fov[2]{};
 } gpu;
 
 struct ReprojectPush {
@@ -2271,7 +2275,7 @@ void ReadKeys() {
     was_half = half_down;
     // The / key: the resample to the runtime's angles off and on (to compare)
     static bool was_resample = false;
-    const bool resample_down = dev && settings.resample && Vulkan::Vr::Multiview::Requested() &&
+    const bool resample_down = dev && settings.resample && BbVr::Active() &&
                                (GetAsyncKeyState(VK_OEM_2) & 0x8000) != 0;
     if (resample_down && !was_resample) {
         const bool off = !resample_key_off.load();
@@ -2818,7 +2822,7 @@ bool DrawnTangents(float& right, float& up, float& down) {
 }
 
 float GlowScale() {
-    if (!Vulkan::Vr::Multiview::Requested() || glow_key.load(std::memory_order_relaxed) == 1) {
+    if (!Wanted() || glow_key.load(std::memory_order_relaxed) == 1) {
         return 1.0f;
     }
     return float(std::clamp(settings.glow, 0, 100)) / 100.0f;
@@ -3537,7 +3541,13 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                   VK_FORMAT_R8G8B8A8_UNORM, true)) {
         // the HUD drawn apart: the scene, the HUD and both together, from one pass
-        const VkImageView scene_view = SampleView(*scene, display_format);
+        VkImageView scene_view = SampleView(*scene, display_format);
+        if (scene_view && camera.found && !Vulkan::Vr::Multiview::Enabled() && SmaaOn()) {
+            // AFR: SMAA on this frame's eye before the HUD is put apart (true stereo does both eyes below)
+            if (const VkImageView smaa = SmaaPicture(cmd, scene_view, encode, display_width, display_height, 0)) {
+                scene_view = smaa;
+            }
+        }
         const VkImageView whole_view = SampleView(entry->whole, encode ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
         if (scene_view && whole_view) {
             for (GpuImage* img : {&entry->picture, &entry->hud, &entry->whole}) {
@@ -3638,6 +3648,10 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                 entry->reprojected = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other,
                                                other == 1 ? settings.ipd : -settings.ipd,
                                                gpu.eye_valid[other] ? &gpu.eye_picture[other] : nullptr);
+            } else if (mode == 0 && settings.afr && camera.found && camera.eye >= 0) {
+                // AFR: this frame's eye resampled to the runtime's angles and pixels, as true stereo does both
+                entry->resampled = ResampledPicture(cmd, scene_view, entry->other, encode, display_width,
+                                                    display_height, camera.eye, entry->fov[camera.eye]);
             } else if (mode == 2 && camera.found && camera.eye < 0 && gpu.depth_ok[scene_index]) {
                 entry->both = Reproject(cmd, *entry, gpu.depths[scene_index], entry->other, -0.5f * settings.ipd,
                                         nullptr) &&
@@ -3874,7 +3888,10 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     // resampled eyes: the swapchain at their size
     const bool resampled = cockpit && made && made->tagged && made->both && made->resampled &&
                            made->other.width == made->right.width && made->other.height == made->right.height;
-    if (resampled) {
+    // AFR: this frame's eye resampled (the swapchain and both eyes' pictures at its size)
+    const bool afr_resampled = eye >= 0 && made->resampled && !made->both && !made->reprojected &&
+                               made->other.width && made->other.height;
+    if (resampled || afr_resampled) {
         width = made->other.width, height = made->other.height;
     }
     if (!st.frame_state.shouldRender ||
@@ -3914,9 +3931,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
                       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT)) {
             Barrier(cmd, pic.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
-            Copy(cmd, source, pic.image, width, height, 0);
+            Copy(cmd, afr_resampled ? made->other.image : source, pic.image, width, height, 0);
             Barrier(cmd, pic.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            gpu.eye_resampled[eye] = afr_resampled;
+            gpu.eye_fov[eye] = made->fov[eye];
             gpu.eye_head[eye] = made->head;
             std::memcpy(gpu.eye_car[eye], made->car, sizeof made->car);
             gpu.eye_valid[eye] = true;
@@ -4106,6 +4125,14 @@ void AfterSubmit() {
                         v.subImage.imageRect.offset.y += crop[1];
                         v.subImage.imageRect.extent = {crop[2], crop[3]};
                     }
+                }
+            }
+            if (cockpit && st.frame_tagged && st.afr_frame && !st.reproject_frame) {
+                // AFR: an eye's picture resampled to the runtime's own angles, whole
+                const int from = gpu.eye_valid[e] ? e : 1 - e;
+                if (gpu.eye_resampled[from]) {
+                    v.fov = gpu.eye_fov[from];
+                    v.subImage.imageRect = {{int32_t(e * st.width), 0}, {int32_t(st.width), int32_t(st.height)}};
                 }
             }
             if (cockpit && st.frame_tagged && st.reproject_frame && st.resampled_frame) {

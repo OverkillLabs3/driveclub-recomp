@@ -78,8 +78,8 @@ bool DlssCapture();
 /// vr.ini game_taa = 0 (or BB_GAME_TAA=0, without VR too): the game's temporal anti-aliasing is left out, the frame
 /// goes on as drawn (with the Game anti-aliasing; FSR and DLSS replace it anyway).
 bool GameTaaOff();
-/// True stereo: how much of the game's glow (its bloom) the frame keeps, 1 as the game draws it (vr.ini glow,
-/// BB_VR_GLOW; Shift and the \ key give the game's own for a comparison).
+/// VR: how much of the game's glow (its bloom) the frame keeps, 1 as the game draws it (vr.ini glow, BB_VR_GLOW;
+/// Shift and the \ key give the game's own for a comparison).
 float GlowScale();
 /// The glow scaled in place: `view` a storage view (GENERAL) of its B10G11R11 image, `layers` the eyes. False without
 /// the pipeline.

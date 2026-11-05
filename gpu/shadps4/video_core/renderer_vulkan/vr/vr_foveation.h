@@ -16,7 +16,7 @@ class Scheduler;
 
 namespace Vulkan::Vr::Foveation {
 
-/// Device creation: VR true stereo with ffr in vr.ini, before the device is made (the extension is then enabled).
+/// Device creation: VR (true stereo or AFR) with ffr in vr.ini, before the device is made (the extension is then enabled).
 bool Wanted();
 /// After the device: whether the attachment rate works (its feature, the texel size the map uses).
 void OnDevice(bool supported, u32 texel_width, u32 texel_height);

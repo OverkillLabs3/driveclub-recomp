@@ -46,7 +46,7 @@ u64 Params(float right, float up, float down, float inner, float outer, float lo
 } // namespace
 
 bool Wanted() {
-    return Multiview::Requested() && BbVr::FfrWanted();
+    return BbVr::FfrWanted();
 }
 
 void OnDevice(bool supported, u32 texel_width, u32 texel_height) {

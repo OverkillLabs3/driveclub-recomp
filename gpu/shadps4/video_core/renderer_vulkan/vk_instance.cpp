@@ -471,7 +471,7 @@ bool Instance::CreateDevice() {
         }
         anti_lag = feature && add_extension(VK_AMD_ANTI_LAG_EXTENSION_NAME);
     }
-    // VR foveated rendering (vr.ini ffr = 1, true stereo): a shading rate attachment per pass.
+    // VR foveated rendering (vr.ini ffr = 1, true stereo or AFR): a shading rate attachment per pass.
     bool shading_rate = false;
     vk::Extent2D shading_texel{16, 16};
     if (Vr::Foveation::Wanted() &&
@@ -864,7 +864,9 @@ bool Instance::CreateDevice() {
     AntiLag::Initialize(*device, anti_lag);
     BbVr::OnDevice(*instance, physical_device, *device, queue_family_index, 0);
     Vr::Multiview::OnDevice(VkDevice(*device), vk11_features.multiview == VK_TRUE); // VR multiview
-    Vr::Foveation::OnDevice(shading_rate && Vr::Multiview::Enabled(), shading_texel.width,
+    // true stereo: its multiview twins take the map; AFR: every pipeline does (GraphicsPipeline)
+    Vr::Foveation::OnDevice(shading_rate && (Vr::Multiview::Enabled() || !Vr::Multiview::Requested()),
+                            shading_texel.width,
                             shading_texel.height); // VR foveated rendering
 
     graphics_queue = device->getQueue(queue_family_index, 0);

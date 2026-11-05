@@ -1599,7 +1599,7 @@ static void AuditNames(const GraphicsPipeline* pipeline) {
     Vr::Multiview::SetDrawHash(vs ? vs->pgm_hash : 0, ps ? ps->pgm_hash : 0);
 }
 
-// VR (true stereo): the game's glow at BbVr::GlowScale, in place, both eyes. The composite then adds less of it.
+// VR: the game's glow at BbVr::GlowScale, in place (both eyes' layers in true stereo). The composite then adds less.
 void Rasterizer::VrScaleGlow() {
     const VideoCore::ImageId id = std::exchange(vr_glow, VideoCore::ImageId{});
     const float scale = BbVr::GlowScale();
@@ -5024,10 +5024,10 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     }
     state.view_mask = Vr::Multiview::PassViewMask(texture_cache, cb_descs, state.num_color_attachments,
                                                   db_desc); // VR multiview
-    // VR foveated rendering: the two-eye scene passes at the render size, from the G-buffer to the anti-aliasing
-    // (not the HUD, the post-processing or the half-size passes).
+    // VR foveated rendering: the scene passes at the render size (two-eye ones in true stereo; in AFR each frame is
+    // one eye), from the G-buffer to the anti-aliasing (not the HUD, the post-processing or the half-size passes).
     state.shading_rate_view = vk::ImageView{};
-    if (state.view_mask && Vr::Foveation::Supported()) {
+    if ((state.view_mask || !Vr::Multiview::Requested()) && Vr::Foveation::Supported()) {
         u32 render_w = 0, render_h = 0;
         const bool render_size = Vr::Fixes::RenderSize(render_w, render_h) && state.width == render_w &&
                                  state.height == render_h;
