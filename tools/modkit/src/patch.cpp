@@ -3,6 +3,7 @@
 
 #include "csv.hpp"
 #include "lua.hpp"
+#include "tex.hpp"
 #include "xml.hpp"
 
 #include <algorithm>
@@ -599,7 +600,7 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
         return;
     }
-    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove") {
+    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set") {
         const std::string file = p.Str("file");
         RpkPack& pack = ws.Pack(file);
         if (name == "rpk.add") {
@@ -625,6 +626,13 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         if (name == "rpk.remove") {
             p.Done();
             pack.Remove(res.id);
+        } else if (name == "tex.set") {
+            const Bytes c = Content(p, env);
+            p.Done();
+            if (res.Type() != kRpkPixelBuffer) throw Error("the resource " + ref + " is not a texture");
+            PixelBuffer pb = PixelBuffer::Parse(res.data);
+            pb.SetData(DdsToTexData(pb, Dds::Parse(c)));
+            res.data = pb.payload;
         } else if (name == "rpk.set") {
             const Bytes c = Content(p, env);
             p.Done();

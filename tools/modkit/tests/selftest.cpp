@@ -2,6 +2,7 @@
 // Checks of the mod kit on made-up data (no game files needed).
 #include "../src/csv.hpp"
 #include "../src/patch.hpp"
+#include "../src/tex.hpp"
 #include "../src/xml.hpp"
 
 #include <cstdio>
@@ -99,6 +100,35 @@ int main() {
         const RpkPack back = RpkPack::Parse(B(out));
         CHECK(S(back.resources[0].Blob()) == "<a x=\"22\"/>");
         CHECK(RpkPack::Parse(src.files["p.rpk"]).Write() == src.files["p.rpk"]);
+    }
+    // textures: tiling and untiling are inverse, a changed DDS reaches the pack, wrong sizes are refused
+    {
+        Bytes payload{'E', 'V', 'O', 'S', 'L', 'I', 'T', 'L'};
+        Wr64(payload, (5ull << 48) | 9);
+        Wr32(payload, 0x20005);
+        Wr16(payload, 20); Wr16(payload, 12); Wr16(payload, 1); Wr16(payload, 36);  // 20x12 BC7
+        payload.insert(payload.end(), {2, 0, 1, 0, 0, 0});                          // 2 mips, type, usage, unk, start, unk3
+        Wr64(payload, 0);
+        Wr32(payload, 0);
+        PixelBuffer pb = PixelBuffer::Parse(payload);
+        Bytes data(pb.ExpectedDataSize());
+        for (size_t i = 0; i < data.size(); ++i) data[i] = uint8_t(i * 7 + i / 251);
+        pb.SetData(data);
+        pb = PixelBuffer::Parse(pb.payload);
+        const Dds dds = TexToDds(pb);
+        CHECK(dds.mips.size() == 2 && dds.mips[0].size() == 5 * 3 * 16 && dds.mips[1].size() == 3 * 2 * 16);
+        const Dds again = Dds::Parse(dds.Write());
+        CHECK(again.mips == dds.mips && again.width == 20);
+        Bytes retiled = DdsToTexData(pb, again);
+        // padding bytes are not kept, so compare the untiled content
+        PixelBuffer pb2 = pb;
+        pb2.SetData(retiled);
+        CHECK(TexToDds(pb2).mips == dds.mips);
+        Dds wrong = again;
+        wrong.width = 16;
+        bool refused = false;
+        try { DdsToTexData(pb, wrong); } catch (const Error&) { refused = true; }
+        CHECK(refused);
     }
     // two mods that set the same cell are reported
     {

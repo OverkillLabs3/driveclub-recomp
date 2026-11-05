@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // dcmod mod ...: make, check and build mods.
 #include "cli.hpp"
+#include "diff.hpp"
 #include "mod.hpp"
 
 namespace dcmod {
@@ -12,6 +13,7 @@ int Usage() {
         "dcmod mod: mods as folders with a mod.json\n"
         "\n"
         "  dcmod mod new DIR [--id ID] [--name NAME]   start a mod with a manifest and an example patch\n"
+        "  dcmod mod diff EDITED -o MODFOLDER [--id ID] [--name NAME]  make a mod from files you edited (game paths under EDITED)\n"
         "  dcmod mod check DIR...                      read the mods and try their patches on the game's files\n"
         "  dcmod mod build DIR... -o OUT               apply the mods, in the order given, and write the changed files to OUT\n"
         "\n"
@@ -75,6 +77,21 @@ int RunMod(const std::vector<std::string>& argv) {
         const std::string id = args.Get("--id", Lower(dir.filename().string()));
         NewMod(dir, id, args.Get("--name", id));
         std::printf("created %s\n", (dir / "mod.json").string().c_str());
+        return 0;
+    }
+    if (cmd == "diff") {
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty()) throw Error("diff needs -o MODFOLDER");
+        const fs::path dir = args.positional[1];
+        const std::string id = args.Get("--id", Lower(fs::path(out).filename().string()));
+        auto archive = OpenGame(args);
+        GameSource source(*archive, GameFolders(args));
+        const DiffResult r = MakeModFromEdits(source, dir, out, id, args.Get("--name", id));
+        for (const std::string& n : r.notes) std::printf("%s\n", n.c_str());
+        std::printf("%zu patches, %zu files included, %zu files unchanged; mod written to %s\n", r.patches, r.loose_files, r.unchanged, out.c_str());
+        for (const std::string& n : r.notes) {
+            if (StartsWith(n, "CHECK FAILED")) return 1;
+        }
         return 0;
     }
     if (cmd == "check") return Run(args, false);
