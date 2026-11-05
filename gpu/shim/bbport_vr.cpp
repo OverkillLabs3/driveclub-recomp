@@ -195,6 +195,9 @@ struct Settings {
     // exposure_log = 1: the game's auto-exposure value twice a second with the head's pitch (ExposureLog)
     bool exposure_log = false;
     bool jitter_log = false; // JitterLog
+    // dev_keys = 1 (or draw_trace): the keys for comparing and saving pictures (7, 8, 9, - ` . , / ' \ ; =). Without it
+    // only recentring, the seat and the exposure ([ ]) answer: the rest of the keyboard is the game's.
+    bool dev_keys = false;
     // The game's auto-exposure in VR (FilterExposure): exposure_bias in EV (+ brighter, - darker; the [ and ] keys),
     // exposure_time the seconds it takes to adapt, held while the head looks exposure_hold degrees up or down or more
     // (the dark dash and the bright sky swung it by three stops and more). exposure_filter = 0: the game's own.
@@ -428,8 +431,21 @@ int KeyCode(const char* name) {
 }
 
 // The launcher's VR tab: BB_VR_FFR = 0 (off) to 3 (strong), BB_VR_EDGE_MARGIN = degrees, BB_VR_EXPOSURE_BIAS = EV,
-// BB_VR_SMAA = 0 or 1, BB_VR_GLOW = percent. They come after vr.ini.
+// BB_VR_SMAA = 0 or 1, BB_VR_GLOW = percent, BB_VR_SMOOTHING = 0 (off), 1 (light) or 2 (strong). They come after
+// vr.ini.
 void LauncherSettings() {
+    if (const char* v = std::getenv("BB_VR_SMOOTHING"); v && *v) {
+        // Light: 2 Hz still, about 7 Hz at 5 cm/s or 20 degrees/s (a few hundredths of a second behind). Strong (the
+        // earlier default): 0.5 Hz still, 1 Hz at 5 cm/s: a slow lean was about a sixth of a second behind.
+        const int level = std::clamp(std::atoi(v), 0, 2);
+        settings.smoothing = level > 0;
+        if (level == 1) {
+            settings.smooth_hz = 2.0f, settings.smooth_turn = 0.25f, settings.smooth_move = 1.0f;
+        } else if (level == 2) {
+            settings.smooth_hz = 0.5f, settings.smooth_turn = 0.05f, settings.smooth_move = 0.1f;
+        }
+        std::printf("VR: head smoothing %s\n", level == 0 ? "off" : level == 1 ? "light" : "strong");
+    }
     if (const char* v = std::getenv("BB_VR_GLOW"); v && *v) {
         settings.glow = std::clamp(std::atoi(v), 0, 100);
     }
@@ -545,6 +561,7 @@ void ReadSettings() {
         else if (k == "glow" && value >= 0.0f && value <= 100.0f) settings.glow = int(value + 0.5f);
         else if (k == "exposure_log") settings.exposure_log = value != 0;
         else if (k == "jitter_log") settings.jitter_log = value != 0;
+        else if (k == "dev_keys") settings.dev_keys = value != 0;
         else if (k == "exposure_filter") settings.exposure_filter = value != 0;
         else if (k == "exposure_bias" && value >= -4.0f && value <= 4.0f) settings.exposure_bias = value;
         else if (k == "exposure_time" && value >= 0.0f && value <= 10.0f) settings.exposure_time = value;
@@ -2160,11 +2177,13 @@ void ReadKeys() {
 #ifdef _WIN32
     // Recentre, and the seat up/down, left/right and forward/back by 2 cm (Ctrl: 10 cm): the keys of vr.ini (the
     // number row 0, 2/1, 5/6, 4/3 by default) or the keypad (5, 8/2, 4/6, 9/3).
+    const bool dev = settings.dev_keys || settings.draw_trace;
     static bool was[10];
     static const int keypad[10] = {VK_NUMPAD5, VK_NUMPAD8, VK_NUMPAD2, VK_NUMPAD4, VK_NUMPAD6,
                                    VK_NUMPAD9, VK_NUMPAD3, 0,          0,          0};
     for (int k = 0; k < 10; ++k) {
-        const bool down = (GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0 || (GetAsyncKeyState(keypad[k]) & 0x8000) != 0;
+        const bool down = (k < 7 || dev) &&
+                          ((GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0 || (GetAsyncKeyState(keypad[k]) & 0x8000) != 0);
         if (down && !was[k]) {
             std::scoped_lock lock{head_mutex};
             if (k == 0) {
@@ -2212,7 +2231,7 @@ void ReadKeys() {
     was_shift = shift_down;
     // The - key, draw_trace off: DLSS's inputs of the next 8 frames (colour, depth, motion; the left eye)
     static bool was_capture = false;
-    const bool capture_down = !settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+    const bool capture_down = settings.dev_keys && !settings.draw_trace && (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
     if (capture_down && !was_capture) {
         dlss_capture = true;
         std::printf("VR: DLSS capture asked for\n");
@@ -2221,7 +2240,7 @@ void ReadKeys() {
     was_capture = capture_down;
     // The ` key: the HUD's layer off and on (to compare the scene alone, one layer, as most games send it)
     static bool was_hud = false;
-    const bool hud_down = BbVr::Active() && (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+    const bool hud_down = dev && BbVr::Active() && (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
     if (hud_down && !was_hud) {
         const bool off = !hud_layer_off.load();
         hud_layer_off = off;
@@ -2231,7 +2250,7 @@ void ReadKeys() {
     was_hud = hud_down;
     // The . key: the next frame's two eyes as the runtime gets them, saved as PNGs (to compare with the headset's view)
     static bool was_shot = false;
-    const bool shot_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0;
+    const bool shot_down = dev && Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PERIOD) & 0x8000) != 0;
     if (shot_down && !was_shot) {
         headset_shot = kHeadsetSeries;
         std::printf("VR: headset shot asked for (the . key)\n");
@@ -2240,7 +2259,7 @@ void ReadKeys() {
     was_shot = shot_down;
     // The , key: half the headset's rate off and on (to compare)
     static bool was_half = false;
-    const bool half_down = BbVr::Active() && (GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0;
+    const bool half_down = dev && BbVr::Active() && (GetAsyncKeyState(VK_OEM_COMMA) & 0x8000) != 0;
     if (half_down && !was_half) {
         const int key = half_rate_key.load();
         const bool on = !(key < 0 ? settings.half_rate : key != 0);
@@ -2252,7 +2271,7 @@ void ReadKeys() {
     was_half = half_down;
     // The / key: the resample to the runtime's angles off and on (to compare)
     static bool was_resample = false;
-    const bool resample_down = settings.resample && Vulkan::Vr::Multiview::Requested() &&
+    const bool resample_down = dev && settings.resample && Vulkan::Vr::Multiview::Requested() &&
                                (GetAsyncKeyState(VK_OEM_2) & 0x8000) != 0;
     if (resample_down && !was_resample) {
         const bool off = !resample_key_off.load();
@@ -2264,7 +2283,7 @@ void ReadKeys() {
     was_resample = resample_down;
     // The ' key: foveated rendering off and on (to compare)
     static bool was_ffr = false;
-    const bool ffr_pressed = settings.ffr && (GetAsyncKeyState(VK_OEM_7) & 0x8000) != 0;
+    const bool ffr_pressed = dev && settings.ffr && (GetAsyncKeyState(VK_OEM_7) & 0x8000) != 0;
     if (ffr_pressed && !was_ffr) {
         const bool off = !ffr_key_off.load();
         ffr_key_off = off;
@@ -2274,7 +2293,7 @@ void ReadKeys() {
     was_ffr = ffr_pressed;
     // The \ key: SMAA off and on (to compare); with Shift the glow as set and as the game draws it. With vr.ini
     // hide_shader or hide_target the key is theirs (below)
-    const bool backslash = Vulkan::Vr::Multiview::Requested() && !settings.hidden[0] && !settings.hidden_targets[0] &&
+    const bool backslash = dev && Vulkan::Vr::Multiview::Requested() && !settings.hidden[0] && !settings.hidden_targets[0] &&
                            (GetAsyncKeyState(VK_OEM_5) & 0x8000) != 0;
     const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     static bool was_glow = false;
@@ -2298,7 +2317,7 @@ void ReadKeys() {
     was_smaa = smaa_down;
     // The ; key: the game's TAA off and on (to compare; vr.ini game_taa sets how it starts)
     static bool was_taa = false;
-    const bool taa_down = BbVr::Wanted() && (GetAsyncKeyState(VK_OEM_1) & 0x8000) != 0;
+    const bool taa_down = dev && BbVr::Wanted() && (GetAsyncKeyState(VK_OEM_1) & 0x8000) != 0;
     if (taa_down && !was_taa) {
         const bool on = BbVr::GameTaaOff(); // off now: it goes on
         game_taa_key = on ? 1 : 0;
@@ -2308,7 +2327,7 @@ void ReadKeys() {
     was_taa = taa_down;
     // True stereo diagnostics: the = key saves one frame's two-layer render targets, both eyes (EyeDump)
     static bool was_dump = false;
-    const bool dump_down = Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
+    const bool dump_down = dev && Vulkan::Vr::Multiview::Requested() && (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
     if (dump_down && !was_dump) {
         eye_dump = true;
         std::printf("VR: eye dump asked for (the next frame)\n");
