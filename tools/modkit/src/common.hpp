@@ -40,6 +40,34 @@ inline void Put32(Bytes& b, size_t at, uint32_t v) {
     for (int i = 0; i < 4; ++i) b[at + size_t(i)] = uint8_t(v >> (8 * i));
 }
 
+// Reads little-endian numbers from a byte buffer and refuses to go past its end.
+class ByteReader {
+public:
+    ByteReader(const Bytes& b, std::string_view what) : b_(b), what_(what) {}
+    size_t pos() const { return p_; }
+    size_t left() const { return b_.size() - p_; }
+    void Seek(size_t p) {
+        if (p > b_.size()) Cut();
+        p_ = p;
+    }
+    const uint8_t* Take(size_t n) {
+        if (n > b_.size() - p_) Cut();
+        const uint8_t* r = b_.data() + p_;
+        p_ += n;
+        return r;
+    }
+    uint8_t U8() { return *Take(1); }
+    uint16_t U16() { return Rd16(Take(2)); }
+    uint32_t U32() { return Rd32(Take(4)); }
+    uint64_t U64() { return Rd64(Take(8)); }
+
+private:
+    [[noreturn]] void Cut() const { throw Error(std::string(what_) + " is cut short"); }
+    const Bytes& b_;
+    std::string_view what_;
+    size_t p_ = 0;
+};
+
 inline Bytes ReadFile(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) throw Error("cannot open " + path.string());

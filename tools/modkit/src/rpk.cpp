@@ -28,30 +28,7 @@ constexpr char kPackName[] = "Resource PacK file";
 constexpr uint32_t kInfoMarker = 0x11111111u, kInfoEnd = 0x99999999u;
 constexpr size_t kPackHeader = 8 + 4 + 18 + 4 + 4;  // 38: the table of contents starts here
 
-class Reader {
-public:
-    Reader(const Bytes& b, std::string_view what) : b_(b), what_(what) {}
-    size_t pos() const { return p_; }
-    void Seek(size_t p) {
-        if (p > b_.size()) Cut();
-        p_ = p;
-    }
-    const uint8_t* Take(size_t n) {
-        if (n > b_.size() - p_) Cut();
-        const uint8_t* r = b_.data() + p_;
-        p_ += n;
-        return r;
-    }
-    uint16_t U16() { return Rd16(Take(2)); }
-    uint32_t U32() { return Rd32(Take(4)); }
-    uint64_t U64() { return Rd64(Take(8)); }
-
-private:
-    [[noreturn]] void Cut() const { throw Error(std::string(what_) + " is cut short"); }
-    const Bytes& b_;
-    std::string_view what_;
-    size_t p_ = 0;
-};
+using Reader = ByteReader;
 
 // The strings of a pool, found by their text.
 class Pool {
