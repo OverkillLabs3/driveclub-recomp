@@ -73,7 +73,8 @@ struct Dlss::Impl {
     HMODULE module{};
     const BbDlssApi* api{};
     std::vector<std::string> instance_extensions, device_extensions;
-    std::optional<FeatureDesc> feature;
+    std::optional<FeatureDesc> features[2]; ///< per slot (SelectFeature)
+    u32 slot{};
     std::optional<FrameGenDesc> frame_gen;
     int frame_gen_max{};
     std::string problem;
@@ -209,30 +210,39 @@ std::string Dlss::Problem() const {
 }
 
 bool Dlss::HasFeature(const FeatureDesc& desc) const {
-    return impl->feature && *impl->feature == desc;
+    return impl->features[impl->slot] && *impl->features[impl->slot] == desc;
+}
+
+bool Dlss::SelectFeature(u32 slot) {
+    const bool two = impl->available && impl->api && impl->api->abi >= 3 && impl->api->SelectFeature;
+    impl->slot = two && slot < 2 ? slot : 0;
+    if (two) {
+        impl->api->SelectFeature(impl->slot);
+    }
+    return two;
 }
 
 bool Dlss::CreateFeature(vk::CommandBuffer command, const FeatureDesc& desc) {
     if (!impl->available) {
         return false;
     }
-    impl->feature.reset();
+    impl->features[impl->slot].reset();
     const BbDlssFeature feature{desc.input_width,  desc.input_height, desc.output_width,
                                 desc.output_height, desc.quality,      desc.depth_inverted ? 1 : 0,
                                 desc.preset,        desc.hdr ? 1 : 0};
     if (!impl->api->CreateFeature(command, &feature)) {
         return false;
     }
-    impl->feature = desc;
+    impl->features[impl->slot] = desc;
     return true;
 }
 
 bool Dlss::Evaluate(vk::CommandBuffer command, const Frame& frame) {
-    if (!impl->available || !impl->feature) {
+    if (!impl->available || !impl->features[impl->slot]) {
         return false;
     }
     const auto image = [](const Resource& r) {
-        const vk::ImageSubresourceRange range{r.aspect, 0, 1, 0, 1};
+        const vk::ImageSubresourceRange range{r.aspect, 0, 1, r.layer, 1};
         return BbDlssImage{r.image,
                            r.view,
                            static_cast<VkImageSubresourceRange>(range),
@@ -247,7 +257,7 @@ bool Dlss::Evaluate(vk::CommandBuffer command, const Frame& frame) {
 }
 
 void Dlss::ReleaseFeature() {
-    impl->feature.reset();
+    impl->features[impl->slot].reset();
     if (impl->api) {
         impl->api->ReleaseFeature();
     }
@@ -312,7 +322,9 @@ void Dlss::ReleaseFrameGen() {
 
 void Dlss::Shutdown() {
     impl->available = false;
-    impl->feature.reset();
+    impl->features[0].reset();
+    impl->features[1].reset();
+    impl->slot = 0;
     impl->frame_gen.reset();
     if (impl->api && impl->initialized) {
         impl->api->Shutdown();
@@ -340,6 +352,9 @@ std::string Dlss::Problem() const {
     return {};
 }
 bool Dlss::HasFeature(const FeatureDesc&) const {
+    return false;
+}
+bool Dlss::SelectFeature(u32) {
     return false;
 }
 bool Dlss::CreateFeature(vk::CommandBuffer, const FeatureDesc&) {

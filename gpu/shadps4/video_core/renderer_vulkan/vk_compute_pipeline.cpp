@@ -5,6 +5,7 @@
 
 #include "shader_recompiler/info.h"
 #include "video_core/renderer_vulkan/vk_compute_pipeline.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
@@ -44,7 +45,7 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         bindings.push_back({
             .binding = binding++,
             .descriptorType = vk::DescriptorType::eStorageBuffer,
-            .descriptorCount = 1,
+            .descriptorCount = Vr::Multiview::BufferDescriptors(buffer.IsSpecial()), // VR multiview: per eye
             .stageFlags = vk::ShaderStageFlagBits::eCompute,
         });
     }
@@ -74,7 +75,8 @@ ComputePipeline::ComputePipeline(const Instance& instance, Scheduler& scheduler,
         .size = sizeof(Shader::PushData),
     };
 
-    uses_push_descriptors = binding < instance.MaxPushDescriptors();
+    uses_push_descriptors =
+        binding + Vr::Multiview::ExtraDescriptors(bindings) < instance.MaxPushDescriptors(); // VR multiview
     const auto flags = uses_push_descriptors
                            ? vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR
                            : vk::DescriptorSetLayoutCreateFlagBits{};

@@ -979,6 +979,21 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * immediates of mov r8d / mov r9d at +0x754c19 / +0x754c1f, which the resolution patches change) and its render size
  * in data (+0x12d0544, +0x12d0554, as the "Internal resolution" patches): the render size is set here, after the
  * patches, so it follows any output size, widescreen ones too. Both multiples of 8. */
+/* VR, the launcher's Auto headset picture (bbgpu_vr_auto_size): the size each eye is drawn at, 0 otherwise. */
+static uint32_t vr_auto_w, vr_auto_h;
+/* VR, Auto headset picture: the output size (the immediates at +0x754c1b / +0x754c21) and the render size (+0x12d0544,
+ * +0x12d0554), as the "VR eye ... full HUD" patches set them, at the size bbgpu_vr_auto_size chose. */
+static void apply_vr_auto_size(unsigned char *image, uint64_t size) {
+    if (size < 0x12d0558 || image[0x754c19] != 0x41 || image[0x754c1a] != 0xb8 || image[0x754c1f] != 0x41 ||
+        image[0x754c20] != 0xb9) {
+        printf("VR: the Auto headset picture needs eboot 1.28: the patches' size stays\n");
+        vr_auto_w = vr_auto_h = 0;
+        return;
+    }
+    memcpy(image + 0x754c1b, &vr_auto_w, 4); memcpy(image + 0x754c21, &vr_auto_h, 4);
+    memcpy(image + 0x12d0544, &vr_auto_w, 4); memcpy(image + 0x12d0554, &vr_auto_h, 4);
+    printf("VR: the game draws each eye at %ux%u (Auto)\n", vr_auto_w, vr_auto_h);
+}
 /* UI scaling: DriveClub's UI engine references a fixed 16:9 canvas (1920x1080). On aspect ratios
  * narrower than 16:9 (16:10 such as 1920x1200 or 1280x800, 4:3 such as 1440x1080, and 3:2 such as
  * 2160x1440), scaling by height forces a canvas wider than the buffer, cropping ~106px (1920x1200),
@@ -987,6 +1002,9 @@ static void apply_patches(const char *path, Segment *segments, uint64_t ns, cons
  * fits all UI menus, HUD, and video quads cleanly onto the screen. */
 static void apply_ui_resolution(unsigned char *image, uint64_t size) {
     if (size < 0x12cf510) return;
+    /* VR: the headset sizes (taller than wide) keep the 16:9 canvas, the HUD goes to the headset on its own
+       16:9 layer, and the headset sets the field of view */
+    if (horizon_vr_wanted()) return;
     if (image[0x754c19] != 0x41 || image[0x754c1a] != 0xb8 || image[0x754c1f] != 0x41 || image[0x754c20] != 0xb9) return;
     uint32_t out_w, out_h;
     memcpy(&out_w, image + 0x754c1b, 4); memcpy(&out_h, image + 0x754c21, 4);
@@ -1124,11 +1142,11 @@ static int32_t planned_render_height(const unsigned char *image, uint64_t size, 
     if (aa && (!strcmp(aa,"dlss") || !strcmp(aa,"fsr3")) && want) {
         for (size_t i=0;i<sizeof scales/sizeof *scales;++i) {
             if (strcmp(want,scales[i].name)) continue;
-            const uint32_t out_h=peek_patched_u32(image,size,patch_file,0x754c21);
+            const uint32_t out_h=vr_auto_h ? vr_auto_h : peek_patched_u32(image,size,patch_file,0x754c21);
             if (out_h>=360 && out_h<=8640) return (int32_t)((uint32_t)((float)out_h/scales[i].scale+4.0f)/8*8);
         }
     }
-    const uint32_t h=peek_patched_u32(image,size,patch_file,0x12d0554);
+    const uint32_t h=vr_auto_h ? vr_auto_h : peek_patched_u32(image,size,patch_file,0x12d0554);
     return h>=360 && h<=8640 ? (int32_t)h : 0;
 }
 /* Pop-in: the game leaves out every object smaller than a share of the screen given per kind of object in
@@ -1607,8 +1625,9 @@ int main(int argc, char **argv) {
         sfo_value(sfo,"ATTRIBUTE",NULL,0,&attributes);
         uint64_t sdk=0;
         if (procparam) memcpy(&sdk,image+procparam+16,8); /* procparam: size, magic, count, sdk_version */
-        uint32_t out_w = peek_patched_u32(image, size, patch_file, 0x754c1b);
-        uint32_t out_h = peek_patched_u32(image, size, patch_file, 0x754c21);
+        if (bbgpu_vr_auto_size(&vr_auto_w, &vr_auto_h) != 1) vr_auto_w = vr_auto_h = 0;
+        uint32_t out_w = vr_auto_w ? vr_auto_w : peek_patched_u32(image, size, patch_file, 0x754c1b);
+        uint32_t out_h = vr_auto_h ? vr_auto_h : peek_patched_u32(image, size, patch_file, 0x754c21);
         if (out_w < 640 || out_w > 16384) out_w = 1920;
         if (out_h < 360 || out_h > 8640) out_h = 1080;
         BbGpuConfig gpu={title,serial,user_dir ? user_dir : "user",(uint32_t)sdk,attributes,out_w,out_h,
@@ -1655,6 +1674,7 @@ int main(int argc, char **argv) {
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
     if (!cpu_only) env_timelapse_install();
     if (!cpu_only) scene_debug_install();
+    if (!cpu_only && vr_auto_w) apply_vr_auto_size(image, size);
     if (!cpu_only) apply_upscale_render_size(image, size);
     if (!cpu_only) apply_ui_resolution(image, size);
     if (!cpu_only) apply_cull_scale(image, size);
@@ -1685,6 +1705,7 @@ int main(int argc, char **argv) {
             executable_entry = 1;
     }
     if (!executable_entry) fail("entry is not executable");
+    runtime_image_ready = 1;
     printf("Mapped %" PRIu64 " bytes, %" PRIu64 " segments; applied %" PRIu64 " relocations\n", size, ns, nr);
 #ifndef _WIN32
     /* The guest main thread runs on a stack below 1 TiB like PS4 stacks. */

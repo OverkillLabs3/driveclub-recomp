@@ -15,9 +15,12 @@
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
+#include "bbport_vr.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderer_vulkan/vk_reflex.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
+#include "video_core/renderer_vulkan/vr/vr_foveation.h" // VR foveated rendering
 #include "video_core/renderer_vulkan/vk_platform.h"
 
 #include <vk_mem_alloc.h>
@@ -468,6 +471,34 @@ bool Instance::CreateDevice() {
         }
         anti_lag = feature && add_extension(VK_AMD_ANTI_LAG_EXTENSION_NAME);
     }
+    // VR foveated rendering (vr.ini ffr = 1, true stereo or AFR): a shading rate attachment per pass.
+    bool shading_rate = false;
+    vk::Extent2D shading_texel{16, 16};
+    if (Vr::Foveation::Wanted() &&
+        std::ranges::any_of(available_extensions,
+                            [](const std::string& e) { return e == VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME; })) {
+        vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceFragmentShadingRateFeaturesKHR> probe;
+        physical_device.getFeatures2(&probe.get<vk::PhysicalDeviceFeatures2>());
+        const auto& rate = probe.get<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
+        if (rate.attachmentFragmentShadingRate && rate.pipelineFragmentShadingRate) {
+            vk::StructureChain<vk::PhysicalDeviceProperties2, vk::PhysicalDeviceFragmentShadingRatePropertiesKHR> props;
+            physical_device.getProperties2(&props.get<vk::PhysicalDeviceProperties2>());
+            const auto& p = props.get<vk::PhysicalDeviceFragmentShadingRatePropertiesKHR>();
+            shading_texel = {std::clamp(16u, p.minFragmentShadingRateAttachmentTexelSize.width,
+                                        p.maxFragmentShadingRateAttachmentTexelSize.width),
+                             std::clamp(16u, p.minFragmentShadingRateAttachmentTexelSize.height,
+                                        p.maxFragmentShadingRateAttachmentTexelSize.height)};
+            std::printf("GPU: shading rate attachment, texels %ux%u to %ux%u, layered %d, with depth writes %d, "
+                        "sample mask %d\n",
+                        p.minFragmentShadingRateAttachmentTexelSize.width,
+                        p.minFragmentShadingRateAttachmentTexelSize.height,
+                        p.maxFragmentShadingRateAttachmentTexelSize.width,
+                        p.maxFragmentShadingRateAttachmentTexelSize.height, int(p.layeredShadingRateAttachments),
+                        int(p.fragmentShadingRateWithShaderDepthStencilWrites),
+                        int(p.fragmentShadingRateWithSampleMask));
+            shading_rate = add_extension(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME);
+        }
+    }
     if (compute_shader_derivatives) {
         compute_shader_derivatives_features =
             feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
@@ -556,6 +587,16 @@ bool Instance::CreateDevice() {
             }
         }
     }
+    // bbport: VR (off unless asked for): the OpenXR runtime's device extensions.
+    std::vector<const char*> vr_extensions;
+    BbVr::AppendDeviceExtensions(*instance, physical_device, vr_extensions);
+    for (const char* name : vr_extensions) {
+        if (std::none_of(enabled_extensions.begin(), enabled_extensions.end(),
+                         [&](const char* e) { return std::string_view{e} == name; }) &&
+            enabled_extensions.size() < enabled_extensions.capacity()) {
+            enabled_extensions.push_back(name);
+        }
+    }
     // bbport: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
     // Default on for AMD only, where the driver drops the old mapping of memory that a second sparse
     // buffer binds; NVIDIA and Intel keep what they had. BB_SPARSE_ALIASED=1 / 0 forces it on / off.
@@ -609,6 +650,10 @@ bool Instance::CreateDevice() {
         },
         vk::PhysicalDeviceVulkan11Features{
             .storageBuffer16BitAccess = vk11_features.storageBuffer16BitAccess,
+            // VR multiview (BB_VR_STEREO=mv only)
+            .multiview = Vr::Multiview::Requested() && vk11_features.multiview,
+            .multiviewGeometryShader = Vr::Multiview::Requested() && vk11_features.multiviewGeometryShader,
+            .multiviewTessellationShader = Vr::Multiview::Requested() && vk11_features.multiviewTessellationShader,
             .shaderDrawParameters = vk11_features.shaderDrawParameters,
         },
         vk::PhysicalDeviceVulkan12Features{
@@ -729,6 +774,10 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceAntiLagFeaturesAMD{
             .antiLag = true,
         },
+        vk::PhysicalDeviceFragmentShadingRateFeaturesKHR{
+            .pipelineFragmentShadingRate = true,
+            .attachmentFragmentShadingRate = true,
+        },
     };
 
     if (!custom_border_color) {
@@ -795,6 +844,9 @@ bool Instance::CreateDevice() {
     if (!anti_lag) {
         device_chain.unlink<vk::PhysicalDeviceAntiLagFeaturesAMD>();
     }
+    if (!shading_rate) {
+        device_chain.unlink<vk::PhysicalDeviceFragmentShadingRateFeaturesKHR>();
+    }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
     if (device_result != vk::Result::eSuccess) {
@@ -810,6 +862,12 @@ bool Instance::CreateDevice() {
     }
     Reflex::Initialize(*instance, physical_device, *device, reflex_supported);
     AntiLag::Initialize(*device, anti_lag);
+    BbVr::OnDevice(*instance, physical_device, *device, queue_family_index, 0);
+    Vr::Multiview::OnDevice(VkDevice(*device), vk11_features.multiview == VK_TRUE); // VR multiview
+    // true stereo: its multiview twins take the map; AFR: every pipeline does (GraphicsPipeline)
+    Vr::Foveation::OnDevice(shading_rate && (Vr::Multiview::Enabled() || !Vr::Multiview::Requested()),
+                            shading_texel.width,
+                            shading_texel.height); // VR foveated rendering
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
