@@ -89,6 +89,14 @@ public:
         members_.emplace_back(key, std::move(value));
         return members_.back().second;
     }
+    void Remove(std::string_view key) {
+        for (size_t i = 0; i < members_.size(); ++i) {
+            if (members_[i].first == key) {
+                members_.erase(members_.begin() + std::ptrdiff_t(i));
+                return;
+            }
+        }
+    }
     Json& Push(Json value) {
         if (kind_ == Kind::Null) kind_ = Kind::Array;
         Need(Kind::Array, "a list");

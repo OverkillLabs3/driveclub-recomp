@@ -41,5 +41,6 @@ using Command = std::function<int(const std::vector<std::string>& argv)>;
 int RunArchive(const std::vector<std::string>& argv);
 int RunRpk(const std::vector<std::string>& argv);
 int RunLua(const std::vector<std::string>& argv);
+int RunMod(const std::vector<std::string>& argv);
 
 }  // namespace dcmod

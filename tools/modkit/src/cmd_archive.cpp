@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <chrono>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace dcmod {
 
@@ -91,6 +95,9 @@ int RunArchive(const std::vector<std::string>& argv) {
         const IndexEntry* e = a.Find(args.positional[0]);
         if (!e) throw Error("not in the archive: " + args.positional[0]);
         const Bytes data = a.Read(*e, args.Has("--verify"));
+#ifdef _WIN32
+        _setmode(_fileno(stdout), _O_BINARY);  // text mode would rewrite line breaks
+#endif
         std::fwrite(data.data(), 1, data.size(), stdout);
         return 0;
     }

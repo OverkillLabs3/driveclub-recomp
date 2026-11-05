@@ -36,12 +36,14 @@ struct LuaProto {
 };
 
 struct LuaChunk {
+    uint8_t header[12] = {};
     int size_t_bytes = 8;
     LuaProto main;
 };
 
 bool IsLuaBytecode(const Bytes& b);
 LuaChunk ParseLua(const Bytes& b);  // throws Error
+Bytes WriteLua(const LuaChunk& chunk);  // gives back the same bytes for a chunk that was read and not changed
 
 // Assembly listing like `luac -l -l`, with the names of constants, locals and upvalues where the script has them.
 std::string DisassembleLua(const LuaChunk& chunk, bool with_lines = true);

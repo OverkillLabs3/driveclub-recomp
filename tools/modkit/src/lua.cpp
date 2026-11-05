@@ -327,12 +327,84 @@ LuaChunk ParseLua(const Bytes& b) {
         throw Error("this Lua code was compiled for a different machine (sizes or byte order differ from the game's)");
     }
     LuaChunk c;
+    std::memcpy(c.header, b.data(), 12);
     c.size_t_bytes = b[8];
     ByteReader r(b, "the Lua script");
     r.Seek(12);
     c.main = LoadFunction(r, c.size_t_bytes, 0);
     if (r.left() != 0) throw Error("the Lua script has bytes after its end");
     return c;
+}
+
+namespace {
+
+void PutSize(Bytes& out, uint64_t v, int size_bytes) {
+    if (size_bytes == 8) Wr64(out, v);
+    else Wr32(out, uint32_t(v));
+}
+
+// `nullable`: an empty string is written as "no string" (a script without a chunk name has none).
+void PutString(Bytes& out, const std::string& s, int size_bytes, bool nullable) {
+    if (nullable && s.empty()) {
+        PutSize(out, 0, size_bytes);
+        return;
+    }
+    PutSize(out, uint64_t(s.size()) + 1, size_bytes);
+    out.insert(out.end(), s.begin(), s.end());
+    out.push_back(0);
+}
+
+void PutFunction(Bytes& out, const LuaProto& f, int sb) {
+    PutString(out, f.source, sb, true);
+    Wr32(out, uint32_t(f.line_defined));
+    Wr32(out, uint32_t(f.last_line));
+    out.push_back(f.nups);
+    out.push_back(f.numparams);
+    out.push_back(f.is_vararg);
+    out.push_back(f.max_stack);
+    Wr32(out, uint32_t(f.code.size()));
+    for (uint32_t c : f.code) Wr32(out, c);
+    Wr32(out, uint32_t(f.k.size()));
+    for (const LuaConst& k : f.k) {
+        switch (k.type) {
+            case LuaConst::Nil: out.push_back(0); break;
+            case LuaConst::Bool:
+                out.push_back(1);
+                out.push_back(k.b ? 1 : 0);
+                break;
+            case LuaConst::Number: {
+                out.push_back(3);
+                uint64_t bits;
+                std::memcpy(&bits, &k.n, 8);
+                Wr64(out, bits);
+                break;
+            }
+            case LuaConst::String:
+                out.push_back(4);
+                PutString(out, k.s, sb, false);
+                break;
+        }
+    }
+    Wr32(out, uint32_t(f.protos.size()));
+    for (const LuaProto& p : f.protos) PutFunction(out, p, sb);
+    Wr32(out, uint32_t(f.lines.size()));
+    for (int l : f.lines) Wr32(out, uint32_t(l));
+    Wr32(out, uint32_t(f.locals.size()));
+    for (const LuaProto::Local& l : f.locals) {
+        PutString(out, l.name, sb, false);
+        Wr32(out, uint32_t(l.start));
+        Wr32(out, uint32_t(l.end));
+    }
+    Wr32(out, uint32_t(f.upvalues.size()));
+    for (const std::string& u : f.upvalues) PutString(out, u, sb, false);
+}
+
+}  // namespace
+
+Bytes WriteLua(const LuaChunk& chunk) {
+    Bytes out(chunk.header, chunk.header + 12);
+    PutFunction(out, chunk.main, chunk.size_t_bytes);
+    return out;
 }
 
 std::string DisassembleLua(const LuaChunk& chunk, bool with_lines) {

@@ -18,6 +18,7 @@ int Usage() {
         "  dcmod lua dis SCRIPT [-o FILE] [--no-lines]  assembly listing of one script\n"
         "  dcmod lua survey SCRIPT... [-o FILE]     the globals, calls and table keys used by the scripts, as Markdown\n"
         "  dcmod lua strings SCRIPT...              every string constant\n"
+        "  dcmod lua verify SCRIPT...               read each script and write it again; the bytes must be the same\n"
         "\n"
         "SCRIPT is a file, a folder (searched for .lua.bin and .lua files) or @PATTERN for scripts inside the game's\n"
         "archive, for example \"@scripts/lua/*\". The game folders come from --update DIR --base DIR,\n"
@@ -141,6 +142,21 @@ int RunLua(const std::vector<std::string>& argv) {
             std::printf("%-60s %9zu bytes  %4zu functions %6zu instructions\n", s.label.c_str(), s.data.size(), u.functions, u.instructions);
         });
         return 0;
+    }
+    if (cmd == "verify") {
+        size_t checked = 0, bad = 0;
+        ForEachScript(args, args.positional, [&](Script& s) {
+            if (!IsLuaBytecode(s.data)) return;
+            ++checked;
+            try {
+                if (WriteLua(ParseLua(s.data)) != s.data) throw Error("writing it again gives different bytes");
+            } catch (const Error& e) {
+                ++bad;
+                std::printf("FAIL %s: %s\n", s.label.c_str(), e.what());
+            }
+        });
+        std::printf("%zu scripts checked, %zu failed\n", checked, bad);
+        return bad ? 1 : 0;
     }
     if (cmd == "strings") {
         ForEachScript(args, args.positional, [&](Script& s) {
