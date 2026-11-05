@@ -160,7 +160,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         }
         // VR: a headset size sets the render and output size itself, as an aspect ratio does (one of the two)
         if(changed==g_vrsize && g_vrsize>=0 && g_c[g_vrsize].sel>0 && !VrChosen()){g_c[g_outres].sel=g_c[g_inres].sel=0;if(g_aspect>=0)g_c[g_aspect].sel=0;}
-        if(changed==g_aspect && g_vrsize>=0 && g_c[g_aspect].sel>0)g_c[g_vrsize].sel=0;
+        if(changed==g_aspect && g_vrsize>=0 && g_c[g_aspect].sel>0 && VrChosen())g_c[g_vrsize].sel=0;
         ApplyVrAntiAliasing();
         DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {

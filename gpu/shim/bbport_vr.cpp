@@ -3867,10 +3867,22 @@ extern "C" int bbgpu_vr_auto_size(uint32_t* width, uint32_t* height) {
             }
         }
     }
+    // BB_VR_SCALE (the launcher's Headset picture scale, percent per side): above 100 supersampled (the resample
+    // takes it down to the runtime's size), below it the runtime's size is stretched from a smaller picture
+    int scale = 100;
+    if (const char* v = std::getenv("BB_VR_SCALE"); v && *v) {
+        scale = std::clamp(std::atoi(v), 50, 200);
+    }
+    w *= float(scale) / 100.0f, h *= float(scale) / 100.0f;
     // the game's sizes are multiples of 8
     *width = std::clamp((uint32_t(std::ceil(w)) + 7u) / 8u * 8u, 640u, 16384u);
     *height = std::clamp((uint32_t(std::ceil(h)) + 7u) / 8u * 8u, 640u, 8640u);
-    if (known) {
+    if (known && scale != 100) {
+        std::printf("VR: Auto headset picture at %d%%: %ux%u per eye, %.2fx per side what draws the runtime's %ux%u "
+                    "pixel for pixel (the eyes of %s from vr_eyes.ini)\n",
+                    scale, *width, *height, scale / 100.0, st.recommended_width, st.recommended_height,
+                    st.system_name.c_str());
+    } else if (known) {
         std::printf("VR: Auto headset picture: %ux%u per eye, so that the runtime's %ux%u are drawn pixel for pixel "
                     "(the eyes of %s from vr_eyes.ini)\n",
                     *width, *height, st.recommended_width, st.recommended_height,
