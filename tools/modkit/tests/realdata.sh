@@ -57,6 +57,16 @@ echo "ok texture with top mips"
 "$exe" audio replace @audio/fmodstudio/gui.bank UX_Confirm_03_L "$tmp/b/UX_accolade_ticker_02_L.raw" -o "$tmp/gui.bank" > /dev/null
 "$exe" audio extract "$tmp/gui.bank" -o "$tmp/c" UX_Confirm_03_L > /dev/null
 cmp -n "$(stat -c %s "$tmp/b/UX_accolade_ticker_02_L.raw")" "$tmp/c/UX_Confirm_03_L.raw" "$tmp/b/UX_accolade_ticker_02_L.raw"
+# a sound out of the bank, encoded again into another stream (longer than it was): the bank is rebuilt, other streams stay
+"$exe" audio wav @audio/fmodstudio/gui.bank UX_Confirm_03_L -o "$tmp/s.wav" > /dev/null
+"$exe" audio import @audio/fmodstudio/gui.bank UX_accolade_ticker_02_L "$tmp/s.wav" -o "$tmp/gui2.bank" > /dev/null
+"$exe" audio info "$tmp/gui2.bank" | grep -q "UX_accolade_ticker_02_L  *48000 Hz  1 ch  *94208 samples  *20832 bytes"
+"$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/o1" UX_Move_02_L > /dev/null
+"$exe" audio extract "$tmp/gui2.bank" -o "$tmp/o2" UX_Move_02_L > /dev/null
+cmp "$tmp/o1/UX_Move_02_L.raw" "$tmp/o2/UX_Move_02_L.raw"
+"$exe" audio wav "$tmp/gui2.bank" UX_accolade_ticker_02_L -o "$tmp/s2.wav" > /dev/null
+cmp -n 44 "$tmp/s.wav" "$tmp/s2.wav"
+echo "ok audio import"
 echo "ok audio replace"
 
 "$exe" archive verify > /dev/null

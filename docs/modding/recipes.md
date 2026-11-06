@@ -77,15 +77,16 @@ dcmod mesh import @vehicles/ferrari_458_italia.rpk edited.glb -o mymod/files/veh
 
 The folder `mymod/files` is a mod (add a `mod.json` with `dcmod mod new`). With the Blender add-on in `tools/blender` the two steps are menu entries. A track pack works the same way (`@worlds/canada_road_circuit_02_n.rpk`); see [models.md](models.md) for what is and is not changed.
 
-## Swap a sound
+## Your own sound or music
 
 ```
 dcmod audio info @audio/fmodstudio/gui.bank
-dcmod audio extract @audio/fmodstudio/gui.bank -o out UX_accolade_ticker_02_L
-dcmod audio replace @audio/fmodstudio/gui.bank UX_Confirm_03_L out/UX_accolade_ticker_02_L.raw -o mymod/files/audio/fmodstudio/gui.bank
+dcmod audio wav @audio/fmodstudio/gui.bank countdown_expired_positive01_L -o original.wav     # hear what is there
+ffmpeg -i mysound.mp3 -ar 48000 -sample_fmt s16 mysound.wav                                  # any audio to WAV
+dcmod audio import @audio/fmodstudio/gui.bank countdown_expired_positive01_L mysound.wav -o mymod/files/audio/fmodstudio/gui.bank
 ```
 
-The first sound now plays the second one's data. A stream in another sound's place must be in the same codec (ATRAC9) and not longer. See [audio.md](audio.md).
+The countdown sound now plays your sound (it can be shorter or longer). The same works for the race music in `music.bank` (`All Torque ...` and the other 51 tracks). `dcmod audio extract` and `replace` move the encoded streams between sounds without encoding. See [audio.md](audio.md).
 
 ## A mod with settings
 

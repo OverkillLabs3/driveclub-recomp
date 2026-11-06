@@ -19,7 +19,7 @@ The mod kit has three parts:
 | [Lua scripts](lua.md) | Mod scripts, logging, and the game's script layer: [the live API](lua-api.md) and [the names its scripts use](lua-names.md) |
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
 | [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
-| [Music and sound](audio.md) | FMOD banks: list, extract and replace streams |
+| [Music and sound](audio.md) | FMOD banks: hear, extract, replace and encode your own sounds and music |
 | [Native plugins](plugins.md) | DLLs that hook the game's code (opt-in, for code you trust) |
 | [Tracks](tracks.md) | what a track is, what can be changed, what does not work |
 | [Tutorial: a new car](tutorial-new-car.md) | clone a car, reshape it in Blender, share it as two mods |
@@ -39,7 +39,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` patches, or replace the script with Lua source |
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
 | Car and model geometry (positions, triangles) | `dcmod mesh` and Blender ([models.md](models.md)) |
-| Music and sound effects (FMOD banks) | `dcmod audio` ([audio.md](audio.md)) |
+| Music and sound effects (FMOD banks), your own WAV files | `dcmod audio import` ([audio.md](audio.md)) |
 | Shaders (the look of surfaces, lighting, post effects) | `dcmod shader` and `shaders\` in a mod ([shaders.md](shaders.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 

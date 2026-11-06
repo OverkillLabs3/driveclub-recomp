@@ -64,7 +64,7 @@ Textures of packs as DDS. `info PACK`, `extract PACK -o DIR [PATTERN...]`, `impo
 
 ## dcmod audio
 
-FMOD banks. `info BANK`, `extract BANK -o DIR [NAME]`, `replace BANK NAME FILE -o OUT`. See [audio.md](audio.md).
+FMOD banks. `info BANK`, `extract BANK -o DIR [NAME]`, `wav BANK NAME -o FILE.wav` (decode), `import BANK NAME FILE.wav -o OUT` (encode to ATRAC9 and rebuild the bank), `replace BANK NAME FILE -o OUT`. See [audio.md](audio.md).
 
 ## dcmod mesh
 
