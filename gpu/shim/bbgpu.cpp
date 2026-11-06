@@ -19,6 +19,7 @@
 #include <boost/asio/io_context.hpp>
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
+#include "video_core/cache_storage.h"
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -343,6 +344,10 @@ extern "C" void bbgpu_shutdown(void) {
         liverpool.reset();
         Libraries::VideoOut::Shutdown();
         presenter.reset();
+        // The pipeline cache's I/O thread waits on a condition variable that exit() destroys before the
+        // DataBase singleton that owns the thread: pthread_cond_destroy then waits for that thread forever
+        // and the process never ends. Stop and join it here, while everything it uses is still alive.
+        Storage::DataBase::Instance().Close();
         Core::Memory::Instance()->SetRasterizer(nullptr);
         Core::Signals::Instance()->RemoveHandlers();
         Libraries::Kernel::StopKernelService();
