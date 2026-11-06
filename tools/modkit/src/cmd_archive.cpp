@@ -86,6 +86,19 @@ int RunArchive(const std::vector<std::string>& argv) {
         const std::vector<std::string> patterns(args.positional.begin() + 1, args.positional.end());
         size_t hits = 0, shown = 0;
         const size_t limit = args.Has("--limit") ? size_t(std::stoull(args.Get("--limit"))) : 200;
+        if (args.Has("--binary")) {
+            // every file up to 64 MB (packs included), by bytes: the files that hold TEXT and how many times
+            size_t files = 0;
+            for (const IndexEntry* e : Select(a, patterns)) {
+                if (e->size > 64u << 20) continue;
+                const Bytes data = a.Read(*e);
+                size_t n = 0;
+                for (auto it = data.begin(); (it = std::search(it, data.end(), needle.begin(), needle.end(), [](uint8_t x, char y) { return std::tolower(x) == y; })) != data.end(); ++it) ++n;
+                if (n) std::printf("%s: %zu\n", e->name.c_str(), n), ++files;
+            }
+            std::printf("%zu files hold the text\n", files);
+            return files ? 0 : 1;
+        }
         for (const IndexEntry* e : Select(a, patterns)) {
             if (e->size > 8u << 20 || EndsWith(Lower(e->name), ".rpk")) continue;
             const Bytes data = a.Read(*e);

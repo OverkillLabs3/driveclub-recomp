@@ -13,7 +13,7 @@ The game's `game.ndx` and `gameNNN.dat` files.
 | `extract PATTERN... -o DIR [--verify]` | Writes files under `DIR` with their game paths. `--verify` checks the MD5 of the index. |
 | `cat PATH` | One file to standard output. |
 | `verify [--md5] [PATTERN...]` | Checks that every name matches its hash; with `--md5` reads and checks every file. |
-| `grep TEXT [PATTERN...] [--limit N]` | Lines of the game's text files that contain TEXT, any case. |
+| `grep TEXT [PATTERN...] [--limit N] [--binary]` | Lines of the game's text files that contain TEXT, any case. With `--binary`: the files (packs and compiled scripts too, up to 64 MB) that hold TEXT, with the number of times. |
 | `names -o FILE` | Writes the list of all paths. |
 
 ## dcmod rpk
