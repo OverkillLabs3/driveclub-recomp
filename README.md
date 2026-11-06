@@ -47,7 +47,7 @@ when no folder has been chosen.
 - Steering wheels with force feedback from the car's tyre physics, pedals with clutch, an H-pattern shifter and a USB handbrake
 - DLC content (add-on cars, bikes, tours and livery decals) can be unlocked from the launcher, built from your own game files. Cars you earn by playing still unlock through normal progression
 - A launcher window that resizes from every edge and corner and stays sharp at any display scale
-- A `mods` folder for loose-file mods: files in it replace the game's own files of the same path. See [Making mods](docs/MODDING.md)
+- A `mods` folder for loose-file mods: files in it replace the game's own files of the same path. See [Making mods](docs/MODDING.md) and the mod kit in [docs/modding](docs/modding/README.md)
 
 ## Controls
 Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.

@@ -1,6 +1,6 @@
 # Recipes
 
-Each recipe was run with `dcmod mod build` on version 1.28 data and the result inspected.
+The recipes were run with `dcmod mod build` on version 1.28 data and the result inspected; the two car recipes were also run in the game.
 
 ## Change a car's stats
 
@@ -28,15 +28,26 @@ Only those two cells change; the other 57 KB of the file is byte for byte as it 
 
 The 21 MB pack is written again with the one attribute changed; every other resource is identical.
 
-## Add a car row that copies another
+## A new car that shares an existing car's model
 
-```json
-{ "op": "csv.add", "file": "newdata/vehicles.csv", "key": "Vehicle Name",
-  "like": "a45_amg", "after": "a45_amg", "row": { "Vehicle Name": "my_car", "Asset": "my_car" } },
-{ "op": "file.copy", "from": "vehicles/mercedes_a45_amg.rpk", "file": "vehicles/my_car.rpk" }
+```bash
+dcmod car variant fe_458 my_458 -o my-458
 ```
 
-This gives a new row and a pack to start from; changing the pack's contents is done with `rpk.set` and `rpk.patch`.
+This writes a mod with a new row in `newdata/vehicles.csv` and its own copy of the car's physics record in `vehicledefs.vdef`. Then change what you want, for example the mass of the new record or its stats:
+
+```json
+{ "op": "vdef.set", "file": "vehicledefs.vdef", "name": "my_458", "offset": 3052, "expect": 1565.0, "value": 1200.0 },
+{ "op": "csv.set", "file": "newdata/vehicles.csv", "key": "Vehicle Name", "match": "my_458", "set": { "TopSpeed": 300 } }
+```
+
+## Show one car's model on another car
+
+```bash
+dcmod car swap fe_458 a45_amg -o a45-as-458
+```
+
+Starting a race with the A45 then shows the 458's model. See [cars.md](cars.md).
 
 ## Add a line to a camera file
 

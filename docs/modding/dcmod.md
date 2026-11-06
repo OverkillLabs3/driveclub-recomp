@@ -39,7 +39,23 @@ Compiled Lua 5.1 scripts. `SCRIPT` is a file, a folder, or `@pattern` in the arc
 | `dis SCRIPT [-o FILE] [--no-lines]` | Assembly listing with constants, upvalue and local names where the script has them, and line numbers. |
 | `survey SCRIPT... [-o FILE] [--min N]` | Markdown list of the globals, calls and table keys the scripts use. |
 | `strings SCRIPT...` | Every string constant. |
+| `compile SOURCE.lua [-o OUT]` | Compiles Lua source to the bytecode the game runs (the game cannot run chunks it compiles from text). |
 | `verify SCRIPT...` | Read and write again; the bytes must match. |
+
+## dcmod car
+
+| Command | Does |
+|---|---|
+| `files NAME` | The table row of a car (NAME is its Vehicle Name) and every file named after its Asset. |
+| `swap DONOR VICTIM -o MOD` | A mod that gives the car VICTIM the model and textures of DONOR. |
+| `variant NAME NEWNAME -o MOD` | A mod that adds NEWNAME with its own physics record, sharing NAME's model. |
+| `clone NAME NEWNAME -o MOD [--asset A]` | Experimental: copies all of a car's files under a new Asset. The game does not finish loading the copy. |
+
+See [cars.md](cars.md).
+
+## dcmod dash
+
+`list`, `cat NAME`, `check FILE|NAME` and `binds`: the in-car instrument definitions. See [cars.md](cars.md).
 
 ## dcmod tex
 
