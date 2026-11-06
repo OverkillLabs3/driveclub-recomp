@@ -139,6 +139,10 @@
         "comment": {
           "type": "string"
         },
+        "top": {
+          "type": "string",
+          "description": "tex.set: the top mips pack of a texture whose largest levels are in one."
+        },
         "optional": {
           "type": "boolean"
         },
@@ -242,6 +246,7 @@
             "manifest.add",
             "rpk.rename",
             "rpk.copy",
+            "rpk.replace",
             "archive.register"
           ],
           "description": "The operation. See docs/modding/patches.md."
