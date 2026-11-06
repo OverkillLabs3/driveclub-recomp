@@ -29,6 +29,11 @@ pack=vehicles/ferrari_458_italia.rpk
 "$exe" mesh info "$tmp/grown.rpk" | grep -q "0008a48ef19c8161_5_BODYShape  *120 vertices  *136 triangles"
 echo "ok mesh with changed counts"
 
+mkdir "$tmp/clone"
+"$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
+"$exe" mod check "$tmp/clone" > /dev/null
+echo "ok car clone"
+
 "$exe" audio info @audio/fmodstudio/gui.bank | head -1 | grep -q "codec atrac9"
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/a" UX_Confirm_03_L > /dev/null
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/b" UX_accolade_ticker_02_L > /dev/null

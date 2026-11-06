@@ -24,8 +24,8 @@ int Usage() {
         "                                  NAME and has its own copy of the vehicle definition (physics) to change\n"
         "  dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]\n"
         "                                  a mod that adds a copy of the car as NEWNAME (Vehicle Name) with the files\n"
-        "                                  copied under the new Asset (default: NEWNAME). Experimental: the game opens the\n"
-        "                                  copy but stops while loading it, see docs/modding/cars.md\n"
+        "                                  copied under the new Asset (default: NEWNAME), so the copy has its own model files\n"
+        "                                  that can be changed (dcmod mesh, dcmod tex), see docs/modding/cars.md\n"
         "\n"
         "The game folders come from --update DIR --base DIR, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR, or launcher.ini.");
     return 2;
@@ -183,6 +183,16 @@ int RunCar(const std::vector<std::string>& argv) {
                 ren.Set("find", asset);
                 ren.Set("replace", fresh_asset);
                 ren.Set("scope", "required");
+                patches.Push(ren);
+            } else if (EndsWith(f, ".rpk")) {
+                // The game finds what it loads from these packs by name (the state machine as stateMachine\vehicles\<asset>),
+                // so the copies must carry the new name; without it the loading screen never ends.
+                Json ren = Json::Object();
+                ren.Set("op", "rpk.rename");
+                ren.Set("file", Rename(f, asset, fresh_asset));
+                ren.Set("find", asset);
+                ren.Set("replace", fresh_asset);
+                ren.Set("scope", "names");
                 patches.Push(ren);
             }
         }

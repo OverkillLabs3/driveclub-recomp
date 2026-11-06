@@ -49,7 +49,7 @@ Compiled Lua 5.1 scripts. `SCRIPT` is a file, a folder, or `@pattern` in the arc
 | `files NAME` | The table row of a car (NAME is its Vehicle Name) and every file named after its Asset. |
 | `swap DONOR VICTIM -o MOD` | A mod that gives the car VICTIM the model and textures of DONOR. |
 | `variant NAME NEWNAME -o MOD` | A mod that adds NEWNAME with its own physics record, sharing NAME's model. |
-| `clone NAME NEWNAME -o MOD [--asset A]` | Experimental: copies all of a car's files under a new Asset. The game does not finish loading the copy. |
+| `clone NAME NEWNAME -o MOD [--asset A]` | Copies all of a car's files under a new Asset and renames the names inside the copied packs. The copy loads and races, with its own model files. |
 
 See [cars.md](cars.md).
 

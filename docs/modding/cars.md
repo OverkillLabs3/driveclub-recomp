@@ -28,7 +28,7 @@ Changing a car **in place** (its table row, its pack, its cameras) is the way th
 
 ### A new car in an existing slot
 
-Because a swap works and a copy under a new asset name does not, a car with a new model is made by **replacing a car you do not need**: swap in the new model pack, and change that car's table row and physics (`csv.set` on its row for the name, class and stats; `vdef.set` on its definition) and its textures (`tex.set`). The new pack can be a donor car's pack changed with `dcmod rpk` and `dcmod tex`, so a re-skinned or re-tuned car is possible now. There is no tool yet that builds a model pack from a mesh made in a 3D program.
+A car with a new model can also be made by **replacing a car you do not need**: swap in the new model pack, and change that car's table row and physics (`csv.set` on its row for the name, class and stats; `vdef.set` on its definition) and its textures (`tex.set`). The new pack can be a donor car's pack changed with `dcmod rpk` and `dcmod tex`, so a re-skinned or re-tuned car is possible now. A model pack from a mesh made in a 3D program is possible with `dcmod mesh` (see [models.md](models.md)), within the limits listed there.
 
 ## Adding a new car
 
@@ -43,7 +43,11 @@ Because a swap works and a copy under a new asset name does not, a car with a ne
 
 `offset` is counted from the start of the record. The only field identified so far is the mass in kilograms at offset 3052 (the correlation with the table's `Weight_Kg` over 131 cars is 0.99; the Ferrari 458 has 1565). Other offsets correlate with power, torque and handling but are not identified: the tyre blocks start near offset 48 (four wheels, 208 bytes each) and the engine data is around 900 to 1400.
 
-**A copy with its own model files does not load yet.** `dcmod car clone` copies the car's 29 asset-named files under a new Asset, lists them in `scripts/filemanifest.cfg` (the game's own list of its files), renames the packs the car's pack requires and the asset name inside its resource names, and copies the dashboard definition (`<asset>.def` in `global.rpk`; the game builds `<asset>.def.rpk` from it and the car's `<asset>_dash` texture). Each of these removed a failure: without the renamed names the game stopped with a null read while setting up texture streaming (guest offset `0x5feee0`); with them it no longer crashes, but the loading screen never finishes (the benchmark reports that the race did not start within 240 s). Listing the new files in the game's own archive index (patch op `archive.register`) did not help either: the game starts with the changed index but the loading screen still never finishes, so `car clone` does not use it. What the load waits for is not known yet. Until it is, a car with a new model is not possible; a variant of an existing model is.
+**A copy with its own model files works.** `dcmod car clone NAME NEWNAME -o MODFOLDER` copies the car's 29 asset-named files under a new Asset, lists them in `scripts/filemanifest.cfg` (the game's own list of its files), renames the packs the car's pack requires and the asset name inside the resource names of every copied pack, and copies the dashboard definition (`<asset>.def` in `global.rpk`; the game builds `<asset>.def.rpk` from it and the car's `<asset>_dash` texture). In the running game a clone of the Ferrari 458 (`dcmod car clone fe_458 fe_clone`) loads, races and has its own model: the clone's pack was reshaped with `dcmod mesh` (half the triangles of the body left out, a small part doubled) and the car in the race shows the holes and the floating copies, while the original car's files stay as they are.
+
+What made it fail before: the game finds the car's state machine by name (`stateMachine\vehicles\<asset>` in `data/nexus/statemachine/vehicles/<asset>.rpk`), and the other copied packs (`merged`, `skel/wiper`, the top mips) carry the asset name too. With those names unchanged the game reads the files and then waits forever on the loading screen; without the renames in the car's own pack it stops with a null read while setting up texture streaming. The clone mod now renames the names in all five packs.
+
+The clone shares the original's sounds, physics definition values (it has its own copy to change, as a variant does) and cameras. To give it a new look, change its pack with `dcmod mesh` and `dcmod tex` inside the mod (the clone's pack is a loose file `vehicles/<asset>.rpk` after `dcmod mod build`).
 
 ## Dashboards (the instruments inside the car)
 
@@ -60,4 +64,4 @@ The elements are `canvas`, `font`, `image`, `maskedimage`, `fadeimage`, `number`
 
 ## A car's model in Blender
 
-`dcmod mesh` exports a car's model pack to glTF and writes edited positions back, so a car's shape can be reshaped (see [models.md](models.md)). The reshaped pack replaces the car's own pack (a loose file at `vehicles/<asset>.rpk`), which changes that car everywhere. A car with a new asset name and its own model files still does not load (see above).
+`dcmod mesh` exports a car's model pack to glTF and writes edited positions back, so a car's shape can be reshaped (see [models.md](models.md)). The reshaped pack replaces the car's own pack (a loose file at `vehicles/<asset>.rpk`), which changes that car everywhere.
