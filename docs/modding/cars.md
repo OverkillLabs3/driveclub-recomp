@@ -24,7 +24,7 @@ Changing a car **in place** (its table row, its pack, its cameras) is the way th
 
 ## Adding a new car
 
-**A variant works.** `dcmod car variant NAME NEWNAME -o MODFOLDER` writes a mod that adds a new row to `newdata/vehicles.csv` (its own name and unique number) and a copy of the car's record in `vehicledefs.vdef` under the new name, which the row uses as its `Vehicle Def`. The new car shares the model, textures, sounds and cameras of the original and has its own physics definition and table values. In the running game a car made this way is chosen by its name and races (checked with the benchmark mode, which starts a race with a car by its `Vehicle Name`).
+**A variant works.** `dcmod car variant NAME NEWNAME -o MODFOLDER` writes a mod that adds a new row to `newdata/vehicles.csv` (its own name and unique number) and a copy of the car's record in `vehicledefs.vdef` under the new name, which the row uses as its `Vehicle Def`. The new car shares the model, textures, sounds and cameras of the original and has its own physics definition and table values. In the running game a car made this way is chosen by its name and races (checked with the benchmark mode, which starts a race with a car by its `Vehicle Name`), and the game's own vehicle list (`GameState.GetVehicles`, read by a mod script) holds the new car next to the original, with `class=3`.
 
 `vehicledefs.vdef` is `EVOSLITLVDEF3-02`, a count (156) and records of 3616 bytes that start with a 32 byte name. The patch operations are
 
