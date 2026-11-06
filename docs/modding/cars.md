@@ -60,4 +60,4 @@ The elements are `canvas`, `font`, `image`, `maskedimage`, `fadeimage`, `number`
 
 ## A car's model in Blender
 
-`dcmod mesh` exports a car's model pack to glTF and writes edited positions back, so a car's shape can be reshaped (see [models.md](models.md)). Combined with `dcmod car swap` or `dcmod car variant`, the reshaped pack can be given to a car row of your own. A car with a new asset name and its own model files still does not load (see above).
+`dcmod mesh` exports a car's model pack to glTF and writes edited positions back, so a car's shape can be reshaped (see [models.md](models.md)). The reshaped pack replaces the car's own pack (a loose file at `vehicles/<asset>.rpk`), which changes that car everywhere. A car with a new asset name and its own model files still does not load (see above).
