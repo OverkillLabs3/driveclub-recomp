@@ -776,7 +776,7 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
         return;
     }
-    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename" || name == "rpk.copy") {
+    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename" || name == "rpk.copy" || name == "rpk.replace") {
         const std::string file = p.Str("file");
         RpkPack& pack = ws.Pack(file);
         if (name == "rpk.copy") {
@@ -861,6 +861,20 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
                 pb.SetData(DdsToTexData(pb, TextureSource(pb, c)));
             }
             res.data = pb.payload;
+        } else if (name == "rpk.replace") {
+            // text inside the payload of a resource of any type (the strings of a world's layers, say); same length, every place
+            const std::string find = p.Str("find"), repl = p.Str("replace");
+            p.Done();
+            if (find.empty() || find.size() != repl.size()) throw Error("\"find\" and \"replace\" must have the same length (the payload keeps its size)");
+            size_t n = 0;
+            for (size_t at = 0; at + find.size() <= res.data.size(); ++at) {
+                if (std::memcmp(&res.data[at], find.data(), find.size()) == 0) {
+                    std::memcpy(&res.data[at], repl.data(), repl.size());
+                    ++n;
+                    at += find.size() - 1;
+                }
+            }
+            if (!n) throw Error("\"" + find + "\" is not in " + ref);
         } else if (name == "rpk.set") {
             const Bytes c = Content(p, env);
             p.Done();
