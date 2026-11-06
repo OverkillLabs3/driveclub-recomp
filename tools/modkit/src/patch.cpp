@@ -418,6 +418,73 @@ void ManifestAdd(std::vector<ManifestNode>& nodes, const std::string& path) {
 
 // The operations that work on the content of a file or of a resource inside a pack. Returns false when `name` is not
 // one of them.
+// Lua 5.1 instruction fields.
+constexpr uint32_t kOpLoadK = 1, kOpSetTable = 9, kOpJmp = 22, kOpForLoop = 31, kOpForPrep = 32;
+uint32_t LuaOp(uint32_t i) { return i & 63; }
+uint32_t LuaA(uint32_t i) { return (i >> 6) & 255; }
+uint32_t LuaB(uint32_t i) { return (i >> 23) & 511; }
+uint32_t LuaC(uint32_t i) { return (i >> 14) & 511; }
+uint32_t LuaABC(uint32_t op, uint32_t a, uint32_t b, uint32_t c) { return op | (a << 6) | (c << 14) | (b << 23); }
+uint32_t LuaABx(uint32_t op, uint32_t a, uint32_t bx) { return op | (a << 6) | (bx << 14); }
+
+// Everywhere a function sets t[find] = v (a constant key, or a register loaded with it), also sets t[repl] = v: two
+// instructions are put after it and the jumps, line numbers and local variable ranges around them are moved.
+size_t AliasKeys(LuaProto& f, const std::string& find, const std::string& repl) {
+    size_t n = 0;
+    for (LuaProto& sub : f.protos) n += AliasKeys(sub, find, repl);
+    int kf = -1;
+    for (size_t i = 0; i < f.k.size(); ++i) {
+        if (f.k[i].type == LuaConst::String && f.k[i].s == find) kf = int(i);
+    }
+    if (kf < 0) return n;
+    int kr = -1;
+    for (size_t i = 0; i < f.k.size(); ++i) {
+        if (f.k[i].type == LuaConst::String && f.k[i].s == repl) kr = int(i);
+    }
+    for (size_t pc = f.code.size(); pc-- > 0;) {
+        const uint32_t ins = f.code[pc];
+        if (LuaOp(ins) != kOpSetTable) continue;
+        const uint32_t b = LuaB(ins);
+        const bool direct = b >= 256 && int(b - 256) == kf;
+        // a key that is a register: the last instruction before that wrote the register must have loaded the constant
+        bool loaded = false;
+        for (size_t q = pc; b < 256 && q-- > 0;) {
+            const uint32_t w = f.code[q], wop = LuaOp(w);
+            const bool writes = wop <= 6 || wop == 10 || wop == 11 || (wop >= 12 && wop <= 21) || wop == 27 || wop == 28 || wop == 36 || wop == 37 || wop == 31 || wop == 32;
+            if (!writes || LuaA(w) != b) continue;
+            loaded = wop == kOpLoadK && int(w >> 14) == kf;
+            break;
+        }
+        if (!direct && !loaded) continue;
+        if (kr < 0) {
+            LuaConst c;
+            c.type = LuaConst::String, c.s = repl;
+            f.k.push_back(c);
+            kr = int(f.k.size()) - 1;
+        }
+        if (f.max_stack >= 249) throw Error("the Lua function has no free register");
+        const uint32_t tmp = f.max_stack;
+        f.max_stack = uint8_t(f.max_stack + 1);
+        const size_t at = pc + 1;
+        // the jumps: moved by the two new instructions when they cross the place
+        for (size_t i = 0; i < f.code.size(); ++i) {
+            const uint32_t op = LuaOp(f.code[i]);
+            if (op != kOpJmp && op != kOpForLoop && op != kOpForPrep) continue;
+            const long target = long(i) + 1 + long(f.code[i] >> 14) - 131071;
+            const long ni = i < at ? long(i) : long(i) + 2, nt = target < long(at) ? target : target + 2;
+            f.code[i] = (f.code[i] & 0x3FFF) | (uint32_t(nt - ni - 1 + 131071) << 14);
+        }
+        f.code.insert(f.code.begin() + long(at), {LuaABx(kOpLoadK, tmp, uint32_t(kr)), LuaABC(kOpSetTable, LuaA(ins), tmp, LuaC(ins))});
+        if (!f.lines.empty()) f.lines.insert(f.lines.begin() + long(at), 2, f.lines[pc]);
+        for (auto& l : f.locals) {
+            if (l.start >= int(at)) l.start += 2;
+            if (l.end >= int(at)) l.end += 2;
+        }
+        ++n;
+    }
+    return n;
+}
+
 bool ContentOp(const std::string& name, Params& p, const std::string& label, Bytes& data, PatchEnv& env) {
     Workspace& ws = env.ws;
     if (name == "text.replace" || name == "text.insert" || name == "text.append" || name == "text.prepend") {
@@ -736,6 +803,16 @@ bool ContentOp(const std::string& name, Params& p, const std::string& label, Byt
         data = WriteLua(chunk);
         return true;
     }
+    if (name == "lua.alias") {
+        // lua.alias: where a script sets table["find"] = value it also sets table["replace"] = value (a new key that works
+        // like an existing one, for example a new track that uses the weather presets of another)
+        const std::string find = p.Str("find"), repl = p.Str("replace");
+        p.Done();
+        LuaChunk chunk = ParseLua(data);
+        if (AliasKeys(chunk.main, find, repl) == 0) throw Error("the script does not set \"" + find + "\" as a table key (different game version?)");
+        data = WriteLua(chunk);
+        return true;
+    }
     return false;
 }
 
@@ -863,9 +940,34 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
             res.data = pb.payload;
         } else if (name == "rpk.replace") {
             // text inside the payload of a resource of any type (the strings of a world's layers, say); same length, every place
-            const std::string find = p.Str("find"), repl = p.Str("replace");
+            const std::string find = p.Str("find"), repl = p.Str("replace"), hash = p.Str("hash", "");
             p.Done();
-            if (find.empty() || find.size() != repl.size()) throw Error("\"find\" and \"replace\" must have the same length (the payload keeps its size)");
+            if (find.empty()) throw Error("\"find\" is empty");
+            if (hash == "crc32") {
+                // names are stored in payloads as their CRC32 (4 bytes, little endian): replace the hash of a name by the hash of another
+                const auto crc = [](const std::string& t) {
+                    uint32_t c = 0xFFFFFFFFu;
+                    for (const char ch : t) {
+                        c ^= uint8_t(ch);
+                        for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                    }
+                    return ~c;
+                };
+                const uint32_t from = crc(find), to = crc(repl);
+                size_t hits = 0;
+                for (size_t at = 0; at + 4 <= res.data.size(); ++at) {
+                    if (Rd32(&res.data[at]) == from) {
+                        for (int k = 0; k < 4; ++k) res.data[at + size_t(k)] = uint8_t(to >> (8 * k));
+                        ++hits;
+                        at += 3;
+                    }
+                }
+                if (!hits) throw Error("the CRC32 of \"" + find + "\" is not in " + ref);
+                ws.PackChanged(file, env.mod, action(ref));
+                return;
+            }
+            if (hash != "") throw Error("\"hash\" can only be \"crc32\"");
+            if (find.size() != repl.size()) throw Error("\"find\" and \"replace\" must have the same length (the payload keeps its size)");
             size_t n = 0;
             for (size_t at = 0; at + find.size() <= res.data.size(); ++at) {
                 if (std::memcmp(&res.data[at], find.data(), find.size()) == 0) {

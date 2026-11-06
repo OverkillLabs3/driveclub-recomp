@@ -133,7 +133,8 @@
             "json.merge",
             "bytes.patch",
             "bytes.replace",
-            "lua.const"
+            "lua.const",
+            "lua.alias"
           ]
         },
         "comment": {
@@ -236,6 +237,7 @@
             "bytes.patch",
             "bytes.replace",
             "lua.const",
+            "lua.alias",
             "rpk.set",
             "rpk.patch",
             "rpk.add",
@@ -270,6 +272,11 @@
           "type": "string"
         },
         "find": {},
+        "hash": {
+          "type": "string",
+          "enum": ["crc32"],
+          "description": "rpk.replace: find and replace are names; the CRC32 of the first is replaced by the CRC32 of the second."
+        },
         "replace": {},
         "regex": {
           "type": "string"

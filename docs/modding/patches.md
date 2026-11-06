@@ -66,6 +66,8 @@ The table's first row names the columns. Rows are found by the value of a key co
 
 `lua.const`: `file`, `find`, `replace` (both a number, text, true/false or null, of the same kind), optional `function` (such as `"main/3"`, the fourth function inside the main chunk; default the whole script), `expect` (how many constants must change; default 1, 0 for any number). It changes the constant tables of the compiled script, so numbers and strings in game logic can be changed without Lua source. See [Lua scripts](lua.md).
 
+`lua.alias`: `file`, `find`, `replace` (names). Where a compiled script sets `table["find"] = value` it also sets `table["replace"] = value`: a new key that is handled like an existing one (a new track with the weather presets of another). Two instructions are added after each such place and the script's jumps, line numbers and local ranges are moved. Fails when the script does not set that key. Used by `dcmod track clone`.
+
 ## Resource packs
 
 For these, `file` is a pack such as `global.rpk`, and `resource` is a name from `dcmod rpk list`, or a 16 digit hex identifier. A name that is a path also matches by its last part.
@@ -98,7 +100,7 @@ A pack that is changed is written again with its resources in their original ord
 
 `rpk.rename`: `file` (a pack), `find`, `replace`, optional `scope` (`required`, default, `names`, `sources` or `all`). Changes text in the names a pack lists, for example the packs it requires.
 
-`rpk.replace`: `file` (a pack), `resource` (id or name), `find`, `replace` (the same length). Replaces text inside the payload of a resource of any type, at every place it occurs (for example the layer names `Cana_C02_Tier1` in a world's patch pack). Fails when the text is not there.
+`rpk.replace`: `file` (a pack), `resource` (id or name), `find`, `replace` (the same length). Replaces text inside the payload of a resource of any type, at every place it occurs (for example the layer names `Cana_C02_Tier1` in a world's patch pack). Fails when the text is not there. With `"hash": "crc32"` `find` and `replace` are names (they may differ in length) and the CRC32 of the first, as 4 little endian bytes, is replaced by the CRC32 of the second: the world stores the names of its scene objects that way.
 
 `rpk.copy`: `file` (a pack), `resource` (an existing resource), `name` (the copy's name). Adds a copy of the resource under a new name and a new identifier.
 

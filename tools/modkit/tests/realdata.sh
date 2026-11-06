@@ -52,6 +52,15 @@ cmp "$tmp/drv.rpk" "$tmp/drv2.rpk"
 "$exe" mesh info "$tmp/d3.rpk" | grep -q "0008f5239ee9c16f_0_mesh_male05_body04_LOD4  *624 vertices"
 echo "ok skinned mesh"
 
+# a track under a new name: the mod is written, builds, and holds the changes the game needs (names, CRC32 of names, Lua table)
+"$exe" track clone canada_road_circuit_02_n canada_road_circuit_09_n -o "$tmp/trk" --title "Test" > /dev/null
+"$exe" mod build "$tmp/trk" -o "$tmp/trkout" > /dev/null
+[[ -f "$tmp/trkout/worlds/canada_road_circuit_09_n.rpk" && -f "$tmp/trkout/data/leveldata/canada_road_circuit_09_n.rpk" ]]
+"$exe" rpk list "$tmp/trkout/worlds/canada_road_circuit_09_n.rpk" -l type:world | grep -q "canada_road_circuit_09_n  "
+"$exe" lua dis "$tmp/trkout/scripts/lua/libraries/weatherpresetlookup.lua.bin" --no-lines | grep -q '"canada_road_circuit_09_n"'
+"$exe" lua verify "$tmp/trkout/scripts/lua/libraries/weatherpresetlookup.lua.bin" > /dev/null
+echo "ok track clone"
+
 mkdir "$tmp/clone"
 "$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
 "$exe" mod check "$tmp/clone" > /dev/null
