@@ -39,3 +39,13 @@ The example plugin was loaded in a race, hooked the start of the game's resource
 - A hook stops the game thread for a moment each time it is reached: do not hook code that runs thousands of times per frame unless the callback is trivial.
 - Plugins are only supported on Windows.
 - A hook that is hit by two threads at the same instant may be missed by one of them while the first steps over the instruction.
+
+## Finding out why the game fails
+
+A few hooks that were enough to find what a mod was missing (guest addresses are the game's addresses plus `0x800000000`):
+
+- The game's resource lookup (`0x800780f30`) gets the identifier at `[rsi]`; a hook on its return (`0x80078104b`) with `rax == 0` logs every identifier that was not found.
+- A fault in the log (`Fault: read access to ... at guest offset 0x...`) names the instruction; the function around it can be read in a disassembler (Ghidra headless works on the game's code in `drport/out/prep/text.bin`), and a hook on the function's entry with the registers and `[rsp]` shows who called it and with what.
+- `0x662260` is the game's own assertion (an `int 0x41`). Its message is in the caller's stack buffer: `rsp + 8 + 0x30` when the hook runs. That is how `Lua state machine failed to shutdown` was found for a track without an entry in a Lua table ([tracks.md](tracks.md)).
+- The game's lookups by name use the CRC32 of the name as a key in a map (the lookup at `0x6954ec` reads the key at `[rbx]`); logging those keys and checking them against `crc32` of the names in the packs finds the name that a copy forgot.
+

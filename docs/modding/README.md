@@ -36,15 +36,16 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Camera files, settings, XML data, UI layout text | `text.*`, `xml.*` patches |
 | Graphics and level of detail settings inside `global.rpk` and other packs | `rpk.patch` with `xml.*` |
 | Any resource inside a pack (add, replace, remove) | `rpk.*` patches |
-| Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` patches, or replace the script with Lua source |
+| Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` and `lua.alias` patches, or replace the script with Lua source |
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
-| Car and model geometry (positions, triangles) | `dcmod mesh` and Blender ([models.md](models.md)) |
-| Music and sound effects (FMOD banks), your own WAV files | `dcmod audio import` ([audio.md](audio.md)) |
+| Car and model geometry (positions, triangles, skin weights, materials of a part) | `dcmod mesh` and Blender ([models.md](models.md)) |
+| A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
+| Music and sound effects (FMOD banks), your own WAV files, which stream an event plays, loops | `dcmod audio import`, `audio set` ([audio.md](audio.md)) |
 | Shaders (the look of surfaces, lighting, post effects) | `dcmod shader` and `shaders\` in a mod ([shaders.md](shaders.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 
 ## Limits
 
-- Textures convert to and from DDS and PNG (`dcmod tex`, also those whose largest levels are in a separate top mips pack, with `--top` and `"top"`). Models convert to glTF and back with any number of vertices and triangles (`dcmod mesh`, with normals); a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files loads and races (`dcmod car clone`, [cars.md](cars.md)).
+- Textures convert to and from DDS and PNG (`dcmod tex`, also those whose largest levels are in a separate top mips pack, with `--top` and `"top"`). Models convert to glTF and back with any number of vertices and triangles (`dcmod mesh`, with normals); a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files loads and races (`dcmod car clone`, [cars.md](cars.md)), and so does a track under a new name (`dcmod track clone`, [tracks.md](tracks.md)). Not possible yet: a part that the car does not have (new nodes), the volume and pitch of a sound, an overlay that shows what a mod changed ([models.md](models.md), [audio.md](audio.md)).
 - Compiled game scripts can be read as an assembly listing, not as Lua source. A replacement script has to be compiled (`dcmod lua compile`, or list it under `scripts` in `mod.json` and the build compiles it): the game cannot run Lua it compiles from text itself.
 - Mods are not signed or checked. Only use mods from people you trust.
