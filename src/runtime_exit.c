@@ -126,8 +126,8 @@ uint32_t runtime_exit_confirm_button(void) { return atomic_load(&confirm_button)
  * game's title-region state, not the host language or controller model. */
 static void update_button_layout(void) {
     if (!regional_input_ready) return;
-    typedef bool (ABI *CircleConfirm)(void);
-    uint32_t button=((CircleConfirm)(runtime_image_base+0x5008f0))() ? 0x2000 : 0x4000;
+    /* A bool in AL, from guest code (through the guest CPU on non-x86-64 hosts). */
+    uint32_t button=(guest_cpu_call(runtime_image_base+0x5008f0,0,NULL)&0xff) ? 0x2000 : 0x4000;
     if (atomic_exchange(&confirm_button,button)!=button)
         printf("Exit dialog: regional Confirm=%s, Back=%s\n",
                button==0x2000 ? "Circle" : "Cross", button==0x2000 ? "Cross" : "Circle");
@@ -148,7 +148,9 @@ static ABI bool webapi_retry(unsigned char *manager) {
  * lazy-bucket initializer recursively with index zero. During confirmed shutdown,
  * expire only those dead connections before running the original destructor;
  * live connections, owned buffers and every other cleanup remain native. */
-static void (ABI *stream_destructor)(void *);
+/* The original destructor: an x86-64 trampoline (the copied prologue, then a jump back into the image).
+ * It is guest code, so it is entered through the guest CPU (a plain call on x86-64 hosts). */
+static uintptr_t stream_destructor;
 static ABI void close_stream(void *object) {
     if (atomic_load(&quit_dispatched)) {
         unsigned expired=0;
@@ -167,7 +169,8 @@ static ABI void close_stream(void *object) {
         if (expired && !atomic_exchange(&reported,true))
             puts("Exit dialog: expired file-stream subscriptions skipped during shutdown");
     }
-    stream_destructor(object);
+    const uint64_t argument=(uint64_t)(uintptr_t)object;
+    guest_cpu_call(stream_destructor,1,&argument);
 }
 static bool install_stream_shutdown_guard(void) {
     unsigned char *site=(unsigned char *)(runtime_image_base+0xea24d0);
@@ -182,8 +185,13 @@ static bool install_stream_shutdown_guard(void) {
 #ifdef _WIN32
     unsigned char *trampoline=VirtualAlloc(NULL,4096,MEM_RESERVE|MEM_COMMIT,PAGE_READWRITE);
 #else
-    unsigned char *trampoline=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
-    if (trampoline==MAP_FAILED) trampoline=NULL;
+    /* Low memory, like the loader's patch thunks: on ARM64 hosts a plain mmap can lie above the 47-bit
+     * addresses the x86-64 guest can jump to. */
+    unsigned char *trampoline=runtime_low_map(4096,PROT_READ|PROT_WRITE);
+    if (!trampoline) {
+        trampoline=mmap(NULL,4096,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+        if (trampoline==MAP_FAILED) trampoline=NULL;
+    }
 #endif
     if (!trampoline) return false;
     memcpy(trampoline,prologue,sizeof(prologue));
@@ -192,7 +200,8 @@ static bool install_stream_shutdown_guard(void) {
     memcpy(jump+2,&resume,8);jump[10]=0xff;jump[11]=0xe0;
     memcpy(trampoline+sizeof(prologue),jump,sizeof(jump));
     unsigned char patch[sizeof(prologue)];memset(patch,0x90,sizeof(patch));
-    uintptr_t target=(uintptr_t)close_stream;
+    /* The guest-callable address of the host function: on ARM64 FEXCore enters it through a thunk. */
+    uintptr_t target=guest_cpu_host_function((void *)close_stream);
     memcpy(jump+2,&target,8);memcpy(patch,jump,sizeof(jump));
 #ifdef _WIN32
     DWORD old,ignored;
@@ -200,7 +209,7 @@ static bool install_stream_shutdown_guard(void) {
         !VirtualProtect(site,sizeof(patch),PAGE_EXECUTE_READWRITE,&old)) {
         VirtualFree(trampoline,0,MEM_RELEASE);return false;
     }
-    stream_destructor=(void (ABI *)(void *))trampoline;
+    stream_destructor=(uintptr_t)trampoline;
     memcpy(site,patch,sizeof(patch));
     VirtualProtect(site,sizeof(patch),old,&ignored);
     FlushInstructionCache(GetCurrentProcess(),trampoline,sizeof(prologue)+sizeof(jump));
@@ -212,11 +221,14 @@ static bool install_stream_shutdown_guard(void) {
         mprotect(start,page,PROT_READ|PROT_WRITE|PROT_EXEC)) {
         munmap(trampoline,4096);return false;
     }
-    stream_destructor=(void (ABI *)(void *))trampoline;
+    /* The trampoline holds x86-64 code the guest runs: the guest CPU is told it is guest code. */
+    guest_cpu_code((uintptr_t)trampoline,4096);
+    stream_destructor=(uintptr_t)trampoline;
     memcpy(site,patch,sizeof(patch));mprotect(start,page,PROT_READ|PROT_EXEC);
     __builtin___clear_cache((char *)trampoline,(char *)trampoline+sizeof(prologue)+sizeof(jump));
     __builtin___clear_cache((char *)site,(char *)site+sizeof(patch));
 #endif
+    guest_cpu_code_changed((uintptr_t)site,sizeof(patch));
     return true;
 }
 void runtime_exit_initialize(void) {
