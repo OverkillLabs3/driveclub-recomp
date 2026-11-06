@@ -18,6 +18,7 @@ The mod kit has three parts:
 | [File formats](formats.md) | Archive, resource packs, tables, XML, Lua |
 | [Lua scripts](lua.md) | Mod scripts, logging, and the game's script layer: [the live API](lua-api.md) and [the names its scripts use](lua-names.md) |
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
+| [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
 | [Music and sound](audio.md) | FMOD banks: list, extract and replace streams |
 | [Recipes](recipes.md) | Worked examples |
 
@@ -33,11 +34,12 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Any resource inside a pack (add, replace, remove) | `rpk.*` patches |
 | Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` patches, or replace the script with Lua source |
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
+| Car and model geometry (positions, triangles) | `dcmod mesh` and Blender ([models.md](models.md)) |
 | Music and sound effects (FMOD banks) | `dcmod audio` ([audio.md](audio.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 
 ## Limits
 
-- Textures convert to and from DDS and PNG (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models have no converter yet; a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files does not load yet ([cars.md](cars.md)).
+- Textures convert to and from DDS and PNG (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models convert to glTF and back for edits that keep the vertex count (`dcmod mesh`); a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files does not load yet ([cars.md](cars.md)).
 - Compiled game scripts can be read as an assembly listing, not as Lua source. A replacement script has to be compiled (`dcmod lua compile`, or list it under `scripts` in `mod.json` and the build compiles it): the game cannot run Lua it compiles from text itself.
 - Mods are not signed or checked. Only use mods from people you trust.

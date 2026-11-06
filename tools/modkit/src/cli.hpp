@@ -44,6 +44,7 @@ int RunLua(const std::vector<std::string>& argv);
 int RunMod(const std::vector<std::string>& argv);
 int RunTex(const std::vector<std::string>& argv);
 int RunAudio(const std::vector<std::string>& argv);
+int RunMesh(const std::vector<std::string>& argv);
 int RunStudio(const std::vector<std::string>& argv);
 int RunDash(const std::vector<std::string>& argv);
 int RunCar(const std::vector<std::string>& argv);

@@ -65,6 +65,10 @@ Textures of packs as DDS. `info PACK`, `extract PACK -o DIR [PATTERN...]`, `impo
 
 FMOD banks. `info BANK`, `extract BANK -o DIR [NAME]`, `replace BANK NAME FILE -o OUT`. See [audio.md](audio.md).
 
+## dcmod mesh
+
+Model geometry as glTF. `info PACK`, `export PACK -o FILE.glb [NAME...]`, `import PACK FILE.glb -o OUT.rpk`. See [models.md](models.md).
+
 ## dcmod mcp
 
 `dcmod mcp [--mods DIR] [--update DIR --base DIR]` starts an MCP server for AI agents; see [agent.md](agent.md).

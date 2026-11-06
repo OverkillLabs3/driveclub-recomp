@@ -18,6 +18,7 @@ int Usage() {
         "  dcmod dash ...      in-car dashboards: list, show, check\n"
         "  dcmod tex ...       textures: extract to DDS, import from DDS\n"
         "  dcmod audio ...     FMOD sound banks: list, extract, replace streams\n"
+        "  dcmod mesh ...      model geometry: export to glTF, import edited positions\n"
         "  dcmod mod ...     mods: new, check, build (patches applied to the game files)\n"
         "\n"
         "Run a command without arguments for its help.");
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         if (cmd == "mod") return dcmod::RunMod(rest);
         if (cmd == "tex") return dcmod::RunTex(rest);
         if (cmd == "audio") return dcmod::RunAudio(rest);
+        if (cmd == "mesh") return dcmod::RunMesh(rest);
         if (cmd == "studio") return dcmod::RunStudio(rest);
         if (cmd == "dash") return dcmod::RunDash(rest);
         if (cmd == "car") return dcmod::RunCar(rest);
