@@ -40,6 +40,6 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 
 ## Limits
 
-- Textures convert to and from DDS and PNG (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models convert to glTF and back with any number of vertices and triangles (`dcmod mesh`; the normals of new vertices are approximate); a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files loads and races (`dcmod car clone`, [cars.md](cars.md)).
+- Textures convert to and from DDS and PNG (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models convert to glTF and back with any number of vertices and triangles (`dcmod mesh`, with normals); a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files loads and races (`dcmod car clone`, [cars.md](cars.md)).
 - Compiled game scripts can be read as an assembly listing, not as Lua source. A replacement script has to be compiled (`dcmod lua compile`, or list it under `scripts` in `mod.json` and the build compiles it): the game cannot run Lua it compiles from text itself.
 - Mods are not signed or checked. Only use mods from people you trust.

@@ -27,6 +27,7 @@ pack=vehicles/ferrari_458_italia.rpk
 "$exe" rpk verify "$tmp/grown.rpk" > /dev/null
 "$exe" mesh info "$tmp/grown.rpk" | grep -q "0008a48ef19c8161_4_BODYShape  *9348 vertices  *7076 triangles"
 "$exe" mesh info "$tmp/grown.rpk" | grep -q "0008a48ef19c8161_5_BODYShape  *120 vertices  *136 triangles"
+grep -aq NORMAL "$tmp/body.glb"
 echo "ok mesh with changed counts"
 
 mkdir "$tmp/clone"

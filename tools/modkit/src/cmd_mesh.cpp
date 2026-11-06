@@ -2,7 +2,7 @@
 // dcmod mesh ...: the geometry of resource packs as glTF 2.0 binary (.glb), for Blender and other editors.
 //
 // A model pack has "mesh" resources. Each depends on a position stream (a vertex buffer of 12 byte XYZ floats), a
-// attribute stream (normals, texture coordinates and so on, not decoded here) and an index buffer, and holds one or more
+// attribute stream (normal, tangent, texture coordinates and so on; the first three are decoded) and an index buffer, and holds one or more
 // sub meshes: four 32 bit numbers (lowest vertex, highest vertex, first index, index count) after the bytes 02 03, and a
 // table at the end of the mesh (3, lowest vertex, 0, first index, index count) that the game draws from.
 // The indices are absolute positions in the vertex buffer and form a triangle list.
@@ -30,8 +30,8 @@ int Usage() {
         "\n"
         "PACK is a file or @path in the game's archive. Objects are named ID_N_NAME (the mesh's identifier and the\n"
         "sub mesh number); keep that prefix when renaming. An object may have more or fewer vertices and triangles\n"
-        "than the game's: extra data goes to the end of the buffers and a new vertex copies the normals and weights\n"
-        "of the nearest old one. Axes are the game's own (Y up).");
+        "than the game's: extra data goes to the end of the buffers. Normals and texture coordinates are exported and\n"
+        "imported; skin weights are copied from the nearest old vertex. Axes are the game's own (Y up).");
     return 2;
 }
 
@@ -39,6 +39,7 @@ struct Sub {
     uint64_t mesh = 0, pos = 0, ib = 0, attr = 0;
     uint32_t pos_stride = 12;
     bool half = false;  // positions are three half floats
+    int normal_off = -1, tangent_off = -1;  // normal and tangent (three 10 bit signed numbers in 4 bytes) in a vertex of the attribute stream
     int uv_off = -1;  // where the texture coordinate (two floats) sits in a vertex of the attribute stream
     uint32_t stride = 0;
     uint32_t lo = 0, hi = 0, first = 0, count = 0, k = 0;
@@ -157,9 +158,11 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
                     for (size_t f = 0; f < n && 21 + f * 5 + 5 <= fmt->data.size(); ++f) {
                         const uint8_t kind = fmt->data[21 + f * 5], type = fmt->data[22 + f * 5];
                         if (kind == 5 && type == 8 && s.uv_off < 0) s.uv_off = int(at);
+                        if (kind == 2 && type == 15 && s.normal_off < 0) s.normal_off = int(at);
+                        if (kind == 5 && type == 15 && fmt->data[23 + f * 5] == 6 && s.tangent_off < 0) s.tangent_off = int(at);
                         at += type == 9 ? 12 : type == 8 || type == 6 ? 8 : 4;
                     }
-                    if (at != s.stride) s.uv_off = -1;
+                    if (at != s.stride) s.uv_off = s.normal_off = s.tangent_off = -1;
                 }
             }
             std::string n = m.DisplayName();
@@ -170,6 +173,28 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
         }
     }
     return out;
+}
+
+// Normals and tangents are three signed 10 bit numbers in a 32 bit word (x in the lowest bits); checked on the Ferrari body
+// (decoded normals agree with the triangles' normals, 1870 of 1872 vertices sampled).
+std::array<float, 3> Dec10(uint32_t u) {
+    std::array<float, 3> r{};
+    for (size_t i = 0; i < 3; ++i) {
+        int v = int((u >> (10 * i)) & 1023);
+        if (v & 512) v -= 1024;
+        r[i] = std::max(-1.f, float(v) / 511.f);
+    }
+    return r;
+}
+
+uint32_t Enc10(std::array<float, 3> v) {
+    const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    uint32_t u = 0;
+    for (size_t i = 0; i < 3; ++i) {
+        const float f = l > 0 ? v[i] / l : (i == 2 ? 1.f : 0.f);
+        u |= (uint32_t(int(std::lrint(std::max(-1.f, std::min(1.f, f)) * 511.f))) & 1023u) << (10 * i);
+    }
+    return u;
 }
 
 float Clean(float v) { return std::isfinite(v) && std::fabs(v) < 1e6f ? v : 0.f; }
@@ -218,6 +243,20 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
                 }
             }
         }
+        size_t nrm_at = 0;
+        const bool has_nrm = s.normal_off >= 0 && s.attr;
+        if (has_nrm) {
+            PadTo4(bin, 0);
+            nrm_at = bin.size();
+            const Bytes& av = pack.Find(s.attr)->data;
+            for (uint32_t i = s.lo; i <= s.hi; ++i) {
+                for (float f : Dec10(Rd32(&av[28 + size_t(i) * s.stride + size_t(s.normal_off)]))) {
+                    uint32_t u;
+                    std::memcpy(&u, &f, 4);
+                    Put32(bin, u);
+                }
+            }
+        }
         // indices, relative to the first vertex
         PadTo4(bin, 0);
         const size_t idx_at = bin.size();
@@ -234,6 +273,7 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
         };
         const int pv_i = view(pos_at, s.vertices() * 12, 34962), iv_i = view(idx_at, idx_end - idx_at, 34963);
         const int uv_i = has_uv ? view(uv_at, s.vertices() * 8, 34962) : -1;
+        const int nrm_i = has_nrm ? view(nrm_at, s.vertices() * 12, 34962) : -1;
         Json pa = Json::Object();
         pa.Set("bufferView", pv_i), pa.Set("componentType", 5126), pa.Set("count", int64_t(s.vertices())), pa.Set("type", "VEC3");
         Json jmn = Json::Array(), jmx = Json::Array();
@@ -251,6 +291,12 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
             ua.Set("bufferView", uv_i), ua.Set("componentType", 5126), ua.Set("count", int64_t(s.vertices())), ua.Set("type", "VEC2");
             accessors.Push(ua);
             attrs.Set("TEXCOORD_0", int(accessors.Items().size()) - 1);
+        }
+        if (has_nrm) {
+            Json na = Json::Object();
+            na.Set("bufferView", nrm_i), na.Set("componentType", 5126), na.Set("count", int64_t(s.vertices())), na.Set("type", "VEC3");
+            accessors.Push(na);
+            attrs.Set("NORMAL", int(accessors.Items().size()) - 1);
         }
         prim.Set("attributes", attrs), prim.Set("indices", pa_i + 1), prim.Set("mode", 4);
         Json prims = Json::Array();
@@ -363,6 +409,65 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
             }
         }
     };
+    // normals: from the glTF object when it has them, else (for vertices that are new) from its triangles
+    std::vector<double> nrm;
+    if (sub.normal_off >= 0 && prim.Find("attributes")->Has("NORMAL")) {
+        nrm = Accessor(g, prim.Find("attributes")->GetInt("NORMAL"), 3);
+        if (nrm.size() != nv_new * 3) nrm.clear();
+    }
+    std::vector<std::array<float, 3>> calc_n(nv_new, std::array<float, 3>{0, 0, 0}), calc_t(nv_new, std::array<float, 3>{0, 0, 0});
+    if (nv_new > nv && prim.Has("indices")) {
+        const std::vector<double> ix = Accessor(g, prim.GetInt("indices"), 1);
+        for (size_t t = 0; t + 2 < ix.size(); t += 3) {
+            size_t v[3];
+            for (size_t k = 0; k < 3; ++k) v[k] = size_t(ix[t + k]) < nv_new ? size_t(ix[t + k]) : 0;
+            float e1[3], e2[3];
+            for (size_t c = 0; c < 3; ++c) e1[c] = float(p[v[1] * 3 + c] - p[v[0] * 3 + c]), e2[c] = float(p[v[2] * 3 + c] - p[v[0] * 3 + c]);
+            const float n[3] = {-(e1[1] * e2[2] - e1[2] * e2[1]), -(e1[2] * e2[0] - e1[0] * e2[2]), -(e1[0] * e2[1] - e1[1] * e2[0])};
+            float tg[3] = {0, 0, 0};
+            if (!uvs.empty()) {
+                const float du1 = float(uvs[v[1] * 2] - uvs[v[0] * 2]), du2 = float(uvs[v[2] * 2] - uvs[v[0] * 2]);
+                const float dv1 = -float(uvs[v[1] * 2 + 1] - uvs[v[0] * 2 + 1]), dv2 = -float(uvs[v[2] * 2 + 1] - uvs[v[0] * 2 + 1]);
+                const float det = du1 * dv2 - du2 * dv1;
+                if (std::fabs(det) > 1e-12f) {
+                    for (size_t c = 0; c < 3; ++c) tg[c] = (e1[c] * dv2 - e2[c] * dv1) / det;
+                }
+            }
+            for (size_t k = 0; k < 3; ++k) {
+                for (size_t c = 0; c < 3; ++c) calc_n[v[k]][c] += n[c], calc_t[v[k]][c] += tg[c];
+            }
+        }
+    }
+    const auto put_frame = [&](uint8_t* dst, size_t i) {
+        if (sub.normal_off < 0) return;
+        std::array<float, 3> n{};
+        bool set = false;
+        if (!nrm.empty()) {
+            n = {float(nrm[i * 3]), float(nrm[i * 3 + 1]), float(nrm[i * 3 + 2])};
+            // a normal that is the same after rounding stays as it is
+            const auto old = Dec10(Rd32(dst + sub.normal_off));
+            const float dot = old[0] * n[0] + old[1] * n[1] + old[2] * n[2];
+            const float l = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            const float lo = std::sqrt(old[0] * old[0] + old[1] * old[1] + old[2] * old[2]);
+            if (l > 0 && (lo == 0 || dot / (l * lo) < 0.9995f)) set = true;
+        } else if (i >= nv) {
+            n = calc_n[i], set = true;
+        }
+        if (set) {
+            const uint32_t u = Enc10(n);
+            std::memcpy(dst + sub.normal_off, &u, 4);
+        }
+        if (sub.tangent_off >= 0 && i >= nv && !uvs.empty()) {
+            std::array<float, 3> t = calc_t[i];
+            const float len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (len > 0) {
+                const float d = (t[0] * n[0] + t[1] * n[1] + t[2] * n[2]) / (len * len);
+                for (size_t c = 0; c < 3; ++c) t[c] -= d * n[c];
+                const uint32_t u = Enc10(t);
+                std::memcpy(dst + sub.tangent_off, &u, 4);
+            }
+        }
+    };
     const auto put_uv = [&](uint8_t* dst, size_t i) {
         if (uvs.empty()) return;
         float old[2];
@@ -374,11 +479,11 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
     if (!grow) {
         for (uint32_t i = 0; i < nv_new; ++i) {
             put_pos(&vb->data[28 + size_t(sub.lo + i) * sub.pos_stride], i);
-            if (av) put_uv(&av->data[28 + size_t(sub.lo + i) * sub.stride], i);
+            if (av) put_uv(&av->data[28 + size_t(sub.lo + i) * sub.stride], i), put_frame(&av->data[28 + size_t(sub.lo + i) * sub.stride], i);
         }
     }
     // A part that grows is written whole at the end of the buffers (its old vertices stay unused), so its vertices
-    // stay one range. Vertices that are new get the other vertex data (normals, weights) of the old one that is nearest.
+    // stay one range. Vertices that are new get the other vertex data (colour, weights) of the old one that is nearest.
     const uint32_t base = VbCount(*vb);
     const uint32_t lo = grow ? base : sub.lo, hi = lo + uint32_t(nv_new) - 1;
     if (grow) {
@@ -409,6 +514,7 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
             av->data.insert(av->data.end(), arow.begin(), arow.end());
             put_pos(&vb->data[vb->data.size() - sub.pos_stride], j);
             put_uv(&av->data[av->data.size() - sub.stride], j);
+            put_frame(&av->data[av->data.size() - sub.stride], j);
         }
         const uint32_t total = base + uint32_t(nv_new);
         std::memcpy(&vb->data[24], &total, 4);
