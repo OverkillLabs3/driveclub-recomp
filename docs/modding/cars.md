@@ -57,3 +57,7 @@ dcmod dash binds                # the values a dashboard can show (vehicle.speed
 ```
 
 The elements are `canvas`, `font`, `image`, `maskedimage`, `fadeimage`, `number`, `gear`, `timer`, `needle`, `arc`, `box`, `line`, `slider`, `slidebox` and `visible` (shows its parent when a value is in a range). A dashboard is changed with `rpk.patch` on `global.rpk` and its resource name (for example `vw_golf_gti.def`), with the picture changed by `tex.set`. `dcmod dash check` reports elements, attributes and values it does not know; the 125 dashboards of the game were read to build its tables, and the dashboard of the Golf GTI passes it.
+
+## A car's model in Blender
+
+`dcmod mesh` exports a car's model pack to glTF and writes edited positions back, so a car's shape can be reshaped (see [models.md](models.md)). Combined with `dcmod car swap` or `dcmod car variant`, the reshaped pack can be given to a car row of your own. A car with a new asset name and its own model files still does not load (see above).
