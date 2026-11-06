@@ -19,7 +19,8 @@ int Usage() {
         "  dcmod car files NAME            the table row of a car (NAME is its Vehicle Name) and every file named after it\n"
         "  dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]\n"
         "                                  a mod that adds a copy of the car as NEWNAME (Vehicle Name) with the files\n"
-        "                                  copied under the new Asset (default: NEWNAME)\n"
+        "                                  copied under the new Asset (default: NEWNAME). Experimental: the game opens the\n"
+        "                                  copy but stops while loading it, see docs/modding/cars.md\n"
         "\n"
         "The game folders come from --update DIR --base DIR, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR, or launcher.ini.");
     return 2;
