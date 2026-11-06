@@ -20,6 +20,7 @@ int Usage() {
         "  dcmod audio ...     FMOD sound banks: list, extract, replace streams\n"
         "  dcmod mesh ...      model geometry: export to glTF, import edited positions\n"
         "  dcmod shader ...    replace the game's shaders (SPIR-V)\n"
+        "  dcmod track ...     the files and table row of a track\n"
         "  dcmod mod ...     mods: new, check, build (patches applied to the game files)\n"
         "\n"
         "Run a command without arguments for its help.");
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
         if (cmd == "audio") return dcmod::RunAudio(rest);
         if (cmd == "mesh") return dcmod::RunMesh(rest);
         if (cmd == "shader") return dcmod::RunShader(rest);
+        if (cmd == "track") return dcmod::RunTrack(rest);
         if (cmd == "studio") return dcmod::RunStudio(rest);
         if (cmd == "dash") return dcmod::RunDash(rest);
         if (cmd == "car") return dcmod::RunCar(rest);

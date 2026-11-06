@@ -20,6 +20,7 @@ The mod kit has three parts:
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
 | [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
 | [Music and sound](audio.md) | FMOD banks: list, extract and replace streams |
+| [Tracks](tracks.md) | what a track is, what can be changed, what does not work |
 | [Tutorial: a new car](tutorial-new-car.md) | clone a car, reshape it in Blender, share it as two mods |
 | [Shaders and graphics](shaders.md) | dump the game's shaders, edit the SPIR-V, replace them in a mod |
 | [Recipes](recipes.md) | Worked examples |

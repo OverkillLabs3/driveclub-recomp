@@ -73,6 +73,10 @@ Model geometry as glTF. `info PACK`, `export PACK -o FILE.glb [NAME...]`, `impor
 
 Shader replacement. `list DUMPDIR [STAGE]`, `dis FILE.spv [-o OUT]`, `as FILE.spvasm -o OUT.spv`, `install FILE.spv MODFOLDER` (the last two and `dis` need `spirv-dis` and `spirv-as` on PATH). See [shaders.md](shaders.md).
 
+## dcmod track
+
+`files NAME` lists a track's table row and the files named after it. See [tracks.md](tracks.md).
+
 ## dcmod mcp
 
 `dcmod mcp [--mods DIR] [--update DIR --base DIR]` starts an MCP server for AI agents; see [agent.md](agent.md).
