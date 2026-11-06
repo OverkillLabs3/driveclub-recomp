@@ -135,6 +135,8 @@ std::unique_ptr<Archive> Archive::Open(const std::vector<fs::path>& folders) {
     if (Rd32(&ndx[p]) != 0x12345678u) throw Error("game.ndx has no marker after the file names");
     p += 4;
     if (p + size_t(files) * 32 > ndx.size()) throw Error("game.ndx records are cut short");
+    archive->raw_index_ = ndx;
+    archive->records_offset_ = p;
     const bool old_style = uint64_t(archive->filetime_) <= (1408492800ull + 11644473600ull) * 10000000ull;
     archive->entries_.resize(files);
     const uint8_t* name_p = names;
@@ -254,6 +256,87 @@ Bytes Archive::Read(const IndexEntry& e, bool verify) {
         md5.Update(out.data(), out.size());
         if (md5.Final() != e.md5) throw Error("the MD5 of \"" + e.name + "\" does not match the index");
     }
+    return out;
+}
+
+ArchiveExtension Archive::Extend(const std::vector<std::pair<std::string, Bytes>>& files) const {
+    ArchiveExtension out;
+    unsigned top = 0;
+    for (const IndexEntry& e : entries_) top = std::max<unsigned>(top, e.volume);
+    out.volume = top + 1;
+    if (out.volume > 0xFFFF) throw Error("the archive has no free volume number");
+
+    // The new volume: the files one after the other, cut into chunks that are stored as they are.
+    Bytes stream;
+    std::vector<IndexEntry> added;
+    std::map<std::string, size_t> replaces;
+    for (const auto& [name, data] : files) {
+        IndexEntry e;
+        e.name = Lower(GamePath(name));
+        e.volume = uint16_t(out.volume);
+        e.offset = stream.size();
+        e.size = uint32_t(data.size());
+        e.hash = Hash(e.name, hash_a_, hash_b_);
+        Md5 md5;
+        md5.Update(data.data(), data.size());
+        e.md5 = md5.Final();
+        stream.insert(stream.end(), data.begin(), data.end());
+        added.push_back(e);
+    }
+    const size_t chunks = (stream.size() + chunk_size_ - 1) / chunk_size_;
+    stream.resize(chunks * chunk_size_, 0);
+    Bytes head;
+    {
+        const fs::path template_volume = VolumePath(entries_.front().volume);
+        if (template_volume.empty()) throw Error("no volume to take the volume header from");
+        const Bytes t = ReadFile(template_volume);
+        if (t.size() < 0x24) throw Error("a data volume is too short");
+        head.assign(t.begin(), t.begin() + 0x24);
+    }
+    Put32(head, 0x18, uint32_t(chunks));
+    Put32(head, 0x1C, chunk_size_);
+    out.volume_data = head;
+    for (size_t i = 0; i < chunks; ++i) Wr32(out.volume_data, chunk_size_);
+    out.volume_data.insert(out.volume_data.end(), {'D', 'A', 'T', 'A'});
+    out.volume_data.insert(out.volume_data.end(), stream.begin(), stream.end());
+
+    // The new index: the old records as they were, the new ones after them, the names written out in full.
+    std::vector<std::string> names;
+    Bytes records;
+    for (size_t i = 0; i < entries_.size(); ++i) {
+        names.push_back(entries_[i].name);
+        records.insert(records.end(), raw_index_.begin() + std::ptrdiff_t(records_offset_ + i * 32), raw_index_.begin() + std::ptrdiff_t(records_offset_ + (i + 1) * 32));
+    }
+    for (const IndexEntry& e : added) {
+        Bytes rec;
+        Wr64(rec, uint64_t(e.volume) | (e.offset << 16));
+        Wr32(rec, e.size);
+        Wr32(rec, e.hash);
+        rec.insert(rec.end(), e.md5.begin(), e.md5.end());
+        bool replaced = false;
+        for (size_t i = 0; i < entries_.size() && !replaced; ++i) {
+            if (entries_[i].name == e.name) {
+                std::copy(rec.begin(), rec.end(), records.begin() + std::ptrdiff_t(i * 32));
+                replaced = true;
+            }
+        }
+        if (!replaced) {
+            names.push_back(e.name);
+            records.insert(records.end(), rec.begin(), rec.end());
+        }
+    }
+    Bytes packed;
+    for (const std::string& n : names) {
+        packed.insert(packed.end(), n.begin(), n.end());
+        packed.push_back(0);
+    }
+    out.index.assign(raw_index_.begin(), raw_index_.begin() + 0x3C);
+    Put32(out.index, 0x38, uint32_t(names.size()));
+    out.index.push_back(0);  // no dictionary: names are written in full
+    Wr32(out.index, uint32_t(packed.size()));
+    out.index.insert(out.index.end(), packed.begin(), packed.end());
+    Wr32(out.index, 0x12345678u);
+    out.index.insert(out.index.end(), records.begin(), records.end());
     return out;
 }
 

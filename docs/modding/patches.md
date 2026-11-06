@@ -99,3 +99,5 @@ A pack that is changed is written again with its resources in their original ord
 `rpk.rename`: `file` (a pack), `find`, `replace`, optional `scope` (`required`, default, `names`, `sources` or `all`). Changes text in the names a pack lists, for example the packs it requires.
 
 `rpk.copy`: `file` (a pack), `resource` (an existing resource), `name` (the copy's name). Adds a copy of the resource under a new name and a new identifier.
+
+`archive.register`: `paths` (files that mods add). Lists the files in the game's own archive index by writing a new `game.ndx` and an extra volume. Experimental: the game does not cope with the changed index yet (it reads past its end), so no shipped command uses it.

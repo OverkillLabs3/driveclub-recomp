@@ -109,11 +109,30 @@ void Workspace::NoteSetting(const std::string& slot, const std::string& value, c
     settings_[slot] = {value, mod};
 }
 
+bool GameSource::ExtendArchive(const std::vector<std::pair<std::string, Bytes>>& files, std::map<std::string, Bytes>& out) {
+    const ArchiveExtension x = archive_.Extend(files);
+    char name[32];
+    std::snprintf(name, sizeof name, "game%03u.dat", x.volume);
+    out["game.ndx"] = x.index;
+    out[name] = x.volume_data;
+    return true;
+}
+
 std::map<std::string, Bytes> Workspace::Finish() {
     std::map<std::string, Bytes> out;
     for (auto& [key, it] : items_) {
         Sync(it.data, it.changed, it.pack, it.pack_changed);
         if (it.changed) out[it.name] = it.data;
+    }
+    if (!registered_.empty()) {
+        std::vector<std::pair<std::string, Bytes>> files;
+        for (const std::string& key : registered_) {
+            const auto it = items_.find(key);
+            if (it == items_.end() || !it->second.loaded) throw Error("archive.register: " + key + " is not a file the mods made");
+            files.emplace_back(it->second.name, it->second.data);
+        }
+        if (!source_.ExtendArchive(files, out)) throw Error("archive.register needs the game's archive");
+        report_.history["game.ndx"].push_back({"dcmod", "archive index with " + std::to_string(files.size()) + " new files"});
     }
     return out;
 }
@@ -738,6 +757,17 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         const Bytes c = Content(p, env);
         p.Done();
         ws.Write(file, c, env.mod, action(""));
+        return;
+    }
+    if (name == "archive.register") {
+        const Json* paths = p.Get("paths");
+        if (!paths || !paths->IsArray()) throw Error("the field \"paths\" (a list of game paths) is required");
+        p.Done();
+        for (const Json& j : paths->Items()) {
+            if (!ws.Exists(j.AsString())) throw Error(j.AsString() + " does not exist (make it with an earlier patch)");
+            (void)ws.Read(j.AsString());
+            ws.Register(j.AsString());
+        }
         return;
     }
     if (name == "file.copy") {

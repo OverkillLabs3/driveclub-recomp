@@ -21,6 +21,8 @@ public:
     // The file's name as the game spells it (the archive's lower case path), or empty when there is no such file.
     virtual std::string Canonical(const std::string& path) = 0;
     virtual Bytes Read(const std::string& canonical) = 0;
+    // A new index and volume that add `files` to the game's archive; false when the source has no archive.
+    virtual bool ExtendArchive(const std::vector<std::pair<std::string, Bytes>>&, std::map<std::string, Bytes>&) { return false; }
 };
 
 class MemorySource : public FileSource {
@@ -40,6 +42,7 @@ public:
     GameSource(Archive& archive, std::vector<fs::path> folders) : archive_(archive), folders_(std::move(folders)) {}
     std::string Canonical(const std::string& path) override;
     Bytes Read(const std::string& canonical) override;
+    bool ExtendArchive(const std::vector<std::pair<std::string, Bytes>>& files, std::map<std::string, Bytes>& out) override;
 
 private:
     Archive& archive_;
@@ -71,6 +74,9 @@ public:
     // Two mods writing different values to the same place (a table cell, a resource) is a conflict worth reporting.
     void NoteSetting(const std::string& slot, const std::string& value, const std::string& mod);
 
+    // Files that the game's archive index is to list (see Archive::Extend).
+    void Register(const std::string& path) { registered_.insert(Key(path)); }
+
     // Turns the changed packs back into files. Returns every file that differs from the source, by game path.
     std::map<std::string, Bytes> Finish();
 
@@ -94,6 +100,7 @@ private:
     PatchReport& report_;
     std::map<std::string, Item> items_;
     std::map<std::string, Slot> settings_;
+    std::set<std::string> registered_;
 };
 
 struct PatchEnv {

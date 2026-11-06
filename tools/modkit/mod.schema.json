@@ -216,7 +216,8 @@
             "vdef.set",
             "manifest.add",
             "rpk.rename",
-            "rpk.copy"
+            "rpk.copy",
+            "archive.register"
           ],
           "description": "The operation. See docs/modding/patches.md."
         },
