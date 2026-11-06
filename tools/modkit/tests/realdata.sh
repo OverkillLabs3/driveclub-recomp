@@ -39,6 +39,19 @@ echo "ok mesh with changed counts"
 [[ $("$exe" rpk list "$tmp/own.rpk" -l | grep -c "vertex_buffer") -eq $(( $("$exe" rpk list "@$pack" -l | grep -c "vertex_buffer") + 2 )) ]]
 echo "ok part with its own buffers"
 
+# skinned meshes (a driver): bone numbers and weights go out with the glTF and come back, and a part can grow
+drv=data/nexus/skel/driver/male/build/male05_body04_src.rpk
+"$exe" archive cat "$drv" > "$tmp/drv.rpk"
+"$exe" mesh export "@$drv" -o "$tmp/drv.glb" > /dev/null
+grep -aq JOINTS_0 "$tmp/drv.glb"
+"$exe" mesh import "@$drv" "$tmp/drv.glb" -o "$tmp/drv2.rpk" > /dev/null
+cmp "$tmp/drv.rpk" "$tmp/drv2.rpk"
+"$exe" mesh export "@$drv" -o "$tmp/d1.glb" "0008f5239ee9c16f_0_*" > /dev/null
+"$py" -I tools/modkit/tests/glbedit.py "$tmp/d1.glb" "$tmp/d2.glb" dup0 > /dev/null
+"$exe" mesh import "@$drv" "$tmp/d2.glb" --own-buffers -o "$tmp/d3.rpk" > /dev/null
+"$exe" mesh info "$tmp/d3.rpk" | grep -q "0008f5239ee9c16f_0_mesh_male05_body04_LOD4  *624 vertices"
+echo "ok skinned mesh"
+
 mkdir "$tmp/clone"
 "$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
 "$exe" mod check "$tmp/clone" > /dev/null

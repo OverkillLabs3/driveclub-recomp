@@ -42,6 +42,10 @@ struct Sub {
     int normal_off = -1, tangent_off = -1;  // normal and tangent (three 10 bit signed numbers in 4 bytes) in a vertex of the attribute stream
     int uv_off = -1;  // where the texture coordinate (two floats) sits in a vertex of the attribute stream
     uint32_t stride = 0;
+    // skinning: four weights (half floats, kind 7) and four bone numbers (16 bit, kind 8), in the attribute stream or in a stream of their own
+    uint64_t skin = 0;
+    uint32_t skin_stride = 0;
+    int w_off = -1, j_off = -1;
     uint32_t lo = 0, hi = 0, first = 0, count = 0, k = 0;
     std::vector<size_t> recs;  // where the mesh data holds this sub mesh's record (the bytes 02 03), often several times
     std::string name;
@@ -94,16 +98,47 @@ long LastMention(const Bytes& d, uint64_t id, size_t at) {
     return -1;
 }
 
+// The fields of a vertex stream by its stream format: a count, then five bytes per field (kind, type, index, 0, 0). The type
+// gives the size: 12 for three floats, 8 for two floats or four half floats or four 16 bit numbers, else 4.
+struct Fields {
+    int normal = -1, tangent = -1, uv = -1, weights = -1, joints = -1;
+    bool whole = false;  // the sizes add up to the stride
+};
+
+Fields ParseFields(const RpkResource* fmt, uint32_t stride) {
+    Fields f;
+    if (!fmt || fmt->data.size() < 21) return f;
+    const size_t n = fmt->data[20];
+    uint32_t at = 0;
+    for (size_t k = 0; k < n && 21 + k * 5 + 5 <= fmt->data.size(); ++k) {
+        const uint8_t kind = fmt->data[21 + k * 5], type = fmt->data[22 + k * 5];
+        if (kind == 5 && type == 8 && f.uv < 0) f.uv = int(at);
+        if (kind == 2 && type == 15 && f.normal < 0) f.normal = int(at);
+        if (kind == 5 && type == 15 && fmt->data[23 + k * 5] == 6 && f.tangent < 0) f.tangent = int(at);
+        if (kind == 7 && type == 6 && f.weights < 0) f.weights = int(at);
+        if (kind == 8 && type == 24 && f.joints < 0) f.joints = int(at);
+        at += type == 9 ? 12 : type == 8 || type == 6 || type == 24 ? 8 : 4;
+    }
+    f.whole = at == stride;
+    if (!f.whole) f = Fields();
+    return f;
+}
+
 std::vector<Sub> FindSubs(const RpkPack& pack) {
     const int vb_type = RpkTypeFromName("vertex_buffer"), ib_type = RpkTypeFromName("index_buffer"), mesh_type = RpkTypeFromName("mesh");
     std::vector<Sub> out;
     for (const RpkResource& m : pack.resources) {
         if (int(m.Type()) != mesh_type) continue;
-        std::vector<uint64_t> poss, ibs, attrs;
+        std::vector<uint64_t> poss, ibs, attrs, skins;
         for (uint64_t d : m.deps) {
             const RpkResource* r = pack.Find(d);
             if (!r) continue;
-            if (int(r->Type()) == vb_type && r->data.size() >= 28) (PositionKind(*r) ? poss : attrs).push_back(d);
+            if (int(r->Type()) == vb_type && r->data.size() >= 28) {
+                const Fields vf = ParseFields(r->deps.empty() ? nullptr : pack.Find(r->deps[0]), Rd16(r->data.data() + 22));
+                if (PositionKind(*r)) poss.push_back(d);
+                else if (vf.weights >= 0 && vf.normal < 0 && vf.uv < 0) skins.push_back(d);  // weights and bones only
+                else attrs.push_back(d);
+            }
             if (int(r->Type()) == ib_type) ibs.push_back(d);
         }
         if (poss.empty() || ibs.empty()) continue;
@@ -149,20 +184,23 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
             if (!same.empty()) {
                 s.attr = nearest(same, i);
                 const RpkResource* av = pack.Find(s.attr);
-                const RpkResource* fmt = av->deps.empty() ? nullptr : pack.Find(av->deps[0]);
                 s.stride = Rd16(av->data.data() + 22);
-                if (fmt && fmt->data.size() >= 21) {
-                    // the format: a count, then five bytes per field (kind, type, index, 0, 0); the type gives the size
-                    const size_t n = fmt->data[20];
-                    uint32_t at = 0;
-                    for (size_t f = 0; f < n && 21 + f * 5 + 5 <= fmt->data.size(); ++f) {
-                        const uint8_t kind = fmt->data[21 + f * 5], type = fmt->data[22 + f * 5];
-                        if (kind == 5 && type == 8 && s.uv_off < 0) s.uv_off = int(at);
-                        if (kind == 2 && type == 15 && s.normal_off < 0) s.normal_off = int(at);
-                        if (kind == 5 && type == 15 && fmt->data[23 + f * 5] == 6 && s.tangent_off < 0) s.tangent_off = int(at);
-                        at += type == 9 ? 12 : type == 8 || type == 6 ? 8 : 4;
-                    }
-                    if (at != s.stride) s.uv_off = s.normal_off = s.tangent_off = -1;
+                const Fields f = ParseFields(av->deps.empty() ? nullptr : pack.Find(av->deps[0]), s.stride);
+                s.uv_off = f.uv, s.normal_off = f.normal, s.tangent_off = f.tangent;
+                if (f.weights >= 0 && f.joints >= 0) s.skin = s.attr, s.skin_stride = s.stride, s.w_off = f.weights, s.j_off = f.joints;
+            }
+            if (!s.skin && !skins.empty()) {
+                std::vector<uint64_t> same_skin;
+                for (uint64_t a : skins) {
+                    if (VbCount(*pack.Find(a)) == nv) same_skin.push_back(a);
+                }
+                if (!same_skin.empty()) {
+                    s.skin = nearest(same_skin, i);
+                    const RpkResource* sv = pack.Find(s.skin);
+                    s.skin_stride = Rd16(sv->data.data() + 22);
+                    const Fields f = ParseFields(sv->deps.empty() ? nullptr : pack.Find(sv->deps[0]), s.skin_stride);
+                    if (f.weights >= 0 && f.joints >= 0) s.w_off = f.weights, s.j_off = f.joints;
+                    else s.skin = 0;
                 }
             }
             std::string n = m.DisplayName();
@@ -257,6 +295,30 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
                 }
             }
         }
+        // bone numbers and weights, when the mesh is skinned
+        size_t jn_at = 0, wt_at = 0;
+        const bool has_skin = s.skin && s.w_off >= 0 && s.j_off >= 0;
+        if (has_skin) {
+            const Bytes& sv = pack.Find(s.skin)->data;
+            PadTo4(bin, 0);
+            jn_at = bin.size();
+            for (uint32_t i = s.lo; i <= s.hi; ++i) {
+                for (int c = 0; c < 4; ++c) {
+                    const uint16_t j = Rd16(&sv[28 + size_t(i) * s.skin_stride + size_t(s.j_off) + size_t(c) * 2]);
+                    bin.push_back(uint8_t(j)), bin.push_back(uint8_t(j >> 8));
+                }
+            }
+            PadTo4(bin, 0);
+            wt_at = bin.size();
+            for (uint32_t i = s.lo; i <= s.hi; ++i) {
+                for (int c = 0; c < 4; ++c) {
+                    const float w = Clean(HalfToFloat(Rd16(&sv[28 + size_t(i) * s.skin_stride + size_t(s.w_off) + size_t(c) * 2])));
+                    uint32_t u;
+                    std::memcpy(&u, &w, 4);
+                    Put32(bin, u);
+                }
+            }
+        }
         // indices, relative to the first vertex
         PadTo4(bin, 0);
         const size_t idx_at = bin.size();
@@ -274,6 +336,8 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
         const int pv_i = view(pos_at, s.vertices() * 12, 34962), iv_i = view(idx_at, idx_end - idx_at, 34963);
         const int uv_i = has_uv ? view(uv_at, s.vertices() * 8, 34962) : -1;
         const int nrm_i = has_nrm ? view(nrm_at, s.vertices() * 12, 34962) : -1;
+        const int jn_i = has_skin ? view(jn_at, s.vertices() * 8, 34962) : -1;
+        const int wt_i = has_skin ? view(wt_at, s.vertices() * 16, 34962) : -1;
         Json pa = Json::Object();
         pa.Set("bufferView", pv_i), pa.Set("componentType", 5126), pa.Set("count", int64_t(s.vertices())), pa.Set("type", "VEC3");
         Json jmn = Json::Array(), jmx = Json::Array();
@@ -297,6 +361,15 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
             na.Set("bufferView", nrm_i), na.Set("componentType", 5126), na.Set("count", int64_t(s.vertices())), na.Set("type", "VEC3");
             accessors.Push(na);
             attrs.Set("NORMAL", int(accessors.Items().size()) - 1);
+        }
+        if (has_skin) {
+            Json ja = Json::Object(), wa = Json::Object();
+            ja.Set("bufferView", jn_i), ja.Set("componentType", 5123), ja.Set("count", int64_t(s.vertices())), ja.Set("type", "VEC4");
+            accessors.Push(ja);
+            attrs.Set("JOINTS_0", int(accessors.Items().size()) - 1);
+            wa.Set("bufferView", wt_i), wa.Set("componentType", 5126), wa.Set("count", int64_t(s.vertices())), wa.Set("type", "VEC4");
+            accessors.Push(wa);
+            attrs.Set("WEIGHTS_0", int(accessors.Items().size()) - 1);
         }
         prim.Set("attributes", attrs), prim.Set("indices", pa_i + 1), prim.Set("mode", 4);
         Json prims = Json::Array();
@@ -417,7 +490,24 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
     }
     RpkResource* vb = pack.Find(sub.pos);
     RpkResource* av = sub.attr ? pack.Find(sub.attr) : nullptr;
+    RpkResource* sv = sub.skin && sub.skin != sub.attr ? pack.Find(sub.skin) : nullptr;  // a stream of weights and bones of its own
     const uint32_t nv = sub.vertices();
+    // bone numbers and weights from the glTF object (JOINTS_0 and WEIGHTS_0)
+    std::vector<double> jn, wt;
+    if (sub.skin && prim.Find("attributes")->Has("JOINTS_0") && prim.Find("attributes")->Has("WEIGHTS_0")) {
+        jn = Accessor(g, prim.Find("attributes")->GetInt("JOINTS_0"), 4);
+        wt = Accessor(g, prim.Find("attributes")->GetInt("WEIGHTS_0"), 4);
+        if (jn.size() != nv_new * 4 || wt.size() != nv_new * 4) jn.clear(), wt.clear();
+    }
+    const auto put_skin = [&](uint8_t* row, size_t i) {  // `row` is the vertex in the stream that holds the skin data
+        if (jn.empty()) return;
+        for (size_t c = 0; c < 4; ++c) {
+            const uint16_t h = FloatToHalf(float(wt[i * 4 + c])), j = uint16_t(jn[i * 4 + c]);
+            // a weight that is the same after rounding stays as it is
+            if (HalfToFloat(h) != Clean(HalfToFloat(Rd16(row + sub.w_off + c * 2))) && h != Rd16(row + sub.w_off + c * 2)) std::memcpy(row + sub.w_off + c * 2, &h, 2);
+            if (j != Rd16(row + sub.j_off + c * 2)) std::memcpy(row + sub.j_off + c * 2, &j, 2);
+        }
+    };
     const size_t csize = sub.half ? 2 : 4;
     const auto put_pos = [&](uint8_t* dst, size_t i) {
         for (size_t c = 0; c < 3; ++c) {
@@ -505,6 +595,8 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
         for (uint32_t i = 0; i < nv_new; ++i) {
             put_pos(&vb->data[28 + size_t(sub.lo + i) * sub.pos_stride], i);
             if (av) put_uv(&av->data[28 + size_t(sub.lo + i) * sub.stride], i), put_frame(&av->data[28 + size_t(sub.lo + i) * sub.stride], i);
+            if (sv) put_skin(&sv->data[28 + size_t(sub.lo + i) * sub.skin_stride], i);
+            else if (sub.skin && av) put_skin(&av->data[28 + size_t(sub.lo + i) * sub.stride], i);
         }
     }
     // A part that grows is written whole at the end of the buffers (its old vertices stay unused), so its vertices
@@ -514,6 +606,7 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
     const bool own = grow && av && (own_buffers || uint64_t(VbCount(*vb)) + nv_new > 65535);
     RpkResource* dv = vb;
     RpkResource* da = av;
+    RpkResource* ds = sv;
     if (own) {
         if (nv_new > 65535) throw Error(name + ": a vertex buffer cannot hold that many vertices (16 bit indices)");
         const RpkResource* mesh0 = pack.Find(sub.mesh);
@@ -525,29 +618,41 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
                 if (r < sub.recs.front() && r + 18 > prev_end) prev_end = r + 18;
             }
         }
-        std::vector<std::pair<size_t, int>> spots;  // where the mesh names the buffers (0 position, 1 attributes)
+        std::vector<std::pair<size_t, int>> spots;  // where the mesh names the buffers (0 position, 1 attributes, 2 skin)
         for (const size_t rec : sub.recs) {
             const long a = LastMention(mesh0->data, sub.pos, rec), b = LastMention(mesh0->data, sub.attr, rec);
             if (a < long(prev_end) || b < long(prev_end)) throw Error(name + ": shares its buffers with the sub mesh before it in the mesh, so it cannot get buffers of its own");
             spots.push_back({size_t(a), 0});
             spots.push_back({size_t(b), 1});
+            if (sv) {
+                const long c = LastMention(mesh0->data, sub.skin, rec);
+                if (c < long(prev_end)) throw Error(name + ": shares its buffers with the sub mesh before it in the mesh, so it cannot get buffers of its own");
+                spots.push_back({size_t(c), 2});
+            }
         }
         const uint64_t np = NewBufferId(pack, sub.pos, sub.mesh ^ (uint64_t(sub.k) << 40) ^ 1), na = NewBufferId(pack, sub.attr, sub.mesh ^ (uint64_t(sub.k) << 40) ^ 2);
         RpkResource npv = EmptyBufferLike(*vb, np), nav = EmptyBufferLike(*av, na);
+        const uint64_t ns = sv ? NewBufferId(pack, sub.skin, sub.mesh ^ (uint64_t(sub.k) << 40) ^ 3) : 0;
+        RpkResource nsv;
+        if (sv) nsv = EmptyBufferLike(*sv, ns);
         pack.Add(std::move(npv));
         pack.Add(std::move(nav));
+        if (sv) pack.Add(std::move(nsv));
         vb = pack.Find(sub.pos), av = pack.Find(sub.attr), dv = pack.Find(np), da = pack.Find(na);
+        if (sv) sv = pack.Find(sub.skin), ds = pack.Find(ns);
         RpkResource* m = pack.Find(sub.mesh);
         for (const auto& [at, kind] : spots) {
-            const uint64_t id = kind ? na : np;
+            const uint64_t id = kind == 2 ? ns : kind ? na : np;
             for (int i = 0; i < 8; ++i) m->data[at + size_t(i)] = uint8_t(id >> (8 * i));
         }
         m->deps.push_back(np);
         m->deps.push_back(na);
+        if (sv) m->deps.push_back(ns);
     }
     const uint32_t base = own ? 0 : VbCount(*vb);
     const uint32_t lo = grow ? base : sub.lo, hi = lo + uint32_t(nv_new) - 1;
     if (grow) {
+        if (sv && VbCount(*sv) != VbCount(*vb)) throw Error(name + ": the weights of this mesh cannot be extended");
         if (!av || VbCount(*av) != VbCount(*vb)) throw Error(name + ": has more vertices than the game's mesh, and the other vertex data of this mesh cannot be extended");
         if (uint64_t(base) + nv_new > 65535) throw Error(name + ": the vertex buffer cannot hold that many vertices (16 bit indices); --own-buffers gives the part buffers of its own");
         std::vector<std::array<float, 3>> old_pos(nv);
@@ -573,6 +678,14 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
             const Bytes arow(av->data.begin() + long(aat), av->data.begin() + long(aat + sub.stride));
             dv->data.insert(dv->data.end(), prow.begin(), prow.end());
             da->data.insert(da->data.end(), arow.begin(), arow.end());
+            if (sv) {
+                const size_t kat = 28 + size_t(sub.lo + best) * sub.skin_stride;
+                const Bytes krow(sv->data.begin() + long(kat), sv->data.begin() + long(kat + sub.skin_stride));
+                ds->data.insert(ds->data.end(), krow.begin(), krow.end());
+                put_skin(&ds->data[ds->data.size() - sub.skin_stride], j);
+            } else if (sub.skin) {
+                put_skin(&da->data[da->data.size() - sub.stride], j);
+            }
             put_pos(&dv->data[dv->data.size() - sub.pos_stride], j);
             put_uv(&da->data[da->data.size() - sub.stride], j);
             put_frame(&da->data[da->data.size() - sub.stride], j);
@@ -580,6 +693,7 @@ void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool 
         const uint32_t total = base + uint32_t(nv_new);
         std::memcpy(&dv->data[24], &total, 4);
         std::memcpy(&da->data[24], &total, 4);
+        if (sv) std::memcpy(&ds->data[24], &total, 4);
     }
     uint32_t first = sub.first, count = sub.count;
     if (prim.Has("indices")) {
