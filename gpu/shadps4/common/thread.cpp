@@ -11,6 +11,7 @@
 #include "common/error.h"
 #include "common/logging/log.h"
 #include "common/thread.h"
+#include "bbport_cpu.h"
 #include "ntapi.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -265,7 +266,7 @@ void PreciseSleepUntil(std::chrono::steady_clock::time_point deadline) {
 #endif
     }
     while (steady_clock::now() < deadline) {
-        __builtin_ia32_pause();
+        BbCpu::Pause();
     }
 }
 
