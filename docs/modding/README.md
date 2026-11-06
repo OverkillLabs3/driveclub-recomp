@@ -16,6 +16,7 @@ The mod kit has three parts:
 | [Game files](game-files.md) | What the archive holds and which files are worth changing |
 | [File formats](formats.md) | Archive, resource packs, tables, XML, Lua |
 | [Lua scripts](lua.md) | Mod scripts, logging, and the game's script layer: [the live API](lua-api.md) and [the names its scripts use](lua-names.md) |
+| [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
 | [Recipes](recipes.md) | Worked examples |
 
 The older way still works: a folder or ZIP whose files sit at their game paths is a mod ([how files are found](../MODDING.md)).

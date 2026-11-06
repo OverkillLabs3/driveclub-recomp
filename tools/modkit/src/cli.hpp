@@ -45,5 +45,6 @@ int RunMod(const std::vector<std::string>& argv);
 int RunTex(const std::vector<std::string>& argv);
 int RunStudio(const std::vector<std::string>& argv);
 int RunDash(const std::vector<std::string>& argv);
+int RunCar(const std::vector<std::string>& argv);
 
 }  // namespace dcmod

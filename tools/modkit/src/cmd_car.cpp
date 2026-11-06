@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// dcmod car ...: new cars made from existing ones. A car is a row of newdata/vehicles.csv plus about thirty files named
+// after its Asset (the model pack, its top mips, cameras, wipers, state machines). A clone is a mod that copies all
+// of them under a new name with `file.copy` patches and adds the row, so it holds none of the game's data.
+#include "cli.hpp"
+#include "csv.hpp"
+#include "mod.hpp"
+
+#include <algorithm>
+
+namespace dcmod {
+
+namespace {
+
+int Usage() {
+    std::puts(
+        "dcmod car: new cars from existing ones\n"
+        "\n"
+        "  dcmod car files NAME            the table row of a car (NAME is its Vehicle Name) and every file named after it\n"
+        "  dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]\n"
+        "                                  a mod that adds a copy of the car as NEWNAME (Vehicle Name) with the files\n"
+        "                                  copied under the new Asset (default: NEWNAME)\n"
+        "\n"
+        "The game folders come from --update DIR --base DIR, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR, or launcher.ini.");
+    return 2;
+}
+
+// The path with `asset` replaced by `fresh` in each segment that starts with it (followed by nothing, '.', '_' or '/').
+// Returns an empty string when no segment does.
+std::string Rename(const std::string& path, const std::string& asset, const std::string& fresh) {
+    std::string out;
+    bool hit = false;
+    size_t pos = 0;
+    while (pos <= path.size()) {
+        size_t slash = path.find('/', pos);
+        if (slash == std::string::npos) slash = path.size();
+        std::string seg = path.substr(pos, slash - pos);
+        if (Lower(seg).compare(0, asset.size(), Lower(asset)) == 0) {
+            const char next = seg.size() > asset.size() ? seg[asset.size()] : '\0';
+            if (next == '\0' || next == '.' || next == '_') {
+                seg = fresh + seg.substr(asset.size());
+                hit = true;
+            }
+        }
+        out += seg;
+        if (slash < path.size()) out.push_back('/');
+        pos = slash + 1;
+    }
+    return hit ? out : std::string();
+}
+
+}  // namespace
+
+int RunCar(const std::vector<std::string>& argv) {
+    if (argv.empty()) return Usage();
+    const std::string cmd = argv[0];
+    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--asset"});
+    if (args.positional.size() < 2) return Usage();
+    auto archive = OpenGame(args);
+    GameSource source(*archive, GameFolders(args));
+    const std::string table_path = source.Canonical("newdata/vehicles.csv");
+    if (table_path.empty()) throw Error("newdata/vehicles.csv is not in the game's files");
+    const Bytes table_bytes = source.Read(table_path);
+    const TextFile tf = TextFile::Load(table_bytes);
+    const CsvDoc doc = CsvDoc::Parse(tf.latin1 ? Latin1ToUtf8(tf.text) : tf.text);
+    const int name_col = doc.Column("Vehicle Name"), asset_col = doc.Column("Asset"), id_col = doc.Column("UniqueID");
+    if (name_col < 0 || asset_col < 0 || id_col < 0) throw Error("the vehicle table does not have the expected columns");
+    const std::string& name = args.positional[1];
+    size_t row = 0;
+    for (size_t r = 1; r < doc.rows.size(); ++r) {
+        if (doc.Get(r, size_t(name_col)) == name) row = r;
+    }
+    if (!row) throw Error("no car has the Vehicle Name \"" + name + "\" in newdata/vehicles.csv");
+    const std::string asset = doc.Get(row, size_t(asset_col));
+    if (asset.empty()) throw Error("that car has no Asset");
+
+    std::vector<std::string> files;
+    for (const IndexEntry& e : archive->Entries()) {
+        if (!Rename(e.name, asset, "x").empty()) files.push_back(e.name);
+    }
+    std::sort(files.begin(), files.end());
+
+    if (cmd == "files") {
+        for (size_t c = 0; c < doc.rows[0].fields.size(); ++c) {
+            if (!doc.Get(row, c).empty()) std::printf("%-26s %s\n", doc.Get(0, c).c_str(), doc.Get(row, c).c_str());
+        }
+        std::printf("\n%zu files are named after the asset \"%s\":\n", files.size(), asset.c_str());
+        for (const std::string& f : files) std::printf("  %s\n", f.c_str());
+        return 0;
+    }
+    if (cmd == "clone") {
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty() || args.positional.size() != 3) throw Error("usage: dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]");
+        const std::string fresh_name = args.positional[2];
+        const std::string fresh_asset = args.Get("--asset", fresh_name);
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            if (doc.Get(r, size_t(name_col)) == fresh_name) throw Error("a car named \"" + fresh_name + "\" already exists");
+            if (doc.Get(r, size_t(asset_col)) == fresh_asset) throw Error("a car with the asset \"" + fresh_asset + "\" already exists");
+        }
+        long next_id = 0;
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            const std::string& v = doc.Get(r, size_t(id_col));
+            if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos) next_id = std::max(next_id, std::stol(v));
+        }
+        Json patches = Json::Array();
+        Json set = Json::Object();
+        set.Set("Vehicle Name", fresh_name);
+        set.Set("UniqueID", std::to_string(next_id + 1));
+        set.Set("Asset", fresh_asset);
+        if (doc.Column("Animation") >= 0 && doc.Get(row, size_t(doc.Column("Animation"))) == asset) set.Set("Animation", fresh_asset);
+        Json add = Json::Object();
+        add.Set("op", "csv.add");
+        add.Set("file", table_path);
+        add.Set("key", "Vehicle Name");
+        add.Set("like", name);
+        add.Set("after", name);
+        add.Set("row", set);
+        patches.Push(add);
+        for (const std::string& f : files) {
+            Json op = Json::Object();
+            op.Set("op", "file.copy");
+            op.Set("from", f);
+            op.Set("file", Rename(f, asset, fresh_asset));
+            patches.Push(op);
+        }
+        Json manifest = Json::Object();
+        manifest.Set("id", Lower(fresh_name));
+        manifest.Set("name", fresh_name + " (copy of " + name + ")");
+        manifest.Set("version", "1.0");
+        manifest.Set("patches", patches);
+        WriteText(fs::path(out) / "mod.json", manifest.Dump());
+        std::printf("%zu files will be copied; mod written to %s\n", files.size(), out.c_str());
+        return 0;
+    }
+    return Usage();
+}
+
+}  // namespace dcmod

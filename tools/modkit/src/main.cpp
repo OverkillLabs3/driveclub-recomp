@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
         if (cmd == "tex") return dcmod::RunTex(rest);
         if (cmd == "studio") return dcmod::RunStudio(rest);
         if (cmd == "dash") return dcmod::RunDash(rest);
+        if (cmd == "car") return dcmod::RunCar(rest);
         std::fprintf(stderr, "dcmod: unknown command \"%s\"\n", cmd.c_str());
         return Usage();
     } catch (const std::exception& e) {
