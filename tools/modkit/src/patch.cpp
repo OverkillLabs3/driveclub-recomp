@@ -845,10 +845,21 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
             pack.Remove(res.id);
         } else if (name == "tex.set") {
             const Bytes c = Content(p, env);
+            const std::string top_file = p.Str("top", "");
             p.Done();
             if (res.Type() != kRpkPixelBuffer) throw Error("the resource " + ref + " is not a texture");
             PixelBuffer pb = PixelBuffer::Parse(res.data);
-            pb.SetData(DdsToTexData(pb, TextureSource(pb, c)));
+            if (pb.start_mip != 0) {
+                // the largest levels are in a top mips resource of another pack
+                if (top_file.empty()) throw Error("the largest levels of " + ref + " are in a top mips pack: name it in \"top\" (for a car, vehicles/<asset>_top_mips.rpk)");
+                RpkPack& top_pack = ws.Pack(top_file);
+                RpkResource* tr = top_pack.Find(pb.top_mips_id);
+                if (!tr) throw Error(top_file + " does not hold the largest levels of " + ref);
+                pb.SetData(DdsToTexData(pb, TextureSource(pb, c), &tr->data));
+                ws.PackChanged(top_file, env.mod, action(ref + " (largest levels)"));
+            } else {
+                pb.SetData(DdsToTexData(pb, TextureSource(pb, c)));
+            }
             res.data = pb.payload;
         } else if (name == "rpk.set") {
             const Bytes c = Content(p, env);

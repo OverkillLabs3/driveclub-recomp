@@ -46,9 +46,13 @@ struct Dds {
     static Dds Parse(const Bytes& file);  // throws Error
 };
 
-// Pixel buffer -> DDS (top levels that live in another pack are not part of it).
-Dds TexToDds(const PixelBuffer& pb);
-// DDS -> new pixel data for `pb`. The DDS must have the same size and a matching format.
-Bytes DdsToTexData(const PixelBuffer& pb, const Dds& dds);
+// Pixel buffer -> DDS. The largest levels of some textures (start_mip > 0) live in a top mips resource of another pack;
+// pass that resource's payload as `top` to get the whole texture, without it only a texture with all levels inside works.
+Dds TexToDds(const PixelBuffer& pb, const Bytes* top = nullptr);
+// DDS -> new pixel data for `pb` (the levels it holds). The DDS must have the same size and a matching format. For a texture
+// with a top mips resource, `top` is the resource's payload, which is rewritten with the largest levels.
+Bytes DdsToTexData(const PixelBuffer& pb, const Dds& dds, Bytes* top = nullptr);
+// Where the pixel data of a top mips resource starts (after its 32 byte header), and its size field.
+size_t TopMipsDataOffset(const Bytes& top);
 
 }  // namespace dcmod

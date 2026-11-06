@@ -44,6 +44,13 @@ echo '{"id":"shape","name":"shape","version":"1.0","requires":["fe_clone"]}' > "
 "$exe" mesh info "$tmp/b2/vehicles/fe_clone.rpk" | grep -q "_5_BODYShape  *120 vertices  *136 triangles"
 echo "ok car clone"
 
+# a car texture whose largest levels are in the top mips pack: out and back must give both packs unchanged
+"$exe" tex extract @vehicles/ferrari_458_italia.rpk -o "$tmp/tx" "ferrari_458_sticker*" --top @vehicles/ferrari_458_italia_top_mips.rpk > /dev/null
+"$exe" tex import @vehicles/ferrari_458_italia.rpk ferrari_458_sticker.tif "$tmp/tx/ferrari_458_sticker.tif.dds" -o "$tmp/tmain.rpk" --top @vehicles/ferrari_458_italia_top_mips.rpk --top-out "$tmp/ttop.rpk" > /dev/null
+"$exe" archive cat vehicles/ferrari_458_italia.rpk | cmp - "$tmp/tmain.rpk"
+"$exe" archive cat vehicles/ferrari_458_italia_top_mips.rpk | cmp - "$tmp/ttop.rpk"
+echo "ok texture with top mips"
+
 "$exe" audio info @audio/fmodstudio/gui.bank | head -1 | grep -q "codec atrac9"
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/a" UX_Confirm_03_L > /dev/null
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/b" UX_accolade_ticker_02_L > /dev/null

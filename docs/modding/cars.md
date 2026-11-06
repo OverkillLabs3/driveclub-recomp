@@ -16,7 +16,7 @@ For `ferrari_458_italia` they are `vehicles/ferrari_458_italia.rpk` (model, mate
 |---|---|
 | Stats, unlock level, names, class | `csv.set` on `newdata/vehicles.csv` |
 | Cameras | `text.*` patches on the camera files |
-| A car's paint, decals, interior textures | `tex.set` with a PNG or DDS on the car's pack (textures whose largest levels are in the `_top_mips` pack cannot be changed yet) |
+| A car's paint, decals, interior textures | `tex.set` with a PNG or DDS on the car's pack; for a texture whose largest levels are in the `_top_mips` pack, add `"top": "vehicles/<asset>_top_mips.rpk"` (checked in the game: the Ferrari badge, `ferrari_458_logo_col.tif`, as a magenta PNG shows magenta on the car) |
 | Anything inside the pack | `rpk.set`, `rpk.patch`, `rpk.add`, `rpk.remove` |
 | The in-car instruments | see below |
 

@@ -41,6 +41,10 @@ dcmod rpk list @global.rpk type:xml -l
 dcmod tex info @helmets.rpk
 dcmod tex extract @helmets.rpk -o textures "helmetlivery_16*"    # DDS files
 dcmod tex import @helmets.rpk helmetlivery_16.tif edited.dds -o helmets-new.rpk
+
+# a texture whose largest levels are in a top mips pack (most car textures)
+dcmod tex extract @vehicles/ferrari_458_italia.rpk -o textures "ferrari_458_logo_col*" --top @vehicles/ferrari_458_italia_top_mips.rpk
+dcmod tex import @vehicles/ferrari_458_italia.rpk ferrari_458_logo_col.tif edited.dds -o car.rpk --top @vehicles/ferrari_458_italia_top_mips.rpk --top-out top.rpk
 ```
 
 A PNG picture works as well as a DDS for textures stored as BC1 (DXT1), BC7 or plain 8 bit RGBA: the kit makes the mip levels and compresses them itself. The picture must have the texture's size (for example 512x512 for the helmet liveries), 8 or 16 bit, not interlaced. Other formats need a DDS.

@@ -19,6 +19,7 @@ int Usage() {
         "  dcmod tex info PACK                         every texture: size, format, mips, whether the converter understands it\n"
         "  dcmod tex extract PACK -o DIR [PATTERN...]  write textures as DDS files (names as in 'rpk list')\n"
         "  dcmod tex import PACK TARGET FILE.dds -o OUT  put a DDS into the texture TARGET (name or id) of the pack\n"
+        "  extract and import take --top PACK (and import --top-out FILE) for textures whose largest levels are in a top mips pack\n"
         "  dcmod tex verify PACK... [--max-mb N]       tile each texture again; the bytes must be the same\n"
         "\n"
         "PACK is a file or @path in the game's archive. The DDS must have the texture's size, a matching block format and\n"
@@ -58,7 +59,7 @@ std::string Safe(const std::string& n) {
 int RunTex(const std::vector<std::string>& argv) {
     if (argv.empty()) return Usage();
     const std::string cmd = argv[0];
-    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--max-mb"});
+    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--max-mb", "--top", "--top-out"});
     if (args.positional.size() < 2) return Usage();
     const std::string spec = args.positional[1];
     const uint64_t max_bytes = args.Has("--max-mb") ? std::stoull(args.Get("--max-mb")) << 20 : ~0ull;
@@ -89,6 +90,9 @@ int RunTex(const std::vector<std::string>& argv) {
         if (out.empty()) throw Error("extract needs -o DIR");
         const std::vector<std::string> patterns(args.positional.begin() + 2, args.positional.end());
         size_t done = 0, skipped = 0;
+        RpkPack top;
+        const bool has_top = args.Has("--top");
+        if (has_top) ForEachPack(args, args.Get("--top"), ~0ull, [&](const std::string&, RpkPack& p) { top = std::move(p); });
         ForEachPack(args, spec, max_bytes, [&](const std::string&, RpkPack& pack) {
             for (const RpkResource& r : pack.resources) {
                 if (r.Type() != kRpkPixelBuffer) continue;
@@ -98,7 +102,9 @@ int RunTex(const std::vector<std::string>& argv) {
                 }
                 if (!wanted) continue;
                 try {
-                    const Dds dds = TexToDds(PixelBuffer::Parse(r.data));
+                    const PixelBuffer pb = PixelBuffer::Parse(r.data);
+                    const RpkResource* tr = has_top && pb.start_mip != 0 ? top.Find(pb.top_mips_id) : nullptr;
+                    const Dds dds = TexToDds(pb, tr ? &tr->data : nullptr);
                     std::string name = Safe(r.DisplayName());
                     if (!EndsWith(Lower(name), ".dds")) name += ".dds";
                     WriteFile(fs::path(out) / name, dds.Write());
@@ -123,8 +129,17 @@ int RunTex(const std::vector<std::string>& argv) {
         if (!r) r = pack.FindByName(t);
         if (!r || r->Type() != kRpkPixelBuffer) throw Error("no texture named or numbered " + t);
         PixelBuffer pb = PixelBuffer::Parse(r->data);
-        pb.SetData(DdsToTexData(pb, TextureSource(pb, ReadFile(args.positional[3]))));
+        RpkPack top;
+        RpkResource* tr = nullptr;
+        if (pb.start_mip != 0) {
+            if (!args.Has("--top") || !args.Has("--top-out")) throw Error("the largest levels of this texture are in a top mips pack: give it with --top PACK and the changed copy's path with --top-out FILE");
+            ForEachPack(args, args.Get("--top"), ~0ull, [&](const std::string&, RpkPack& p) { top = std::move(p); });
+            tr = top.Find(pb.top_mips_id);
+            if (!tr) throw Error("the top mips pack does not hold this texture's largest levels");
+        }
+        pb.SetData(DdsToTexData(pb, TextureSource(pb, ReadFile(args.positional[3])), tr ? &tr->data : nullptr));
         r->data = pb.payload;
+        if (tr) WriteFile(args.Get("--top-out"), top.Write());
         WriteFile(out, pack.Write());
         std::printf("%s replaced; written to %s\n", r->DisplayName().c_str(), out.c_str());
         return 0;

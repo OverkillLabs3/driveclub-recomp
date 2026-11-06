@@ -76,7 +76,7 @@ For these, `file` is a pack such as `global.rpk`, and `resource` is a name from 
 
 `rpk.add`: `file`, `type` (`xml`, `bin`, or another name from `dcmod rpk info`, or `type_N`), `id` (16 hex digits; the first four are the type number, `0027` for xml), `name`, `from` or `text`, optional `sources`, `deps`, `version`.
 
-`tex.set`: `file`, `resource`, `from` (a DDS file). Replaces a texture; see [studio.md](studio.md) for the DDS requirements.
+`tex.set`: `file`, `resource`, `from` (a DDS or PNG file), optional `top`. Replaces a texture; see [studio.md](studio.md) for the requirements. A texture whose largest levels are in a separate top mips pack (most car textures: `dcmod tex info` shows it) needs `top`, the path of that pack (for a car `vehicles/<asset>_top_mips.rpk`); the file must then have the texture's full size and both packs are changed.
 
 `rpk.remove`: `file`, `resource`. Dependencies on it are dropped from the other resources of the pack.
 

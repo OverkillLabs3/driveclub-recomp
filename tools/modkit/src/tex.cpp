@@ -128,18 +128,37 @@ void PixelBuffer::SetData(const Bytes& data) {
     payload.insert(payload.end(), data.begin(), data.end());
 }
 
-Dds TexToDds(const PixelBuffer& pb) {
+size_t TopMipsDataOffset(const Bytes& top) {
+    if (top.size() < 32 || std::memcmp(top.data(), "EVOSLITL", 8) != 0) throw Error("this resource is not a top mips resource");
+    if (Rd32(&top[28]) != top.size() - 32) throw Error("the top mips size does not match the resource");
+    return 32;
+}
+
+Dds TexToDds(const PixelBuffer& pb, const Bytes* top) {
     const TexFormat& f = pb.Format();
-    if (pb.start_mip != 0) throw Error("the largest levels of this texture are stored in a top mips resource of another pack");
+    if (pb.start_mip != 0 && !top) throw Error("the largest levels of this texture are stored in a top mips resource of another pack (name that pack to convert it)");
     if (pb.depth > 1 || pb.type != 0) throw Error("only plain 2D textures are supported");
     const Bytes data = pb.Data();
-    if (data.size() != pb.ExpectedDataSize()) throw Error("the pixel data does not have the size the layout predicts (" + std::to_string(data.size()) + " instead of " + std::to_string(pb.ExpectedDataSize()) + ")");
+    size_t expect = 0, top_expect = 0;
+    for (unsigned n = pb.start_mip; n < pb.mips; ++n) expect += LevelOf(pb, f, n).padded_bytes;
+    for (unsigned n = 0; n < pb.start_mip; ++n) top_expect += LevelOf(pb, f, n).padded_bytes;
+    if (data.size() != expect) throw Error("the pixel data does not have the size the layout predicts (" + std::to_string(data.size()) + " instead of " + std::to_string(expect) + ")");
     Dds d;
     d.width = pb.width;
     d.height = pb.height;
     d.dxgi = f.dxgi;
+    if (pb.start_mip != 0) {
+        const size_t at = TopMipsDataOffset(*top);
+        if (top->size() - at != top_expect) throw Error("the top mips data does not have the size the layout predicts (" + std::to_string(top->size() - at) + " instead of " + std::to_string(top_expect) + ")");
+        size_t pos = at;
+        for (unsigned n = 0; n < pb.start_mip; ++n) {
+            const Level l = LevelOf(pb, f, n);
+            d.mips.push_back(Untile(top->data() + pos, l, f.elem_bytes));
+            pos += l.padded_bytes;
+        }
+    }
     size_t pos = 0;
-    for (unsigned n = 0; n < pb.mips; ++n) {
+    for (unsigned n = pb.start_mip; n < pb.mips; ++n) {
         const Level l = LevelOf(pb, f, n);
         d.mips.push_back(Untile(data.data() + pos, l, f.elem_bytes));
         pos += l.padded_bytes;
@@ -147,7 +166,8 @@ Dds TexToDds(const PixelBuffer& pb) {
     return d;
 }
 
-Bytes DdsToTexData(const PixelBuffer& pb, const Dds& dds) {
+Bytes DdsToTexData(const PixelBuffer& pb, const Dds& dds, Bytes* top) {
+    if (pb.start_mip != 0 && !top) throw Error("the largest levels of this texture are stored in a top mips resource of another pack (name that pack to change it)");
     const TexFormat& f = pb.Format();
     if (dds.width != pb.width || dds.height != pb.height) {
         throw Error("the DDS is " + std::to_string(dds.width) + "x" + std::to_string(dds.height) + " but the texture is " + std::to_string(pb.width) + "x" + std::to_string(pb.height));
@@ -161,12 +181,20 @@ Bytes DdsToTexData(const PixelBuffer& pb, const Dds& dds) {
     if (dds.mips.size() < pb.mips) {
         throw Error("the DDS has " + std::to_string(dds.mips.size()) + " mip levels but the texture needs " + std::to_string(pb.mips) + "; generate the mip chain when saving");
     }
-    Bytes out;
+    Bytes out, big;
     for (unsigned n = 0; n < pb.mips; ++n) {
         const Level l = LevelOf(pb, f, n);
         if (dds.mips[n].size() != l.w * l.h * f.elem_bytes) throw Error("mip level " + std::to_string(n) + " of the DDS has the wrong size");
         const Bytes tiled = Tile(dds.mips[n], l, f.elem_bytes);
-        out.insert(out.end(), tiled.begin(), tiled.end());
+        Bytes& dst = n < pb.start_mip ? big : out;
+        dst.insert(dst.end(), tiled.begin(), tiled.end());
+    }
+    if (pb.start_mip != 0) {
+        const size_t at = TopMipsDataOffset(*top);
+        top->resize(at);
+        const uint32_t size = uint32_t(big.size());
+        std::memcpy(&(*top)[28], &size, 4);
+        top->insert(top->end(), big.begin(), big.end());
     }
     return out;
 }
