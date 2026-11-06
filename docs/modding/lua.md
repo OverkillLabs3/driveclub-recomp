@@ -59,6 +59,7 @@ Every mod script can use these (all of them run the function you give inside a `
 | `dcmod.after(seconds, fn)` | Runs `fn` once, in real time. |
 | `dcmod.every(seconds, fn)` | Runs `fn` again and again. This is a mod's update loop. |
 | `dcmod.on_ready(fn)` | Runs `fn` once the game is up: `dcmod.ready_delay` seconds (20) after the start. The game's event system does not exist before that, and using it earlier crashes the game. |
+| `dcmod.setting(mod, name, fallback)` | The value of a setting the mod offers (see [mod-format.md](mod-format.md)); `dcmod.settings[mod]` holds all of them. |
 | `dcmod.on(event, fn)` | Calls `fn(...)` whenever the game sends the event (after the game is up). `NewLap`, `GUIPushPage` and `GUIPopPage` are events the game's own scripts listen for; the others it sends are in [lua-api.md](lua-api.md). |
 
 ```lua

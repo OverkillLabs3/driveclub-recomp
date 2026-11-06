@@ -79,6 +79,27 @@
         "type": "string"
       }
     },
+    "scripts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Lua files (game paths) that run at start-up. Source files are compiled by the build."
+    },
+    "settings": {
+      "type": "object",
+      "description": "Choices the player can change. Patches use { \"$setting\": name }, scripts use dcmod.setting(mod, name).",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["default"],
+        "properties": {
+          "label": { "type": "string" },
+          "type": { "enum": ["number", "bool", "string", "choice"] },
+          "default": {},
+          "min": { "type": "number" },
+          "max": { "type": "number" },
+          "choices": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
     "patches": {
       "type": "array",
       "items": {

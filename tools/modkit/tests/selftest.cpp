@@ -188,6 +188,36 @@ int main() {
         CHECK(report.conflicts.size() == 1);
         CHECK(S(ws.Finish().at("t.csv")) == "K,V\na,3\n");
     }
+    {  // mod settings: defaults, the player's choices, patch values and the Lua table
+        const fs::path dir = fs::temp_directory_path() / "dcmod_selftest_settings";
+        fs::create_directories(dir);
+        WriteText(dir / "mod.json", R"({"id":"t.set","settings":{"power":{"type":"number","default":300,"min":100,"max":500},
+            "name":{"type":"string","default":"a b"},"on":{"type":"bool","default":true},"m":{"type":"choice","default":"x","choices":["x","y"]}},
+            "patches":[{"op":"csv.set","file":"t.csv","match":"a","set":{"V":{"$setting":"power"}}}]})");
+        Mod m = LoadMod(dir);
+        CHECK(m.settings.Find("power")->AsInt() == 300);
+        ApplySettings(m, Json::Parse(R"({"power":410,"m":"y"})"));
+        CHECK(m.settings.Find("power")->AsInt() == 410 && m.settings.Find("m")->AsString() == "y");
+        bool bad = false;
+        for (const char* choice : {R"({"power":9999})", R"({"power":"x"})", R"({"nope":1})", R"({"m":"z"})", R"({"on":1})"}) {
+            Mod c = LoadMod(dir);
+            try {
+                ApplySettings(c, Json::Parse(choice));
+            } catch (const Error&) {
+                continue;
+            }
+            bad = true;
+        }
+        CHECK(!bad);
+        MemorySource src;
+        src.files["t.csv"] = B("K,V\na,1\n");
+        PatchReport report;
+        const std::map<std::string, Bytes> built = BuildMods({m}, src, report);
+        CHECK(S(built.at("t.csv")) == "K,V\na,410\n");
+        const std::string lua = SettingsLua({m});
+        CHECK(lua.find("[\"power\"] = 410,") != std::string::npos && lua.find("[\"on\"] = true") != std::string::npos);
+        fs::remove_all(dir);
+    }
     std::printf(failures ? "%d checks FAILED\n" : "all checks passed\n", failures);
     return failures ? 1 : 0;
 }

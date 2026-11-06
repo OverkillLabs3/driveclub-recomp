@@ -67,6 +67,84 @@ bool IsMetadata(const std::string& name) {
 
 }  // namespace
 
+void ApplySettings(Mod& m, const Json& choices) {
+    for (const auto& [key, value] : choices.Members()) {
+        if (!m.settings_def.Has(key)) throw Error(m.id + ": there is no setting " + key);
+        m.settings.Set(key, value);
+    }
+    for (const auto& [key, def] : m.settings_def.Members()) {
+        const Json& v = *m.settings.Find(key);
+        const std::string type = def.GetString("type", v.IsBool() ? "bool" : v.IsNumber() ? "number" : "string");
+        const std::string at = m.id + ": setting " + key + ": ";
+        if (type == "bool" && !v.IsBool()) throw Error(at + "must be true or false");
+        if (type == "number" && !v.IsNumber()) throw Error(at + "must be a number");
+        if ((type == "string" || type == "choice") && !v.IsString()) throw Error(at + "must be a text");
+        if (type != "bool" && type != "number" && type != "string" && type != "choice") throw Error(at + "unknown type " + type);
+        if (type == "number") {
+            if (const Json* lo = def.Find("min")) if (v.AsNumber() < lo->AsNumber()) throw Error(at + "is below " + lo->Dump(0));
+            if (const Json* hi = def.Find("max")) if (v.AsNumber() > hi->AsNumber()) throw Error(at + "is above " + hi->Dump(0));
+        }
+        if (type == "choice") {
+            const Json* ch = def.Find("choices");
+            bool ok = false;
+            if (ch) for (const Json& c : ch->Items()) ok = ok || (c.IsString() && c.AsString() == v.AsString());
+            if (!ok) throw Error(at + "is not one of its choices");
+        }
+    }
+}
+
+namespace {
+
+// Patch values {"$setting": "name"} stand for the value of that setting of the mod.
+Json Substitute(const Json& j, const Mod& m) {
+    if (j.IsObject()) {
+        if (j.Members().size() == 1 && j.Members()[0].first == "$setting" && j.Members()[0].second.IsString()) {
+            const Json* v = m.settings.Find(j.Members()[0].second.AsString());
+            if (!v) throw Error(m.id + ": the patch uses the setting " + j.Members()[0].second.AsString() + " which the mod does not have");
+            return *v;
+        }
+        Json out = Json::Object();
+        for (const auto& [k, v] : j.Members()) out.Set(k, Substitute(v, m));
+        return out;
+    }
+    if (j.IsArray()) {
+        Json out = Json::Array();
+        for (const Json& v : j.Items()) out.Push(Substitute(v, m));
+        return out;
+    }
+    return j;
+}
+
+std::string LuaLiteral(const Json& v) {
+    if (v.IsBool()) return v.AsBool() ? "true" : "false";
+    if (v.IsNumber()) {
+        std::string n = v.Dump(0);
+        while (!n.empty() && (n.back() == '\n' || n.back() == ' ')) n.pop_back();
+        return n;
+    }
+    std::string out = "\"";
+    for (unsigned char c : v.AsString()) {
+        char buf[8];
+        if (c == '"' || c == '\\' || c < 32 || c > 126) std::snprintf(buf, sizeof buf, "\\%03u", c), out += buf;
+        else out.push_back(char(c));
+    }
+    return out + "\"";
+}
+
+}  // namespace
+
+std::string SettingsLua(const std::vector<Mod>& mods) {
+    std::string lua = "dcmod.settings = {\n";
+    for (const Mod& m : mods) {
+        if (m.settings.Members().empty()) continue;
+        lua += "  [\"" + m.id + "\"] = {";
+        for (const auto& [k, v] : m.settings.Members()) lua += " [\"" + k + "\"] = " + LuaLiteral(v) + ",";
+        lua += " },\n";
+    }
+    lua += "}\nfunction dcmod.setting(mod, name, fallback)\n  local m = dcmod.settings[mod]\n  if m and m[name] ~= nil then return m[name] end\n  return fallback\nend\n";
+    return lua;
+}
+
 Mod LoadMod(const fs::path& dir, const std::string& fallback_id) {
     Mod m;
     m.dir = dir;
@@ -87,6 +165,16 @@ Mod LoadMod(const fs::path& dir, const std::string& fallback_id) {
     m.after = Strings(j, "after");
     m.before = Strings(j, "before");
     m.scripts = Strings(j, "scripts");
+    if (const Json* st = j.Find("settings")) {
+        if (!st->IsObject()) throw Error(m.id + ": \"settings\" must be an object");
+        m.settings_def = *st;
+        for (const auto& [key, def] : st->Members()) {
+            const Json* d = def.Find("default");
+            if (!d) throw Error(m.id + ": the setting " + key + " has no default");
+            m.settings.Set(key, *d);
+        }
+        ApplySettings(m, Json::Object());  // checks the defaults
+    }
     if (const Json* r = j.Find("requires")) {
         for (const Json& d : r->Items()) {
             ModDep dep;
@@ -184,7 +272,7 @@ std::map<std::string, Bytes> BuildMods(const std::vector<Mod>& ordered, FileSour
                 }
             }
             PatchEnv env{ws, m.id, m.dir};
-            ApplyPatches(m.patches, env);
+            ApplyPatches(Substitute(m.patches, m), env);
         } catch (const Error& e) {
             throw Error(m.id + ": " + e.what());
         }

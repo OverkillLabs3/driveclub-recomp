@@ -38,6 +38,28 @@ The loose files come from the folder named by `"files"` in `mod.json`; without t
 | `after`, `before` | Load order rules that do not need the other mod to be present. |
 | `patches` | The [patch operations](patches.md), applied in order. |
 | `files` | Folder with the loose files, relative to the mod. |
+| `scripts` | Lua files (game paths) that run at start-up; see [lua.md](lua.md). |
+| `settings` | Choices the player can change, see below. |
+
+## Settings
+
+A mod can offer settings. Each has a name and a definition:
+
+```json
+"settings": {
+  "power":    { "label": "Top speed", "type": "number", "default": 300, "min": 100, "max": 500 },
+  "greeting": { "label": "Greeting", "type": "string", "default": "hello" },
+  "loud":     { "type": "bool", "default": false },
+  "mode":     { "type": "choice", "default": "a", "choices": ["a", "b"] }
+}
+```
+
+`type` is `number` (with optional `min` and `max`), `bool`, `string` or `choice` (one of `choices`); `default` is required. The player's choices are a JSON file `{ "mod.id": { "power": 410 } }` given to `dcmod mod check` or `dcmod mod build` with `--settings FILE`; a value of the wrong type, outside its range, or for a name the mod does not have is an error.
+
+- In a patch, `{ "$setting": "power" }` in place of a value stands for the setting's value: `"set": { "TopSpeed": { "$setting": "power" } }`.
+- In a Lua script, `dcmod.setting("mod.id", "power", fallback)` returns it; `dcmod.settings["mod.id"]` is the whole table.
+
+The launcher does not show settings yet; until it does, a settings file is passed by hand.
 
 ## Load order and what wins
 

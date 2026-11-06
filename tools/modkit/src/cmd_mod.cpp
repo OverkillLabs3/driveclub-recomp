@@ -61,9 +61,9 @@ int Usage() {
         "\n"
         "  dcmod mod new DIR [--id ID] [--name NAME]   start a mod with a manifest and an example patch\n"
         "  dcmod mod diff EDITED -o MODFOLDER [--id ID] [--name NAME]  make a mod from files you edited (game paths under EDITED)\n"
-        "  dcmod mod check DIR...                      read the mods and try their patches on the game's files\n"
+        "  dcmod mod check DIR... [--settings FILE]    read the mods and try their patches on the game's files\n"
         "  dcmod mod pack DIR -o FILE.zip              a ZIP of the mod folder to share\n"
-        "  dcmod mod build DIR... -o OUT               apply the mods, in the order given, and write the changed files to OUT\n"
+        "  dcmod mod build DIR... -o OUT [--settings FILE]  apply the mods, in the order given, and write the changed files to OUT\n"
         "\n"
         "A mod folder may be written ID=FOLDER to give it that id when its mod.json has none.\n"
         "OUT is a folder in the shape of the game's files; used as a mods folder it makes the game use the result.\n"
@@ -81,6 +81,13 @@ int Run(const Args& args, bool write) {
         mods.push_back(named ? LoadMod(a.substr(eq + 1), a.substr(0, eq)) : LoadMod(a));
     }
     if (mods.empty()) throw Error("no mod folders given");
+    if (args.Has("--settings")) {
+        // {"mod.id": {"setting": value}}: what the user chose for the settings that mods offer
+        const Json all = Json::ParseFile(args.Get("--settings"));
+        for (Mod& m : mods) {
+            if (const Json* c = all.Find(m.id)) ApplySettings(m, *c);
+        }
+    }
     std::vector<std::string> problems;
     std::vector<Mod> ordered;
     for (size_t i : OrderMods(mods, problems)) ordered.push_back(mods[i]);
@@ -118,7 +125,7 @@ int Run(const Args& args, bool write) {
 int RunMod(const std::vector<std::string>& argv) {
     if (argv.empty()) return Usage();
     const std::string cmd = argv[0];
-    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--id", "--name"});
+    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--id", "--name", "--settings"});
     if (args.positional.size() < 2) return Usage();
     if (cmd == "new") {
         const fs::path dir = args.positional[1];
