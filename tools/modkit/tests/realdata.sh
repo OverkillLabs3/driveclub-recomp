@@ -30,6 +30,15 @@ pack=vehicles/ferrari_458_italia.rpk
 grep -aq NORMAL "$tmp/body.glb"
 echo "ok mesh with changed counts"
 
+# the same part with buffers of its own: two new vertex buffers, the mesh names them, and nothing names the payload of another id
+"$exe" mesh export "@$pack" -o "$tmp/boot.glb" "0008dd44e0ac42c5_0_*" > /dev/null
+"$py" -I tools/modkit/tests/glbedit.py "$tmp/boot.glb" "$tmp/boot2.glb" dup0 > /dev/null
+"$exe" mesh import "@$pack" "$tmp/boot2.glb" --own-buffers -o "$tmp/own.rpk" > /dev/null
+"$exe" rpk verify "$tmp/own.rpk" | grep -q "payload names another identifier: 0"
+"$exe" mesh info "$tmp/own.rpk" | grep -q "0008dd44e0ac42c5_0_BOOTShape  *610 vertices  *1032 triangles"
+[[ $("$exe" rpk list "$tmp/own.rpk" -l | grep -c "vertex_buffer") -eq $(( $("$exe" rpk list "@$pack" -l | grep -c "vertex_buffer") + 2 )) ]]
+echo "ok part with its own buffers"
+
 mkdir "$tmp/clone"
 "$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
 "$exe" mod check "$tmp/clone" > /dev/null

@@ -25,12 +25,12 @@ int Usage() {
         "\n"
         "  dcmod mesh info PACK                        the sub meshes: name, vertices, triangles\n"
         "  dcmod mesh export PACK -o FILE.glb [NAME...]  one glTF mesh per sub mesh (names may use * and ?)\n"
-        "  dcmod mesh import PACK FILE.glb -o OUT.rpk  write the pack again with the positions (and triangles) of the\n"
+        "  dcmod mesh import PACK FILE.glb [--own-buffers] -o OUT.rpk  write the pack again with the positions (and triangles) of the\n"
         "                                              glTF objects that came from it\n"
         "\n"
         "PACK is a file or @path in the game's archive. Objects are named ID_N_NAME (the mesh's identifier and the\n"
         "sub mesh number); keep that prefix when renaming. An object may have more or fewer vertices and triangles\n"
-        "than the game's: extra data goes to the end of the buffers. Normals and texture coordinates are exported and\n"
+        "than the game's: extra data goes to the end of the buffers (--own-buffers: new vertex buffers of its own for a part that grows). Normals and texture coordinates are exported and\n"
         "imported; skin weights are copied from the nearest old vertex. Axes are the game's own (Y up).");
     return 2;
 }
@@ -383,7 +383,31 @@ RpkPack LoadPack(const Args& args, const std::string& spec) {
 // Writes the glTF object `prim` (positions `p`, texture coordinates, triangles) into the sub mesh. Vertices and triangles
 // may be fewer or more than the game's. Extra vertices go to the end of the position and attribute buffers (the
 // attribute data of the nearest old vertex is copied), extra triangles to the end of the index buffer.
-void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, const std::vector<double>& p, const std::string& name) {
+// An identifier for a new vertex buffer: the type of vertex buffers and 48 bits taken from a hash of where it comes from.
+uint64_t NewBufferId(const RpkPack& pack, uint64_t a, uint64_t b) {
+    uint64_t h = 1469598103934665603ull;
+    for (const uint64_t v : {a, b}) {
+        for (int i = 0; i < 8; ++i) h = (h ^ ((v >> (8 * i)) & 255)) * 1099511628211ull;
+    }
+    for (;;) {
+        const uint64_t id = (uint64_t(RpkTypeFromName("vertex_buffer")) << 48) | (h & 0xFFFFFFFFFFFFull);
+        if (!pack.Find(id)) return id;
+        h = h * 1099511628211ull + 1;
+    }
+}
+
+// A vertex buffer without vertices that has the format of `src`. The payload carries its own identifier, which the game
+// goes by: a copy that keeps the old one is taken for the old buffer.
+RpkResource EmptyBufferLike(const RpkResource& src, uint64_t id) {
+    RpkResource r;
+    r.id = id, r.deps = src.deps, r.names = src.names, r.sources = src.sources;
+    r.data.assign(src.data.begin(), src.data.begin() + 28);
+    for (int i = 0; i < 8; ++i) r.data[8 + size_t(i)] = uint8_t(id >> (8 * i));
+    std::memset(&r.data[24], 0, 4);
+    return r;
+}
+
+void ImportSub(RpkPack& pack, const Sub& sub, const std::vector<Sub>& all, bool own_buffers, const Glb& g, const Json& prim, const std::vector<double>& p, const std::string& name) {
     const size_t nv_new = p.size() / 3;
     if (!nv_new) throw Error(name + ": has no vertices");
     std::vector<double> uvs;
@@ -485,11 +509,47 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
     }
     // A part that grows is written whole at the end of the buffers (its old vertices stay unused), so its vertices
     // stay one range. Vertices that are new get the other vertex data (colour, weights) of the old one that is nearest.
-    const uint32_t base = VbCount(*vb);
+    // A part may have buffers of its own, so that it does not depend on room in the shared ones: always with --own-buffers,
+    // and when the shared buffer is full.
+    const bool own = grow && av && (own_buffers || uint64_t(VbCount(*vb)) + nv_new > 65535);
+    RpkResource* dv = vb;
+    RpkResource* da = av;
+    if (own) {
+        if (nv_new > 65535) throw Error(name + ": a vertex buffer cannot hold that many vertices (16 bit indices)");
+        const RpkResource* mesh0 = pack.Find(sub.mesh);
+        // the part's mentions of its buffers in the mesh: after the record before it and before its own
+        size_t prev_end = 0;
+        for (const Sub& o : all) {
+            if (o.mesh != sub.mesh) continue;
+            for (const size_t r : o.recs) {
+                if (r < sub.recs.front() && r + 18 > prev_end) prev_end = r + 18;
+            }
+        }
+        std::vector<std::pair<size_t, int>> spots;  // where the mesh names the buffers (0 position, 1 attributes)
+        for (const size_t rec : sub.recs) {
+            const long a = LastMention(mesh0->data, sub.pos, rec), b = LastMention(mesh0->data, sub.attr, rec);
+            if (a < long(prev_end) || b < long(prev_end)) throw Error(name + ": shares its buffers with the sub mesh before it in the mesh, so it cannot get buffers of its own");
+            spots.push_back({size_t(a), 0});
+            spots.push_back({size_t(b), 1});
+        }
+        const uint64_t np = NewBufferId(pack, sub.pos, sub.mesh ^ (uint64_t(sub.k) << 40) ^ 1), na = NewBufferId(pack, sub.attr, sub.mesh ^ (uint64_t(sub.k) << 40) ^ 2);
+        RpkResource npv = EmptyBufferLike(*vb, np), nav = EmptyBufferLike(*av, na);
+        pack.Add(std::move(npv));
+        pack.Add(std::move(nav));
+        vb = pack.Find(sub.pos), av = pack.Find(sub.attr), dv = pack.Find(np), da = pack.Find(na);
+        RpkResource* m = pack.Find(sub.mesh);
+        for (const auto& [at, kind] : spots) {
+            const uint64_t id = kind ? na : np;
+            for (int i = 0; i < 8; ++i) m->data[at + size_t(i)] = uint8_t(id >> (8 * i));
+        }
+        m->deps.push_back(np);
+        m->deps.push_back(na);
+    }
+    const uint32_t base = own ? 0 : VbCount(*vb);
     const uint32_t lo = grow ? base : sub.lo, hi = lo + uint32_t(nv_new) - 1;
     if (grow) {
-        if (!av || VbCount(*av) != base) throw Error(name + ": has more vertices than the game's mesh, and the other vertex data of this mesh cannot be extended");
-        if (uint64_t(base) + nv_new > 65535) throw Error(name + ": the vertex buffer cannot hold that many vertices (16 bit indices)");
+        if (!av || VbCount(*av) != VbCount(*vb)) throw Error(name + ": has more vertices than the game's mesh, and the other vertex data of this mesh cannot be extended");
+        if (uint64_t(base) + nv_new > 65535) throw Error(name + ": the vertex buffer cannot hold that many vertices (16 bit indices); --own-buffers gives the part buffers of its own");
         std::vector<std::array<float, 3>> old_pos(nv);
         for (uint32_t i = 0; i < nv; ++i) {
             for (size_t c = 0; c < 3; ++c) {
@@ -511,15 +571,15 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
             const size_t pat = 28 + size_t(sub.lo + best) * sub.pos_stride, aat = 28 + size_t(sub.lo + best) * sub.stride;
             const Bytes prow(vb->data.begin() + long(pat), vb->data.begin() + long(pat + sub.pos_stride));
             const Bytes arow(av->data.begin() + long(aat), av->data.begin() + long(aat + sub.stride));
-            vb->data.insert(vb->data.end(), prow.begin(), prow.end());
-            av->data.insert(av->data.end(), arow.begin(), arow.end());
-            put_pos(&vb->data[vb->data.size() - sub.pos_stride], j);
-            put_uv(&av->data[av->data.size() - sub.stride], j);
-            put_frame(&av->data[av->data.size() - sub.stride], j);
+            dv->data.insert(dv->data.end(), prow.begin(), prow.end());
+            da->data.insert(da->data.end(), arow.begin(), arow.end());
+            put_pos(&dv->data[dv->data.size() - sub.pos_stride], j);
+            put_uv(&da->data[da->data.size() - sub.stride], j);
+            put_frame(&da->data[da->data.size() - sub.stride], j);
         }
         const uint32_t total = base + uint32_t(nv_new);
-        std::memcpy(&vb->data[24], &total, 4);
-        std::memcpy(&av->data[24], &total, 4);
+        std::memcpy(&dv->data[24], &total, 4);
+        std::memcpy(&da->data[24], &total, 4);
     }
     uint32_t first = sub.first, count = sub.count;
     if (prim.Has("indices")) {
@@ -632,7 +692,7 @@ int RunMesh(const std::vector<std::string>& argv) {
             if (!sub) continue;
             const Json& prim = meshes->Items().at(size_t(node.GetInt("mesh"))).Find("primitives")->Items().at(0);
             const std::vector<double> p = Accessor(g, prim.Find("attributes")->GetInt("POSITION"), 3);
-            ImportSub(pack, *sub, g, prim, p, name);
+            ImportSub(pack, *sub, subs, args.Has("--own-buffers"), g, prim, p, name);
             ++used;
         }
         if (!used) throw Error("none of the objects in the file came from this pack (their names start with the mesh identifier)");
