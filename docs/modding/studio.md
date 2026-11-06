@@ -47,6 +47,8 @@ A PNG picture works as well as a DDS for textures stored as BC1 (DXT1), BC7 or p
 
 In a mod, `{ "op": "tex.set", "file": "helmets.rpk", "resource": "helmetlivery_16.tif", "from": "textures/mine.png" }` replaces a texture. The DDS needs the texture's size and block format and all its mip levels; texconv, Compressonator, GIMP and Paint.NET write such files (BC1 for DXT1, BC7 for BC7). About 8000 of the textures in packs under 100 MB convert and tile back byte for byte. Textures whose largest levels are stored in the separate `*_topmips.rpk` packs (most car textures), volume and cube textures, and a few BC7 textures with an unexplained size (63) are reported and left alone.
 
+Checked in the game: the Ferrari 458's `ferrari_458_license_plate.tif` (512x128, BC1) replaced with a solid magenta picture shows as a magenta number plate on the car in a race.
+
 ## Editor help
 
 `tools/modkit/mod.schema.json` is a JSON Schema for `mod.json`. In Visual Studio Code, add `"$schema": "path/to/mod.schema.json"` to the file and you get completion and error checks while typing.
