@@ -61,6 +61,12 @@ echo "ok skinned mesh"
 "$exe" lua verify "$tmp/trkout/scripts/lua/libraries/weatherpresetlookup.lua.bin" > /dev/null
 echo "ok track clone"
 
+# a part gets the material of another part of its mesh; a material the mesh does not have is refused
+"$exe" mesh material "@$pack" 0008dd44e0ac42c5_3 0008dd44e0ac42c5_2 -o "$tmp/mat.rpk" > /dev/null
+"$exe" mesh materials "$tmp/mat.rpk" 0008dd44e0ac42c5_3 | grep -q rubber_black
+! "$exe" mesh material "@$pack" 0008dd44e0ac42c5_2 0008a48ef19c8161_1 -o "$tmp/mat2.rpk" 2> /dev/null
+echo "ok part material"
+
 mkdir "$tmp/clone"
 "$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
 "$exe" mod check "$tmp/clone" > /dev/null

@@ -25,6 +25,9 @@ int Usage() {
         "\n"
         "  dcmod mesh info PACK                        the sub meshes: name, vertices, triangles\n"
         "  dcmod mesh export PACK -o FILE.glb [NAME...]  one glTF mesh per sub mesh (names may use * and ?)\n"
+        "  dcmod mesh materials PACK [SUBMESH]         the materials of the pack, or of the mesh of a sub mesh\n"
+        "  dcmod mesh material PACK TARGET SOURCE -o OUT  TARGET sub mesh is drawn with the material of SOURCE (a sub mesh\n"
+        "                                              or a material identifier)\n"
         "  dcmod mesh import PACK FILE.glb [--own-buffers] -o OUT.rpk  write the pack again with the positions (and triangles) of the\n"
         "                                              glTF objects that came from it\n"
         "\n"
@@ -778,6 +781,79 @@ int RunMesh(const std::vector<std::string>& argv) {
         if (subs.empty()) throw Error("no sub meshes to write");
         WriteFile(out, MakeGlb(pack, subs));
         std::printf("wrote %zu sub meshes to %s\n", subs.size(), out.c_str());
+        return 0;
+    }
+    if (cmd == "materials") {
+        // the materials of the pack, or those of the mesh of one sub mesh (the ones it can be given)
+        const int mat_type = RpkTypeFromName("material");
+        const std::string of = args.positional.size() > 2 ? args.positional[2] : "";
+        const RpkResource* only = nullptr;
+        if (!of.empty()) {
+            for (const Sub& sb : subs) {
+                if (sb.name == of || StartsWith(sb.name, of + "_")) only = pack.Find(sb.mesh);
+            }
+            if (!only) throw Error("no sub mesh " + of);
+        }
+        for (const RpkResource& r : pack.resources) {
+            if (int(r.Type()) != mat_type) continue;
+            if (only && std::find(only->deps.begin(), only->deps.end(), r.id) == only->deps.end()) continue;
+            std::printf("%s  %s\n", HexId(r.id).c_str(), r.DisplayName().c_str());
+        }
+        return 0;
+    }
+    if (cmd == "material") {
+        // dcmod mesh material PACK TARGET SOURCE -o OUT: the sub mesh TARGET is drawn with the material of the sub mesh SOURCE
+        // (TARGET and SOURCE are names as `info` shows them, or only ID_N), or with a material of the pack given by its identifier
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty() || args.positional.size() < 4) throw Error("material needs TARGET SOURCE and -o OUT");
+        const auto find_sub = [&](const std::string& n) -> const Sub* {
+            for (const Sub& s : subs) {
+                if (s.name == n || StartsWith(s.name, n + "_")) return &s;
+            }
+            return nullptr;
+        };
+        const Sub* target = find_sub(args.positional[2]);
+        if (!target) throw Error("no sub mesh " + args.positional[2]);
+        const int mat_type = RpkTypeFromName("material");
+        const auto material_of = [&](const Sub& sb, size_t rec) -> std::pair<long, uint64_t> {
+            const RpkResource* m = pack.Find(sb.mesh);
+            long best = -1;
+            uint64_t who = 0;
+            for (const uint64_t d : m->deps) {
+                const RpkResource* r = pack.Find(d);
+                if (!r || int(r->Type()) != mat_type) continue;
+                const long at = LastMention(m->data, d, rec);
+                if (at > best) best = at, who = d;
+            }
+            return {best, who};
+        };
+        uint64_t wanted = 0;
+        if (const Sub* source = find_sub(args.positional[3])) {
+            wanted = material_of(*source, source->recs.front()).second;
+        } else {
+            const RpkResource* r = pack.Find(ParseHexId(args.positional[3]));
+            if (!r || int(r->Type()) != mat_type) throw Error(args.positional[3] + " is neither a sub mesh nor a material of the pack");
+            wanted = r->id;
+        }
+        if (!wanted) throw Error("the source has no material");
+        size_t prev_end = 0;
+        for (const Sub& o : subs) {
+            if (o.mesh != target->mesh) continue;
+            for (const size_t r : o.recs) {
+                if (r < target->recs.front() && r + 18 > prev_end) prev_end = r + 18;
+            }
+        }
+        RpkResource* mesh = pack.Find(target->mesh);
+        for (const size_t rec : target->recs) {
+            const long at = material_of(*target, rec).first;
+            if (at < long(prev_end)) throw Error("the sub mesh shares its material with the sub mesh before it in the mesh, so it cannot get another");
+            for (int i = 0; i < 8; ++i) mesh->data[size_t(at) + size_t(i)] = uint8_t(wanted >> (8 * i));
+        }
+        // A material that the mesh does not list does not work: adding it to the dependencies (with the count of materials in the
+        // header raised) made the game hang while loading, so only materials the mesh already has are accepted.
+        if (std::find(mesh->deps.begin(), mesh->deps.end(), wanted) == mesh->deps.end()) throw Error("the mesh of that sub mesh does not use the material " + HexId(wanted) + "; choose one of its own (dcmod mesh materials PACK SUBMESH)");
+        WriteFile(out, pack.Write());
+        std::printf("%s uses the material %s (%s); written to %s\n", target->name.c_str(), HexId(wanted).c_str(), pack.Find(wanted)->DisplayName().c_str(), out.c_str());
         return 0;
     }
     if (cmd == "import") {

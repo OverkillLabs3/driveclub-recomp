@@ -53,3 +53,8 @@ A model made elsewhere (or taken from another game with that game's own tools, w
 5. Export glTF binary with normals on and import it with `dcmod mesh import`.
 
 Only the geometry comes across: the part keeps the material (shader, textures) of the sub mesh it replaces, bone numbers and weights are imported only for skinned meshes (a car has none), and the collision and the physics of the car do not change with its looks. Checked in the game: the Ferrari's main body part (9348 vertices, 14152 triangles) was replaced by an ellipsoid made by a script (2145 vertices, 4096 triangles, normals and UVs, none of it from the car); the race shows a smooth red ellipsoid in place of the body, shaded like the rest of the car (1902x1033 capture, HDR off). A model from a 3D program follows the same path.
+
+## Materials of a part
+
+A part is drawn with the material of the sub mesh it replaces (shader, textures). `dcmod mesh materials PACK SUBMESH` lists the materials the mesh of a sub mesh has, and `dcmod mesh material PACK TARGET SOURCE -o OUT` makes TARGET use the material of another sub mesh (or a material identifier) from that list. Checked in the game: the rear deck of the Ferrari 458, a carbon coloured panel, drawn with the material of the next part became silver. Only materials that the mesh already lists work: a material added to the mesh's dependencies (with the count of materials in the header raised, or not) made the game fault or hang while loading, so the command refuses it. A material must also fit the vertex data of the part (the tyre material on a body part faulted the game). A part that shares its material mention with the sub mesh before it in the mesh cannot get another one (the command says so).
+
