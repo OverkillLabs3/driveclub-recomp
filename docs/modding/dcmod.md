@@ -93,6 +93,7 @@ Shader replacement. `list DUMPDIR [STAGE]`, `dis FILE.spv [-o OUT]`, `as FILE.sp
 | `new DIR [--id ID] [--name NAME]` | A mod folder with an example. |
 | `pack DIR -o FILE.zip` | Writes the mod folder as a ZIP to share (files stored, nothing from the game added). |
 | `diff EDITED -o MODFOLDER [--id ID] [--name NAME]` | Makes a mod from files you edited, and checks that building it gives those files. |
+| `watch DIR... -o OUT [--interval MS] [--once]` | Builds like `build`, then again each time a file in the mod folders changes (the mods folder of the game as OUT gives a quick edit and restart loop). `--once` builds once. |
 | `check DIR... [--settings FILE]` | Reads the mods, orders them, tries all patches on the game files, writes nothing. |
 | `build DIR... -o OUT` | Applies the mods in the order given (after requirement and order rules; `--settings FILE` gives the player's choices for mod settings, see [mod-format.md](mod-format.md)) and writes the changed files and `dcmod-report.json` (which mod did what to which file). |
 

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // dcmod mod ...: make, check and build mods.
 #include "cli.hpp"
+
+#include <chrono>
+#include <thread>
 #include "diff.hpp"
 #include "mod.hpp"
 
@@ -64,6 +67,7 @@ int Usage() {
         "  dcmod mod check DIR... [--settings FILE]    read the mods and try their patches on the game's files\n"
         "  dcmod mod pack DIR -o FILE.zip              a ZIP of the mod folder to share\n"
         "  dcmod mod build DIR... -o OUT [--settings FILE]  apply the mods, in the order given, and write the changed files to OUT\n"
+        "  dcmod mod watch DIR... -o OUT [--interval MS] [--once]  build, and build again whenever a file of a mod changes\n"
         "\n"
         "A mod folder may be written ID=FOLDER to give it that id when its mod.json has none.\n"
         "OUT is a folder in the shape of the game's files; used as a mods folder it makes the game use the result.\n"
@@ -125,7 +129,7 @@ int Run(const Args& args, bool write) {
 int RunMod(const std::vector<std::string>& argv) {
     if (argv.empty()) return Usage();
     const std::string cmd = argv[0];
-    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--id", "--name", "--settings"});
+    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--id", "--name", "--settings", "--interval"});
     if (args.positional.size() < 2) return Usage();
     if (cmd == "new") {
         const fs::path dir = args.positional[1];
@@ -156,6 +160,43 @@ int RunMod(const std::vector<std::string>& argv) {
         const size_t n = WriteZip(args.positional[1], out);
         std::printf("packed %s (%zu files) into %s\n", m.id.c_str(), n, out.c_str());
         return 0;
+    }
+    if (cmd == "watch") {
+        // dcmod mod watch DIR... -o OUT [--interval MS] [--once]: builds the mods into OUT, and again whenever a file of a mod changes
+        if (args.Get("-o", args.Get("--output")).empty()) throw Error("watch needs -o OUT");
+        const auto stamp = [&]() {
+            uint64_t h = 1469598103934665603ull;
+            for (size_t i = 1; i < args.positional.size(); ++i) {
+                std::string dir = args.positional[i];
+                const size_t eq = dir.find('=');
+                if (eq != std::string::npos) dir = dir.substr(eq + 1);
+                std::error_code ec;
+                for (const auto& e : fs::recursive_directory_iterator(dir, ec)) {
+                    if (!e.is_regular_file(ec)) continue;
+                    h = (h ^ uint64_t(e.last_write_time(ec).time_since_epoch().count())) * 1099511628211ull;
+                    h = (h ^ uint64_t(e.file_size(ec))) * 1099511628211ull;
+                    for (const char c : e.path().string()) h = (h ^ uint8_t(c)) * 1099511628211ull;
+                }
+            }
+            return h;
+        };
+        const long interval = args.Has("--interval") ? std::stol(args.Get("--interval")) : 1000;
+        uint64_t last = 0;
+        for (;;) {
+            const uint64_t now = stamp();
+            if (now != last) {
+                last = now;
+                try {
+                    Run(args, true);
+                } catch (const std::exception& e) {
+                    std::printf("build failed: %s\n", e.what());
+                    if (args.Has("--once")) return 1;
+                }
+                std::fflush(stdout);
+                if (args.Has("--once")) return 0;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval));
+        }
     }
     if (cmd == "check") return Run(args, false);
     if (cmd == "build") return Run(args, true);

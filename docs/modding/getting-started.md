@@ -55,4 +55,6 @@ Build it. The output folder holds only the files the mod changed:
 dcmod mod build my-mod -o built
 ```
 
+For a quick edit loop, `dcmod mod watch my-mod -o "<game folder>\mods"` builds into the game's mods folder and builds again every time a file of the mod changes; the game reads its files when it starts, so restart it to see a change (Lua scripts and data are read at start, not while it runs).
+
 Copy the contents of `built` into the game's `mods` folder (next to `DriveClub.exe`). The log (`logs\driveclub_*.log`) then shows `Runtime: replaced by mods folder: ...` for each file the game opened. Several mods are built in one go, in the order given, with `dcmod mod build first-mod second-mod -o built`; later mods win where they change the same thing, and the kit prints a `conflict:` line for each such case.
