@@ -4,9 +4,56 @@
 #include "diff.hpp"
 #include "mod.hpp"
 
+#include <algorithm>
+
 namespace dcmod {
 
 namespace {
+
+uint32_t Crc32(const uint8_t* d, size_t n) {
+    static uint32_t t[256];
+    if (!t[1]) {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+    }
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; ++i) c = t[(c ^ d[i]) & 255] ^ (c >> 8);
+    return ~c;
+}
+
+// A ZIP of the folder, files stored without compression. Returns the number of files.
+size_t WriteZip(const fs::path& dir, const fs::path& out) {
+    Bytes zip, central;
+    auto put = [](Bytes& b, uint64_t v, int n) { for (int i = 0; i < n; ++i) b.push_back(uint8_t(v >> (8 * i))); };
+    size_t count = 0;
+    std::vector<fs::path> files;
+    for (const auto& e : fs::recursive_directory_iterator(dir)) if (e.is_regular_file()) files.push_back(e.path());
+    std::sort(files.begin(), files.end());
+    for (const fs::path& f : files) {
+        const std::string name = fs::relative(f, dir).generic_string();
+        const Bytes data = ReadFile(f);
+        const uint32_t crc = Crc32(data.data(), data.size()), at = uint32_t(zip.size());
+        for (Bytes* b : {&zip, &central}) {
+            if (b == &central) { put(central, 0x02014b50, 4); put(central, 20, 2); }
+            else put(zip, 0x04034b50, 4);
+            put(*b, 20, 2); put(*b, 0x0800, 2); put(*b, 0, 2); put(*b, 0, 2); put(*b, 0x21, 2);
+            put(*b, crc, 4); put(*b, data.size(), 4); put(*b, data.size(), 4); put(*b, name.size(), 2); put(*b, 0, 2);
+            if (b == &central) { put(central, 0, 2); put(central, 0, 2); put(central, 0, 2); put(central, 0, 4); put(central, at, 4); }
+            b->insert(b->end(), name.begin(), name.end());
+        }
+        zip.insert(zip.end(), data.begin(), data.end());
+        ++count;
+    }
+    const uint32_t cd_at = uint32_t(zip.size());
+    zip.insert(zip.end(), central.begin(), central.end());
+    put(zip, 0x06054b50, 4); put(zip, 0, 2); put(zip, 0, 2); put(zip, count, 2); put(zip, count, 2);
+    put(zip, central.size(), 4); put(zip, cd_at, 4); put(zip, 0, 2);
+    WriteFile(out, zip);
+    return count;
+}
 
 int Usage() {
     std::puts(
@@ -15,6 +62,7 @@ int Usage() {
         "  dcmod mod new DIR [--id ID] [--name NAME]   start a mod with a manifest and an example patch\n"
         "  dcmod mod diff EDITED -o MODFOLDER [--id ID] [--name NAME]  make a mod from files you edited (game paths under EDITED)\n"
         "  dcmod mod check DIR...                      read the mods and try their patches on the game's files\n"
+        "  dcmod mod pack DIR -o FILE.zip              a ZIP of the mod folder to share\n"
         "  dcmod mod build DIR... -o OUT               apply the mods, in the order given, and write the changed files to OUT\n"
         "\n"
         "A mod folder may be written ID=FOLDER to give it that id when its mod.json has none.\n"
@@ -92,6 +140,14 @@ int RunMod(const std::vector<std::string>& argv) {
         for (const std::string& n : r.notes) {
             if (StartsWith(n, "CHECK FAILED")) return 1;
         }
+        return 0;
+    }
+    if (cmd == "pack") {
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty()) throw Error("pack needs -o FILE.zip");
+        const Mod m = LoadMod(args.positional[1]);
+        const size_t n = WriteZip(args.positional[1], out);
+        std::printf("packed %s (%zu files) into %s\n", m.id.c_str(), n, out.c_str());
         return 0;
     }
     if (cmd == "check") return Run(args, false);

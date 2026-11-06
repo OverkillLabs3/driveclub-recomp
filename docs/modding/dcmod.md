@@ -78,6 +78,7 @@ FMOD banks. `info BANK`, `extract BANK -o DIR [NAME]`, `replace BANK NAME FILE -
 | Command | Does |
 |---|---|
 | `new DIR [--id ID] [--name NAME]` | A mod folder with an example. |
+| `pack DIR -o FILE.zip` | Writes the mod folder as a ZIP to share (files stored, nothing from the game added). |
 | `diff EDITED -o MODFOLDER [--id ID] [--name NAME]` | Makes a mod from files you edited, and checks that building it gives those files. |
 | `check DIR...` | Reads the mods, orders them, tries all patches on the game files, writes nothing. |
 | `build DIR... -o OUT` | Applies the mods in the order given (after requirement and order rules) and writes the changed files and `dcmod-report.json` (which mod did what to which file). |
