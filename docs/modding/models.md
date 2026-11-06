@@ -23,6 +23,7 @@ Position streams come in four layouts, told apart by the stream format resource 
 
 Checked in the game (captures at 1920x1080):
 
+- Normals: every normal of the Ferrari body parts was negated in the glTF and imported; the car's shading in a race changes (the roof and bonnet turn bright and reflective). The doubled and raised copies of a small part, whose normals are computed from their triangles, are lit like the body (before normals were written they came out black).
 - The Ferrari 458 body was exported, half of its main body part's triangles were left out and a small part was doubled and raised by half a metre, and the glTF was imported: the car has a hole in its right rear and the copies float above it (the game's draw calls, logged, had the new index counts).
 - The Ferrari 458 pack was exported, every height doubled, imported and used as a loose file: the whole car (body, glass, wheels) comes out twice as tall.
 - The Fraser Valley track pack (`worlds/canada_road_circuit_02_n.rpk`, 2641 sub meshes) was exported, every vertex raised by 60 m and imported: the barns and trees of the scenery float in the sky. The road surface stayed where it was, so it is not (only) in this pack.
