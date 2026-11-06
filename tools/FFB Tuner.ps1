@@ -15,10 +15,8 @@ if (-not (Test-Path -LiteralPath $ini)) {
 $settings = @(
     @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('physics','game'); Default='game'
        Help='physics: the force comes from the car''s front tyres in the game''s simulation, as in a sim (Assetto Corsa style settings). game: the game''s own forces.' }
-    @{ Key='wheel_ffb_physics_chain';  Label='Steering model';             Kind='choice'; Choices=@('column','reworked'); Default='column'; Group='physics'
-       Help='column: being tested, the force from the game''s own tyre formula at the wheel''s position now, with power assist and steady damping. reworked: the 0.4.1 model. Can be changed while driving.' }
-    @{ Key='wheel_ffb_physics_detail'; Label='Detail % (column)';          Kind='slider'; Min=0; Max=200;  Default=100; Group='physics'
-       Help='With the column model: how much of the quick changes in the force you feel, on top of the steady force. Raise it if the wheel feels dead; lower it if it feels busy. Does nothing with reworked.' }
+    @{ Key='wheel_ffb_physics_detail'; Label='Detail %';                   Kind='slider'; Min=0; Max=200;  Default=100; Group='physics'
+       Help='How much of the quick changes in the force you feel, on top of the steady force. Raise it if the wheel feels dead; lower it if it feels busy.' }
     @{ Key='wheel_ffb_physics_countersteer'; Label='Automatic countersteer'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
        Help='on: as the game, which turns the road wheels further than your wheel when you countersteer (up to a third with wheel assist off), and passes less past a steering limit. off: the road wheels follow only your wheel, so you catch the slides yourself. This changes how the car handles, not only the force feedback. Can be changed while driving.' }
     @{ Key='wheel_ffb_physics_hit_protection'; Label='Hit protection'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
@@ -32,7 +30,7 @@ $settings = @(
     @{ Key='wheel_ffb_physics_max_force'; Label='Maximum force %';         Kind='slider'; Min=30; Max=100; Default=100; Group='physics'
        Help='The most of the wheel''s force the steering asks for; stronger forces bend smoothly toward it, so a snap-back in a slide does not tower over the rest of the driving. Smaller forces stay as they are. 100: no extra limit.' }
     @{ Key='wheel_ffb_physics_damper'; Label='Damper %';                   Kind='slider'; Min=0; Max=100;  Default=5;   Group='physics'
-       Help='Resistance to turning the wheel quickly. Steadies a direct drive. Reworked: strongest at a standstill (the tyres scrub), a third of that at speed. Column: steady, so start low.' }
+       Help='Resistance to turning the wheel quickly. Steadies a direct drive. The same at every speed, so start low.' }
     @{ Key='wheel_ffb_physics_effects'; Label='Tyre effects %';            Kind='slider'; Min=0; Max=100;  Default=100; Group='physics'
        Help='A light buzz when a tyre slides past its grip: a front sliding or locking, the rear spinning or sliding; faster the faster it slides. 0: off (only the steering force). Lower it if it is too strong on your wheel.' }
     @{ Key='wheel_ffb_strength';       Label='Steering strength %';        Kind='slider'; Min=0; Max=500;  Default=100; Group='classic'

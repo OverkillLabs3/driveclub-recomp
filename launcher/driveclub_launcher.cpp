@@ -1704,7 +1704,7 @@ void BuildModel() {
                     Kind::Button, {L"Wheel Setup..."}, {"@wheelsetup"}, 0, 0});
   g_ffb_model = seg(L"Force feedback",
                     L"How the wheel's force is made.\n"
-                    L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides. It learns each car as you drive.\n"
+                    L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides.\n"
                     L"\x2022 Original: the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip.\n"
                     L"Tip: use Reworked Physics with every wheel.",
                     {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 1);

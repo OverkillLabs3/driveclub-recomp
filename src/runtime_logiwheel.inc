@@ -255,8 +255,10 @@ static int ffb_surface[2]={-1,-1};
 #define PH_MECH_TRAIL 0.35f   /* the mechanical trail as a share of the pneumatic trail of a tyre that grips */
 #define PH_NORM 1.18f         /* the moment of a 1 g corner over the front's weight: 60% of the wheel at gain 100 */
 static float smoothstep(float lo, float hi, float x) { const float t=fminf(1.0f,fmaxf(0.0f,(x-lo)/(hi-lo))); return t*t*(3.0f-2.0f*t); }
-/* ---- wheel_ffb_physics_chain = column ----------------------------------------------------------------------------
- * The game's tyre (guest +0x7bdca0) is a brush model with no aligning moment, and its parameters are all in the wheel:
+/* ---- column: the steering force ----------------------------------------------------------------------------------
+ * In place of the moment above (ffb_physics_step's torque, the 0.4.1 force), which bikes keep (two wheels) and a car has
+ * until its values are there; that step's kickback, tyre effects and the car's weight go with this one too. The game's
+ * tyre (guest +0x7bdca0) is a brush model with no aligning moment, and its parameters are all in the wheel:
  * the peak slip (+0x100, 2 mu / +0xf0), the other slip it uses (2 mu / +0xf4), the load (+0x70). So the force can be worked
  * out at the wheel's position now, as the game's next step will have it, instead of waiting for the last step's forces;
  * the steering force then does not depend on the frame rate, and has no learnt grip and no multipliers on it:
@@ -264,7 +266,7 @@ static float smoothstep(float lo, float hi, float x) { const float t=fminf(1.0f,
  *   fitted to Assetto Corsa's M4 on the same wheel: most of it around 0.4 of the peak slip, a fifth of that far past it
  *   (the mechanical trail; the game's own force has a quarter). Under 0.125 of the peak a softer centre, as there.
  * - braking and drive through the scrub radius, a third of the lateral lever as the game's own force; the steering
- *   axis' inclination, as the reworked model.
+ *   axis' inclination, as the 0.4.1 force.
  * - power assist: a light car has none; on the others the share of the moment the driver feels falls as it grows, to a
  *   half (Balachandran and Gerdes 2014: 1 at no force, falling to a floor), which is what keeps a road car's slide from
  *   towering over its corners. By the car's mass, as the game's data does not say which cars have it. On the steady
@@ -817,9 +819,9 @@ static void ffb_physics_pass(SDL_Haptic *haptic, int32_t pos) {
     pthread_mutex_lock(&ph.m);
     const float torque=ph.torque, road=ph.road, slip=ph.slip, slip_hz=ph.slip_hz, speed=ph.speed;
     const uint64_t step_us=ph.us, hit_us=ph.hit_us;
-    const bool col_have=ph.col_ok && ph.col_lock>0.0f && ph.weight>0.0f, column=ffb_ph_column && col_have;
+    const bool column=ph.col_ok && ph.col_lock>0.0f && ph.weight>0.0f;
     struct ph_tyre col[2]; float col_target=0.0f, col_lock=0.0f, col_weight=1.0f;
-    if (col_have) { memcpy(col,ph.col,sizeof col); col_target=ph.col_target; col_lock=ph.col_lock; col_weight=ph.weight; }
+    if (column) { memcpy(col,ph.col,sizeof col); col_target=ph.col_target; col_lock=ph.col_lock; col_weight=ph.weight; }
     pthread_mutex_unlock(&ph.m);
     const float car_gain=(float)ffb_car_percent/100.0f;   /* this car's own percentage (ffb_gain_buttons) */
     const uint64_t now=now_us();
@@ -839,10 +841,10 @@ static void ffb_physics_pass(SDL_Haptic *haptic, int32_t pos) {
      * still rising with the force everywhere). Not the kickback. */
     const float steer_f=torque*(float)ffb_ph_gain/100.0f;
     float want=(steer_f*(1.0f+0.5f*expf(-fabsf(steer_f)/0.12f))+road*(float)ffb_ph_gain/100.0f)*car_gain;
-    /* The change between the two steering models, live in FFB Tuner, over a quarter of a second */
+    /* From the moment above to column over a quarter of a second, once the car's values are there */
     static float col_mix;
     col_mix=fminf(1.0f,fmaxf(0.0f,col_mix+(column ? dt : -dt)/0.25f));
-    if (col_have && col_mix>0.0f) {
+    if (column && col_mix>0.0f) {
         /* the wheel's position now on the game's scale, against the angle of its last step: how far the wheel has turned
          * the road wheels since. A frame's movement at the wheel's fastest is about 0.06 rad, even at 30 frames a second;
          * more than that, or a step that is old (a stutter), is not this, and the force goes back to the last step's */
@@ -977,8 +979,9 @@ static void ffb_physics_pass(SDL_Haptic *haptic, int32_t pos) {
         if (done-flushed>=500000) { fflush(ffb_trace_file); flushed=done; }
         pthread_mutex_unlock(&ffb_trace_m);
     }
-    /* damper: the wheel's own, strongest at a standstill (the tyres scrub) and a third of that at speed; column: steady,
-     * as a rack's (a force feedback system has less of it than a real steering, Balachandran and Gerdes 2014) */
+    /* damper: the wheel's own, steady as a rack's (a force feedback system has less of it than a real steering,
+     * Balachandran and Gerdes 2014); with the moment above (bikes), strongest at a standstill (the tyres scrub) and a
+     * third of that at speed */
     const Uint16 damping=ffb_zero ? 0 : (Uint16)(32767.0f*(float)ffb_ph_damper/100.0f*(column ? 1.0f : 0.35f+0.65f*(1.0f-smoothstep(0.0f,12.0f,speed))));
     if (!ffb_ph_damper && pw.damper_id>=0) { SDL_DestroyHapticEffect(haptic,pw.damper_id); pw.damper_id=-1; pw.damper_running=false; }
     if (ffb_ph_damper>0 && (SDL_GetHapticFeatures(haptic)&SDL_HAPTIC_DAMPER) && (pw.damper_id<0 || !pw.damper_running || abs((int)damping-(int)pw.damper_sent)>=256)) {
@@ -1090,9 +1093,9 @@ static bool ffb_settings_reload(void) {
     for (int i=0;i<LOGI_EFFECTS;++i) ffb.fx[i].dirty=ffb.fx[i].used;
     pthread_mutex_unlock(&ffb.m);
     if (ffb_physics)
-        printf("Runtime: FFB settings reloaded from default.ini (physics model: gain %d%%, filter %d%%, minimum force %d%%, maximum force %d%%, damper %d%%, tyre effects %d%%, tyre %s, steering %s, detail %d%%, countersteer %s, hit protection %s)\n",
+        printf("Runtime: FFB settings reloaded from default.ini (physics model: gain %d%%, filter %d%%, minimum force %d%%, maximum force %d%%, damper %d%%, tyre effects %d%%, tyre %s, detail %d%%, countersteer %s, hit protection %s)\n",
                ffb_ph_gain,ffb_ph_filter,ffb_ph_min_force,ffb_ph_max_force,ffb_ph_damper,ffb_ph_effects,
-               ffb_ph_tyre_grip ? "grip" : "classic",ffb_ph_column ? "column" : "reworked",ffb_ph_detail,
+               ffb_ph_tyre_grip ? "grip" : "classic",ffb_ph_detail,
                ffb_ph_countersteer_off ? "off" : "on",ffb_ph_hit_protection ? "on" : "off");
     else printf("Runtime: FFB settings reloaded from default.ini (%s model, strength %d%%, falloff %d%%)\n",
                 ffb_software ? "software" : "game",ffb_strength,ffb_falloff);

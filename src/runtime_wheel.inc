@@ -60,21 +60,19 @@ static int ffb_strength=100;   /* percent: the whole steering force of the softw
 /* ffb_center: how much more force the first degrees off the target give (0: in proportion, as the game's spring);
  * ffb_slide: how much more the force drops than the game's grip does (0: as the game's grip). Percent, 0..100. */
 static int ffb_center, ffb_slide;
-/* wheel_ffb_model = physics: the steering force from the car's front tyres in the game's simulation (the moment their
- * lateral forces put on the steering, runtime_logiwheel.inc), with settings named after Assetto Corsa's, percent:
- * gain (100: a 1 g corner at about 60% of the wheel's maximum), filter, minimum force and a damper that is strongest at
- * a standstill; the road and kerbs always at their real strength, and kickback too with reworked (column: with the detail). */
+/* wheel_ffb_model = physics: the steering force from the car's front tyres in the game's simulation (the game's own tyre
+ * formula at the wheel's position now, the steering's power assist and steady damping: runtime_logiwheel.inc,
+ * ffb_column_force), with settings named after Assetto Corsa's, percent: gain (100: a 1 g corner at about 60% of the
+ * wheel's maximum), filter, minimum force and a steady damper; the road and kerbs always at their real strength, kickback
+ * with the detail. */
 static bool ffb_physics;
 static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=5, ffb_ph_effects=100, ffb_ph_max_force=100;
-/* The tyres' trail follows how much of their grip the game's forces say is used (light at the real limit) and the force
- * keeps falling past it; wheel_ffb_physics_tyre = classic: the trail from the brush model's slip, as before. */
+/* The 0.4.1 force, which bikes keep (the tyre formula above needs four wheels), and the switches below it: the tyres'
+ * trail follows how much of their grip the game's forces say is used (light at the real limit) and the force keeps
+ * falling past it; wheel_ffb_physics_tyre = classic: the trail from the brush model's slip, as before. */
 static bool ffb_ph_tyre_grip=true;
-/* wheel_ffb_physics_chain = column (the default): the steering force from the game's own tyre formula at the wheel's
- * position now, the steering's power assist and steady damping (runtime_logiwheel.inc, ffb_column_force); reworked: the
- * model below. */
-static bool ffb_ph_column=true;
-/* wheel_ffb_physics_detail (0..200, 100): column: the share of what the steering's power assist smooths past that the
- * driver feels; wheel_ffb_physics_countersteer = off: the game's automatic countersteer left out (runtime_pad.c). */
+/* wheel_ffb_physics_detail (0..200, 100): the share of what the steering's power assist smooths past that the driver
+ * feels; wheel_ffb_physics_countersteer = off: the game's automatic countersteer left out (runtime_pad.c). */
 static int ffb_ph_detail=100;
 static bool ffb_ph_countersteer_off;
 /* wheel_ffb_physics_hit_protection = off: the force is not held down after a hit (ffb_physics_pass) */
@@ -218,11 +216,11 @@ static void wheel_parse(const char *lhs, char *rhs) {
         else if (!strcmp(k,"filter")) ffb_ph_filter=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"min_force")) ffb_ph_min_force=v<0 ? 0 : v>30 ? 30 : v;
         else if (!strcmp(k,"max_force")) ffb_ph_max_force=v<30 ? 30 : v>100 ? 100 : v;
-        else if (!strcmp(k,"chain")) { lower(rhs); ffb_ph_column=strcmp(rhs,"reworked")!=0; }
         else if (!strcmp(k,"detail")) ffb_ph_detail=v<0 ? 0 : v>200 ? 200 : v;
         else if (!strcmp(k,"countersteer")) { lower(rhs); ffb_ph_countersteer_off=!strcmp(rhs,"off") || !strcmp(rhs,"false") || !strcmp(rhs,"0"); }
         else if (!strcmp(k,"hit_protection")) { lower(rhs); ffb_ph_hit_protection=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
-        /* kerbs, road and slip are no settings any more (older files have them): the road at its full strength, no buzz */
+        /* kerbs, road and slip are no settings any more (older files have them): the road at its full strength, no buzz;
+         * nor chain (test builds wrote it): the steering force is column's */
         else if (!strcmp(k,"damper")) ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"effects")) ffb_ph_effects=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"tyre")) { lower(rhs); ffb_ph_tyre_grip=strncmp(rhs,"classic",7)!=0; }
@@ -361,28 +359,23 @@ static const char wheel_default_config[]=
     "# wheel_ffb_falloff: percent the force drops far past the grip limit (0..100; 0 holds it, as the game does);\n"
     "# wheel_ffb_smoothing: milliseconds (0..100); wheel_ffb_soft_lock: game (the steering lock the game asks for),\n"
     "# off, or degrees lock to lock: a force stops the wheel there.\n"
-    "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim. Its\n"
-    "# settings, percent: wheel_ffb_physics_gain (0..300; 100: a 1 g corner at about 60% of the wheel's maximum),\n"
+    "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim: the\n"
+    "# game's own tyre formula at the wheel's position now, with power assist and steady damping. Its settings, percent:\n"
+    "# wheel_ffb_physics_gain (0..300; 100: a 1 g corner at about 60% of the wheel's maximum),\n"
     "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force (0..30, for gear and belt wheels),\n"
     "# wheel_ffb_physics_max_force (30..100, 100: the most of the wheel's force the steering asks for; stronger forces\n"
-    "# bend smoothly toward it), wheel_ffb_physics_chain (column: the force from the game's own tyre formula at the\n"
-    "# wheel's position now, with power assist and steady damping; or reworked, the 0.4.1 model; it can be changed while\n"
-    "# driving), wheel_ffb_physics_detail (0..200, 100: with column, how much of the quick changes in the force you feel),\n"
+    "# bend smoothly toward it), wheel_ffb_physics_detail (0..200, 100: how much of the quick changes in the force you feel),\n"
     "# wheel_ffb_physics_countersteer (on, or off: the road wheels follow only your wheel, without the game's extra angle\n"
     "# when you countersteer; this changes how the car handles, not only the force feedback),\n"
     "# wheel_ffb_physics_hit_protection (on: after a hit from a wall or another car the force is held down for about half\n"
     "# a second, so it cannot throw the wheel; off: every hit at full force),\n"
     "# wheel_ffb_physics_damper (0..100, 5), wheel_ffb_physics_effects (0..100, 100; 0 off: a buzz from a tyre past its grip,\n"
     "# a front sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
-    "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs) is always at its full strength, and kickback too\n"
-    "# with reworked (with column it follows wheel_ffb_physics_detail).\n"
-    "# The wheel goes light where the game's tyres run out of grip and keeps getting lighter in a slide, and the front\n"
-    "# tyres' braking and drive forces turn it through the steering geometry (a kerb under braking, torque steer), and\n"
-    "# braking hard into a corner lightens it as the front nears its limit (its grip used by braking and cornering\n"
-    "# together), and it centres itself when rolling with the wheel turned (the steering axis' inclination); the tyres'\n"
-    "# forces build up over their relaxation length (kerb strikes without full-force hits); wheel_ffb_physics_tyre =\n"
-    "# classic, wheel_ffb_physics_scrub = off, wheel_ffb_physics_combined = off, wheel_ffb_physics_centre = off and\n"
-    "# wheel_ffb_physics_relax = off go back to the model before those.\n"
+    "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs) is always at its full strength, and kickback\n"
+    "# follows wheel_ffb_physics_detail.\n"
+    "# Bikes keep the 0.4.1 force (the tyre formula needs four wheels); wheel_ffb_physics_tyre = classic,\n"
+    "# wheel_ffb_physics_scrub = off, wheel_ffb_physics_combined = off, wheel_ffb_physics_centre = off and\n"
+    "# wheel_ffb_physics_relax = off change that one.\n"
     "# wheel_ffb_invert = true if the wheel pulls the wrong way.\n"
     "# H-pattern shifter: wheel_shifter = auto (a controller named \"Shifter\"), wheel (its buttons are on the wheel),\n"
     "# off, or part of its name; then one line per gear: wheel_gear = <button number>, <1..6 or r>. WheelSetup.exe\n"
