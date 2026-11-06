@@ -8,6 +8,10 @@ on:
     paths:
       - '.github/workflows/appimage.yml'
       - 'build-linux.sh'
+      - 'cpu/**'
+      - 'tools/cpu_selftest.c'
+      - '.gitmodules'
+      - 'third_party/FEX'
       - 'gpu/**'
       - 'launcher/prepare.cpp'
       - 'launcher/prepare.h'
@@ -36,10 +40,21 @@ env:
 
 jobs:
   appimage:
-    runs-on: ubuntu-24.04
+    # aarch64: the game's x86-64 code runs in FEXCore (third_party/FEX, a submodule); everything else is native.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: ${{ matrix.arch == 'aarch64' && 'recursive' || 'false' }}
 
       - name: Install build dependencies
         run: |
@@ -72,7 +87,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/deps
-          key: appimage-deps-${{ runner.os }}-${{ hashFiles('packaging/appimage/fetch-deps.sh') }}
+          key: appimage-deps-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('packaging/appimage/fetch-deps.sh') }}
 
       - name: Fetch build dependencies
         run: bash packaging/appimage/fetch-deps.sh
@@ -103,12 +118,14 @@ jobs:
 
       - name: Smoke-test the AppImage
         run: |
-          appimage=$(ls release/driveclub-recomp-*-x86_64.AppImage)
+          appimage=$(ls release/driveclub-recomp-*-${{ matrix.arch }}.AppImage)
           chmod +x "$appimage"
           # Extract instead of mounting: GitHub runners have no FUSE.
           "$appimage" --appimage-extract >/dev/null
           (cd squashfs-root && ./AppRun --version && ./AppRun --help >/dev/null)
           (cd squashfs-root && ./AppRun --selftest | tee ../selftest.txt)
+          # aarch64: the guest CPU's crossings (FEXCore) without the game.
+          (cd squashfs-root && ./AppRun --cpu-selftest)
           if grep -q 'not found' selftest.txt; then
             echo 'The AppImage has unresolved shared libraries.' >&2
             exit 1
@@ -118,15 +135,15 @@ jobs:
       - name: Upload the AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: driveclub-recomp-${{ steps.package.outputs.version }}-x86_64.AppImage
+          name: driveclub-recomp-${{ steps.package.outputs.version }}-${{ matrix.arch }}.AppImage
           path: |
-            release/driveclub-recomp-*-x86_64.AppImage
-            release/driveclub-recomp-*-x86_64.AppImage.sha256
+            release/driveclub-recomp-*-${{ matrix.arch }}.AppImage
+            release/driveclub-recomp-*-${{ matrix.arch }}.AppImage.sha256
           if-no-files-found: error
 
       - name: Build log on failure
         if: failure()
         run: |
-          for log in out/gpu-build.log; do
+          for log in out/gpu-build.log out/fex-build.log; do
             [ -f "$log" ] && { echo "--- $log ---"; tail -100 "$log"; }
           done
