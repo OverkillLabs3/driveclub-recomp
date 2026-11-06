@@ -10,7 +10,7 @@ Put the DLL in the folder `plugins` of a mods folder (`mods\plugins\my.dll` next
 
 ## Writing one
 
-`tools/modkit/examples/plugin-hello` has the header `dc_plugin.h` and a complete example. A plugin exports one function:
+`tools/modkit/examples/plugin-hello` (a hook that counts calls and reads memory) and `plugin-message` (a hook that changes a register) are complete examples with the header `dc_plugin.h`. A plugin exports one function:
 
 ```c
 #include "dc_plugin.h"
@@ -31,7 +31,7 @@ A guest address is `0x800000000` plus the offset in the game's code and data ima
 
 ## Checked in the game
 
-The example plugin was loaded in a race, hooked the start of the game's resource lookup (guest `0x800780f30`, which all game threads call, over 120000 times in about 30 seconds), logged its registers, and read the code bytes at the hook (`55 48 89 e5`, a function prologue). The game ran normally to the start of the race. Writing memory was checked too: a second plugin overwrote the first 8 bytes of a message in the game's constants (`Couldn't` became `PLUGGED!`), and the game's log line then read `PLUGGED! find ExciterDsp params for vehicle(ferrari_458)`; `write` makes read only memory writable for the copy. Changing registers in a hook uses the same breakpoint code but was not tried in the game.
+The example plugin was loaded in a race, hooked the start of the game's resource lookup (guest `0x800780f30`, which all game threads call, over 120000 times in about 30 seconds), logged its registers, and read the code bytes at the hook (`55 48 89 e5`, a function prologue). The game ran normally to the start of the race. Writing memory was checked too: a second plugin overwrote the first 8 bytes of a message in the game's constants (`Couldn't` became `PLUGGED!`), and the game's log line then read `PLUGGED! find ExciterDsp params for vehicle(ferrari_458)`; `write` makes read only memory writable for the copy. Changing a register was checked with `tools/modkit/examples/plugin-message`: it hooks the call of the game's `snprintf` that builds the message `Couldn't find ExciterDsp params for vehicle(...)`, sets `rsi` (the format string) to a string of its own, and the log line then reads `Message changed by a plugin: no ExciterDsp params for vehicle(ferrari_458)`, with the real vehicle name filled in by the game.
 
 ## Limits
 
