@@ -76,7 +76,7 @@ Shader replacement. `list DUMPDIR [STAGE]`, `dis FILE.spv [-o OUT]`, `as FILE.sp
 
 ## dcmod track
 
-`files NAME` lists a track's table row and the files named after it. See [tracks.md](tracks.md).
+`list` shows every track (Track Name and the name in menus); `files NAME` lists a track's table row and the files named after it. See [tracks.md](tracks.md).
 
 ## dcmod mcp
 

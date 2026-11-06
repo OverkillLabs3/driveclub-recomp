@@ -15,6 +15,7 @@ int Usage() {
     std::puts(
         "dcmod track: the files and table row of a track\n"
         "\n"
+        "  dcmod track list           every track: Track Name and the name shown in menus\n"
         "  dcmod track files NAME     the table row of a track (NAME is its Track Name) and every file named after it\n"
         "\n"
         "The game folders come from --update DIR --base DIR, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR, or launcher.ini.");
@@ -40,9 +41,9 @@ bool Named(const std::string& path, const std::string& asset) {
 }  // namespace
 
 int RunTrack(const std::vector<std::string>& argv) {
-    if (argv.size() < 2 || argv[0] != "files") return Usage();
+    if (argv.empty() || (argv[0] != "files" && argv[0] != "list") || (argv[0] == "files" && argv.size() < 2)) return Usage();
     const Args args = ParseArgs(argv, {"--update", "--base", "--game"});
-    if (args.positional.size() < 2) return Usage();
+    if (args.positional.size() < 2 && argv[0] != "list") return Usage();
     auto archive = OpenGame(args);
     GameSource source(*archive, GameFolders(args));
     const std::string table_path = source.Canonical("newdata/tracks.csv");
@@ -51,6 +52,12 @@ int RunTrack(const std::vector<std::string>& argv) {
     const CsvDoc doc = CsvDoc::Parse(tf.latin1 ? Latin1ToUtf8(tf.text) : tf.text);
     const int name_col = doc.Column("Track Name"), rpk_col = doc.Column("RPKName");
     if (name_col < 0 || rpk_col < 0) throw Error("the track table does not have the expected columns");
+    if (argv[0] == "list") {
+        const int title_col = doc.Column("PRODUCT_NAME_1");
+        for (size_t r = 1; r < doc.rows.size(); ++r) std::printf("%-38s %s%s\n", doc.Get(r, size_t(name_col)).c_str(), title_col >= 0 ? doc.Get(r, size_t(title_col)).c_str() : "", "");
+        std::printf("%zu tracks\n", doc.rows.size() - 1);
+        return 0;
+    }
     size_t row = 0;
     for (size_t r = 1; r < doc.rows.size(); ++r) {
         if (doc.Get(r, size_t(name_col)) == args.positional[1]) row = r;
