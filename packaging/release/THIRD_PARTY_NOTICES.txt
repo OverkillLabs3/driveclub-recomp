@@ -14,3 +14,6 @@ This program includes code and libraries from other projects. Their licenses app
 - The remaining runtime DLLs next to the program come from the MSYS2 CLANG64 distribution; each keeps its own license.
 
 Source for the GPL parts is available from the project repository this release was built from.
+
+Lua 5.1.5 (third_party/lua51, used by the mod kit's dcmod program to compile mod scripts)
+Copyright (C) 1994-2012 Lua.org, PUC-Rio. MIT licence; the text is in third_party/lua51/COPYRIGHT.

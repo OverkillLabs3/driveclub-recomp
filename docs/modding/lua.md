@@ -49,6 +49,25 @@ dcmod.log("lap time", t)      -- the log gets:  Mod: lap time 83.2
 
 It works by opening a path that the runtime recognises (`dcmod/log/<text>`); capital letters are sent as `^` and the letter because the game lower-cases paths, and characters other than letters, digits and `" .:=_,-()[]"` become `?`. Up to 20000 lines are written per run. This needs the runtime of this release or later.
 
+### The dcmod library
+
+Every mod script can use these (all of them run the function you give inside a `pcall`, and a failure is logged as `Mod: error in ...` without stopping anything else):
+
+| Function | Does |
+|---|---|
+| `dcmod.log(...)` | Writes a line to the game log. |
+| `dcmod.after(seconds, fn)` | Runs `fn` once, in real time. |
+| `dcmod.every(seconds, fn)` | Runs `fn` again and again. This is a mod's update loop. |
+| `dcmod.on_ready(fn)` | Runs `fn` once the game is up: `dcmod.ready_delay` seconds (20) after the start. The game's event system does not exist before that, and using it earlier crashes the game. |
+| `dcmod.on(event, fn)` | Calls `fn(...)` whenever the game sends the event (after the game is up). `NewLap`, `GUIPushPage` and `GUIPopPage` are events the game's own scripts listen for; the others it sends are in [lua-api.md](lua-api.md). |
+
+```lua
+dcmod.on("NewLap", function(...) dcmod.log("lap", ...) end)
+dcmod.every(10, function() dcmod.log("still running") end)
+```
+
+Timers, the boot hook, `dcmod.on` and `dcmod.log` have been run in the game. The arguments an event passes are not documented anywhere; log them to see.
+
 ### What a script can use
 
 All the globals the game's own scripts use exist when a mod script runs. [lua-api.md](lua-api.md) lists every global with its members, for example `Event.Listen`, `Event.SendEvent`, `Actor.GetPlayer`, `Actor.SpawnActor`, `GameState.StartGame`, `GUIOptions.Set`, `Rewards`, `Vehicles`, `Tracks`, `Tour`, `LAMS`, `HUD`, `Stats`. It was read from the running game. What each function takes is learned from the game's scripts: `dcmod lua dis` shows how they call them, and `dcmod lua survey` lists the calls.

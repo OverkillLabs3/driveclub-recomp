@@ -23,6 +23,37 @@ function dcmod.log(...)
   text = string.gsub(text, "%u", function(c) return "^" .. string.lower(c) end)
   loadfile("dcmod/log/" .. text)
 end
+-- Timers and events. The game's event system does not exist while the boot script runs, so dcmod.on_ready and
+-- dcmod.on wait until dcmod.ready_delay seconds after the start (20 by default).
+local function guarded(what, fn, ...)
+  local ok, problem = pcall(fn, ...)
+  if not ok then dcmod.log("error in", what, problem) end
+end
+function dcmod.after(seconds, fn)
+  return SetRealTimeout(seconds, function() guarded("timer", fn) end)
+end
+function dcmod.every(seconds, fn)
+  local function step()
+    guarded("timer", fn)
+    SetRealTimeout(seconds, step)
+  end
+  return SetRealTimeout(seconds, step)
+end
+local ready, waiting, connections = false, {}, {}
+dcmod.ready_delay = 20
+function dcmod.on_ready(fn)
+  if ready then guarded("on_ready", fn) else waiting[#waiting + 1] = fn end
+end
+function dcmod.on(event, fn)
+  dcmod.on_ready(function()
+    connections[#connections + 1] = Event.Listen(global, event, function(...) guarded("event " .. event, fn, ...) end)
+  end)
+end
+SetRealTimeout(dcmod.ready_delay, function()
+  ready = true
+  for i = 1, #waiting do guarded("on_ready", waiting[i]) end
+  waiting = {}
+end)
 rawset(_G, "dcmod", dcmod)
 local function run(path)
   local chunk, err = loadfile(path)
