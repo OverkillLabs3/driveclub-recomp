@@ -36,6 +36,6 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 
 ## Limits
 
-- Textures convert to and from DDS (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models have no converter yet; their resources can be extracted and replaced as raw payloads (`dcmod rpk`).
-- Scripts that are compiled can be read as an assembly listing, not as Lua source. Replacing a script with new Lua source works because the game loads plain Lua text.
+- Textures convert to and from DDS and PNG (`dcmod tex`), except those whose largest levels are in a separate top mips pack. Models have no converter yet; a car's model pack can be given to another car (`dcmod car swap`) and its resources extracted and replaced as raw payloads (`dcmod rpk`). A car under a new name with its own model files does not load yet ([cars.md](cars.md)).
+- Compiled game scripts can be read as an assembly listing, not as Lua source. A replacement script has to be compiled (`dcmod lua compile`, or list it under `scripts` in `mod.json` and the build compiles it): the game cannot run Lua it compiles from text itself.
 - Mods are not signed or checked. Only use mods from people you trust.

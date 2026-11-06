@@ -25,7 +25,7 @@ Each line has the instruction, the source line and the constant it refers to, fo
 ## Changing a script
 
 - **A value**: `lua.const` replaces a number or string constant, in the whole script or one function. It needs no Lua source, and it keeps the rest of the script exactly.
-- **A whole script**: put Lua source text in `files/scripts/...` at the same path. The game loads Lua text as well as compiled code. The compiled script can be decompiled with a tool such as unluac, which is not part of this kit.
+- **A whole script**: compile your Lua source with `dcmod lua compile` and put the bytecode in `files/scripts/...` at the same path. The game runs bytecode but crashes on Lua source it has to compile itself, so do not ship the source text under the game's script names. The compiled script can be decompiled with a tool such as unluac, which is not part of this kit.
 
 ## Scripts that run at start-up
 
