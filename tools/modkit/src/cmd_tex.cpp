@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // dcmod tex ...: textures of resource packs as DDS files.
 #include "cli.hpp"
+
+#include <map>
 #include "image.hpp"
 #include "rpk.hpp"
 #include "tex.hpp"
@@ -145,7 +147,8 @@ int RunTex(const std::vector<std::string>& argv) {
         return 0;
     }
     if (cmd == "verify") {
-        size_t good = 0, layout = 0, unsupported = 0, topmips = 0, volumes = 0, bad = 0;
+        size_t good = 0, layout = 0, unsupported = 0, topmips = 0, volumes = 0, bad = 0, with_top = 0;
+        std::map<std::string, std::pair<bool, RpkPack>> tops;
         for (size_t i = 1; i < args.positional.size(); ++i) {
             ForEachPack(args, args.positional[i], max_bytes, [&](const std::string& label, RpkPack& pack) {
                 for (const RpkResource& r : pack.resources) {
@@ -157,7 +160,30 @@ int RunTex(const std::vector<std::string>& argv) {
                             continue;
                         }
                         if (pb.start_mip != 0) {
-                            ++topmips;
+                            // the largest levels are in the pack of the same name with _top_mips, when the archive has it
+                            const std::string top_label = EndsWith(label, ".rpk") ? label.substr(0, label.size() - 4) + "_top_mips.rpk" : "";
+                            if (!tops.count(top_label)) {
+                                RpkPack tp;
+                                bool loaded = false;
+                                if (!top_label.empty() && label[0] == '@') {
+                                    try {
+                                        ForEachPack(args, top_label, ~0ull, [&](const std::string&, RpkPack& q) { tp = std::move(q), loaded = true; });
+                                    } catch (const Error&) {
+                                    }
+                                }
+                                tops.emplace(top_label, std::make_pair(loaded, std::move(tp)));
+                            }
+                            const auto& entry = tops[top_label];
+                            const RpkResource* tr = entry.first ? entry.second.Find(pb.top_mips_id) : nullptr;
+                            if (!tr || pb.depth > 1 || pb.type != 0) {
+                                ++topmips;
+                                continue;
+                            }
+                            Bytes top_back = tr->data;
+                            const Dds back = Dds::Parse(TexToDds(pb, &tr->data).Write());
+                            if (DdsToTexData(pb, back, &top_back) != pb.Data() || top_back != tr->data) throw Error("tiling it again gives different bytes (top mips)");
+                            ++good;
+                            ++with_top;
                             continue;
                         }
                         if (pb.depth > 1 || pb.type != 0) {
@@ -181,7 +207,7 @@ int RunTex(const std::vector<std::string>& argv) {
                 }
             });
         }
-        std::printf("%zu textures round trip, %zu with a size the layout does not predict, %zu with unsupported formats, %zu with top mips elsewhere, %zu failed\n", good, layout, unsupported, topmips, bad);
+        std::printf("%zu textures round trip (%zu of them with their top mips), %zu with a size the layout does not predict, %zu with unsupported formats, %zu with top mips elsewhere, %zu failed\n", good, with_top, layout, unsupported, topmips, bad);
         return bad ? 1 : 0;
     }
     return Usage();
