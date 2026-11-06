@@ -2,6 +2,8 @@
 // Checks of the mod kit on made-up data (no game files needed).
 #include "../src/csv.hpp"
 #include "../src/diff.hpp"
+#include "../src/lua.hpp"
+#include "../src/mod.hpp"
 #include "../src/patch.hpp"
 #include "../src/tex.hpp"
 #include "../src/xml.hpp"
@@ -149,6 +151,30 @@ int main() {
         Json clist = Json::Array();
         for (const Json& op : *cops) clist.Push(op);
         CHECK(Run(src, "t.csv", clist.Dump()) == t2);
+    }
+    // Lua: source compiles to bytecode in the game's format, reads back, and is wrapped into the boot scripts
+    {
+        const Bytes code = CompileLua("local a = 1; return a + 41", "t.lua");
+        CHECK(IsLuaBytecode(code));
+        const LuaChunk chunk = ParseLua(code);
+        CHECK(WriteLua(chunk) == code && chunk.size_t_bytes == 8);
+        bool refused = false;
+        try { CompileLua("local = = 1", "bad.lua"); } catch (const Error&) { refused = true; }
+        CHECK(refused);
+        MemorySource src;
+        src.files["scripts/bootscripts/defaultbootscript.lua.bin"] = B("orig-default");
+        src.files["scripts/bootscripts/releasebootscript.lua.bin"] = B("orig-release");
+        src.files["scripts/mods/x/main.lua"] = B("dcmod.log('hi')");
+        PatchReport report;
+        Workspace ws(src, report);
+        Mod mod;
+        mod.id = "t";
+        mod.scripts = {"scripts/mods/x/main.lua"};
+        AddScriptLoader(ws, {mod});
+        const auto files = ws.Finish();
+        CHECK(S(files.at("scripts/bootscripts/releasebootscript_dcmod_original.lua.bin")) == "orig-release");
+        CHECK(S(files.at("scripts/bootscripts/releasebootscript.lua.bin")).find("run(\"scripts/mods/x/main.lua.bin\")") != std::string::npos);
+        CHECK(IsLuaBytecode(files.at("scripts/mods/x/main.lua.bin")));
     }
     // two mods that set the same cell are reported
     {

@@ -18,6 +18,7 @@ int Usage() {
         "  dcmod lua dis SCRIPT [-o FILE] [--no-lines]  assembly listing of one script\n"
         "  dcmod lua survey SCRIPT... [-o FILE]     the globals, calls and table keys used by the scripts, as Markdown\n"
         "  dcmod lua strings SCRIPT...              every string constant\n"
+        "  dcmod lua compile SOURCE.lua [-o OUT]    compile Lua source to the bytecode the game runs\n"
         "  dcmod lua verify SCRIPT...               read each script and write it again; the bytes must be the same\n"
         "\n"
         "SCRIPT is a file, a folder (searched for .lua.bin and .lua files) or @PATTERN for scripts inside the game's\n"
@@ -141,6 +142,16 @@ int RunLua(const std::vector<std::string>& argv) {
             CollectLuaUsage(ParseLua(s.data), u);
             std::printf("%-60s %9zu bytes  %4zu functions %6zu instructions\n", s.label.c_str(), s.data.size(), u.functions, u.instructions);
         });
+        return 0;
+    }
+    if (cmd == "compile") {
+        // dcmod lua compile SOURCE.lua [-o OUT]: the bytecode the game can run (the game cannot compile text itself)
+        if (args.positional.size() != 1) throw Error("compile takes one Lua source file");
+        const std::string src = ReadText(args.positional[0]);
+        const Bytes out = CompileLua(src, fs::path(args.positional[0]).filename().string());
+        const std::string target = out_path.empty() ? args.positional[0] + ".bin" : out_path;
+        WriteFile(target, out);
+        std::printf("%zu bytes written to %s\n", out.size(), target.c_str());
         return 0;
     }
     if (cmd == "verify") {

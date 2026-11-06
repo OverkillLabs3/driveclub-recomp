@@ -5,6 +5,7 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 [[ -f msys2-env.sh ]] && source ./msys2-env.sh
 mkdir -p out
+bash tools/modkit/lua51.sh
 cxx=${CXX:-clang++}
 command -v "$cxx" >/dev/null || cxx=g++
 if [[ ${OS:-} == Windows_NT ]]; then
@@ -14,5 +15,5 @@ else
     exe=out/dcmod
     link=(-static-libstdc++ -static-libgcc)
 fi
-"$cxx" -std=c++17 -O2 -Wall -Wextra -o "$exe" tools/modkit/src/*.cpp "${link[@]}"
+"$cxx" -std=c++17 -O2 -Wall -Wextra -o "$exe" tools/modkit/src/*.cpp out/lua51/*.o "${link[@]}"
 echo "Built $PWD/$exe"

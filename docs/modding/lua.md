@@ -35,4 +35,28 @@ A mod can list Lua files, supplied in its `files` folder, under `"scripts"`:
 { "id": "me.hello", "scripts": [ "scripts/mods/hello/main.lua" ] }
 ```
 
-When any mod lists scripts, the build replaces the game's boot scripts (`scripts/bootscripts/defaultbootscript.lua.bin` and `releasebootscript.lua.bin`, the two names the game's executable refers to) with a short Lua text. It runs the original boot script, kept beside it as `..._dcmod_original.lua.bin`, and then each mod script in load order. A script that fails to load or raises an error prints a line starting with `dcmod:` and the others still run. The globals the scripts of the game use are listed in [lua-names.md](lua-names.md).
+When any mod lists scripts, the build replaces the game's boot scripts (`scripts/bootscripts/defaultbootscript.lua.bin` and `releasebootscript.lua.bin`, the two names the game's executable refers to) with a short Lua text. It runs the original boot script, kept beside it as `..._dcmod_original.lua.bin`, and then each mod script in load order, each in its own `pcall`, so a script that fails does not stop the others.
+
+**Scripts are compiled when the mod is built.** The game runs Lua bytecode but crashes when it runs a chunk it has compiled from text itself (`loadfile` or `loadstring` of source), so the kit compiles each source script with the real Lua 5.1.5 compiler (included in the kit, MIT licence) and the boot script loads the compiled file. `dcmod lua compile file.lua` does the same by hand. A mod may also list a script that is already bytecode. Do not call `loadstring` or `loadfile` on source text in a mod script.
+
+### Logging
+
+The game's `print` does not write to the log. The boot script defines `dcmod.log(...)`, which does:
+
+```lua
+dcmod.log("lap time", t)      -- the log gets:  Mod: lap time 83.2
+```
+
+It works by opening a path that the runtime recognises (`dcmod/log/<text>`); capital letters are sent as `^` and the letter because the game lower-cases paths, and characters other than letters, digits and `" .:=_,-()[]"` become `?`. Up to 20000 lines are written per run. This needs the runtime of this release or later.
+
+### What a script can use
+
+All the globals the game's own scripts use exist when a mod script runs. [lua-api.md](lua-api.md) lists every global with its members, for example `Event.Listen`, `Event.SendEvent`, `Actor.GetPlayer`, `Actor.SpawnActor`, `GameState.StartGame`, `GUIOptions.Set`, `Rewards`, `Vehicles`, `Tracks`, `Tour`, `LAMS`, `HUD`, `Stats`. It was read from the running game. What each function takes is learned from the game's scripts: `dcmod lua dis` shows how they call them, and `dcmod lua survey` lists the calls.
+
+### Finding out more
+
+A mod script can walk any table and log it, which is how lua-api.md was made:
+
+```lua
+for k, v in pairs(Actor) do dcmod.log(k, type(v)) end
+```

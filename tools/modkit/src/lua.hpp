@@ -42,6 +42,8 @@ struct LuaChunk {
 };
 
 bool IsLuaBytecode(const Bytes& b);
+// Compiles Lua source to bytecode in the game's format (Lua 5.1.5, 64 bit). Throws an Error with the compiler's message.
+Bytes CompileLua(const std::string& source, const std::string& chunk_name);
 LuaChunk ParseLua(const Bytes& b);  // throws Error
 Bytes WriteLua(const LuaChunk& chunk);  // gives back the same bytes for a chunk that was read and not changed
 

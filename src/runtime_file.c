@@ -230,6 +230,7 @@ static int folder_present(const char *key,size_t length,const char *host) {
 /* Resolve a guest path to a host path; returns 0 or a host errno. */
 static int translate(const char *guest,char *out,size_t size) {
     if (!guest || !*guest) return ENOENT;
+    if (runtime_mod_marker(guest)) return ENOENT; /* a call from a mod script (runtime_modapi.c), before the path is lower-cased */
     char buffer[1024];
     guest_key(guest,buffer,sizeof(buffer));
     for (const char *p=buffer;(p=strstr(p,".."));p+=2)
