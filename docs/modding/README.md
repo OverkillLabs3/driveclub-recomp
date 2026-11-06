@@ -18,6 +18,7 @@ The mod kit has three parts:
 | [File formats](formats.md) | Archive, resource packs, tables, XML, Lua |
 | [Lua scripts](lua.md) | Mod scripts, logging, and the game's script layer: [the live API](lua-api.md) and [the names its scripts use](lua-names.md) |
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
+| [Music and sound](audio.md) | FMOD banks: list, extract and replace streams |
 | [Recipes](recipes.md) | Worked examples |
 
 The older way still works: a folder or ZIP whose files sit at their game paths is a mod ([how files are found](../MODDING.md)).
@@ -32,6 +33,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Any resource inside a pack (add, replace, remove) | `rpk.*` patches |
 | Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` patches, or replace the script with Lua source |
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
+| Music and sound effects (FMOD banks) | `dcmod audio` ([audio.md](audio.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 
 ## Limits

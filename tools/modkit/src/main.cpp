@@ -17,6 +17,7 @@ int Usage() {
         "  dcmod studio        a web page to browse the game files, edit them and make mods from the edits\n"
         "  dcmod dash ...      in-car dashboards: list, show, check\n"
         "  dcmod tex ...       textures: extract to DDS, import from DDS\n"
+        "  dcmod audio ...     FMOD sound banks: list, extract, replace streams\n"
         "  dcmod mod ...     mods: new, check, build (patches applied to the game files)\n"
         "\n"
         "Run a command without arguments for its help.");
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
         if (cmd == "lua") return dcmod::RunLua(rest);
         if (cmd == "mod") return dcmod::RunMod(rest);
         if (cmd == "tex") return dcmod::RunTex(rest);
+        if (cmd == "audio") return dcmod::RunAudio(rest);
         if (cmd == "studio") return dcmod::RunStudio(rest);
         if (cmd == "dash") return dcmod::RunDash(rest);
         if (cmd == "car") return dcmod::RunCar(rest);
