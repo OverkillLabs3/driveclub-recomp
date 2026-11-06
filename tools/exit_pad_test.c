@@ -8,7 +8,11 @@
 uintptr_t runtime_image_base;
 uint64_t runtime_image_size;
 const char *runtime_file_user_dir(void) { return "out/exit-pad-test-user"; }
-int bbgpu_overlay_captures_input(void) { return 0; }
+static int test_overlay_captures;
+int bbgpu_overlay_captures_input(void) { return test_overlay_captures; }
+int runtime_memory_is_mapped(uintptr_t a, uint64_t s) { (void)a; (void)s; return 0; }
+void bbgpu_reflex_pre_input_sample(void) {}
+void bbgpu_reflex_on_input_sampled(void) {}
 void bbgpu_overlay_note(const char *s) { (void)s; }
 void bbgpu_mouse_stick_capture(int c) { (void)c; }
 static uint32_t test_confirm=0x4000;
@@ -102,6 +106,18 @@ int main(void) {
     feed(&d,j,SDL_GAMEPAD_BUTTON_EAST,false,true);
     feed(&d,j,SDL_GAMEPAD_BUTTON_SOUTH,true,true); assert(!d.open && d.draining);
     feed(&d,j,SDL_GAMEPAD_BUTTON_SOUTH,false,true);
+
+    /* Modal sampling continues when overlay captures input (e.g. exit dialog is open). */
+    test_overlay_captures=1;
+    sampled_confirm[0]=0;
+    assert(SDL_SetJoystickVirtualButton(j,SDL_GAMEPAD_BUTTON_SOUTH,true));
+    SDL_UpdateJoysticks();
+    PadData p; sample(&p);
+    assert(sampled_confirm[0]!=0);
+    assert(p.buttons==0);
+    assert(SDL_SetJoystickVirtualButton(j,SDL_GAMEPAD_BUTTON_SOUTH,false));
+    test_overlay_captures=0;
+
     if(gamepad) { SDL_CloseGamepad(gamepad); gamepad=NULL; }
     SDL_CloseJoystick(j); SDL_DetachVirtualJoystick(id); SDL_Quit();
     puts("exit_pad_test: PASS (SDL virtual controller, both regional layouts, remapped Confirm/Back and prompts)");

@@ -105,7 +105,7 @@ runtime=(src/runtime*.c)
 imgui=gpu/third_party/imgui
 "$CXX" -std=c++20 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
     -Ilauncher -I"$imgui" -I"$imgui/backends" \
-    tools/launcher_linux.cpp launcher/prepare.cpp \
+    tools/launcher_linux.cpp tools/unlock_linux.cpp launcher/prepare.cpp \
     "$imgui/imgui.cpp" "$imgui/imgui_draw.cpp" "$imgui/imgui_tables.cpp" "$imgui/imgui_widgets.cpp" \
     "$imgui/backends/imgui_impl_sdl3.cpp" "$imgui/backends/imgui_impl_sdlrenderer3.cpp" \
     "${sdl_cflags[@]}" "${sdl_libs[@]}" -pthread -o out/driveclub-launcher

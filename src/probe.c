@@ -42,6 +42,7 @@ static unsigned char *image;
 static size_t page_size;
 #include "runtime_camera_patch.inc"
 #include "runtime_horizon_lock.inc"
+#include "runtime_environment_timelapse.inc"
 #include "runtime_scene_debug.inc"
 #include "runtime_motion_blur.inc"
 #include "runtime_menu_repeat.inc"
@@ -1652,6 +1653,7 @@ int main(int argc, char **argv) {
         memcpy(image + relocs[i].target, &value, 8);
     }
     if (patch_file) apply_patches(patch_file, segments, ns, relocs, nr);
+    if (!cpu_only) env_timelapse_install();
     if (!cpu_only) scene_debug_install();
     if (!cpu_only) apply_upscale_render_size(image, size);
     if (!cpu_only) apply_ui_resolution(image, size);
