@@ -36,4 +36,5 @@ The sound that plays for an event is chosen by the bank's event data, which the 
 ## Limits
 
 - The bank's event and routing data (which event plays which stream) is not edited by the kit.
-- A stream that is much longer than the one it replaces was not tried: the whole music tracks were not re-encoded in the game, only a short sound.
+- A longer stream was tried in the game: `countdown_expired_positive01_L` (12 KB, 1.2 s) replaced by a 30 s tone (315 KB); the decoder received 562 of its frames in a 25 s run, more than the original has, so the game reads past the old length. A 400 s stereo file was imported over a `music.bank` frontend track (stream 9.6 MB, the bank grows to 250 MB) and decodes back in full with `wav`; the menu music was not reached in an unattended run, so its playback was not heard in the game.
+- A music bank is large (240 MB). Ship a changed `music.bank` only when the mod is about music.
