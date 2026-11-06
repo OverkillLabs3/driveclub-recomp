@@ -16,6 +16,7 @@ int Usage() {
     std::puts(
         "dcmod car: new cars from existing ones\n"
         "\n"
+        "  dcmod car list                  every car: Vehicle Name, Asset (the file name stem) and class\n"
         "  dcmod car files NAME            the table row of a car (NAME is its Vehicle Name) and every file named after it\n"
         "  dcmod car swap DONOR VICTIM -o MODFOLDER\n"
         "                                  a mod that gives the car VICTIM the model and textures of the car DONOR\n"
@@ -61,7 +62,7 @@ int RunCar(const std::vector<std::string>& argv) {
     if (argv.empty()) return Usage();
     const std::string cmd = argv[0];
     const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--asset"});
-    if (args.positional.size() < 2) return Usage();
+    if (args.positional.size() < 2 && cmd != "list") return Usage();
     auto archive = OpenGame(args);
     GameSource source(*archive, GameFolders(args));
     const std::string table_path = source.Canonical("newdata/vehicles.csv");
@@ -71,6 +72,14 @@ int RunCar(const std::vector<std::string>& argv) {
     const CsvDoc doc = CsvDoc::Parse(tf.latin1 ? Latin1ToUtf8(tf.text) : tf.text);
     const int name_col = doc.Column("Vehicle Name"), asset_col = doc.Column("Asset"), id_col = doc.Column("UniqueID");
     if (name_col < 0 || asset_col < 0 || id_col < 0) throw Error("the vehicle table does not have the expected columns");
+    if (cmd == "list") {
+        const int class_col = doc.Column("Class");
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            std::printf("%-30s %-36s %s%s\n", doc.Get(r, size_t(name_col)).c_str(), doc.Get(r, size_t(asset_col)).c_str(), class_col >= 0 ? "class " : "", class_col >= 0 ? doc.Get(r, size_t(class_col)).c_str() : "");
+        }
+        std::printf("%zu cars\n", doc.rows.size() - 1);
+        return 0;
+    }
     const std::string& name = args.positional[1];
     size_t row = 0;
     for (size_t r = 1; r < doc.rows.size(); ++r) {

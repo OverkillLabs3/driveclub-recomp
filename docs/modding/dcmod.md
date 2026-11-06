@@ -46,6 +46,7 @@ Compiled Lua 5.1 scripts. `SCRIPT` is a file, a folder, or `@pattern` in the arc
 
 | Command | Does |
 |---|---|
+| `list` | Every car: Vehicle Name, Asset (the file name stem) and class. |
 | `files NAME` | The table row of a car (NAME is its Vehicle Name) and every file named after its Asset. |
 | `swap DONOR VICTIM -o MOD` | A mod that gives the car VICTIM the model and textures of DONOR. |
 | `variant NAME NEWNAME -o MOD` | A mod that adds NEWNAME with its own physics record, sharing NAME's model. |
