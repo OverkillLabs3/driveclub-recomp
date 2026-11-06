@@ -11,10 +11,10 @@ if (-not (Test-Path -LiteralPath $ini)) {
 }
 
 # Key, label, kind, range or choices, default, help (shown as a tooltip and under the sliders). Group: physics (shown
-# with the physics model only), classic (with the software and game models only); no group: always shown.
+# with the physics model only), classic (with the software and original models only); no group: always shown.
 $settings = @(
-    @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('physics','game'); Default='game'
-       Help='physics: the force comes from the car''s front tyres in the game''s simulation, as in a sim (Assetto Corsa style settings). game: the game''s own forces.' }
+    @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('physics','original'); Default='physics'
+       Help='physics: the force comes from the car''s front tyres in the game''s simulation, as in a sim (Assetto Corsa style settings). original: the PS4 game''s own forces, a light spring.' }
     @{ Key='wheel_ffb_physics_detail'; Label='Detail %';                   Kind='slider'; Min=0; Max=200;  Default=100; Group='physics'
        Help='How much of the quick changes in the force you feel, on top of the steady force. Raise it if the wheel feels dead; lower it if it feels busy.' }
     @{ Key='wheel_ffb_physics_countersteer'; Label='Automatic countersteer'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
@@ -95,6 +95,8 @@ function Write-Values($values) {
 }
 
 $loaded = Read-Values
+# "game" was the original model's name until 0.4.1, the launcher's default then: the game reads it as physics now
+if ($loaded['wheel_ffb_model'] -eq 'game') { $loaded['wheel_ffb_model'] = 'physics' }
 $script:backedUp = $false
 $script:syncing = $false
 $controls = @{}

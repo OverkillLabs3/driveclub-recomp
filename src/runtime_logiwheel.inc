@@ -1098,7 +1098,7 @@ static bool ffb_settings_reload(void) {
                ffb_ph_tyre_grip ? "grip" : "classic",ffb_ph_detail,
                ffb_ph_countersteer_off ? "off" : "on",ffb_ph_hit_protection ? "on" : "off");
     else printf("Runtime: FFB settings reloaded from default.ini (%s model, strength %d%%, falloff %d%%)\n",
-                ffb_software ? "software" : "game",ffb_strength,ffb_falloff);
+                ffb_software ? "software" : "original",ffb_strength,ffb_falloff);
     return true;
 }
 

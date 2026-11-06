@@ -64,8 +64,8 @@ static int ffb_center, ffb_slide;
  * formula at the wheel's position now, the steering's power assist and steady damping: runtime_logiwheel.inc,
  * ffb_column_force), with settings named after Assetto Corsa's, percent: gain (100: a 1 g corner at about 60% of the
  * wheel's maximum), filter, minimum force and a steady damper; the road and kerbs always at their real strength, kickback
- * with the detail. */
-static bool ffb_physics;
+ * with the detail. On by default: wheel_ffb_model = original is the game's own force, the PS4 game's light spring. */
+static bool ffb_physics=true;
 static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=5, ffb_ph_effects=100, ffb_ph_max_force=100;
 /* The 0.4.1 force, which bikes keep (the tyre formula above needs four wheels), and the switches below it: the tyres'
  * trail follows how much of their grip the game's forces say is used (light at the real limit) and the force keeps
@@ -209,7 +209,9 @@ static void wheel_parse(const char *lhs, char *rhs) {
         if (!strcmp(key,"ffb_long_rumble")) ffb_long_rumble=v; else ffb_vibration_limit=v;
         return;
     }
-    if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); ffb_physics=!strcmp(rhs,"physics"); return; }
+    /* original: the game's own force. "game" was its name until 0.4.1, when the launcher wrote it for every player who
+     * left the row as it came; it reads as physics now, like any value but original and software. */
+    if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); ffb_physics=!ffb_software && strcmp(rhs,"original"); return; }
     if (!strncmp(key,"ffb_physics_",12)) {
         const char *k=key+12; const int v=atoi(rhs);
         if (!strcmp(k,"gain")) ffb_ph_gain=v<0 ? 0 : v>500 ? 500 : v;
@@ -350,8 +352,9 @@ static const char wheel_default_config[]=
     "# wheel_ffb_vibration_response: 100 in proportion to the game; lower lifts small vibrations (20..100).\n"
     "# wheel_ffb_long_rumble: percent of the kerb vibration kept when it goes on for more than about half a second\n"
     "# (wheelspin, burnouts; 0..100).\n"
-    "# wheel_ffb_model: game (the game's spring goes to the wheel as it is) or software (the steering force is worked\n"
-    "# out here, smoothed between the game's frames, and falls off past the grip limit). With software:\n"
+    "# wheel_ffb_model: physics (the default, below), original (the game's spring goes to the wheel as it is; \"game\"\n"
+    "# until 0.4.1, which now means physics) or software (the steering force is worked out here, smoothed between the\n"
+    "# game's frames, and falls off past the grip limit). With software:\n"
     "# wheel_ffb_strength: percent of the steering force (0..1000; the log's \"FFB clipping\" lines say how often it\n"
     "# is at the wheel's maximum, where detail is lost: keep that low);\n"
     "# wheel_ffb_center: more force in the first degrees off centre (0..100; 0: in proportion, as the game);\n"
@@ -382,6 +385,7 @@ static const char wheel_default_config[]=
     "# finds the numbers. The game uses the shifter with a manual gearbox chosen in its settings.\n"
     "wheel_shifter = auto\n"
     "wheel_ffb = on\n"
+    "wheel_ffb_model = physics\n"
     "wheel_ffb_gain = 100\n"
     "wheel_ffb_vibration = 100\n"
     "wheel_ffb_invert = false\n";

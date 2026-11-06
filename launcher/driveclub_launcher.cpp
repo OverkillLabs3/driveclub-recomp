@@ -621,7 +621,7 @@ bool WheelIniReady() { return FileHas(WheelIniPath(), kLayoutMarker); }
 // A row's value as default.ini has it, and back (INT32_MIN: a value the launcher does not offer, kept as it is).
 std::string WheelValue(int i) {
   const Ctl& c = g_c[size_t(i)];
-  if (i == g_ffb_model) return c.sel == 0 ? "physics" : "game";
+  if (i == g_ffb_model) return c.sel == 0 ? "physics" : "original";
   if (i == g_ffb_softlock) return kSoftLock[c.sel];
   if (i == g_ffb_wave) return c.sel == 0 ? "sine" : "square";
   if (i == g_ffb_hit) return c.sel ? "on" : "off";
@@ -631,7 +631,9 @@ std::string WheelValue(int i) {
 int WheelParse(int i, std::string v) {
   const Ctl& c = g_c[size_t(i)];
   for (char& ch : v) ch = char(tolower((unsigned char)ch));
-  if (i == g_ffb_model) return v == "physics" ? 0 : v == "game" ? 1 : INT32_MIN;
+  // "game": what this row wrote for Original until 0.4.1, when Original was its default, so nearly every player has it
+  // without having chosen it; the runtime reads it as physics too
+  if (i == g_ffb_model) return v == "physics" || v == "game" ? 0 : v == "original" ? 1 : INT32_MIN;
   if (i == g_ffb_softlock) {
     for (int k = 0; k < 6; ++k) if (v == kSoftLock[k]) return k;
     return INT32_MIN;
@@ -1722,7 +1724,7 @@ void BuildModel() {
                     L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides.\n"
                     L"\x2022 Original: the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip.\n"
                     L"Tip: use Reworked Physics with every wheel.",
-                    {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 1);
+                    {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 0);
   g_ffb_preset = seg(L"Preset", L"Ready-made settings for your type of wheel. It only moves the sliders below; fine-tune them afterwards.\n"
                                 L"\x2022 Direct drive: the motor is on the steering shaft (Fanatec DD, Moza, Simagic, Simucube...).\n"
                                 L"\x2022 Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels.",
