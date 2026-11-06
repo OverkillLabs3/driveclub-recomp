@@ -36,12 +36,48 @@ int Usage() {
 
 struct Sub {
     uint64_t mesh = 0, pos = 0, ib = 0, attr = 0;
+    uint32_t pos_stride = 12;
+    bool half = false;  // positions are three half floats
     int uv_off = -1;  // where the texture coordinate (two floats) sits in a vertex of the attribute stream
     uint32_t stride = 0;
     uint32_t lo = 0, hi = 0, first = 0, count = 0, k = 0;
     std::string name;
     uint32_t vertices() const { return hi - lo + 1; }
 };
+
+// Position streams are told by their stream format: three floats (12 bytes), three floats and 4 other bytes (16) or
+// three half floats and 2 padding bytes (8), or the same with 4 other bytes after them (12).
+int PositionKind(const RpkResource& vb) {
+    if (vb.data.size() < 28 || vb.deps.empty()) return 0;
+    switch (vb.deps[0]) {
+        case 0x0002ea626d3b6d17ull: return 1;
+        case 0x00021bb5417fb6e5ull: return 1;
+        case 0x000234fef1a20d63ull: return 2;
+        case 0x0002874b47ba4c22ull: return 2;
+        default: return 0;
+    }
+}
+
+float HalfToFloat(uint16_t h) {
+    const int e = (h >> 10) & 31;
+    const float m = float(h & 1023);
+    float f = e == 0 ? std::ldexp(m, -24) : e == 31 ? (m ? NAN : INFINITY) : std::ldexp(m + 1024.f, e - 25);
+    return h & 0x8000 ? -f : f;
+}
+
+uint16_t FloatToHalf(float f) {
+    if (std::isnan(f)) return 0x7E00;
+    const uint16_t sign = std::signbit(f) ? 0x8000 : 0;
+    f = std::fabs(f);
+    if (f >= 65520.f) return sign | 0x7C00;
+    if (f < 6.1035156e-5f) return sign | uint16_t(std::lrint(std::ldexp(f, 24)));
+    int e;
+    const float m = std::frexp(f, &e);  // f = m * 2^e, m in [0.5, 1)
+    uint32_t mant = uint32_t(std::lrint(std::ldexp(m, 11))) - 1024;  // 10 bits
+    int exp = e + 14;
+    if (mant >= 1024) mant = 0, ++exp;
+    return sign | uint16_t(exp << 10) | uint16_t(mant);
+}
 
 uint32_t VbCount(const RpkResource& r) { return r.data.size() >= 28 ? Rd32(r.data.data() + 24) : 0; }
 
@@ -64,7 +100,7 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
         for (uint64_t d : m.deps) {
             const RpkResource* r = pack.Find(d);
             if (!r) continue;
-            if (int(r->Type()) == vb_type && r->data.size() >= 28) (Rd16(r->data.data() + 22) == 12 ? poss : attrs).push_back(d);
+            if (int(r->Type()) == vb_type && r->data.size() >= 28) (PositionKind(*r) ? poss : attrs).push_back(d);
             if (int(r->Type()) == ib_type) ibs.push_back(d);
         }
         if (poss.empty() || ibs.empty()) continue;
@@ -94,7 +130,7 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
             if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
             seen.push_back(key);
             Sub s;
-            s.mesh = m.id, s.pos = pos, s.ib = ib, s.lo = lo, s.hi = hi, s.first = first, s.count = cnt, s.k = k++;
+            s.mesh = m.id, s.pos = pos, s.pos_stride = Rd16(pack.Find(pos)->data.data() + 22), s.half = PositionKind(*pack.Find(pos)) == 2, s.ib = ib, s.lo = lo, s.hi = hi, s.first = first, s.count = cnt, s.k = k++;
             // the attribute stream that has as many vertices as the position stream
             std::vector<uint64_t> same;
             for (uint64_t a : attrs) {
@@ -145,7 +181,8 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
         for (uint32_t i = s.lo; i <= s.hi; ++i) {
             for (int c = 0; c < 3; ++c) {
                 float f;
-                std::memcpy(&f, &pv[28 + i * 12 + c * 4], 4);
+                if (s.half) f = HalfToFloat(Rd16(&pv[28 + size_t(i) * s.pos_stride + size_t(c) * 2]));
+                else std::memcpy(&f, &pv[28 + size_t(i) * s.pos_stride + size_t(c) * 4], 4);
                 f = Clean(f);
                 mn[c] = std::min(mn[c], f), mx[c] = std::max(mx[c], f);
                 uint32_t u;
@@ -358,12 +395,18 @@ int RunMesh(const std::vector<std::string>& argv) {
             }
             RpkResource* vb = pack.Find(sub->pos);
             for (uint32_t i = 0; i < sub->vertices(); ++i) {
-                uint8_t* dst = &vb->data[28 + (sub->lo + i) * 12];
-                float old[3];
-                std::memcpy(old, dst, 12);
+                uint8_t* dst = &vb->data[28 + size_t(sub->lo + i) * sub->pos_stride];
                 for (int c = 0; c < 3; ++c) {
                     const float f = float(p[i * 3 + size_t(c)]);
-                    if (f != Clean(old[c])) std::memcpy(dst + c * 4, &f, 4);  // vertices the game left unset stay as they are
+                    // vertices the game left unset (or a position that is the same after rounding) stay as they are
+                    if (sub->half) {
+                        const uint16_t h = FloatToHalf(f);
+                        if (HalfToFloat(h) != Clean(HalfToFloat(Rd16(dst + c * 2))) && h != Rd16(dst + c * 2)) std::memcpy(dst + c * 2, &h, 2);
+                    } else {
+                        float old;
+                        std::memcpy(&old, dst + c * 4, 4);
+                        if (f != Clean(old)) std::memcpy(dst + c * 4, &f, 4);
+                    }
                 }
             }
             if (prim.Has("indices")) {

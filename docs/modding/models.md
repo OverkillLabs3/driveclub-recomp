@@ -10,16 +10,24 @@ dcmod mesh import @vehicles/ferrari_458_italia.rpk ferrari.glb -o mymod/vehicles
 
 ## How the geometry is stored
 
-A `mesh` resource depends on a position stream (a `vertex_buffer` with 12 byte XYZ floats), a second vertex stream with the other vertex data (normals, texture coordinates, skin weights; 16 to 44 bytes per vertex, not decoded yet) and an `index_buffer` (16 bit triangle lists). The mesh holds one record per sub mesh: lowest vertex, highest vertex, first index, index count. Indices are absolute positions in the vertex buffer. A mesh may use several position buffers; the identifiers of the buffers a record uses come just before it. A car has about 500 sub meshes (the body, each LOD level, wheels, brakes, glass, interior).
+A `mesh` resource depends on a position stream (a `vertex_buffer`) and a second vertex stream with the other vertex data (normals, texture coordinates, skin weights; 16 to 44 bytes per vertex, not decoded yet) and an `index_buffer` (16 bit triangle lists). The mesh holds one record per sub mesh: lowest vertex, highest vertex, first index, index count. Indices are absolute positions in the vertex buffer. A mesh may use several position buffers; the identifiers of the buffers a record uses come just before it. A car has about 500 sub meshes (the body, each LOD level, wheels, brakes, glass, interior).
+
+Position streams come in four layouts, told apart by the stream format resource they depend on: three floats (12 bytes per vertex), three floats and 4 other bytes (16), three half floats and 2 padding bytes (8), and three half floats and 4 other bytes (12). Cars use the first two or the half layouts; tracks mostly the half layouts. Positions are exported as floats and written back in the stream's own layout (halves are rounded, and a vertex that did not change keeps its exact stored bytes).
 
 ## What export and import do
 
 - Export writes one glTF object per sub mesh, named `ID_N_NAME` (the mesh resource's identifier, the sub mesh number, the part name), with positions (the game's axes, Y up) and texture coordinates. The attribute stream's layout comes from its stream format resource: the field of kind 5 and type 8 is the texture coordinate (two floats). Texture coordinates are checked on real data (body UVs lie in 0 to 1) and are exported only; import does not change them.
 - Import reads those objects back by the name prefix and writes their positions into the pack's position stream, and their triangles into the index buffer. The result is a complete pack in which everything else is unchanged: exporting and importing without edits gives the original file byte for byte.
 - An object has to keep its number of vertices and triangles. Positions can move and triangles can be reconnected. Normals, texture coordinates and skin weights stay as the game has them, so a heavy reshape can show wrong shading until the second stream is understood.
-- Not yet: new objects, a different number of vertices, imported models from other games. These need the second vertex stream, which is not decoded.
+- Not yet: new objects, a different number of vertices, imported models from other games. These need the second vertex stream (normals, tangents, skin weights), of which only the texture coordinates are decoded.
 
-Checked in the game: the Ferrari 458 pack was exported, every position stretched upward, imported and used as a loose file; the race starts and the car shows the changed shape.
+Checked in the game (captures at 1920x1080):
+
+- The Ferrari 458 pack was exported, every height doubled, imported and used as a loose file: the whole car (body, glass, wheels) comes out twice as tall.
+- The Fraser Valley track pack (`worlds/canada_road_circuit_02_n.rpk`, 2641 sub meshes) was exported, every vertex raised by 60 m and imported: the barns and trees of the scenery float in the sky. The road surface stayed where it was, so it is not (only) in this pack.
+- Exporting and importing without changes gives the original bytes for the car and the two tracks tried.
+
+World packs are large (150 MB). They are read through the mods folder like any other pack.
 
 ## Blender
 

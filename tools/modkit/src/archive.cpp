@@ -300,6 +300,30 @@ ArchiveExtension Archive::Extend(const std::vector<std::pair<std::string, Bytes>
     out.volume_data.insert(out.volume_data.end(), {'D', 'A', 'T', 'A'});
     out.volume_data.insert(out.volume_data.end(), stream.begin(), stream.end());
 
+    // Only files the archive already has: keep the index as it is and change those records in place.
+    {
+        std::vector<size_t> at;
+        for (const IndexEntry& e : added) {
+            size_t found = entries_.size();
+            for (size_t i = 0; i < entries_.size(); ++i) {
+                if (entries_[i].name == e.name) found = i;
+            }
+            at.push_back(found);
+        }
+        if (std::find(at.begin(), at.end(), entries_.size()) == at.end()) {
+            out.index = raw_index_;
+            for (size_t k = 0; k < added.size(); ++k) {
+                Bytes rec;
+                Wr64(rec, uint64_t(added[k].volume) | (added[k].offset << 16));
+                Wr32(rec, added[k].size);
+                Wr32(rec, added[k].hash);
+                rec.insert(rec.end(), added[k].md5.begin(), added[k].md5.end());
+                std::copy(rec.begin(), rec.end(), out.index.begin() + std::ptrdiff_t(records_offset_ + at[k] * 32));
+            }
+            return out;
+        }
+    }
+
     // The new index: the old records as they were, the new ones after them, the names written out in full.
     std::vector<std::string> names;
     Bytes records;
@@ -337,6 +361,9 @@ ArchiveExtension Archive::Extend(const std::vector<std::pair<std::string, Bytes>
     out.index.insert(out.index.end(), packed.begin(), packed.end());
     Wr32(out.index, 0x12345678u);
     out.index.insert(out.index.end(), records.begin(), records.end());
+    // the footer: the three time stamps the index ends with, then the position of this last number
+    if (raw_index_.size() >= 32) out.index.insert(out.index.end(), raw_index_.end() - 32, raw_index_.end() - 8);
+    Wr64(out.index, uint64_t(out.index.size()));
     return out;
 }
 
