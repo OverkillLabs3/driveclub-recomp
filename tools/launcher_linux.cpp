@@ -141,7 +141,7 @@ struct Settings {
   char online_host[64] = "127.0.0.1:8080";
   int drive_preset = 0;    // Custom, Sim, Assisted, Game defaults
   bool ffb_on = true;      // wheel_ffb in the runtime's input_config/default.ini
-  int ffb_model = 0;       // Game, Software, Reworked Physics
+  int ffb_model = 2;       // Original, Software, Reworked Physics
   int ffb_gain = 100;      // game and software models, percent (0..2000)
   int ffb_physics_gain = 100, ffb_physics_filter = 0, ffb_physics_min_force = 0,
       ffb_physics_damper = 10, ffb_physics_effects = 100;
@@ -267,7 +267,12 @@ const char* const kXboxName[2] = {"Xbox 360", "Xbox One / Series"};
 const char* const kPsName[2] = {"PS4", "PS5"};
 const char* const kOnlineName[2] = {"Off", "Join a session"};
 const char* const kDrivePresetName[4] = {"Custom", "Sim", "Assisted", "Game defaults"};
-const char* const kFfbModelName[3] = {"Game (original)", "Software", "Reworked Physics"};
+const char* const kFfbModelName[3] = {"Original (not recommended)", "Software", "Reworked Physics"};
+// The force model as wheel_ffb_model and this launcher's settings have it. "game" (0 in this launcher's settings) is
+// what was saved for the game's own force until 0.4.1, when it was the default, so nearly every player has it without
+// having chosen it: it reads as Reworked Physics, as in the runtime.
+int FfbModelFromName(const std::string& v) { return v == "original" ? 0 : v == "software" || v == "1" ? 1 : 2; }
+const char* FfbModelName(int i) { return i == 0 ? "original" : i == 1 ? "software" : "physics"; }
 const char* const kSoftLockName[6] = {"Game", "Off", "540°", "720°", "900°", "1080°"};
 const char* const kWaveName[2] = {"Square", "Sine"};
 const char* const kNrPresetName[3] = {"Automatic", "Original", "Optimized"};
@@ -855,7 +860,7 @@ void LoadWheelSettings() {
   ParseBool(kv, "wheel_ffb", g.ffb_on);
   const auto model = kv.find("wheel_ffb_model");
   if (model != kv.end()) {
-    g.ffb_model = model->second == "physics" ? 2 : model->second == "software" ? 1 : 0;
+    g.ffb_model = FfbModelFromName(model->second);
   }
   ParseInt(kv, "wheel_ffb_gain", g.ffb_gain);
   ParseInt(kv, "wheel_ffb_physics_gain", g.ffb_physics_gain);
@@ -955,7 +960,7 @@ void LoadSettings() {
     std::snprintf(g.online_host, sizeof g.online_host, "%s", kv.at("online_host").c_str());
   ParseInt(kv, "drive_preset", g.drive_preset);
   ParseBool(kv, "ffb_on", g.ffb_on);
-  ParseInt(kv, "ffb_model", g.ffb_model);
+  if (const auto model = kv.find("ffb_model"); model != kv.end()) g.ffb_model = FfbModelFromName(model->second);
   ParseInt(kv, "ffb_gain", g.ffb_gain);
   ParseInt(kv, "ffb_physics_gain", g.ffb_physics_gain);
   ParseInt(kv, "ffb_physics_filter", g.ffb_physics_filter);
@@ -1257,7 +1262,7 @@ bool SaveWheelSettings() {
     ok = SetIniValue(path, key, value) && ok;
   };
   write("wheel_ffb", g.ffb_on ? "on" : "off");
-  write("wheel_ffb_model", g.ffb_model == 0 ? "game" : g.ffb_model == 1 ? "software" : "physics");
+  write("wheel_ffb_model", FfbModelName(g.ffb_model));
   write("wheel_ffb_gain", std::to_string(g.ffb_gain));
   write("wheel_ffb_physics_gain", std::to_string(g.ffb_physics_gain));
   write("wheel_ffb_physics_filter", std::to_string(g.ffb_physics_filter));
@@ -1333,7 +1338,7 @@ bool SaveSettings() {
       << "ps_buttons=" << g.ps_buttons << "\n"
       << "drive_preset=" << g.drive_preset << "\n"
       << "ffb_on=" << (g.ffb_on ? 1 : 0) << "\n"
-      << "ffb_model=" << g.ffb_model << "\n"
+      << "ffb_model=" << FfbModelName(g.ffb_model) << "\n"
       << "ffb_gain=" << g.ffb_gain << "\n"
       << "ffb_physics_gain=" << g.ffb_physics_gain << "\n"
       << "ffb_physics_filter=" << g.ffb_physics_filter << "\n"
@@ -2813,7 +2818,7 @@ void WheelPage() {
     if (ToggleRow("Force feedback", "Sends the game's forces to the wheel. Off leaves it without forces.",
                   &g.ffb_on)) g.dirty = true;
     if (ComboRow("Force model",
-                 "Game: the game's own spring, as the PS4 version sends it. Software: the steering force is "
+                 "Original: the game's own spring, as the PS4 version sends it. Software: the steering force is "
                  "worked out by the runtime, smoothed between the game's frames. Reworked Physics: the force "
                  "comes from the front tyres in the game's simulation, as in a racing sim.",
                  &g.ffb_model, kFfbModelName, 3)) g.dirty = true;

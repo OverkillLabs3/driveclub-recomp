@@ -565,12 +565,13 @@ bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_
 int g_ffb_model = -1, g_ffb_preset = -1, g_ffb_softlock = -1, g_ffb_wave = -1, g_wheel_setup = -1;
 int g_ffb_slider[4] = {-1, -1, -1, -1};
 int g_ffb_effects = -1;  // Tyre effects: not part of the presets
+int g_ffb_hit = -1;      // Hit protection: on or off in default.ini, as FFB Tuner writes it
 int g_ffb_tuner = -1;    // the Open FFB Tuner button
 int g_bugreport = -1;    // the "Save a bug report" button
 int g_drag = -1;  // the slider being dragged
 // The two starting points (gain, filter, minimum force, damper), as FFB Tuner's. The road (its surfaces, bumps and
 // kerbs) is always at its full, real strength in the physics model, and it has no vibration effects.
-const int kWheelPreset[2][4] = {{100, 0, 0, 10}, {130, 10, 8, 0}};  // the vibration wave is the Original model's own
+const int kWheelPreset[2][4] = {{100, 0, 0, 5}, {130, 10, 8, 0}};  // the vibration wave is the Original model's own
 const char* const kSoftLock[6] = {"game", "off", "540", "720", "900", "1080"};
 constexpr char kLayoutMarker[] = "# DriveClub racing layout";  // the game replaces a default.ini without it
 
@@ -620,16 +621,19 @@ bool WheelIniReady() { return FileHas(WheelIniPath(), kLayoutMarker); }
 // A row's value as default.ini has it, and back (INT32_MIN: a value the launcher does not offer, kept as it is).
 std::string WheelValue(int i) {
   const Ctl& c = g_c[size_t(i)];
-  if (i == g_ffb_model) return c.sel == 0 ? "physics" : "game";
+  if (i == g_ffb_model) return c.sel == 0 ? "physics" : "original";
   if (i == g_ffb_softlock) return kSoftLock[c.sel];
   if (i == g_ffb_wave) return c.sel == 0 ? "sine" : "square";
+  if (i == g_ffb_hit) return c.sel ? "on" : "off";
   if (c.kind == Kind::Toggle) return c.sel ? "true" : "false";
   return std::to_string(c.sel);
 }
 int WheelParse(int i, std::string v) {
   const Ctl& c = g_c[size_t(i)];
   for (char& ch : v) ch = char(tolower((unsigned char)ch));
-  if (i == g_ffb_model) return v == "physics" ? 0 : v == "game" ? 1 : INT32_MIN;
+  // "game": what this row wrote for Original until 0.4.1, when Original was its default, so nearly every player has it
+  // without having chosen it; the runtime reads it as physics too
+  if (i == g_ffb_model) return v == "physics" || v == "game" ? 0 : v == "original" ? 1 : INT32_MIN;
   if (i == g_ffb_softlock) {
     for (int k = 0; k < 6; ++k) if (v == kSoftLock[k]) return k;
     return INT32_MIN;
@@ -1717,10 +1721,10 @@ void BuildModel() {
                     Kind::Button, {L"Wheel Setup..."}, {"@wheelsetup"}, 0, 0});
   g_ffb_model = seg(L"Force feedback",
                     L"How the wheel's force is made.\n"
-                    L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides. It learns each car as you drive.\n"
+                    L"\x2022 Reworked Physics: comes from the car's tyres, like a racing sim. The wheel gets heavier in fast corners, goes light when the front tyres lose grip, and turns the right way when the back slides.\n"
                     L"\x2022 Original: the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip.\n"
                     L"Tip: use Reworked Physics with every wheel.",
-                    {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 1);
+                    {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 0);
   g_ffb_preset = seg(L"Preset", L"Ready-made settings for your type of wheel. It only moves the sliders below; fine-tune them afterwards.\n"
                                 L"\x2022 Direct drive: the motor is on the steering shaft (Fanatec DD, Moza, Simagic, Simucube...).\n"
                                 L"\x2022 Gear or belt: most Logitech, Thrustmaster and Fanatec CSL or ClubSport belt wheels.",
@@ -1752,13 +1756,17 @@ void BuildModel() {
                                              L"\x2022 Gear and belt wheels often feel dead around the centre because they can't make very small forces.\n"
                                              L"Tip: try 5 to 10 if yours does. Keep it at 0 on a direct drive wheel.",
                            "wheel_ffb_physics_min_force", 0, 30, 0);
-  g_ffb_slider[3] = slider(L"Damper", L"Makes the wheel a little heavier to turn, so it stays calm and doesn't wobble. Like real steering, it's heaviest when the car stands still.\n"
-                                      L"Tip: 10 to 30 on a direct drive wheel stops it wobbling when you let go. Gear and belt wheels usually want 0.",
-                           "wheel_ffb_physics_damper", 0, 100, 10);
+  g_ffb_slider[3] = slider(L"Damper", L"Makes the wheel a little heavier to turn, so it stays calm and doesn't wobble.\n"
+                                      L"Tip: about 5 on a direct drive wheel. Gear and belt wheels usually want 0.",
+                           "wheel_ffb_physics_damper", 0, 100, 5);
   g_ffb_effects = slider(L"Tyre effects", L"A light buzz in the wheel when a tyre slides past its grip: the front sliding wide or locking under braking, the rear spinning or sliding. It only comes when a tyre really slides, and it buzzes faster the faster it slides.\n"
                                           L"\x2022 0: off. Only the steering force, as a real car's wheel.\n"
                                           L"Tip: lower it if the buzz is too strong on your wheel.",
                           "wheel_ffb_physics_effects", 0, 100, 100);
+  g_ffb_hit = toggle(L"Hit protection", L"When the car hits a wall or another car, the force is held down for about half a second, so the hit can't throw the wheel.\n"
+                                        L"\x2022 Off: every hit at full force. Keep your thumbs outside the rim.",
+                     "@ffb:wheel_ffb_physics_hit_protection", true);
+  g_c[g_ffb_hit].physics_only = true;
   g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you can't turn it further than the car can.\n"
                                      L"\x2022 Game: the right angle for each car.\n"
                                      L"Tip: set your wheel's own software to 900 degrees as well.",
@@ -1845,7 +1853,7 @@ void BuildModel() {
                      L"Wheel Setup shows every controller plugged in.\n"
                      L"Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
   g_cards.back().sub = kSubWheel;
-  g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_tuner, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[3], g_ffb_effects, g_ffb_softlock,
+  g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_preset, g_ffb_tuner, g_ffb_slider[0], g_ffb_slider[1], g_ffb_slider[2], g_ffb_slider[3], g_ffb_effects, g_ffb_hit, g_ffb_softlock,
                                          g_ffb_wave, g_ffb_gain_row[0], g_ffb_gain_row[1]}, 0, kTabDriving});
   g_cards.back().sub = kSubWheel;
 }

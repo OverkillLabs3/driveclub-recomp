@@ -91,8 +91,8 @@ Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that W
 The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a button of any controller, not only the wheel: a button box or a second controller is written with its name (`wheel_button = 3, cross, BBI-32 Button Box`). They also take a key, or a key with Ctrl, Shift or Alt, so a Stream Deck that sends keys works too (F13 to F24 are free for it); keys reach the game while its window is in front. The launcher's FFB gain + and − rows take a button or a key the same way.
 
 **Force feedback**
-- **Reworked Physics** (recommended): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top. It learns each car's tyres in the first corners.
-- **Original Physics** (the default): the forces the PS4 game made for a Logitech wheel. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal).
+- **Reworked Physics** (the default): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top.
+- **Original Physics** (not recommended): the forces the PS4 game made for a Logitech wheel, a light spring. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal). It is `wheel_ffb_model = original`; settings saved by 0.4.1 or older have `game` there, which now gives Reworked Physics, so choose Original again if you want it.
 
 **Preset** sets the sliders for your kind of wheel: **Direct drive** (Fanatec DD, Moza, Simagic, Simucube, ...) or **Gear or belt** (most Logitech, Thrustmaster and Fanatec CSL wheels). Then adjust them to taste:
 
@@ -101,7 +101,8 @@ The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a 
 | Gain | 0–300% | The overall strength. At 100% a hard corner uses about 60% of the wheel's force. |
 | Filter | 0–100% | Smooths the force. 0 on a direct drive, a little on gear wheels. |
 | Minimum force | 0–30% | Lifts the smallest forces past the dead spot that gear and belt wheels have around the centre. |
-| Damper | 0–100% | Weight when you turn the wheel, strongest when the car stands still, as with real tyres. |
+| Damper | 0–100% | Weight when you turn the wheel quickly, and a calmer wheel. About 5 on a direct drive. |
+| Hit protection | On, Off | Holds the force down for about half a second when the car hits a wall or another car, so the hit can't throw the wheel. On by default. |
 | Kerbs | 0–200% | The rumble of kerbs. |
 | Road | 0–200% | Bumps and the road surface. |
 | Slip | 0–200% | A buzz when the tyres slide, spin or lock. |
@@ -109,7 +110,7 @@ The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a 
 | Vibration wave | Sine, Square | Square feels sharper on gear and belt wheels. |
 | Invert forces | | Turns the forces around if the wheel pulls the wrong way. |
 
-Direct drive: gain 100, filter 0, minimum force 0, kerbs 50, road 50, slip 30, damper 10. Gear or belt: gain 130, filter 10, minimum force 8, kerbs 80, road 80, slip 50, damper 0.
+Direct drive: gain 100, filter 0, minimum force 0, kerbs 50, road 50, slip 30, damper 5. Gear or belt: gain 130, filter 10, minimum force 8, kerbs 80, road 80, slip 50, damper 0.
 
 The settings are kept in `default.ini` (`wheel_ffb_physics_*`), and the game picks up changes to it within a second, so `FFB Tuner.bat` can change them while you drive. If the wheel feels flat in hard corners, lower the gain: the log in `logs` says how often the force was at the wheel's maximum (`FFB clipping`). `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
 
