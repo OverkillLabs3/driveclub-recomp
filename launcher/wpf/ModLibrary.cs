@@ -3,11 +3,30 @@ using System.IO;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DriveClub.Launcher;
 
+/// <summary>A choice a mod offers (mod.json "settings"); the player's value goes to dcmod build --settings.</summary>
+public sealed class ModSetting
+{
+    public string Label { get; set; } = "";
+    public string Type { get; set; } = "string";
+    public JsonElement? Default { get; set; }
+    public double? Min { get; set; }
+    public double? Max { get; set; }
+    public List<string> Choices { get; set; } = [];
+}
+
 public sealed class ModPackage
 {
+    /// <summary>What the mod is for (Car, Track, Livery, Graphics, Physics, Script, Audio, Tour, ...), shown in the list.</summary>
+    public string Category { get; set; } = "";
+    /// <summary>The id written in mod.json; the settings file is keyed by it.</summary>
+    public string ManifestId { get; set; } = "";
+    [JsonPropertyName("settings")] public Dictionary<string, ModSetting> SettingDefs { get; set; } = new();
+    /// <summary>The player's values for the settings, as JSON text by name.</summary>
+    public Dictionary<string, string> Choices { get; set; } = new();
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Version { get; set; } = "";
@@ -53,6 +72,13 @@ public sealed class ModLibrary
         var package = Find(s, id); int index = s.Packages.IndexOf(package);
         int target = Math.Clamp(index + offset, 0, s.Packages.Count - 1);
         s.Packages.RemoveAt(index); s.Packages.Insert(target, package);
+    });
+    public ModLibraryState SetChoice(string id, string name, string json) => Change(s =>
+    {
+        var package = Find(s, id);
+        if (!package.SettingDefs.ContainsKey(name)) throw new InvalidDataException("The mod has no setting " + name + ".");
+        using (JsonDocument.Parse(json)) { }
+        package.Choices[name] = json;
     });
     public ModLibraryState Remove(string id) => Change(s => s.Packages.Remove(Find(s, id)));
 
@@ -103,6 +129,7 @@ public sealed class ModLibrary
             var package = File.Exists(manifest) ? JsonSerializer.Deserialize<ModPackage>(File.ReadAllText(manifest), Json) ?? new() : new ModPackage();
             package.Id = Guid.NewGuid().ToString("N"); package.Enabled = false;
             package.Patched = HasPatches(manifest);
+            package.ManifestId = ManifestIdOf(manifest) ?? package.Id;
             if (string.IsNullOrWhiteSpace(package.Name)) package.Name = Path.GetFileNameWithoutExtension(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             string payload = content;
             foreach (string container in new[] { "files", "mods", "app0" })
@@ -177,6 +204,17 @@ public sealed class ModLibrary
         catch (JsonException) { return false; }
     }
 
+    private static string? ManifestIdOf(string manifest)
+    {
+        try
+        {
+            if (!File.Exists(manifest)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(manifest), new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+            return doc.RootElement.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
+        }
+        catch (JsonException) { return null; }
+    }
+
     /// <summary>With patched mods every enabled mod goes through dcmod, so patches see the files of the mods below them.</summary>
     private Dictionary<string, (ModPackage Package, string Hash)> Generate(ModLibraryState next)
     {
@@ -193,6 +231,16 @@ public sealed class ModLibrary
             start.ArgumentList.Add(package.Id + "=" + (package.Patched ? Under(folder, SourceFolder) : folder));
         }
         start.ArgumentList.Add("-o"); start.ArgumentList.Add(output);
+        var chosen = new Dictionary<string, Dictionary<string, JsonElement>>();
+        foreach (var package in next.Packages.Where(p => p.Enabled && p.Choices.Count > 0))
+            chosen[package.ManifestId.Length > 0 ? package.ManifestId : package.Id] = package.Choices.ToDictionary(c => c.Key, c => { using var doc = JsonDocument.Parse(c.Value); return doc.RootElement.Clone(); });
+        if (chosen.Count > 0)
+        {
+            Directory.CreateDirectory(store);
+            string settingsFile = Path.Combine(store, "settings.json");
+            File.WriteAllText(settingsFile, JsonSerializer.Serialize(chosen));
+            start.ArgumentList.Add("--settings"); start.ArgumentList.Add(settingsFile);
+        }
         using var process = Process.Start(start) ?? throw new IOException("dcmod could not be started.");
         var errors = process.StandardError.ReadToEndAsync();
         string text = process.StandardOutput.ReadToEnd();

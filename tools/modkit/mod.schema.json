@@ -79,6 +79,10 @@
         "type": "string"
       }
     },
+    "category": {
+      "type": "string",
+      "description": "What the mod is for: Car, Track, Livery, Graphics, Physics, Script, Audio, Tour, or another word."
+    },
     "scripts": {
       "type": "array",
       "items": { "type": "string" },

@@ -19,6 +19,7 @@ Proven by the launcher itself, which uses the same route for its features: the v
 `mods` is the folder next to `DriveClub.exe`. Put files there by hand (both launchers), or use the **Mods** page of the new launcher:
 
 - **Import ZIP** or **Import folder** adds a mod to the library. An imported mod starts disabled. A mod that has `patches` in its `mod.json` is applied to your game files with `dcmod.exe` when it is enabled (see [modding/mod-format.md](modding/mod-format.md)); with such mods the launcher builds the result of all enabled mods together.
+- A mod's details show its category and, when its `mod.json` has `settings`, a control for each one; the values you choose are kept and applied when the mods are built ([modding/mod-format.md](modding/mod-format.md)).
 - The checkbox turns a mod on or off. Turning it on copies its files into `mods`; turning it off removes them.
 - **Move up** and **Move down** set the order. When two enabled mods have a file with the same path, the one higher in the list wins. Selecting a mod shows how many files it shares with other enabled mods.
 - **Open mods folder** opens `mods`.

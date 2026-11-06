@@ -38,6 +38,7 @@ The loose files come from the folder named by `"files"` in `mod.json`; without t
 | `after`, `before` | Load order rules that do not need the other mod to be present. |
 | `patches` | The [patch operations](patches.md), applied in order. |
 | `files` | Folder with the loose files, relative to the mod. |
+| `category` | What the mod is for (`Car`, `Track`, `Livery`, `Graphics`, `Physics`, `Script`, `Audio`, `Tour`, or your own word). The launcher shows it. |
 | `scripts` | Lua files (game paths) that run at start-up; see [lua.md](lua.md). |
 | `settings` | Choices the player can change, see below. |
 
@@ -59,7 +60,7 @@ A mod can offer settings. Each has a name and a definition:
 - In a patch, `{ "$setting": "power" }` in place of a value stands for the setting's value: `"set": { "TopSpeed": { "$setting": "power" } }`.
 - In a Lua script, `dcmod.setting("mod.id", "power", fallback)` returns it; `dcmod.settings["mod.id"]` is the whole table.
 
-The launcher does not show settings yet; until it does, a settings file is passed by hand.
+The launcher shows a mod's settings in the mod details (a box for numbers and texts, a check box for yes/no, a list for choices) and keeps the player's values; it builds the mods with them (`--settings`). With the command line, the settings file is passed by hand.
 
 ## Load order and what wins
 
