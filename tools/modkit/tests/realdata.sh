@@ -33,6 +33,15 @@ echo "ok mesh with changed counts"
 mkdir "$tmp/clone"
 "$exe" car clone fe_458 fe_clone -o "$tmp/clone" > /dev/null
 "$exe" mod check "$tmp/clone" > /dev/null
+# the tutorial's two mods: the clone, and a second one with a reshaped pack as a loose file
+"$exe" mod build "$tmp/clone" -o "$tmp/b1" > /dev/null
+"$exe" mesh export "$tmp/b1/vehicles/fe_clone.rpk" -o "$tmp/c.glb" "*_BODYShape" > /dev/null
+"$py" -I tools/modkit/tests/glbedit.py "$tmp/c.glb" "$tmp/c2.glb" dup5 > /dev/null
+mkdir -p "$tmp/shape/files/vehicles"
+"$exe" mesh import "$tmp/b1/vehicles/fe_clone.rpk" "$tmp/c2.glb" -o "$tmp/shape/files/vehicles/fe_clone.rpk" > /dev/null
+echo '{"id":"shape","name":"shape","version":"1.0","requires":["fe_clone"]}' > "$tmp/shape/mod.json"
+"$exe" mod build "$tmp/clone" "$tmp/shape" -o "$tmp/b2" > /dev/null
+"$exe" mesh info "$tmp/b2/vehicles/fe_clone.rpk" | grep -q "_5_BODYShape  *120 vertices  *136 triangles"
 echo "ok car clone"
 
 "$exe" audio info @audio/fmodstudio/gui.bank | head -1 | grep -q "codec atrac9"
