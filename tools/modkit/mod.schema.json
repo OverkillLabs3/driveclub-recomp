@@ -3,65 +3,341 @@
   "title": "DriveClub Recomp mod manifest (mod.json)",
   "type": "object",
   "properties": {
-    "$schema": { "type": "string" },
-    "id": { "type": "string", "pattern": "^[a-z0-9._-]+$", "description": "Unique id: a-z, 0-9, '.', '-', '_'." },
-    "name": { "type": "string" },
-    "version": { "type": "string", "description": "Dotted numbers, for example 1.2.0." },
-    "author": { "type": "string" },
-    "description": { "type": "string" },
-    "game": { "type": "string", "description": "Game version the mod was made for, for example 1.28." },
-    "files": { "type": "string", "description": "Folder with loose files, relative to the mod." },
+    "$schema": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]+$",
+      "description": "Unique id: a-z, 0-9, '.', '-', '_'."
+    },
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "description": "Dotted numbers, for example 1.2.0."
+    },
+    "author": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "game": {
+      "type": "string",
+      "description": "Game version the mod was made for, for example 1.28."
+    },
+    "files": {
+      "type": "string",
+      "description": "Folder with loose files, relative to the mod."
+    },
     "requires": {
       "type": "array",
       "items": {
         "oneOf": [
-          { "type": "string" },
-          { "type": "object", "required": ["id"], "properties": { "id": { "type": "string" }, "version": { "type": "string", "description": "such as >=1.2" }, "optional": { "type": "boolean" } }, "additionalProperties": false }
+          {
+            "type": "string"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string",
+                "description": "such as >=1.2"
+              },
+              "optional": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
         ]
       }
     },
-    "conflicts": { "type": "array", "items": { "type": "string" } },
-    "after": { "type": "array", "items": { "type": "string" } },
-    "before": { "type": "array", "items": { "type": "string" } },
-    "patches": { "type": "array", "items": { "$ref": "#/definitions/patch" } }
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "after": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "before": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "patches": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/patch"
+      }
+    }
   },
   "definitions": {
     "contentOp": {
       "type": "object",
-      "required": ["op"],
+      "required": [
+        "op"
+      ],
       "properties": {
-        "op": { "enum": ["text.replace", "text.insert", "text.append", "text.prepend", "csv.set", "csv.add", "csv.remove", "xml.set", "xml.remove", "xml.insert", "json.merge", "bytes.patch", "bytes.replace", "lua.const"] },
-        "comment": { "type": "string" },
-        "optional": { "type": "boolean" },
-        "find": {}, "replace": {}, "regex": { "type": "string" }, "occurrence": { "type": "integer", "minimum": 1 }, "all": { "type": "boolean" },
-        "after": { "type": "string" }, "before": { "type": "string" }, "text": { "type": "string" }, "from": { "type": "string" },
-        "key": { "type": "string" }, "match": {}, "where": { "type": "object" }, "set": { "type": "object" }, "row": { "type": "object" }, "like": { "type": "string" },
-        "path": { "type": "string" }, "attr": { "type": "string" }, "value": {}, "remove_attr": { "type": "string" }, "raw": { "type": "boolean" }, "xml": { "type": "string" },
-        "offset": {}, "expect": {}, "write": { "type": "string" }, "function": { "type": "string" }
+        "op": {
+          "enum": [
+            "text.replace",
+            "text.insert",
+            "text.append",
+            "text.prepend",
+            "csv.set",
+            "csv.add",
+            "csv.remove",
+            "xml.set",
+            "xml.remove",
+            "xml.insert",
+            "json.merge",
+            "bytes.patch",
+            "bytes.replace",
+            "lua.const"
+          ]
+        },
+        "comment": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean"
+        },
+        "find": {},
+        "replace": {},
+        "regex": {
+          "type": "string"
+        },
+        "occurrence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "after": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "match": {},
+        "where": {
+          "type": "object"
+        },
+        "set": {
+          "type": "object"
+        },
+        "row": {
+          "type": "object"
+        },
+        "like": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "attr": {
+          "type": "string"
+        },
+        "value": {},
+        "remove_attr": {
+          "type": "string"
+        },
+        "raw": {
+          "type": "boolean"
+        },
+        "xml": {
+          "type": "string"
+        },
+        "offset": {},
+        "expect": {},
+        "write": {
+          "type": "string"
+        },
+        "function": {
+          "type": "string"
+        }
       }
     },
     "patch": {
       "type": "object",
-      "required": ["op"],
+      "required": [
+        "op"
+      ],
       "properties": {
         "op": {
-          "enum": ["file.set", "file.copy", "text.replace", "text.insert", "text.append", "text.prepend", "csv.set", "csv.add", "csv.remove", "xml.set", "xml.remove", "xml.insert", "json.merge", "bytes.patch", "bytes.replace", "lua.const", "rpk.set", "rpk.patch", "rpk.add", "rpk.remove", "tex.set"],
+          "enum": [
+            "file.set",
+            "file.copy",
+            "text.replace",
+            "text.insert",
+            "text.append",
+            "text.prepend",
+            "csv.set",
+            "csv.add",
+            "csv.remove",
+            "xml.set",
+            "xml.remove",
+            "xml.insert",
+            "json.merge",
+            "bytes.patch",
+            "bytes.replace",
+            "lua.const",
+            "rpk.set",
+            "rpk.patch",
+            "rpk.add",
+            "rpk.remove",
+            "tex.set",
+            "vdef.clone",
+            "vdef.set",
+            "manifest.add",
+            "rpk.rename"
+          ],
           "description": "The operation. See docs/modding/patches.md."
         },
-        "comment": { "type": "string" },
-        "optional": { "type": "boolean", "description": "A failure of this patch becomes a warning." },
-        "file": { "type": "string", "description": "Game path of the file to change." },
-        "from": { "type": "string", "description": "A file in the mod (or for file.copy a game path)." },
-        "text": { "type": "string" },
-        "find": {}, "replace": {}, "regex": { "type": "string" }, "occurrence": { "type": "integer", "minimum": 1 }, "all": { "type": "boolean" },
-        "after": { "type": "string" }, "before": { "type": "string" },
-        "key": { "type": "string" }, "match": {}, "where": { "type": "object" }, "set": { "type": "object" }, "row": { "type": "object" }, "like": { "type": "string" },
-        "path": { "type": "string" }, "attr": { "type": "string" }, "value": {}, "remove_attr": { "type": "string" }, "raw": { "type": "boolean" }, "xml": { "type": "string" },
-        "offset": {}, "expect": {}, "write": { "type": "string" }, "function": { "type": "string" },
-        "resource": { "type": "string", "description": "A resource name or 16 digit hex id inside the pack." },
-        "ops": { "type": "array", "items": { "$ref": "#/definitions/contentOp" } },
-        "type": { "type": "string" }, "id": { "type": "string" }, "name": { "type": "string" },
-        "sources": { "type": "array", "items": { "type": "string" } }, "deps": { "type": "array", "items": { "type": "string" } }, "version": { "type": "integer" }
+        "comment": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean",
+          "description": "A failure of this patch becomes a warning."
+        },
+        "file": {
+          "type": "string",
+          "description": "Game path of the file to change."
+        },
+        "from": {
+          "type": "string",
+          "description": "A file in the mod (or for file.copy a game path)."
+        },
+        "text": {
+          "type": "string"
+        },
+        "find": {},
+        "replace": {},
+        "regex": {
+          "type": "string"
+        },
+        "occurrence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "after": {
+          "type": "string"
+        },
+        "before": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "match": {},
+        "where": {
+          "type": "object"
+        },
+        "set": {
+          "type": "object"
+        },
+        "row": {
+          "type": "object"
+        },
+        "like": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "attr": {
+          "type": "string"
+        },
+        "value": {},
+        "remove_attr": {
+          "type": "string"
+        },
+        "raw": {
+          "type": "boolean"
+        },
+        "xml": {
+          "type": "string"
+        },
+        "offset": {},
+        "expect": {},
+        "write": {
+          "type": "string"
+        },
+        "function": {
+          "type": "string"
+        },
+        "resource": {
+          "type": "string",
+          "description": "A resource name or 16 digit hex id inside the pack."
+        },
+        "ops": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/contentOp"
+          }
+        },
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "version": {
+          "type": "integer"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "type": "string"
+        }
       }
     }
   }

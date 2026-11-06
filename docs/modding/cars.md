@@ -24,7 +24,18 @@ Changing a car **in place** (its table row, its pack, its cameras) is the way th
 
 ## Adding a new car
 
-`dcmod car clone NAME NEWNAME -o MODFOLDER` writes a mod that adds a table row and copies all the asset-named files under a new Asset with `file.copy` patches (the mod holds none of the game's data). The game opens the copied pack when the new car is chosen, but it then stops with a null read in the car loading code. The cause is not known yet: some lookup is keyed by something other than the file names. Copying the files is therefore not enough to add a car, and the command is a starting point for finding what else is needed, not a working feature. A new car is not possible until that is understood.
+**A variant works.** `dcmod car variant NAME NEWNAME -o MODFOLDER` writes a mod that adds a new row to `newdata/vehicles.csv` (its own name and unique number) and a copy of the car's record in `vehicledefs.vdef` under the new name, which the row uses as its `Vehicle Def`. The new car shares the model, textures, sounds and cameras of the original and has its own physics definition and table values. In the running game a car made this way is chosen by its name and races (checked with the benchmark mode, which starts a race with a car by its `Vehicle Name`).
+
+`vehicledefs.vdef` is `EVOSLITLVDEF3-02`, a count (156) and records of 3616 bytes that start with a 32 byte name. The patch operations are
+
+```json
+{ "op": "vdef.clone", "file": "vehicledefs.vdef", "from": "Ferrari_458", "name": "my_458" }
+{ "op": "vdef.set", "file": "vehicledefs.vdef", "name": "my_458", "offset": 3052, "expect": 1565.0, "value": 1200.0 }
+```
+
+`offset` is counted from the start of the record. The only field identified so far is the mass in kilograms at offset 3052 (the correlation with the table's `Weight_Kg` over 131 cars is 0.99; the Ferrari 458 has 1565). Other offsets correlate with power, torque and handling but are not identified: the tyre blocks start near offset 48 (four wheels, 208 bytes each) and the engine data is around 900 to 1400.
+
+**A copy with its own model files does not load yet.** `dcmod car clone` copies the car's 29 asset-named files under a new Asset, lists them in `scripts/filemanifest.cfg` (the game's own list of its files) and renames the packs the car's pack requires, and the game opens the copied pack and then stops with a null read while it sets up texture streaming for it (the function at guest offset 0x5feee0 gets an empty pack handle). The cause is not known. It needs more reverse engineering of how a car's pack is registered; the command is kept for that work. Until then a car with a new model is not possible; a variant of an existing model is.
 
 ## Dashboards (the instruments inside the car)
 

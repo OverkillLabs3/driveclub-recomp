@@ -17,6 +17,9 @@ int Usage() {
         "dcmod car: new cars from existing ones\n"
         "\n"
         "  dcmod car files NAME            the table row of a car (NAME is its Vehicle Name) and every file named after it\n"
+        "  dcmod car variant NAME NEWNAME -o MODFOLDER\n"
+        "                                  a mod that adds NEWNAME as a car that shares the model, sounds and cameras of\n"
+        "                                  NAME and has its own copy of the vehicle definition (physics) to change\n"
         "  dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]\n"
         "                                  a mod that adds a copy of the car as NEWNAME (Vehicle Name) with the files\n"
         "                                  copied under the new Asset (default: NEWNAME). Experimental: the game opens the\n"
@@ -89,14 +92,15 @@ int RunCar(const std::vector<std::string>& argv) {
         for (const std::string& f : files) std::printf("  %s\n", f.c_str());
         return 0;
     }
-    if (cmd == "clone") {
+    if (cmd == "clone" || cmd == "variant") {
+        const bool variant = cmd == "variant";
         const std::string out = args.Get("-o", args.Get("--output"));
         if (out.empty() || args.positional.size() != 3) throw Error("usage: dcmod car clone NAME NEWNAME -o MODFOLDER [--asset ASSET]");
         const std::string fresh_name = args.positional[2];
-        const std::string fresh_asset = args.Get("--asset", fresh_name);
+        const std::string fresh_asset = variant ? asset : args.Get("--asset", fresh_name);
         for (size_t r = 1; r < doc.rows.size(); ++r) {
             if (doc.Get(r, size_t(name_col)) == fresh_name) throw Error("a car named \"" + fresh_name + "\" already exists");
-            if (doc.Get(r, size_t(asset_col)) == fresh_asset) throw Error("a car with the asset \"" + fresh_asset + "\" already exists");
+            if (!variant && doc.Get(r, size_t(asset_col)) == fresh_asset) throw Error("a car with the asset \"" + fresh_asset + "\" already exists");
         }
         long next_id = 0;
         for (size_t r = 1; r < doc.rows.size(); ++r) {
@@ -104,11 +108,23 @@ int RunCar(const std::vector<std::string>& argv) {
             if (!v.empty() && v.find_first_not_of("0123456789") == std::string::npos) next_id = std::max(next_id, std::stol(v));
         }
         Json patches = Json::Array();
+        const int def_col = doc.Column("Vehicle Def");
+        const std::string old_def = def_col >= 0 ? doc.Get(row, size_t(def_col)) : std::string();
+        const std::string fresh_def = variant ? fresh_name : fresh_asset;
+        if (!old_def.empty() && source.Canonical("vehicledefs.vdef").size()) {
+            Json def = Json::Object();
+            def.Set("op", "vdef.clone");
+            def.Set("file", "vehicledefs.vdef");
+            def.Set("from", old_def);
+            def.Set("name", fresh_def);
+            patches.Push(def);
+        }
         Json set = Json::Object();
+        if (!old_def.empty() && source.Canonical("vehicledefs.vdef").size()) set.Set("Vehicle Def", fresh_def);
         set.Set("Vehicle Name", fresh_name);
         set.Set("UniqueID", std::to_string(next_id + 1));
-        set.Set("Asset", fresh_asset);
-        if (doc.Column("Animation") >= 0 && doc.Get(row, size_t(doc.Column("Animation"))) == asset) set.Set("Animation", fresh_asset);
+        if (!variant) set.Set("Asset", fresh_asset);
+        if (!variant && doc.Column("Animation") >= 0 && doc.Get(row, size_t(doc.Column("Animation"))) == asset) set.Set("Animation", fresh_asset);
         Json add = Json::Object();
         add.Set("op", "csv.add");
         add.Set("file", table_path);
@@ -117,12 +133,31 @@ int RunCar(const std::vector<std::string>& argv) {
         add.Set("after", name);
         add.Set("row", set);
         patches.Push(add);
-        for (const std::string& f : files) {
+        for (const std::string& f : variant ? std::vector<std::string>() : files) {
             Json op = Json::Object();
             op.Set("op", "file.copy");
             op.Set("from", f);
             op.Set("file", Rename(f, asset, fresh_asset));
             patches.Push(op);
+            // The car's own pack lists the packs it requires by asset name.
+            if (StartsWith(f, "vehicles/") && !EndsWith(f, "_top_mips.rpk") && EndsWith(f, ".rpk")) {
+                Json ren = Json::Object();
+                ren.Set("op", "rpk.rename");
+                ren.Set("file", Rename(f, asset, fresh_asset));
+                ren.Set("find", asset);
+                ren.Set("replace", fresh_asset);
+                ren.Set("scope", "required");
+                patches.Push(ren);
+            }
+        }
+        if (!variant && source.Canonical("scripts/filemanifest.cfg").size()) {
+            Json listed = Json::Object();
+            listed.Set("op", "manifest.add");
+            listed.Set("file", "scripts/filemanifest.cfg");
+            Json paths = Json::Array();
+            for (const std::string& f : files) paths.Push(Rename(f, asset, fresh_asset));
+            listed.Set("paths", paths);
+            patches.Push(listed);
         }
         Json manifest = Json::Object();
         manifest.Set("id", Lower(fresh_name));
@@ -130,7 +165,8 @@ int RunCar(const std::vector<std::string>& argv) {
         manifest.Set("version", "1.0");
         manifest.Set("patches", patches);
         WriteText(fs::path(out) / "mod.json", manifest.Dump());
-        std::printf("%zu files will be copied; mod written to %s\n", files.size(), out.c_str());
+        if (variant) std::printf("a new row and a copy of the vehicle definition; mod written to %s\n", out.c_str());
+        else std::printf("%zu files will be copied; mod written to %s\n", files.size(), out.c_str());
         return 0;
     }
     return Usage();

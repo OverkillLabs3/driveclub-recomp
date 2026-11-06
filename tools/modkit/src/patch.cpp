@@ -325,6 +325,78 @@ size_t ReplaceConsts(LuaProto& f, const LuaConst& from, const LuaConst& to, cons
     return n;
 }
 
+// scripts/filemanifest.cfg lists every file of the game by folder: "/folder" opens one, its files follow by name, "/.."
+// closes it. The game's own file system works from this list, so a new file that is not in it is unknown to the game.
+struct ManifestNode {
+    std::vector<std::pair<std::string, int>> kids;  // the line as written, and the folder's index (or -1 for a file)
+};
+
+std::vector<ManifestNode> ParseManifest(const std::string& text) {
+    std::vector<ManifestNode> nodes(1);
+    std::vector<int> stack{0};
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t e = text.find('\n', pos);
+        if (e == std::string::npos) e = text.size();
+        const std::string line = text.substr(pos, e - pos);
+        pos = e + 1;
+        if (line == "/..") {
+            if (stack.size() > 1) stack.pop_back();
+            else nodes[0].kids.emplace_back(line, -1);  // the file ends with one closing line too many; keep it
+        } else if (!line.empty() && line[0] == '/') {
+            nodes.emplace_back();
+            nodes[size_t(stack.back())].kids.emplace_back(line, int(nodes.size()) - 1);
+            stack.push_back(int(nodes.size()) - 1);
+        } else {
+            nodes[size_t(stack.back())].kids.emplace_back(line, -1);
+        }
+    }
+    return nodes;
+}
+
+void WriteManifest(const std::vector<ManifestNode>& nodes, int at, std::string& out) {
+    for (const auto& [line, child] : nodes[size_t(at)].kids) {
+        out += line + "\n";
+        if (child >= 0) {
+            WriteManifest(nodes, child, out);
+            out += "/..\n";
+        }
+    }
+}
+
+void ManifestAdd(std::vector<ManifestNode>& nodes, const std::string& path) {
+    int at = 0;
+    std::string rest = GamePath(path);
+    for (size_t slash; (slash = rest.find('/')) != std::string::npos; rest.erase(0, slash + 1)) {
+        const std::string dir = rest.substr(0, slash);
+        int next = -1;
+        for (const auto& [line, child] : nodes[size_t(at)].kids) {
+            if (child >= 0 && Lower(line.substr(1)) == Lower(dir)) {
+                next = child;
+                break;
+            }
+        }
+        if (next < 0) {
+            nodes.emplace_back();
+            next = int(nodes.size()) - 1;
+            nodes[size_t(at)].kids.emplace_back("/" + dir, next);
+        }
+        at = next;
+    }
+    auto& kids = nodes[size_t(at)].kids;
+    for (const auto& k : kids) {
+        if (k.second < 0 && Lower(k.first) == Lower(rest)) return;  // already listed
+    }
+    size_t place = kids.size();
+    for (size_t i = 0; i < kids.size(); ++i) {
+        if (kids[i].second < 0 && Lower(kids[i].first) > Lower(rest)) {
+            place = i;
+            break;
+        }
+    }
+    kids.insert(kids.begin() + std::ptrdiff_t(place), {rest, -1});
+}
+
 // The operations that work on the content of a file or of a resource inside a pack. Returns false when `name` is not
 // one of them.
 bool ContentOp(const std::string& name, Params& p, const std::string& label, Bytes& data, PatchEnv& env) {
@@ -545,6 +617,79 @@ bool ContentOp(const std::string& name, Params& p, const std::string& label, Byt
         }
         return true;
     }
+    if (name == "manifest.add") {
+        const Json* paths = p.Get("paths");
+        if (!paths || !paths->IsArray()) throw Error("the field \"paths\" (a list of game paths) is required");
+        p.Done();
+        TextFile tf = TextFile::Load(data);
+        std::vector<ManifestNode> nodes = ParseManifest(tf.text);
+        for (const Json& j : paths->Items()) ManifestAdd(nodes, j.AsString());
+        std::string out;
+        WriteManifest(nodes, 0, out);
+        tf.text = out;
+        data = tf.Save();
+        return true;
+    }
+    if (name == "vdef.set") {
+        // Sets a number in one record of vehicledefs.vdef: "offset" is counted from the start of the record (its name).
+        const std::string rec = p.Str("name");
+        const int64_t offset = p.Int("offset", -1);
+        const Json* value = p.Get("value");
+        const std::string type = p.Str("type", "float");
+        const Json* expect = p.Get("expect");
+        p.Done();
+        constexpr size_t kHead = 20, kRecord = 3616, kName = 32;
+        if (data.size() < kHead || std::memcmp(data.data(), "EVOSLITLVDEF", 12) != 0) throw Error("this is not a vehicle definitions file");
+        if (offset < int64_t(kName) || offset + 4 > int64_t(kRecord) || offset % 4 != 0) throw Error("\"offset\" must be a multiple of 4 inside the record, after its name (32 to 3612)");
+        if (!value || !value->IsNumber()) throw Error("\"value\" must be a number");
+        const uint32_t count = Rd32(&data[16]);
+        for (uint32_t i = 0; i < count; ++i) {
+            uint8_t* r = &data[kHead + size_t(i) * kRecord];
+            if (std::strncmp(reinterpret_cast<const char*>(r), rec.c_str(), kName) != 0) continue;
+            uint8_t* at = r + offset;
+            if (expect && expect->IsNumber()) {
+                float have;
+                std::memcpy(&have, at, 4);
+                if (type == "float" ? have != float(expect->AsNumber()) : Rd32(at) != uint32_t(expect->AsInt())) throw Error("the value at that offset is not the expected one (different game version?)");
+            }
+            if (type == "float") {
+                const float f = float(value->AsNumber());
+                std::memcpy(at, &f, 4);
+            } else if (type == "u32") {
+                Put32(data, size_t(at - data.data()), uint32_t(value->AsInt()));
+            } else {
+                throw Error("\"type\" must be float or u32");
+            }
+            return true;
+        }
+        throw Error("no vehicle definition named " + rec);
+    }
+    if (name == "vdef.clone") {
+        // vehicledefs.vdef: "EVOSLITLVDEF3-02", a u32 count, then records of 3616 bytes that start with a 32 byte name
+        // (padded with 'w'). A copy of one record under a new name is added at the end.
+        const std::string from = p.Str("from"), fresh = p.Str("name");
+        p.Done();
+        constexpr size_t kHead = 20, kRecord = 3616, kName = 32;
+        if (data.size() < kHead || std::memcmp(data.data(), "EVOSLITLVDEF", 12) != 0) throw Error("this is not a vehicle definitions file");
+        const uint32_t count = Rd32(&data[16]);
+        if (kHead + size_t(count) * kRecord > data.size()) throw Error("the vehicle definitions file is not laid out as expected (version " + std::string(reinterpret_cast<const char*>(&data[12]), 4) + ")");
+        if (fresh.empty() || fresh.size() >= kName) throw Error("the new name must be 1 to 31 characters");
+        const auto record_name = [&](size_t i) { return std::string(reinterpret_cast<const char*>(&data[kHead + i * kRecord]), strnlen(reinterpret_cast<const char*>(&data[kHead + i * kRecord]), kName)); };
+        size_t found = count;
+        for (size_t i = 0; i < count; ++i) {
+            if (record_name(i) == fresh) throw Error("a vehicle definition named " + fresh + " exists");
+            if (record_name(i) == from) found = i;
+        }
+        if (found == count) throw Error("no vehicle definition named " + from);
+        Bytes copy(data.begin() + std::ptrdiff_t(kHead + found * kRecord), data.begin() + std::ptrdiff_t(kHead + (found + 1) * kRecord));
+        std::fill(copy.begin(), copy.begin() + std::ptrdiff_t(kName), uint8_t('w'));
+        std::copy(fresh.begin(), fresh.end(), copy.begin());
+        copy[fresh.size()] = 0;
+        const size_t end = kHead + size_t(count) * kRecord;
+        data.insert(data.begin() + std::ptrdiff_t(end), copy.begin(), copy.end());
+        Put32(data, 16, count + 1);
+        return true;
+    }
     if (name == "lua.const") {
         const Json* f = p.Get("find");
         const Json* r = p.Get("replace");
@@ -601,9 +746,32 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
         return;
     }
-    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set") {
+    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename") {
         const std::string file = p.Str("file");
         RpkPack& pack = ws.Pack(file);
+        if (name == "rpk.rename") {
+            // Text in the names a pack lists: the packs it requires, and optionally resource names or source paths.
+            const std::string find = p.Str("find"), repl = p.Str("replace"), scope = p.Str("scope", "required");
+            p.Done();
+            if (find.empty()) throw Error("\"find\" is empty");
+            if (scope != "required" && scope != "names" && scope != "sources" && scope != "all") throw Error("scope must be required, names, sources or all");
+            size_t changed = 0;
+            const auto edit = [&](std::string& s) {
+                for (size_t at = s.find(find); at != std::string::npos; at = s.find(find, at + repl.size())) {
+                    s.replace(at, find.size(), repl);
+                    ++changed;
+                }
+            };
+            if (scope == "required" || scope == "all") for (std::string& s : pack.required) edit(s);
+            for (RpkResource& r : pack.resources) {
+                if (scope == "names" || scope == "all") for (std::string& s : r.names) edit(s);
+                if (scope == "sources" || scope == "all") for (std::string& s : r.sources) edit(s);
+            }
+            if (scope == "names" || scope == "all") for (RpkAlias& a : pack.aliases) edit(a.name);
+            if (changed == 0) throw Error("\"" + find + "\" was not found in the " + scope + " names");
+            ws.PackChanged(file, env.mod, action(find + " -> " + repl));
+            return;
+        }
         if (name == "rpk.add") {
             RpkResource r;
             const int type = RpkTypeFromName(p.Str("type"));

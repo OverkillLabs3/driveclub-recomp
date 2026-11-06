@@ -87,3 +87,13 @@ For these, `file` is a pack such as `global.rpk`, and `resource` is a name from 
 ```
 
 A pack that is changed is written again with its resources in their original order, so a pack that mods leave alone is never touched.
+
+## Other game files
+
+`vdef.clone`: `file` (`vehicledefs.vdef`), `from` (a record name), `name` (the new record's name). Adds a copy of a vehicle definition.
+
+`vdef.set`: `file`, `name` (record), `offset` (from the start of the record), `value`, optional `type` (`float`, default, or `u32`) and `expect` (the value that must be there now). See [cars.md](cars.md).
+
+`manifest.add`: `file` (`scripts/filemanifest.cfg`), `paths` (game paths to list). The game's list of its own files; new files that the game should find by itself have to be in it.
+
+`rpk.rename`: `file` (a pack), `find`, `replace`, optional `scope` (`required`, default, `names`, `sources` or `all`). Changes text in the names a pack lists, for example the packs it requires.
