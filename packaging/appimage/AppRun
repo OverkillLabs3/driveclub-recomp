@@ -13,6 +13,7 @@
 #   DriveClub.AppImage --setup UPDATE BASE   save the folders and open the launcher
 #   DriveClub.AppImage --repair              prepare the game again and play
 #   DriveClub.AppImage --selftest            print paths and check the bundled libraries
+#   DriveClub.AppImage --cpu-selftest        aarch64: check the guest CPU (FEXCore) without the game
 #   DriveClub.AppImage --version
 set -euo pipefail
 
@@ -202,6 +203,7 @@ DriveClub Recomp (native Linux)
   DriveClub.AppImage --setup UPDATE BASE   Save the game folders and open the launcher.
   DriveClub.AppImage --repair              Prepare the game files again and play.
   DriveClub.AppImage --selftest            Print the paths and check the bundled libraries.
+  DriveClub.AppImage --cpu-selftest        aarch64: check the guest CPU (FEXCore) without the game.
   DriveClub.AppImage --version             Print the packaged version.
 
 Environment:
@@ -233,6 +235,13 @@ case ${1:-} in
     --version)
         if [ -f "$share/version.txt" ]; then cat "$share/version.txt"; else echo dev; fi
         exit 0
+        ;;
+    --cpu-selftest)
+        if [ ! -x "$bindir/driveclub-cpu-selftest" ]; then
+            echo "This AppImage runs the game's code on the host CPU (x86_64): no guest CPU to check."
+            exit 0
+        fi
+        exec "$bindir/driveclub-cpu-selftest"
         ;;
     --selftest)
         echo "APPIMAGE=$self"

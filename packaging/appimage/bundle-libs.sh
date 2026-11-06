@@ -80,6 +80,28 @@ in_package() {
     esac
 }
 
+# The direct dependencies of an ELF file, in ldd's "name => path" form. Cross builds (BB_ARCH set to another
+# architecture, e.g. aarch64 on x86_64) cannot run ldd on the target's programs: their DT_NEEDED entries are
+# read with readelf and looked up on LD_LIBRARY_PATH and the target's multiarch library folders instead.
+# collect() follows the dependencies of every library it copies, so direct ones are enough.
+dependencies() {
+    local elf=$1 target=${BB_ARCH:-$(uname -m)} name dir found
+    if [ "$target" = "$(uname -m)" ]; then
+        ldd "$elf" 2>/dev/null || true
+        return
+    fi
+    local dirs=()
+    IFS=: read -r -a dirs <<< "${LD_LIBRARY_PATH:-}"
+    dirs+=("/usr/lib/$target-linux-gnu" "/lib/$target-linux-gnu")
+    while IFS= read -r name; do
+        found=
+        for dir in "${dirs[@]}"; do
+            [ -n "$dir" ] && [ -e "$dir/$name" ] && { found=$dir/$name; break; }
+        done
+        if [ -n "$found" ]; then echo "	$name => $found (0x0)"; else echo "	$name => not found"; fi
+    done < <("${READELF:-readelf}" -d "$elf" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+}
+
 collect() {
     local elf=$1 line name path real base link
     is_elf "$elf" || return 0
@@ -121,7 +143,7 @@ collect() {
             seen[$base]=2
             collect "$real"
         fi
-    done < <(ldd "$elf" 2>/dev/null || true)
+    done < <(dependencies "$elf")
 }
 
 collect "$probe"

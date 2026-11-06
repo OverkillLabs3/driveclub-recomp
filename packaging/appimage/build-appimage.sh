@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Linux AppImage: release/driveclub-recomp-<version>-x86_64.AppImage.
+# Builds the Linux AppImage: release/driveclub-recomp-<version>-<arch>.AppImage (x86_64 or aarch64).
 #
 #   bash packaging/appimage/build-appimage.sh [version]
 #
@@ -14,6 +14,7 @@
 #   APPIMAGE_ZSTD_LEVEL, APPIMAGE_BLOCK
 #   APPIMAGE_RUNTIME   a local type-2 runtime instead of downloading it
 #   MKSQUASHFS         path to mksquashfs
+#   BB_ARCH            target architecture when cross-compiling (see build-linux.sh); STRIP its strip
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd -- "$here"
@@ -23,8 +24,12 @@ if [ -f "$deps/deps.env" ]; then
     # shellcheck disable=SC1090
     . "$deps/deps.env"
 fi
-arch=$(uname -m)
-[ "$arch" = x86_64 ] || { echo "The AppImage is built for x86_64 (this is $arch)." >&2; exit 1; }
+arch=${BB_ARCH:-$(uname -m)}
+case $arch in
+    x86_64|aarch64) ;;
+    *) echo "The AppImage is built for x86_64 or aarch64 (this is $arch)." >&2; exit 1 ;;
+esac
+export BB_ARCH=$arch
 
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
     bash build-linux.sh
@@ -33,10 +38,16 @@ probe=$here/out/driveclub-probe
 prepare=$here/out/driveclub-prepare
 launcher=$here/out/driveclub-launcher
 gpu=$here/out/gpu/libbbgpu.so
+selftest=$here/out/driveclub-cpu-selftest
+cpu=$here/out/fex/libbbcpu.so
 [ -f "$probe" ] || { echo 'Build first: bash build-linux.sh' >&2; exit 1; }
 [ -f "$prepare" ] || { echo 'Missing out/driveclub-prepare (bash build-linux.sh).' >&2; exit 1; }
 [ -f "$launcher" ] || { echo 'Missing out/driveclub-launcher (bash build-linux.sh).' >&2; exit 1; }
 [ -f "$gpu" ] || { echo 'Missing out/gpu/libbbgpu.so (bash build-linux.sh).' >&2; exit 1; }
+if [ "$arch" = aarch64 ]; then
+    [ -f "$cpu" ] || { echo 'Missing out/fex/libbbcpu.so (bash build-linux.sh).' >&2; exit 1; }
+    [ -f "$selftest" ] || { echo 'Missing out/driveclub-cpu-selftest (bash build-linux.sh).' >&2; exit 1; }
+fi
 
 build=$here/out/appimage
 appdir=$build/DriveClub.AppDir
@@ -52,12 +63,24 @@ install -m755 "$probe" "$appdir/usr/bin/driveclub-probe"
 install -m755 "$prepare" "$appdir/usr/bin/driveclub-prepare"
 install -m755 "$launcher" "$appdir/usr/bin/driveclub-launcher"
 install -m755 "$gpu" "$appdir/usr/lib/driveclub-recomp/gpu/libbbgpu.so"
+# aarch64: the game's x86-64 code runs in FEXCore's JIT (libbbcpu.so); driveclub-cpu-selftest checks it
+# without the game.
+if [ "$arch" = aarch64 ]; then
+    mkdir -p "$appdir/usr/lib/driveclub-recomp/cpu"
+    install -m755 "$cpu" "$appdir/usr/lib/driveclub-recomp/cpu/libbbcpu.so"
+    install -m755 "$selftest" "$appdir/usr/bin/driveclub-cpu-selftest"
+fi
 install -m644 launcher/assets/fonts/001futura-webfont.ttf "$port/fonts/001futura-webfont.ttf"
 # RelWithDebInfo builds carry debug info; the players do not need it. Only debug sections are removed:
 # the runtime_*/guest_cpu_* exports libbbgpu resolves stay in the dynamic symbol table.
-if command -v strip >/dev/null; then
-    strip --strip-debug "$appdir/usr/bin/driveclub-probe" "$appdir/usr/bin/driveclub-prepare" \
+strip_tool=${STRIP:-strip}
+if command -v "$strip_tool" >/dev/null; then
+    "$strip_tool" --strip-debug "$appdir/usr/bin/driveclub-probe" "$appdir/usr/bin/driveclub-prepare" \
         "$appdir/usr/bin/driveclub-launcher" "$appdir/usr/lib/driveclub-recomp/gpu/libbbgpu.so"
+    if [ "$arch" = aarch64 ]; then
+        "$strip_tool" --strip-debug "$appdir/usr/bin/driveclub-cpu-selftest" \
+            "$appdir/usr/lib/driveclub-recomp/cpu/libbbcpu.so"
+    fi
 fi
 printf '%s\n' "$version" > "$port/version.txt"
 install -m644 packaging/release/trophies.tsv "$port/trophies.tsv"
@@ -81,7 +104,7 @@ ln -s AppRun "$appdir/driveclub-recomp"
 # The bundled libraries. The staged GPU library comes first, so ldd resolves libbbgpu from the
 # AppDir without copying a second copy into usr/lib.
 echo 'Bundling shared libraries ...'
-LD_LIBRARY_PATH="$appdir/usr/lib/driveclub-recomp/gpu:${LD_LIBRARY_PATH:-}" \
+LD_LIBRARY_PATH="$appdir/usr/lib/driveclub-recomp/gpu:$appdir/usr/lib/driveclub-recomp/cpu:${LD_LIBRARY_PATH:-}" \
     bash packaging/appimage/bundle-libs.sh "$appdir"
 
 mksquashfs=${MKSQUASHFS:-$(command -v mksquashfs || true)}
@@ -90,15 +113,15 @@ if [ -n "${APPIMAGE_RUNTIME:-}" ]; then
     runtime=$APPIMAGE_RUNTIME
     [ -x "$runtime" ] || { echo "APPIMAGE_RUNTIME is not executable: $runtime" >&2; exit 1; }
 else
-    runtime=$build/runtime-x86_64
+    runtime=$build/runtime-$arch
 fi
 if [ ! -x "$runtime" ]; then
     echo "Fetching the AppImage type-2 runtime ..."
     if command -v curl >/dev/null; then
         curl -fL --retry 3 -o "$runtime" \
-            https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+            https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$arch
     elif command -v wget >/dev/null; then
-        wget -O "$runtime" https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64
+        wget -O "$runtime" https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$arch
     else
         echo 'Need curl or wget for the AppImage runtime, or set APPIMAGE_RUNTIME.' >&2
         exit 1
@@ -117,7 +140,7 @@ echo "Packing the squashfs ($comp, block $block) ..."
 "$mksquashfs" "$appdir" "$squashfs" -comp "$comp" "${comp_args[@]}" -b "$block" \
     -noappend -all-root -quiet
 
-out=$here/release/driveclub-recomp-$version-x86_64.AppImage
+out=$here/release/driveclub-recomp-$version-$arch.AppImage
 cat "$runtime" "$squashfs" > "$out"
 chmod +x "$out"
 sha256sum "$out" > "$out.sha256"
