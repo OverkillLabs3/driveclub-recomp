@@ -22,6 +22,9 @@ int Usage() {
         "  dcmod audio import BANK NAME FILE.wav -o OUT   encode FILE.wav (48 kHz, 16 bit or float, mono or stereo) as ATRAC9\n"
         "                                          in the stream's own configuration and put it in place of the stream NAME;\n"
         "                                          the bank is rebuilt, so the new sound may be longer or shorter\n"
+        "  dcmod audio items BANK                  the wave items the events play: stream, loops or plays once\n"
+        "  dcmod audio set BANK NAME [--use OTHER] [--loop on|off] -o OUT   the event of the stream NAME plays OTHER instead,\n"
+        "                                          and/or loops without end or plays once\n"
         "  dcmod audio replace BANK NAME FILE -o OUT   put FILE (an encoded stream: the superframes of 'extract') in place of NAME\n"
         "\n"
         "BANK is a file or @path in the game's archive (for example @audio/fmodstudio/music.bank). Convert other audio to\n"
@@ -239,6 +242,45 @@ Bytes RebuildBank(const Bytes& bank, const Fsb& fsb, size_t which, const Bytes& 
     return out;
 }
 
+// The bank's event data. A wave item (a WAIT chunk, 429 bytes) is what an event plays: it names a WAV chunk by its
+// identifier (the last 16 bytes) and holds the loop setting (a count of -1 for a loop without end at byte 40, a flag at 44).
+// A WAV chunk (24 bytes) is an identifier and the number of the stream in the bank (at 20).
+struct Item {
+    size_t wait = 0, wav = 0;  // where the WAIT and its WAV chunk begin (their bodies)
+    uint32_t stream = 0;
+};
+
+std::vector<Item> FindItems(const Bytes& d) {
+    std::vector<size_t> waits, wavs;
+    std::function<void(size_t, size_t, const std::string&)> walk = [&](size_t p, size_t end, const std::string& path) {
+        while (p + 8 <= end) {
+            const uint32_t size = Rd32(&d[p + 4]);
+            const size_t body = p + 8;
+            if (body + size > end) return;
+            const std::string tag(reinterpret_cast<const char*>(&d[p]), 4);
+            if (tag == "LIST" || tag == "RIFF") {
+                walk(body + 4, body + size, path + "/" + std::string(reinterpret_cast<const char*>(&d[body]), 4));
+            } else if (path == "/PROJ/WAIS" && tag == "WAIT" && size == 429) {
+                waits.push_back(body);
+            } else if (path == "/PROJ/WAVS" && tag == "WAV " && size == 24) {
+                wavs.push_back(body);
+            }
+            p = body + size + (size & 1);
+        }
+    };
+    if (d.size() > 12) walk(12, d.size(), "");
+    std::vector<Item> out;
+    for (const size_t w : waits) {
+        for (const size_t v : wavs) {
+            if (std::memcmp(&d[w + 413], &d[v], 16) == 0) {
+                out.push_back({w, v, Rd32(&d[v + 20])});
+                break;
+            }
+        }
+    }
+    return out;
+}
+
 Bytes LoadBank(const Args& args, const std::string& spec) {
     if (spec.empty() || spec[0] != '@') return ReadFile(spec);
     auto archive = OpenGame(args);
@@ -252,7 +294,7 @@ Bytes LoadBank(const Args& args, const std::string& spec) {
 int RunAudio(const std::vector<std::string>& argv) {
     if (argv.empty()) return Usage();
     const std::string cmd = argv[0];
-    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output"});
+    const Args args = ParseArgs(argv, {"--update", "--base", "--game", "-o", "--output", "--use", "--loop"});
     if (args.positional.size() < 2) return Usage();
     const Bytes bank = LoadBank(args, args.positional[1]);
     const Fsb fsb = ParseBank(bank);
@@ -297,6 +339,40 @@ int RunAudio(const std::vector<std::string>& argv) {
         const Bytes data = ReadFile(args.positional[3]);
         WriteFile(out, RebuildBank(bank, fsb, i, data, fsb.streams[i].samples));
         std::printf("replaced %s (%zu bytes instead of %zu); written to %s\n", fsb.streams[i].name.c_str(), data.size(), fsb.streams[i].size, out.c_str());
+        return 0;
+    }
+    if (cmd == "items") {
+        const std::vector<Item> items = FindItems(bank);
+        std::printf("%zu wave items (what the events play)\n", items.size());
+        for (const Item& it : items) {
+            const bool inf = Rd32(&bank[it.wait + 40]) == 0xFFFFFFFFu;
+            std::printf("%-40s stream %3u  %s\n", it.stream < fsb.streams.size() ? fsb.streams[it.stream].name.c_str() : "?", it.stream, inf ? "loops" : "plays once");
+        }
+        return 0;
+    }
+    if (cmd == "set") {
+        // dcmod audio set BANK NAME [--use OTHER] [--loop on|off] -o OUT: the event that plays the stream NAME plays OTHER
+        // instead (OTHER's data, so one stream can serve several events), and/or loops without end or not at all
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty() || args.positional.size() < 3) throw Error("set needs BANK NAME [--use OTHER] [--loop on|off] -o OUT");
+        const size_t i = find_stream(args.positional[2]);
+        Bytes edited = bank;
+        size_t n = 0;
+        for (const Item& it : FindItems(bank)) {
+            if (it.stream != i) continue;
+            ++n;
+            if (args.Has("--loop")) {
+                const std::string v = args.Get("--loop");
+                if (v != "on" && v != "off") throw Error("--loop is on or off");
+                const uint32_t count = v == "on" ? 0xFFFFFFFFu : 0;
+                Put32(edited, it.wait + 40, count);
+                edited[it.wait + 44] = v == "on" ? 1 : 0;
+            }
+            if (args.Has("--use")) Put32(edited, it.wav + 20, uint32_t(find_stream(args.Get("--use"))));
+        }
+        if (!n) throw Error("no event plays " + args.positional[2]);
+        WriteFile(out, edited);
+        std::printf("changed %zu wave items of %s; written to %s\n", n, args.positional[2].c_str(), out.c_str());
         return 0;
     }
     if (cmd == "wav") {

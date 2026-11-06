@@ -17,6 +17,16 @@ dcmod audio replace @audio/fmodstudio/gui.bank NAME stream.raw -o mymod/audio/fm
 - `import` encodes a WAV file (48 kHz; 8, 16, 24, 32 bit or float; mono or stereo, which is mixed or duplicated to the stream's channels) as ATRAC9 in the configuration of the stream it replaces, and **rebuilds the bank**: the new sound may be shorter or longer than the old one. The other streams and the bank's event data are left as they are. Convert other audio to WAV first, for example `ffmpeg -i song.mp3 -ar 48000 -sample_fmt s16 song.wav`.
 - `extract` writes each stream as `NAME.raw` (its superframes, as the game's decoder reads them) and a `streams.json`; `replace` puts such a file back (any length, the bank is rebuilt).
 
+## Events: what plays, and whether it loops
+
+```
+dcmod audio items @audio/fmodstudio/gui.bank                          # what the events play: stream and loops or plays once
+dcmod audio set @audio/fmodstudio/gui.bank NAME --use OTHER -o mymod/audio/fmodstudio/gui.bank   # the event of NAME plays OTHER
+dcmod audio set @audio/fmodstudio/gui.bank NAME --loop on -o mymod/audio/fmodstudio/gui.bank     # loops without end (off: plays once)
+```
+
+A bank holds one wave item per stream: a record of the event data that names the stream (by number) and holds the loop setting. `set --use` changes which stream the item plays, so one stream's data can serve several events and no copy is needed; `--loop` writes the loop setting of the item. Volume and pitch of an item were not located in the data, and which of several items an event picks (the menu music event chooses among several tracks) is not changed by this.
+
 The sound that plays for an event is chosen by the bank's event data, which the kit does not edit: to change what a game sound is, import over the stream it plays (`info` and the names tell which; the sounds with `_L` and `_R` are the left and right sounds of a stereo pair, and `_Ls`, `_Rs` their short versions).
 
 ## What was checked
@@ -30,11 +40,16 @@ The sound that plays for an event is chosen by the bank's event data, which the 
 - It writes what the game's decoder (LibAtrac9, MIT licence, `third_party/LibAtrac9`) reads and uses its tables. Frames are mono blocks (a stereo stream is two blocks per frame, no joint stereo) at 48 kHz, with fixed length scale factors, a constant bit allocation gradient chosen per block, and Huffman coded spectra. For each block the band count and gradient value that give the least error within the frame budget are chosen; the budget is the stream's own (the game's streams use 56 to 64 bytes per block and frame, about 84 to 96 kbit/s per channel).
 - The stream's configuration (frame size, channel layout) is taken from the stream that is replaced. Only configurations with 48 kHz and mono blocks can be written, which is every configuration in the game's banks (the three that exist: one mono block of 56 byte frames, two mono blocks of 112 or 128 byte frames).
 - The decoder's first block (256 samples, 5 ms) is a start up block: the new sound starts that much later than the file. `wav` drops the same 256 samples, so a sound goes out and comes back at the same place.
-- The loop points and the volume of a sound are in the bank's event data, not in the stream. The kit does not change them, so a sound that loops in the game keeps looping the way its event says.
+- Whether a sound loops is in the bank's event data (`audio set --loop`); the volume is too, and the kit does not change it.
 - It is a plain encoder, not a tuned one: it has no psychoacoustic model, no joint stereo and no band extension. Music encoded with it is a little worse than the game's own encodes at the same rate.
 
 ## Limits
 
-- The bank's event and routing data (which event plays which stream) is not edited by the kit.
+- The bank's other event data (timelines, buses, parameters, volume, pitch, how an event chooses among items) is not edited by the kit.
 - A longer stream was tried in the game: `countdown_expired_positive01_L` (12 KB, 1.2 s) replaced by a 30 s tone (315 KB); the decoder received 562 of its frames in a 25 s run, more than the original has, so the game reads past the old length. A 400 s stereo file was imported over a `music.bank` frontend track (stream 9.6 MB, the bank grows to 250 MB) and decodes back in full with `wav`; the menu music of the home screen is `dc_track5_hybrid_frontend` (found by matching the frames the decoder gets, `DC_AUDIO_DUMP`, against every stream of every bank). A 3 minute 7 second FLAC track converted with `ffmpeg -i in.flac -ar 48000 -ac 2 -sample_fmt s16 song.wav` and imported over all five `dc_track*_hybrid_frontend` streams was heard playing at the home menu, and its frames were what the decoder received.
 - A music bank is large (240 MB). Ship a changed `music.bank` only when the mod is about music.
+
+## What was checked for events
+
+- `set --use`: `countdown_expired_positive01_L` pointed at `UX_Confirm_03_L`; in a race start the decoder received none of the countdown sound's frames and 102 frames of the confirm sound, while the R sound next to it was unchanged.
+- `set --loop on`: `countdown_expired_positive01_R` made to loop; the same frames reached the decoder 7 times in the run against 1 to 2 times without it.
