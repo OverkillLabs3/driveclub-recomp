@@ -38,3 +38,15 @@ World packs are large (150 MB). They are read through the mods folder like any o
 ## Unreal Engine and others
 
 The `.glb` files import into Unreal (glTF importer plugin or Interchange), Unity and any tool that reads glTF. Keep the object names when exporting back.
+
+## A model from another game
+
+A model made elsewhere (or taken from another game with that game's own tools, where its licence allows it) goes onto the car by taking the place of one of the car's parts:
+
+1. Export the part you want to replace, for example the body: `dcmod mesh export built1/vehicles/my_car.rpk -o body.glb "*_BODYShape"`, and open it in Blender next to your model.
+2. Bring your model to the same size and place. The game uses metres and Y up: the Ferrari's body spans x from -0.97 to 0.97 (width), y from 0 to 1.08 (height) and z from -2.0 to 1.66 (length) around the car's origin, with the wheels' centres at the height of their radius. Scale and rotate your model to fit, and check the placement against the exported parts.
+3. Give your object the name of the part it replaces (`ID_N_NAME`) and delete the old part's object. One object can replace one part; a part with several sub meshes (the body has one for each material) gets one object per sub mesh, so cut your model by material.
+4. Make the UV map: textures are the game's own sheets (the part keeps its material), so either paint a new texture for the material with `dcmod tex` or `tex.set`, or lay out the UVs over the existing texture.
+5. Export glTF binary with normals on and import it with `dcmod mesh import`.
+
+Only the geometry comes across: the part keeps the material (shader, textures) of the sub mesh it replaces, skin weights are not imported (a car body has none), and the collision and the physics of the car do not change with its looks. The tools were tested with models made by editing the car's own parts; a model from another program follows the same path but has not been tried.
