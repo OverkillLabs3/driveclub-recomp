@@ -17,6 +17,8 @@ int Usage() {
         "dcmod car: new cars from existing ones\n"
         "\n"
         "  dcmod car files NAME            the table row of a car (NAME is its Vehicle Name) and every file named after it\n"
+        "  dcmod car swap DONOR VICTIM -o MODFOLDER\n"
+        "                                  a mod that gives the car VICTIM the model and textures of the car DONOR\n"
         "  dcmod car variant NAME NEWNAME -o MODFOLDER\n"
         "                                  a mod that adds NEWNAME as a car that shares the model, sounds and cameras of\n"
         "                                  NAME and has its own copy of the vehicle definition (physics) to change\n"
@@ -90,6 +92,40 @@ int RunCar(const std::vector<std::string>& argv) {
         }
         std::printf("\n%zu files are named after the asset \"%s\":\n", files.size(), asset.c_str());
         for (const std::string& f : files) std::printf("  %s\n", f.c_str());
+        return 0;
+    }
+    if (cmd == "swap") {
+        // dcmod car swap DONOR VICTIM -o MODFOLDER: the victim car gets the donor's model and textures.
+        const std::string out = args.Get("-o", args.Get("--output"));
+        if (out.empty() || args.positional.size() != 3) throw Error("usage: dcmod car swap DONOR VICTIM -o MODFOLDER");
+        size_t victim_row = 0;
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            if (doc.Get(r, size_t(name_col)) == args.positional[2]) victim_row = r;
+        }
+        if (!victim_row) throw Error("no car has the Vehicle Name \"" + args.positional[2] + "\"");
+        const std::string victim = doc.Get(victim_row, size_t(asset_col));
+        Json patches = Json::Array();
+        const auto add = [&](const char* op, const std::vector<std::pair<const char*, std::string>>& kv) {
+            Json j = Json::Object();
+            j.Set("op", op);
+            for (const auto& [k, v] : kv) j.Set(k, v);
+            patches.Push(j);
+        };
+        for (const char* suffix : {".rpk", "_top_mips.rpk"}) {
+            const std::string from = "vehicles/" + asset + suffix;
+            if (source.Canonical(from).empty()) continue;
+            add("file.copy", {{"from", from}, {"file", "vehicles/" + victim + suffix}});
+        }
+        for (const char* scope : {"required", "names"}) {
+            add("rpk.rename", {{"file", "vehicles/" + victim + ".rpk"}, {"find", asset}, {"replace", victim}, {"scope", scope}});
+        }
+        Json manifest = Json::Object();
+        manifest.Set("id", Lower(victim) + "-as-" + Lower(asset));
+        manifest.Set("name", name + " model on " + args.positional[2]);
+        manifest.Set("version", "1.0");
+        manifest.Set("patches", patches);
+        WriteText(fs::path(out) / "mod.json", manifest.Dump());
+        std::printf("%s will show the model of %s; mod written to %s\n", args.positional[2].c_str(), name.c_str(), out.c_str());
         return 0;
     }
     if (cmd == "clone" || cmd == "variant") {

@@ -30,7 +30,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Graphics and level of detail settings inside `global.rpk` and other packs | `rpk.patch` with `xml.*` |
 | Any resource inside a pack (add, replace, remove) | `rpk.*` patches |
 | Compiled Lua scripts (rewards, game configuration, drift scoring, UI logic) | `lua.const` patches, or replace the script with Lua source |
-| A new car as a copy of an existing one | `file.copy`, `csv.add`, `rpk.patch` |
+| A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 
 ## Limits

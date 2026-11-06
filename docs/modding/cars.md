@@ -22,6 +22,10 @@ For `ferrari_458_italia` they are `vehicles/ferrari_458_italia.rpk` (model, mate
 
 Changing a car **in place** (its table row, its pack, its cameras) is the way that works.
 
+## Giving a car another model
+
+`dcmod car swap DONOR VICTIM -o MODFOLDER` writes a mod that gives the car VICTIM the model and textures of the car DONOR: it copies the donor's pack and top mips pack over the victim's, and renames the packs the copy requires and the asset name in its resource names to the victim's. Everything else of the victim (table row, physics, sounds, cameras, dashboard) stays. In the running game, with `dcmod car swap fe_458 a45_amg`, starting a race with the Mercedes A45 AMG shows the Ferrari 458 Italia (a picture of the game window during the race shows its body and badge). The donor can also be a pack you changed yourself with `rpk` and `tex`.
+
 ## Adding a new car
 
 **A variant works.** `dcmod car variant NAME NEWNAME -o MODFOLDER` writes a mod that adds a new row to `newdata/vehicles.csv` (its own name and unique number) and a copy of the car's record in `vehicledefs.vdef` under the new name, which the row uses as its `Vehicle Def`. The new car shares the model, textures, sounds and cameras of the original and has its own physics definition and table values. In the running game a car made this way is chosen by its name and races (checked with the benchmark mode, which starts a race with a car by its `Vehicle Name`), and the game's own vehicle list (`GameState.GetVehicles`, read by a mod script) holds the new car next to the original, with `class=3`.
