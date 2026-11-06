@@ -69,7 +69,7 @@ If both set the same cell, the output has `conflict: newdata/vehicles.csv | a45_
 dcmod mesh export @vehicles/ferrari_458_italia.rpk -o ferrari.glb
 ```
 
-Open `ferrari.glb` in Blender (File > Import > glTF). Move vertices, keep every object's name and its number of vertices and triangles, select the objects and export glTF binary with normals, texture coordinates and materials off. Then:
+Open `ferrari.glb` in Blender (File > Import > glTF). Move vertices, add or remove triangles, keep every object's name, select the objects and export glTF binary with normals and materials off (texture coordinates on only if you changed them; Blender then splits vertices along UV seams, and the new vertices take the normals of the nearest old one). Then:
 
 ```
 dcmod mesh import @vehicles/ferrari_458_italia.rpk edited.glb -o mymod/files/vehicles/ferrari_458_italia.rpk

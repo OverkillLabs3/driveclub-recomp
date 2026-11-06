@@ -18,6 +18,17 @@ for pack in vehicles/ferrari_458_italia.rpk worlds/canada_road_circuit_02_n.rpk;
     echo "ok mesh round trip: $pack"
 done
 
+# fewer triangles in one part, more of both in another: the pack must read back with the new counts
+py=python; "$py" -V > /dev/null 2>&1 || py=python3
+pack=vehicles/ferrari_458_italia.rpk
+"$exe" mesh export "@$pack" -o "$tmp/body.glb" "0008a48ef19c8161_*" > /dev/null
+"$py" -I tools/modkit/tests/glbedit.py "$tmp/body.glb" "$tmp/body2.glb" half4 dup5 > /dev/null
+"$exe" mesh import "@$pack" "$tmp/body2.glb" -o "$tmp/grown.rpk" > /dev/null
+"$exe" rpk verify "$tmp/grown.rpk" > /dev/null
+"$exe" mesh info "$tmp/grown.rpk" | grep -q "0008a48ef19c8161_4_BODYShape  *9348 vertices  *7076 triangles"
+"$exe" mesh info "$tmp/grown.rpk" | grep -q "0008a48ef19c8161_5_BODYShape  *120 vertices  *136 triangles"
+echo "ok mesh with changed counts"
+
 "$exe" audio info @audio/fmodstudio/gui.bank | head -1 | grep -q "codec atrac9"
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/a" UX_Confirm_03_L > /dev/null
 "$exe" audio extract @audio/fmodstudio/gui.bank -o "$tmp/b" UX_accolade_ticker_02_L > /dev/null

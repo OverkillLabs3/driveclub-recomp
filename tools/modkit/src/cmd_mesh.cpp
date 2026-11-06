@@ -3,7 +3,8 @@
 //
 // A model pack has "mesh" resources. Each depends on a position stream (a vertex buffer of 12 byte XYZ floats), a
 // attribute stream (normals, texture coordinates and so on, not decoded here) and an index buffer, and holds one or more
-// sub meshes: four 32 bit numbers (lowest vertex, highest vertex, first index, index count) after the bytes 02 03.
+// sub meshes: four 32 bit numbers (lowest vertex, highest vertex, first index, index count) after the bytes 02 03, and a
+// table at the end of the mesh (3, lowest vertex, 0, first index, index count) that the game draws from.
 // The indices are absolute positions in the vertex buffer and form a triangle list.
 #include "cli.hpp"
 #include "json.hpp"
@@ -28,9 +29,9 @@ int Usage() {
         "                                              glTF objects that came from it\n"
         "\n"
         "PACK is a file or @path in the game's archive. Objects are named ID_N_NAME (the mesh's identifier and the\n"
-        "sub mesh number); keep that prefix when renaming. An object must keep its number of vertices and triangles:\n"
-        "positions can be moved and triangles reconnected, the other vertex data (normals, texture coordinates, skin\n"
-        "weights) stays as it was. Axes are the game's own (Y up).");
+        "sub mesh number); keep that prefix when renaming. An object may have more or fewer vertices and triangles\n"
+        "than the game's: extra data goes to the end of the buffers and a new vertex copies the normals and weights\n"
+        "of the nearest old one. Axes are the game's own (Y up).");
     return 2;
 }
 
@@ -41,6 +42,7 @@ struct Sub {
     int uv_off = -1;  // where the texture coordinate (two floats) sits in a vertex of the attribute stream
     uint32_t stride = 0;
     uint32_t lo = 0, hi = 0, first = 0, count = 0, k = 0;
+    std::vector<size_t> recs;  // where the mesh data holds this sub mesh's record (the bytes 02 03), often several times
     std::string name;
     uint32_t vertices() const { return hi - lo + 1; }
 };
@@ -116,6 +118,7 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
         };
         uint32_t k = 0;
         std::vector<std::array<uint64_t, 5>> seen;
+        std::vector<size_t> seen_at;  // the entry of `out` that each key made
         for (size_t i = 0; i + 18 <= m.data.size(); ++i) {
             if (m.data[i] != 2 || m.data[i + 1] != 3) continue;
             const uint32_t lo = Rd32(&m.data[i + 2]), hi = Rd32(&m.data[i + 6]), first = Rd32(&m.data[i + 10]), cnt = Rd32(&m.data[i + 14]);
@@ -127,10 +130,16 @@ std::vector<Sub> FindSubs(const RpkPack& pack) {
             for (uint32_t t = 0; t < cnt && inside; ++t) inside = Rd16(ix + t * 2) >= lo && Rd16(ix + t * 2) <= hi;
             if (!inside) continue;
             const std::array<uint64_t, 5> key{pos, ib, lo, hi, (uint64_t(first) << 32) | cnt};
-            if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+            const auto dup = std::find(seen.begin(), seen.end(), key);
+            if (dup != seen.end()) {
+                out[seen_at[size_t(dup - seen.begin())]].recs.push_back(i);
+                continue;
+            }
             seen.push_back(key);
+            seen_at.push_back(out.size());
             Sub s;
             s.mesh = m.id, s.pos = pos, s.pos_stride = Rd16(pack.Find(pos)->data.data() + 22), s.half = PositionKind(*pack.Find(pos)) == 2, s.ib = ib, s.lo = lo, s.hi = hi, s.first = first, s.count = cnt, s.k = k++;
+            s.recs.push_back(i);
             // the attribute stream that has as many vertices as the position stream
             std::vector<uint64_t> same;
             for (uint64_t a : attrs) {
@@ -325,6 +334,132 @@ RpkPack LoadPack(const Args& args, const std::string& spec) {
     return RpkPack::Parse(archive->Read(*e));
 }
 
+// Writes the glTF object `prim` (positions `p`, texture coordinates, triangles) into the sub mesh. Vertices and triangles
+// may be fewer or more than the game's. Extra vertices go to the end of the position and attribute buffers (the
+// attribute data of the nearest old vertex is copied), extra triangles to the end of the index buffer.
+void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, const std::vector<double>& p, const std::string& name) {
+    const size_t nv_new = p.size() / 3;
+    if (!nv_new) throw Error(name + ": has no vertices");
+    std::vector<double> uvs;
+    if (sub.uv_off >= 0 && prim.Find("attributes")->Has("TEXCOORD_0")) {
+        uvs = Accessor(g, prim.Find("attributes")->GetInt("TEXCOORD_0"), 2);
+        if (uvs.size() != nv_new * 2) uvs.clear();
+    }
+    RpkResource* vb = pack.Find(sub.pos);
+    RpkResource* av = sub.attr ? pack.Find(sub.attr) : nullptr;
+    const uint32_t nv = sub.vertices();
+    const size_t csize = sub.half ? 2 : 4;
+    const auto put_pos = [&](uint8_t* dst, size_t i) {
+        for (size_t c = 0; c < 3; ++c) {
+            const float f = float(p[i * 3 + c]);
+            // a position that is the same after rounding stays as it is
+            if (sub.half) {
+                const uint16_t h = FloatToHalf(f);
+                if (HalfToFloat(h) != Clean(HalfToFloat(Rd16(dst + c * 2))) && h != Rd16(dst + c * 2)) std::memcpy(dst + c * 2, &h, 2);
+            } else {
+                float old;
+                std::memcpy(&old, dst + c * 4, 4);
+                if (f != Clean(old)) std::memcpy(dst + c * 4, &f, 4);
+            }
+        }
+    };
+    const auto put_uv = [&](uint8_t* dst, size_t i) {
+        if (uvs.empty()) return;
+        float old[2];
+        const float now[2] = {float(uvs[i * 2]), 1.f - float(uvs[i * 2 + 1])};
+        std::memcpy(old, dst + sub.uv_off, 8);
+        if (std::fabs(old[0] - now[0]) > 1e-6f * std::max(1.f, std::fabs(old[0])) || std::fabs(old[1] - now[1]) > 1e-6f * std::max(1.f, std::fabs(old[1]))) std::memcpy(dst + sub.uv_off, now, 8);
+    };
+    const bool grow = nv_new > nv;
+    if (!grow) {
+        for (uint32_t i = 0; i < nv_new; ++i) {
+            put_pos(&vb->data[28 + size_t(sub.lo + i) * sub.pos_stride], i);
+            if (av) put_uv(&av->data[28 + size_t(sub.lo + i) * sub.stride], i);
+        }
+    }
+    // A part that grows is written whole at the end of the buffers (its old vertices stay unused), so its vertices
+    // stay one range. Vertices that are new get the other vertex data (normals, weights) of the old one that is nearest.
+    const uint32_t base = VbCount(*vb);
+    const uint32_t lo = grow ? base : sub.lo, hi = lo + uint32_t(nv_new) - 1;
+    if (grow) {
+        if (!av || VbCount(*av) != base) throw Error(name + ": has more vertices than the game's mesh, and the other vertex data of this mesh cannot be extended");
+        if (uint64_t(base) + nv_new > 65535) throw Error(name + ": the vertex buffer cannot hold that many vertices (16 bit indices)");
+        std::vector<std::array<float, 3>> old_pos(nv);
+        for (uint32_t i = 0; i < nv; ++i) {
+            for (size_t c = 0; c < 3; ++c) {
+                const uint8_t* q = &vb->data[28 + size_t(sub.lo + i) * sub.pos_stride + c * csize];
+                if (sub.half) old_pos[i][c] = HalfToFloat(Rd16(q));
+                else std::memcpy(&old_pos[i][c], q, 4);
+            }
+        }
+        for (size_t j = 0; j < nv_new; ++j) {
+            uint32_t best = uint32_t(j);
+            if (j >= nv) {
+                float best_d = 1e30f;
+                for (uint32_t i = 0; i < nv; ++i) {
+                    float d = 0;
+                    for (size_t c = 0; c < 3; ++c) d += (old_pos[i][c] - float(p[j * 3 + c])) * (old_pos[i][c] - float(p[j * 3 + c]));
+                    if (d < best_d) best_d = d, best = i;
+                }
+            }
+            const size_t pat = 28 + size_t(sub.lo + best) * sub.pos_stride, aat = 28 + size_t(sub.lo + best) * sub.stride;
+            const Bytes prow(vb->data.begin() + long(pat), vb->data.begin() + long(pat + sub.pos_stride));
+            const Bytes arow(av->data.begin() + long(aat), av->data.begin() + long(aat + sub.stride));
+            vb->data.insert(vb->data.end(), prow.begin(), prow.end());
+            av->data.insert(av->data.end(), arow.begin(), arow.end());
+            put_pos(&vb->data[vb->data.size() - sub.pos_stride], j);
+            put_uv(&av->data[av->data.size() - sub.stride], j);
+        }
+        const uint32_t total = base + uint32_t(nv_new);
+        std::memcpy(&vb->data[24], &total, 4);
+        std::memcpy(&av->data[24], &total, 4);
+    }
+    uint32_t first = sub.first, count = sub.count;
+    if (prim.Has("indices")) {
+        const std::vector<double> idx = Accessor(g, prim.GetInt("indices"), 1);
+        if (idx.empty() || idx.size() % 3) throw Error(name + ": the indices are not a triangle list");
+        RpkResource* ib = pack.Find(sub.ib);
+        Bytes raw;
+        for (const double d : idx) {
+            if (d >= double(nv_new)) throw Error(name + ": a triangle uses a vertex that does not exist");
+            const uint32_t v = lo + uint32_t(d);
+            raw.push_back(uint8_t(v)), raw.push_back(uint8_t(v >> 8));
+        }
+        count = uint32_t(idx.size());
+        if (count > sub.count || grow) {
+            first = VbCount(*ib);
+            if (uint64_t(first) + count > 0xFFFFFFFFull / 2) throw Error(name + ": the index buffer is full");
+            ib->data.insert(ib->data.end(), raw.begin(), raw.end());
+            const uint32_t total = first + count;
+            std::memcpy(&ib->data[24], &total, 4);
+        } else {
+            std::memcpy(&ib->data[28 + size_t(first) * 2], raw.data(), raw.size());
+        }
+    }
+    if (first == sub.first && count == sub.count && lo == sub.lo && hi == sub.hi) return;
+    // The mesh keeps the range twice: in its records (02 03, lowest vertex, highest vertex, first index, count) and in a
+    // table at its end (03 00 00 00, lowest vertex, 0, first index, count) that the game draws from.
+    RpkResource* mesh = pack.Find(sub.mesh);
+    for (const size_t at : sub.recs) {
+        std::memcpy(&mesh->data[at + 2], &lo, 4);
+        std::memcpy(&mesh->data[at + 6], &hi, 4);
+        std::memcpy(&mesh->data[at + 10], &first, 4);
+        std::memcpy(&mesh->data[at + 14], &count, 4);
+    }
+    uint8_t pat[20] = {3, 0, 0, 0};
+    const uint32_t fields[4] = {sub.lo, 0, sub.first, sub.count};
+    std::memcpy(pat + 4, fields, 16);
+    size_t tail = 0;
+    for (size_t i = 0; i + 20 <= mesh->data.size(); ++i) {
+        if (std::memcmp(&mesh->data[i], pat, 20) != 0) continue;
+        std::memcpy(&mesh->data[i + 4], &lo, 4);
+        std::memcpy(&mesh->data[i + 12], &first, 4);
+        std::memcpy(&mesh->data[i + 16], &count, 4);
+        ++tail;
+    }
+    if (!tail) throw Error(name + ": the mesh has no draw table entry for this sub mesh");
+}
+
 }  // namespace
 
 int RunMesh(const std::vector<std::string>& argv) {
@@ -390,38 +525,7 @@ int RunMesh(const std::vector<std::string>& argv) {
             if (!sub) continue;
             const Json& prim = meshes->Items().at(size_t(node.GetInt("mesh"))).Find("primitives")->Items().at(0);
             const std::vector<double> p = Accessor(g, prim.Find("attributes")->GetInt("POSITION"), 3);
-            if (p.size() != size_t(sub->vertices()) * 3) {
-                throw Error(name + ": has " + std::to_string(p.size() / 3) + " vertices, the game's mesh has " + std::to_string(sub->vertices()) + "; the number of vertices cannot change");
-            }
-            RpkResource* vb = pack.Find(sub->pos);
-            for (uint32_t i = 0; i < sub->vertices(); ++i) {
-                uint8_t* dst = &vb->data[28 + size_t(sub->lo + i) * sub->pos_stride];
-                for (int c = 0; c < 3; ++c) {
-                    const float f = float(p[i * 3 + size_t(c)]);
-                    // vertices the game left unset (or a position that is the same after rounding) stay as they are
-                    if (sub->half) {
-                        const uint16_t h = FloatToHalf(f);
-                        if (HalfToFloat(h) != Clean(HalfToFloat(Rd16(dst + c * 2))) && h != Rd16(dst + c * 2)) std::memcpy(dst + c * 2, &h, 2);
-                    } else {
-                        float old;
-                        std::memcpy(&old, dst + c * 4, 4);
-                        if (f != Clean(old)) std::memcpy(dst + c * 4, &f, 4);
-                    }
-                }
-            }
-            if (prim.Has("indices")) {
-                const std::vector<double> idx = Accessor(g, prim.GetInt("indices"), 1);
-                if (idx.size() != sub->count) {
-                    throw Error(name + ": has " + std::to_string(idx.size() / 3) + " triangles, the game's mesh has " + std::to_string(sub->count / 3) + "; the number of triangles cannot change");
-                }
-                RpkResource* ib = pack.Find(sub->ib);
-                for (uint32_t i = 0; i < sub->count; ++i) {
-                    const uint32_t v = uint32_t(idx[i]) + sub->lo;
-                    if (v > sub->hi) throw Error(name + ": a triangle uses a vertex that does not exist");
-                    ib->data[28 + (sub->first + i) * 2] = uint8_t(v);
-                    ib->data[29 + (sub->first + i) * 2] = uint8_t(v >> 8);
-                }
-            }
+            ImportSub(pack, *sub, g, prim, p, name);
             ++used;
         }
         if (!used) throw Error("none of the objects in the file came from this pack (their names start with the mesh identifier)");
