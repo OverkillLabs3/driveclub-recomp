@@ -7,6 +7,7 @@ The kit is one C++17 program with no dependencies. On Windows use the MSYS2 CLAN
 ```bash
 bash tools/modkit/build.sh        # writes out/dcmod.exe (out/dcmod on Linux)
 bash tools/modkit/test.sh         # self-test on made-up data
+bash tools/modkit/tests/realdata.sh   # round trips on your own game files (optional)
 ```
 
 ## Tell it where the game is

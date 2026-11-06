@@ -75,7 +75,7 @@ Any file the game opens by name can be replaced the same way; the table lists th
 - Replace the whole pack with a pack you built (`dcmod rpk build`).
 - Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`; with `dcmod` a text can be any length.
 
-The mod kit (`dcmod`, see [modding/README.md](modding/README.md)) lists, extracts, rebuilds and patches packs, and a mod can change the inside of a pack with patches instead of shipping the pack. Tools published by others (not part of this project; check their licences and limits):
+The mod kit (`dcmod`, see [modding/README.md](modding/README.md)) lists, extracts, rebuilds and patches packs, exports model geometry to glTF and back (`dcmod mesh`, for Blender), lists and replaces sound streams (`dcmod audio`), and a mod can change the inside of a pack with patches instead of shipping the pack. Tools published by others (not part of this project; check their licences and limits):
 
 - [DriveClubFS](https://github.com/Nenkai/DriveClubFS) by Nenkai unpacks the `.ndx` and `.dat` archives and extracts textures, binary resources and XML from `.rpk` files. Its README lists versions 1.00 and 1.28 as tested. It is an unpacker and has no function to rebuild an archive or a pack.
 - [010GameTemplates](https://github.com/Nenkai/010GameTemplates/tree/main/Evolution%20Studios/DriveClub) has 010 Editor templates for the archive, index, tour and save formats.

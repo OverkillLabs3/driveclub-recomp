@@ -137,7 +137,7 @@ private:
             info.Set("version", "1.0");
             r.Set("serverInfo", info);
             r.Set("instructions",
-                  "Tools for modding DriveClub. Start with `game` (archive, rpk, lua, tex, dash, car, mod commands). Mods live in the workspace: "
+                  "Tools for modding DriveClub. Start with `game` (archive, rpk, lua, tex, audio, mesh, dash, car, mod commands). Mods live in the workspace: "
                   "use `mod_list`, `mod_read`, `mod_write`, `mod_add_patch`, `mod_check` and `mod_build`. Patches change the game's files without copying them; "
                   "see the patch operations in docs/modding/patches.md.");
             return r;
@@ -159,7 +159,7 @@ private:
     static Json Tools() {
         Json t = Json::Array();
         t.Push(Tool("game",
-                    "Run a dcmod command on the game's data. `command` is archive, rpk, lua, tex, dash, car or mod; `args` are its arguments as one string each, "
+                    "Run a dcmod command on the game's data. `command` is archive, rpk, lua, tex, audio, mesh, dash, car or mod; `args` are its arguments as one string each, "
                     "for example command=archive args=[list,-l,newdata/*], command=archive args=[cat,newdata/vehicles.csv], command=rpk args=[list,@global.rpk,type:xml,-l], "
                     "command=lua args=[dis,@scripts/lua/libraries/rewards.lua.bin], command=car args=[files,fe_458]. Run with no args for each command's help. "
                     "Output files (-o) can only go in the workspace.",
@@ -211,10 +211,12 @@ private:
             if (command == "rpk") return RunRpk(a);
             if (command == "lua") return RunLua(a);
             if (command == "tex") return RunTex(a);
+            if (command == "audio") return RunAudio(a);
+            if (command == "mesh") return RunMesh(a);
             if (command == "dash") return RunDash(a);
             if (command == "car") return RunCar(a);
             if (command == "mod") return RunMod(a);
-            throw Error("unknown command " + command + " (use archive, rpk, lua, tex, dash, car or mod)");
+            throw Error("unknown command " + command + " (use archive, rpk, lua, tex, audio, mesh, dash, car or mod)");
         }, &rc);
         return TextResult(text.empty() ? "(no output)" : text, rc != 0 && rc != 2);
     }

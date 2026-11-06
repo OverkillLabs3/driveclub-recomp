@@ -189,6 +189,7 @@ To record a new profile after the code has changed a lot: build with `BB_PGO=gen
 ```bash
 bash tools/modkit/build.sh     # out/dcmod.exe (out/dcmod on Linux); on Windows from the MSYS2 CLANG64 shell
 bash tools/modkit/test.sh      # self-test on made-up data, no game files needed
+bash tools/modkit/tests/realdata.sh   # round trips on your game files (set DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR)
 ```
 
 The release package copies `dcmod.exe` next to the launcher (`packaging/package.sh`). See [docs/modding](docs/modding/README.md).

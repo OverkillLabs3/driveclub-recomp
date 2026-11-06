@@ -31,7 +31,7 @@ Without `--update` and `--base` the server uses the environment variables `DRIVE
 
 | Tool | Does |
 |---|---|
-| `game` | Runs a `dcmod` command: `command` is `archive`, `rpk`, `lua`, `tex`, `dash`, `car` or `mod`, `args` are its arguments. For example `archive` with `["grep", "topspeed", "newdata/*"]` or `rpk` with `["list", "@global.rpk", "type:xml", "-l"]`. With no `args` a command prints its help. |
+| `game` | Runs a `dcmod` command: `command` is `archive`, `rpk`, `lua`, `tex`, `audio`, `mesh`, `dash`, `car` or `mod`, `args` are its arguments. For example `archive` with `["grep", "topspeed", "newdata/*"]` or `rpk` with `["list", "@global.rpk", "type:xml", "-l"]`. With no `args` a command prints its help. |
 | `mod_list`, `mod_read`, `mod_write` | The mods in the workspace and their `mod.json`. |
 | `mod_add_patch` | Adds one patch to a mod and checks that the mod still applies to the game's files; a patch that does not apply is not kept, and the message says why. |
 | `mod_write_file` | Writes a file inside a mod folder (a script, or a file a patch reads with `from`). |
