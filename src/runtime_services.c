@@ -258,7 +258,16 @@ static int guest_ok(uint64_t a, uint64_t n, int write) {
     return 0;
 }
 static int plugin_read(uint64_t a, void *out, uint64_t n) { if (!out || guest_ok(a, n, 0)) return -1; memcpy(out, (void *)a, n); return 0; }
-static int plugin_write(uint64_t a, const void *d, uint64_t n) { if (!d || guest_ok(a, n, 1)) return -1; memcpy((void *)a, d, n); return 0; }
+/* read only memory (the game's constants) is made writable for the copy, then put back */
+static int plugin_write(uint64_t a, const void *d, uint64_t n) {
+    if (!d || guest_ok(a, n, 0)) return -1;
+    DWORD old;
+    if (!VirtualProtect((void *)a, (SIZE_T)n, PAGE_EXECUTE_READWRITE, &old)) return -1;
+    memcpy((void *)a, d, n);
+    VirtualProtect((void *)a, (SIZE_T)n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void *)a, (SIZE_T)n);
+    return 0;
+}
 static int plugin_hook(uint64_t addr, DcHookFn fn, void *user) {
     if (!fn || trace_count >= TRACE_MAX || guest_ok(addr, 1, 0)) return -1;
     ensure_trace_handler();

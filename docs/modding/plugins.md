@@ -31,7 +31,7 @@ A guest address is `0x800000000` plus the offset in the game's code and data ima
 
 ## Checked in the game
 
-The example plugin was loaded in a race, hooked the start of the game's resource lookup (guest `0x800780f30`, which all game threads call, over 120000 times in about 30 seconds), logged its registers, and read the code bytes at the hook (`55 48 89 e5`, a function prologue). The game ran normally to the start of the race. Writing memory and changing registers use the same code paths but were not tried in the game.
+The example plugin was loaded in a race, hooked the start of the game's resource lookup (guest `0x800780f30`, which all game threads call, over 120000 times in about 30 seconds), logged its registers, and read the code bytes at the hook (`55 48 89 e5`, a function prologue). The game ran normally to the start of the race. Writing memory was checked too: a second plugin overwrote the first 8 bytes of a message in the game's constants (`Couldn't` became `PLUGGED!`), and the game's log line then read `PLUGGED! find ExciterDsp params for vehicle(ferrari_458)`; `write` makes read only memory writable for the copy. Changing registers in a hook uses the same breakpoint code but was not tried in the game.
 
 ## Limits
 
