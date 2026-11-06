@@ -18,7 +18,7 @@ Proven by the launcher itself, which uses the same route for its features: the v
 
 `mods` is the folder next to `DriveClub.exe`. Put files there by hand (both launchers), or use the **Mods** page of the new launcher:
 
-- **Import ZIP** or **Import folder** adds a mod to the library. An imported mod starts disabled.
+- **Import ZIP** or **Import folder** adds a mod to the library. An imported mod starts disabled. A mod that has `patches` in its `mod.json` is applied to your game files with `dcmod.exe` when it is enabled (see [modding/mod-format.md](modding/mod-format.md)); with such mods the launcher builds the result of all enabled mods together.
 - The checkbox turns a mod on or off. Turning it on copies its files into `mods`; turning it off removes them.
 - **Move up** and **Move down** set the order. When two enabled mods have a file with the same path, the one higher in the list wins. Selecting a mod shows how many files it shares with other enabled mods.
 - **Open mods folder** opens `mods`.
@@ -36,7 +36,7 @@ my-mod.zip
   newdata/vehicles.csv
 ```
 
-The files may also sit inside one folder called `files`, `mods` or `app0`. One enclosing folder around the whole mod is fine too. `mod.json` is optional and only names the mod in the list:
+The files may also sit inside one folder called `files`, `mods` or `app0`. One enclosing folder around the whole mod is fine too. `mod.json` is optional. In its simplest form it only names the mod in the list; it can also list patches, requirements and scripts (see [modding/mod-format.md](modding/mod-format.md)):
 
 ```json
 { "name": "My mod", "version": "1.0", "author": "Your name", "description": "What it changes." }
@@ -68,10 +68,12 @@ Any file the game opens by name can be replaced the same way; the table lists th
 
 ## Resource packs
 
-`.rpk` files are the game's resource packs. They start with `EVOSLITL` and the text `Resource PacK file`. A pack lists every file it holds with its size, so you cannot change a file inside a pack to another length with a text editor. Two ways around that:
+`.rpk` files are the game's resource packs. They start with `EVOSLITL` and the text `Resource PacK file`. A pack lists every file it holds with its size, so you cannot change a file inside a pack to another length with a text editor. Ways around that:
 
-- Replace the whole pack with a pack you built.
-- Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`.
+- Use patches: a mod can change a resource inside a pack (`rpk.patch`, `rpk.set`, `tex.set`) and `dcmod` writes the pack again, so the mod does not carry the pack.
+
+- Replace the whole pack with a pack you built (`dcmod rpk build`).
+- Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`; with `dcmod` a text can be any length.
 
 The mod kit (`dcmod`, see [modding/README.md](modding/README.md)) lists, extracts, rebuilds and patches packs, and a mod can change the inside of a pack with patches instead of shipping the pack. Tools published by others (not part of this project; check their licences and limits):
 
