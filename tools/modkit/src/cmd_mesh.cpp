@@ -473,6 +473,7 @@ void ImportSub(RpkPack& pack, const Sub& sub, const Glb& g, const Json& prim, co
         float old[2];
         const float now[2] = {float(uvs[i * 2]), 1.f - float(uvs[i * 2 + 1])};
         std::memcpy(old, dst + sub.uv_off, 8);
+        old[0] = Clean(old[0]), old[1] = Clean(old[1]);  // a junk value (the export wrote 0 for it) counts as unchanged
         if (std::fabs(old[0] - now[0]) > 1e-6f * std::max(1.f, std::fabs(old[0])) || std::fabs(old[1] - now[1]) > 1e-6f * std::max(1.f, std::fabs(old[1]))) std::memcpy(dst + sub.uv_off, now, 8);
     };
     const bool grow = nv_new > nv;

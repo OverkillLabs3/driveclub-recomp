@@ -28,7 +28,7 @@ Checked in the game (captures at 1920x1080):
 - The Ferrari 458 body was exported, half of its main body part's triangles were left out and a small part was doubled and raised by half a metre, and the glTF was imported: the car has a hole in its right rear and the copies float above it (the game's draw calls, logged, had the new index counts).
 - The Ferrari 458 pack was exported, every height doubled, imported and used as a loose file: the whole car (body, glass, wheels) comes out twice as tall.
 - The Fraser Valley track pack (`worlds/canada_road_circuit_02_n.rpk`, 2641 sub meshes) was exported, every vertex raised by 60 m and imported: the barns and trees of the scenery float in the sky. The road surface stayed where it was, so it is not (only) in this pack.
-- Exporting and importing without changes gives the original bytes for the car and the two tracks tried.
+- Exporting and importing without changes gives the original bytes for all 137 car packs and for 14 world packs from every country that were tried (a texture coordinate that the game stores as junk, like 4.9e8, is left as it is).
 
 World packs are large (150 MB). They are read through the mods folder like any other pack.
 
