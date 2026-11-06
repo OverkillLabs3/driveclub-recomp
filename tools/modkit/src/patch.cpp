@@ -746,9 +746,27 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
         return;
     }
-    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename") {
+    if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename" || name == "rpk.copy") {
         const std::string file = p.Str("file");
         RpkPack& pack = ws.Pack(file);
+        if (name == "rpk.copy") {
+            // A copy of a resource under another name, with an identifier made from the new name.
+            const std::string ref = p.Str("resource"), fresh = p.Str("name");
+            p.Done();
+            RpkResource& src = FindResource(pack, ref);
+            RpkResource copy = src;
+            uint64_t h = 0xcbf29ce484222325ull;
+            for (unsigned char c : fresh) h = (h ^ c) * 0x100000001b3ull;
+            copy.id = (uint64_t(src.Type()) << 48) | (h & 0xFFFFFFFFFFFFull);
+            while (pack.Find(copy.id)) ++copy.id;
+            if (copy.data.size() >= 16 && std::memcmp(copy.data.data(), "EVOSLITL", 8) == 0) {
+                for (int i = 0; i < 8; ++i) copy.data[size_t(8 + i)] = uint8_t(copy.id >> (8 * i));
+            }
+            copy.names.assign(1, fresh);
+            pack.Add(std::move(copy));
+            ws.PackChanged(file, env.mod, action(ref + " as " + fresh));
+            return;
+        }
         if (name == "rpk.rename") {
             // Text in the names a pack lists: the packs it requires, and optionally resource names or source paths.
             const std::string find = p.Str("find"), repl = p.Str("replace"), scope = p.Str("scope", "required");

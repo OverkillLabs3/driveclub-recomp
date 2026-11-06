@@ -97,3 +97,5 @@ A pack that is changed is written again with its resources in their original ord
 `manifest.add`: `file` (`scripts/filemanifest.cfg`), `paths` (game paths to list). The game's list of its own files; new files that the game should find by itself have to be in it.
 
 `rpk.rename`: `file` (a pack), `find`, `replace`, optional `scope` (`required`, default, `names`, `sources` or `all`). Changes text in the names a pack lists, for example the packs it requires.
+
+`rpk.copy`: `file` (a pack), `resource` (an existing resource), `name` (the copy's name). Adds a copy of the resource under a new name and a new identifier.

@@ -150,6 +150,23 @@ int RunCar(const std::vector<std::string>& argv) {
                 patches.Push(ren);
             }
         }
+        if (!variant) {
+            // The dashboard definition: the game builds <asset>.def.rpk from the resource named <asset>.def in global.rpk.
+            Json dash = Json::Object();
+            dash.Set("op", "rpk.copy");
+            dash.Set("file", "global.rpk");
+            dash.Set("resource", asset + ".def");
+            dash.Set("name", fresh_asset + ".def");
+            dash.Set("optional", true);
+            patches.Push(dash);
+            Json names = Json::Object();
+            names.Set("op", "rpk.rename");
+            names.Set("file", "vehicles/" + fresh_asset + ".rpk");
+            names.Set("find", asset);
+            names.Set("replace", fresh_asset);
+            names.Set("scope", "names");
+            patches.Push(names);
+        }
         if (!variant && source.Canonical("scripts/filemanifest.cfg").size()) {
             Json listed = Json::Object();
             listed.Set("op", "manifest.add");
