@@ -27,7 +27,7 @@ clang -shared -O2 -o hello.dll hello.c
 
 ## Addresses
 
-A guest address is `0x800000000` plus the offset in the game's code and data image, the one a disassembler shows for the console executable (the file `eboot.elf` the launcher prepares, loaded at 0). A hook address must be the first byte of an instruction. The kit's `dcmod lua` and the Lua API list ([lua-api.md](lua-api.md)) are the easier way to change game logic; use a plugin when the logic is native code.
+`read` and `write` take any address of the game's process (the game's code and data, its thread stacks, heaps), 0 on success and -1 for memory that is not mapped or not readable. A game code address is `0x800000000` plus the offset in the game's code and data image, the one a disassembler shows for the console executable (the file `eboot.elf` the launcher prepares, loaded at 0). A hook address must be the first byte of an instruction. The kit's `dcmod lua` and the Lua API list ([lua-api.md](lua-api.md)) are the easier way to change game logic; use a plugin when the logic is native code.
 
 ## Checked in the game
 

@@ -5,8 +5,8 @@
  *
  * once, after the game's code is in memory. The plugin can log, read and write the game's memory, and hook an address:
  * the callback runs each time the game reaches the instruction at that address, gets the registers (which it may
- * change) and the game goes on with the instruction. A guest address is the game's virtual address, as in the
- * disassembly of the game's code plus 0x800000000 (see docs/modding/plugins.md).
+ * change) and the game goes on with the instruction. A game code address is the offset in the game's image,
+ * as in a disassembly of it, plus 0x800000000; read and write accept any address of the process (see docs/modding/plugins.md).
  *
  * Build for 64 bit Windows, no runtime library is needed: any C or C++ compiler. */
 #ifndef DC_PLUGIN_H

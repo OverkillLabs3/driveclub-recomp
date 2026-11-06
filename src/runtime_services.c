@@ -249,7 +249,7 @@ typedef struct DcPluginApi {
 } DcPluginApi;
 static void plugin_log(const char *text) { printf("Plugin: %.400s\n", text ? text : ""); fflush(stdout); }
 static int guest_ok(uint64_t a, uint64_t n, int write) {
-    if (!n || a < 0x800000000ull || a + n < a) return -1;
+    if (!n || !a || a + n < a) return -1;  /* any address of the process: the game's code and data, its stacks and heaps */
     MEMORY_BASIC_INFORMATION mi;
     for (uint64_t at = a; at < a + n; at = (uint64_t)mi.BaseAddress + mi.RegionSize) {
         if (!VirtualQuery((void *)at, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return -1;
