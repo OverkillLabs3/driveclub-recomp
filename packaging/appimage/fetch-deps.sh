@@ -14,6 +14,7 @@
 #   SDL3_VERSION      default 3.4.18
 #   FFMPEG_VERSION    default 6.1.2
 #   VULKAN_HEADERS_VERSION, ROBIN_MAP_VERSION, VMA_VERSION
+#   BB_ARCH           target architecture when cross-compiling (with CC, CXX and CMAKE_TOOLCHAIN_FILE)
 set -euo pipefail
 cd -- "$(dirname -- "$0")/../.."
 deps=${BB_DEPS_DIR:-$PWD/out/deps}
@@ -124,7 +125,14 @@ if [ ! -f "$deps/ffmpeg/lib/libavformat.so.60" ]; then
     fi
     x86asm=--enable-x86asm
     command -v nasm >/dev/null || x86asm=--disable-x86asm
-    (cd "$src" && ./configure \
+    # BB_ARCH (aarch64, x86_64): cross-compile for that target with CC/CXX (and CMAKE_TOOLCHAIN_FILE for SDL3).
+    target_arch=${BB_ARCH:-$(uname -m)}
+    cross=()
+    [ "$target_arch" = x86_64 ] || x86asm=--disable-x86asm
+    if [ "$target_arch" != "$(uname -m)" ]; then
+        cross=(--enable-cross-compile --arch="$target_arch" --target-os=linux --disable-stripping)
+    fi
+    (cd "$src" && ./configure ${cross[@]+"${cross[@]}"} \
         --cc="${CC:-cc}" --cxx="${CXX:-c++}" \
         --prefix="$deps/ffmpeg" --libdir="$deps/ffmpeg/lib" --incdir="$deps/ffmpeg/include" \
         --enable-shared --disable-static \
