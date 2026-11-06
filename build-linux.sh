@@ -14,6 +14,7 @@
 #   BB_PGO_DIR        profile directory (default pgo)
 #   BB_VULKAN_HEADERS include directory with a recent vulkan/vulkan.h (see packaging/appimage/fetch-deps.sh)
 #   BB_DEPS_DIR       prefix with the AppImage build dependencies (default out/deps)
+#   BB_ARCH           target architecture, x86_64 or aarch64 (default: this machine's; set it to cross-compile)
 #   FEX_CC, FEX_CXX   aarch64: compilers for FEXCore (default clang and clang++; FEX needs Clang)
 #   FEX_TUNE_ARCH     aarch64: FEXCore -march (default armv8.2-a), FEX_TUNE_CPU its -mcpu (default generic)
 set -euo pipefail
@@ -79,8 +80,10 @@ if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
 fi
 
 # The guest CPU: on aarch64 the game's x86-64 code runs in FEXCore's JIT, linked into out/fex/libbbcpu.so
-# (cpu/: FEX's CMake project builds it, cpu/fex_project.cmake adds the target).
-arch=$(uname -m)
+# (cpu/: FEX's CMake project builds it, cpu/fex_project.cmake adds the target; FEX uses the fmt it ships
+# with, as a distribution's older fmt does not build it). BB_ARCH names the target
+# when cross-compiling (with CC/CXX for it and CMAKE_TOOLCHAIN_FILE for the CMake parts).
+arch=${BB_ARCH:-$(uname -m)}
 cpu=()
 case $arch in
     x86_64) ;;
@@ -93,6 +96,7 @@ case $arch in
         if [ ! -f out/fex/build.ninja ]; then
             CC=${FEX_CC:-clang} CXX=${FEX_CXX:-clang++} cmake -S third_party/FEX -B out/fex -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release -DCMAKE_PROJECT_FEX_INCLUDE="$PWD/cpu/fex_project.cmake" \
+                -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON \
                 -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF -DBUILD_STEAM_SUPPORT=OFF \
                 -DBUILD_FEX_LINUX_TESTS=OFF -DENABLE_ZYDIS=OFF -DTUNE_ARCH="${FEX_TUNE_ARCH:-armv8.2-a}" \
                 -DTUNE_CPU="${FEX_TUNE_CPU:-generic}" >/dev/null
