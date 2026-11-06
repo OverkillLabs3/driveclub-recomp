@@ -26,6 +26,10 @@ Changing a car **in place** (its table row, its pack, its cameras) is the way th
 
 `dcmod car swap DONOR VICTIM -o MODFOLDER` writes a mod that gives the car VICTIM the model and textures of the car DONOR: it copies the donor's pack and top mips pack over the victim's, and renames the packs the copy requires and the asset name in its resource names to the victim's. Everything else of the victim (table row, physics, sounds, cameras, dashboard) stays. In the running game, with `dcmod car swap fe_458 a45_amg`, starting a race with the Mercedes A45 AMG shows the Ferrari 458 Italia (a picture of the game window during the race shows its body and badge). The donor can also be a pack you changed yourself with `rpk` and `tex`.
 
+### A new car in an existing slot
+
+Because a swap works and a copy under a new asset name does not, a car with a new model is made by **replacing a car you do not need**: swap in the new model pack, and change that car's table row and physics (`csv.set` on its row for the name, class and stats; `vdef.set` on its definition) and its textures (`tex.set`). The new pack can be a donor car's pack changed with `dcmod rpk` and `dcmod tex`, so a re-skinned or re-tuned car is possible now. There is no tool yet that builds a model pack from a mesh made in a 3D program.
+
 ## Adding a new car
 
 **A variant works.** `dcmod car variant NAME NEWNAME -o MODFOLDER` writes a mod that adds a new row to `newdata/vehicles.csv` (its own name and unique number) and a copy of the car's record in `vehicledefs.vdef` under the new name, which the row uses as its `Vehicle Def`. The new car shares the model, textures, sounds and cameras of the original and has its own physics definition and table values. In the running game a car made this way is chosen by its name and races (checked with the benchmark mode, which starts a race with a car by its `Vehicle Name`), and the game's own vehicle list (`GameState.GetVehicles`, read by a mod script) holds the new car next to the original, with `class=3`.
