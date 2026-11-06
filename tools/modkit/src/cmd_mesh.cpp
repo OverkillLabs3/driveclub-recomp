@@ -35,7 +35,9 @@ int Usage() {
 }
 
 struct Sub {
-    uint64_t mesh = 0, pos = 0, ib = 0;
+    uint64_t mesh = 0, pos = 0, ib = 0, attr = 0;
+    int uv_off = -1;  // where the texture coordinate (two floats) sits in a vertex of the attribute stream
+    uint32_t stride = 0;
     uint32_t lo = 0, hi = 0, first = 0, count = 0, k = 0;
     std::string name;
     uint32_t vertices() const { return hi - lo + 1; }
@@ -43,35 +45,78 @@ struct Sub {
 
 uint32_t VbCount(const RpkResource& r) { return r.data.size() >= 28 ? Rd32(r.data.data() + 24) : 0; }
 
+// The last place before `at` where the mesh data names the resource `id` (its identifier as 8 little endian bytes).
+long LastMention(const Bytes& d, uint64_t id, size_t at) {
+    uint8_t key[8];
+    for (int i = 0; i < 8; ++i) key[i] = uint8_t(id >> (8 * i));
+    for (size_t i = std::min(at, d.size() - 8) + 1; i-- > 0;) {
+        if (i + 8 <= at && std::memcmp(&d[i], key, 8) == 0) return long(i);
+    }
+    return -1;
+}
+
 std::vector<Sub> FindSubs(const RpkPack& pack) {
     const int vb_type = RpkTypeFromName("vertex_buffer"), ib_type = RpkTypeFromName("index_buffer"), mesh_type = RpkTypeFromName("mesh");
     std::vector<Sub> out;
     for (const RpkResource& m : pack.resources) {
         if (int(m.Type()) != mesh_type) continue;
-        uint64_t pos = 0, ib = 0;
+        std::vector<uint64_t> poss, ibs, attrs;
         for (uint64_t d : m.deps) {
             const RpkResource* r = pack.Find(d);
             if (!r) continue;
-            if (int(r->Type()) == vb_type && r->data.size() >= 28 && Rd16(r->data.data() + 22) == 12 && !pos) pos = d;
-            if (int(r->Type()) == ib_type && !ib) ib = d;
+            if (int(r->Type()) == vb_type && r->data.size() >= 28) (Rd16(r->data.data() + 22) == 12 ? poss : attrs).push_back(d);
+            if (int(r->Type()) == ib_type) ibs.push_back(d);
         }
-        if (!pos || !ib) continue;
-        const uint32_t nv = VbCount(*pack.Find(pos)), ni = VbCount(*pack.Find(ib));
+        if (poss.empty() || ibs.empty()) continue;
+        // each sub mesh record is preceded by the identifiers of the buffers it uses; take the nearest of each kind
+        auto nearest = [&](const std::vector<uint64_t>& list, size_t at) {
+            long best = -1;
+            uint64_t who = list.front();
+            for (uint64_t d : list) {
+                const long p = LastMention(m.data, d, at);
+                if (p > best) best = p, who = d;
+            }
+            return who;
+        };
         uint32_t k = 0;
-        std::vector<std::array<uint32_t, 4>> seen;
+        std::vector<std::array<uint64_t, 5>> seen;
         for (size_t i = 0; i + 18 <= m.data.size(); ++i) {
             if (m.data[i] != 2 || m.data[i + 1] != 3) continue;
             const uint32_t lo = Rd32(&m.data[i + 2]), hi = Rd32(&m.data[i + 6]), first = Rd32(&m.data[i + 10]), cnt = Rd32(&m.data[i + 14]);
+            const uint64_t pos = nearest(poss, i), ib = nearest(ibs, i);
+            const uint32_t nv = VbCount(*pack.Find(pos)), ni = VbCount(*pack.Find(ib));
             if (!cnt || cnt % 3 || hi < lo || hi >= nv || first + cnt > ni) continue;
             const uint8_t* ix = &pack.Find(ib)->data[28 + first * 2];
             bool inside = true;  // a record whose indices leave its range is not a sub mesh
             for (uint32_t t = 0; t < cnt && inside; ++t) inside = Rd16(ix + t * 2) >= lo && Rd16(ix + t * 2) <= hi;
             if (!inside) continue;
-            const std::array<uint32_t, 4> key{lo, hi, first, cnt};
+            const std::array<uint64_t, 5> key{pos, ib, lo, hi, (uint64_t(first) << 32) | cnt};
             if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
             seen.push_back(key);
             Sub s;
             s.mesh = m.id, s.pos = pos, s.ib = ib, s.lo = lo, s.hi = hi, s.first = first, s.count = cnt, s.k = k++;
+            // the attribute stream that has as many vertices as the position stream
+            std::vector<uint64_t> same;
+            for (uint64_t a : attrs) {
+                if (VbCount(*pack.Find(a)) == nv) same.push_back(a);
+            }
+            if (!same.empty()) {
+                s.attr = nearest(same, i);
+                const RpkResource* av = pack.Find(s.attr);
+                const RpkResource* fmt = av->deps.empty() ? nullptr : pack.Find(av->deps[0]);
+                s.stride = Rd16(av->data.data() + 22);
+                if (fmt && fmt->data.size() >= 21) {
+                    // the format: a count, then five bytes per field (kind, type, index, 0, 0); the type gives the size
+                    const size_t n = fmt->data[20];
+                    uint32_t at = 0;
+                    for (size_t f = 0; f < n && 21 + f * 5 + 5 <= fmt->data.size(); ++f) {
+                        const uint8_t kind = fmt->data[21 + f * 5], type = fmt->data[22 + f * 5];
+                        if (kind == 5 && type == 8 && s.uv_off < 0) s.uv_off = int(at);
+                        at += type == 9 ? 12 : type == 8 || type == 6 ? 8 : 4;
+                    }
+                    if (at != s.stride) s.uv_off = -1;
+                }
+            }
             std::string n = m.DisplayName();
             const size_t bar = n.rfind('|');
             if (bar != std::string::npos && bar + 1 < n.size()) n = n.substr(bar + 1);
@@ -108,6 +153,25 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
                 Put32(bin, u);
             }
         }
+        // texture coordinates, when the attribute stream has them (glTF counts v from the top)
+        size_t uv_at = 0;
+        const bool has_uv = s.uv_off >= 0;
+        if (has_uv) {
+            PadTo4(bin, 0);
+            uv_at = bin.size();
+            const Bytes& av = pack.Find(s.attr)->data;
+            for (uint32_t i = s.lo; i <= s.hi; ++i) {
+                float uv[2];
+                std::memcpy(uv, &av[28 + size_t(i) * s.stride + size_t(s.uv_off)], 8);
+                uv[1] = 1.f - uv[1];
+                for (float f : uv) {
+                    uint32_t u;
+                    const float c = Clean(f);
+                    std::memcpy(&u, &c, 4);
+                    Put32(bin, u);
+                }
+            }
+        }
         // indices, relative to the first vertex
         PadTo4(bin, 0);
         const size_t idx_at = bin.size();
@@ -123,6 +187,7 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
             return int(views.Items().size()) - 1;
         };
         const int pv_i = view(pos_at, s.vertices() * 12, 34962), iv_i = view(idx_at, idx_end - idx_at, 34963);
+        const int uv_i = has_uv ? view(uv_at, s.vertices() * 8, 34962) : -1;
         Json pa = Json::Object();
         pa.Set("bufferView", pv_i), pa.Set("componentType", 5126), pa.Set("count", int64_t(s.vertices())), pa.Set("type", "VEC3");
         Json jmn = Json::Array(), jmx = Json::Array();
@@ -135,6 +200,12 @@ Bytes MakeGlb(const RpkPack& pack, const std::vector<Sub>& subs) {
         const int pa_i = int(accessors.Items().size()) - 2;
         Json prim = Json::Object(), attrs = Json::Object();
         attrs.Set("POSITION", pa_i);
+        if (has_uv) {
+            Json ua = Json::Object();
+            ua.Set("bufferView", uv_i), ua.Set("componentType", 5126), ua.Set("count", int64_t(s.vertices())), ua.Set("type", "VEC2");
+            accessors.Push(ua);
+            attrs.Set("TEXCOORD_0", int(accessors.Items().size()) - 1);
+        }
         prim.Set("attributes", attrs), prim.Set("indices", pa_i + 1), prim.Set("mode", 4);
         Json prims = Json::Array();
         prims.Push(prim);

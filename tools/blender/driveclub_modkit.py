@@ -34,11 +34,12 @@ class DCModPrefs(AddonPreferences):
 
 
 def run_dcmod(context, args):
-    prefs = context.preferences.addons[__name__].preferences
-    cmd = [bpy.path.abspath(prefs.dcmod) or "dcmod"] + args
-    if prefs.update_dir:
+    addon = context.preferences.addons.get(__name__)
+    prefs = addon.preferences if addon else None
+    cmd = [bpy.path.abspath(prefs.dcmod) if prefs and prefs.dcmod else os.environ.get("DCMOD", "dcmod")] + args
+    if prefs and prefs.update_dir:
         cmd += ["--update", bpy.path.abspath(prefs.update_dir)]
-    if prefs.base_dir:
+    if prefs and prefs.base_dir:
         cmd += ["--base", bpy.path.abspath(prefs.base_dir)]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
