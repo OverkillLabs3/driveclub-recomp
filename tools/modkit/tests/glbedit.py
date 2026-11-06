@@ -25,7 +25,7 @@ for m in j['meshes']:
     if key in half:
         idx = idx[:(len(idx) // 6) * 3]
     if key in dup:
-        up = [pos[i] + (0.5 if i % 3 == 1 else 0.0) for i in range(len(pos))]
+        up = [pos[i] + (float(__import__("os").environ.get("LIFT","0.5")) if i % 3 == 1 else 0.0) for i in range(len(pos))]
         idx = idx + [i + n for i in idx]
         pos = pos + up
         if uv: uv = uv + uv

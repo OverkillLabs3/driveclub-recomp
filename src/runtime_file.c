@@ -205,6 +205,8 @@ void runtime_file_add_mods(const char *dir) {
     else if (dir && *dir) printf("Runtime: too many mods folders, %s ignored\n",dir);
     miss_reset();
 }
+/* The i-th mods folder (for the GPU layer's shader patches), or NULL. */
+const char *runtime_file_mods_dir(int i) { return i>=0 && i<mods_count ? mods_dirs[i] : NULL; }
 /* Probe /app0 folder `key` (length bytes) in every overlay. Only ENOENT proves absence:
  * an existing file or another stat error must not poison that path as missing.
  * Runs under `lock`; `host` is the /app0 mount's host folder. */

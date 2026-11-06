@@ -20,6 +20,7 @@ The mod kit has three parts:
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
 | [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
 | [Music and sound](audio.md) | FMOD banks: list, extract and replace streams |
+| [Shaders and graphics](shaders.md) | dump the game's shaders, edit the SPIR-V, replace them in a mod |
 | [Recipes](recipes.md) | Worked examples |
 
 The older way still works: a folder or ZIP whose files sit at their game paths is a mod ([how files are found](../MODDING.md)).
@@ -36,6 +37,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
 | Car and model geometry (positions, triangles) | `dcmod mesh` and Blender ([models.md](models.md)) |
 | Music and sound effects (FMOD banks) | `dcmod audio` ([audio.md](audio.md)) |
+| Shaders (the look of surfaces, lighting, post effects) | `dcmod shader` and `shaders\` in a mod ([shaders.md](shaders.md)) |
 | Anything else | replacement files, `bytes.*` patches |
 
 ## Limits
