@@ -13,6 +13,7 @@ int Usage() {
         "  dcmod archive ...   look into the game's own archive (list, extract, verify)\n"
         "  dcmod rpk ...       resource packs: list, extract, build, replace, verify\n"
         "  dcmod lua ...       the game's compiled Lua scripts: disassemble, survey the names they use\n"
+        "  dcmod mcp           an MCP server so that an AI agent can make mods (docs/modding/agent.md)\n"
         "  dcmod studio        a web page to browse the game files, edit them and make mods from the edits\n"
         "  dcmod dash ...      in-car dashboards: list, show, check\n"
         "  dcmod tex ...       textures: extract to DDS, import from DDS\n"
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         if (cmd == "studio") return dcmod::RunStudio(rest);
         if (cmd == "dash") return dcmod::RunDash(rest);
         if (cmd == "car") return dcmod::RunCar(rest);
+        if (cmd == "mcp") return dcmod::RunMcp(rest);
         std::fprintf(stderr, "dcmod: unknown command \"%s\"\n", cmd.c_str());
         return Usage();
     } catch (const std::exception& e) {

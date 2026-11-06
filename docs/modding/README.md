@@ -10,6 +10,7 @@ The mod kit has three parts:
 |---|---|
 | [Getting started](getting-started.md) | Set up the kit and make a first mod |
 | [Studio and the easy way](studio.md) | The web page for modding, making a mod from edited files, textures |
+| [Working with an AI agent](agent.md) | `dcmod mcp`: let an agent browse the game files and make mods |
 | [Mod format](mod-format.md) | `mod.json`, load order, requirements, conflicts |
 | [Patch operations](patches.md) | Every operation with examples |
 | [dcmod reference](dcmod.md) | All commands |

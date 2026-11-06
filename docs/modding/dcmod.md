@@ -45,6 +45,10 @@ Compiled Lua 5.1 scripts. `SCRIPT` is a file, a folder, or `@pattern` in the arc
 
 Textures of packs as DDS. `info PACK`, `extract PACK -o DIR [PATTERN...]`, `import PACK TARGET FILE.dds -o OUT`, `verify PACK... [--max-mb N]`. See [studio.md](studio.md).
 
+## dcmod mcp
+
+`dcmod mcp [--mods DIR] [--update DIR --base DIR]` starts an MCP server for AI agents; see [agent.md](agent.md).
+
 ## dcmod studio
 
 `dcmod studio [--mods DIR] [--port N]` starts the local web page described in [studio.md](studio.md).
