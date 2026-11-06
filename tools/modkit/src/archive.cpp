@@ -324,46 +324,69 @@ ArchiveExtension Archive::Extend(const std::vector<std::pair<std::string, Bytes>
         }
     }
 
-    // The new index: the old records as they were, the new ones after them, the names written out in full.
-    std::vector<std::string> names;
-    Bytes records;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-        names.push_back(entries_[i].name);
-        records.insert(records.end(), raw_index_.begin() + std::ptrdiff_t(records_offset_ + i * 32), raw_index_.begin() + std::ptrdiff_t(records_offset_ + (i + 1) * 32));
-    }
-    for (const IndexEntry& e : added) {
-        Bytes rec;
-        Wr64(rec, uint64_t(e.volume) | (e.offset << 16));
-        Wr32(rec, e.size);
-        Wr32(rec, e.hash);
-        rec.insert(rec.end(), e.md5.begin(), e.md5.end());
-        bool replaced = false;
-        for (size_t i = 0; i < entries_.size() && !replaced; ++i) {
-            if (entries_[i].name == e.name) {
-                std::copy(rec.begin(), rec.end(), records.begin() + std::ptrdiff_t(i * 32));
-                replaced = true;
+    // The new index. The records are sorted by the hash of the name (the game searches them that way), so the new
+    // ones go in at their place. The old names keep the dictionary packing, the new ones are plain.
+    {
+        const Bytes& raw = raw_index_;
+        const size_t dict_size = raw[0x3C];
+        const size_t dict_at = 0x3D, names_at = dict_at + 2 * dict_size + 4;
+        const uint32_t packed = Rd32(&raw[names_at - 4]);
+        struct Item {
+            uint32_t hash;
+            Bytes name, record;
+        };
+        // After the records: the marker again, an 8 byte time for each volume, and the position of the last number.
+        const size_t rec_end = records_offset_ + entries_.size() * 32;
+        const bool has_tail = raw.size() >= rec_end + 12 && Rd32(&raw[rec_end]) == 0x12345678u;
+        std::vector<Item> items;
+        size_t np = names_at;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            Item it;
+            while (np < names_at + packed && raw[np] != 0) it.name.push_back(raw[np++]);
+            ++np;
+            it.record.assign(raw.begin() + std::ptrdiff_t(records_offset_ + i * 32), raw.begin() + std::ptrdiff_t(records_offset_ + (i + 1) * 32));
+            it.hash = entries_[i].hash;
+            items.push_back(std::move(it));
+        }
+        for (const IndexEntry& e : added) {
+            Item it;
+            Wr64(it.record, uint64_t(e.volume) | (e.offset << 16));
+            Wr32(it.record, e.size);
+            Wr32(it.record, e.hash);
+            it.record.insert(it.record.end(), e.md5.begin(), e.md5.end());
+            it.hash = e.hash;
+            bool replaced = false;
+            for (size_t i = 0; i < entries_.size() && !replaced; ++i) {
+                if (entries_[i].name == e.name) {
+                    items[i].record = it.record;
+                    replaced = true;
+                }
+            }
+            if (!replaced) {
+                it.name.assign(e.name.begin(), e.name.end());
+                items.push_back(std::move(it));
             }
         }
-        if (!replaced) {
-            names.push_back(e.name);
-            records.insert(records.end(), rec.begin(), rec.end());
+        std::stable_sort(items.begin(), items.end(), [](const Item& x, const Item& y) { return x.hash < y.hash; });
+        Bytes names_block;
+        for (const Item& it : items) {
+            names_block.insert(names_block.end(), it.name.begin(), it.name.end());
+            names_block.push_back(0);
+        }
+        out.index.assign(raw.begin(), raw.begin() + std::ptrdiff_t(names_at - 4));
+        Put32(out.index, 0x38, uint32_t(items.size()));
+        Put32(out.index, 0x30, uint32_t(out.volume + 1));                      // the number of volumes
+        Put32(out.index, 0x34, Rd32(&raw[0x34]) + uint32_t(chunks));           // the number of chunks in all of them
+        Wr32(out.index, uint32_t(names_block.size()));
+        out.index.insert(out.index.end(), names_block.begin(), names_block.end());
+        Wr32(out.index, 0x12345678u);
+        for (const Item& it : items) out.index.insert(out.index.end(), it.record.begin(), it.record.end());
+        if (has_tail) {
+            out.index.insert(out.index.end(), raw.begin() + std::ptrdiff_t(rec_end), raw.end() - 8);
+            out.index.insert(out.index.end(), raw.begin() + 8, raw.begin() + 16);  // the new volume, with the time of the index
+            Wr64(out.index, uint64_t(out.index.size()));
         }
     }
-    Bytes packed;
-    for (const std::string& n : names) {
-        packed.insert(packed.end(), n.begin(), n.end());
-        packed.push_back(0);
-    }
-    out.index.assign(raw_index_.begin(), raw_index_.begin() + 0x3C);
-    Put32(out.index, 0x38, uint32_t(names.size()));
-    out.index.push_back(0);  // no dictionary: names are written in full
-    Wr32(out.index, uint32_t(packed.size()));
-    out.index.insert(out.index.end(), packed.begin(), packed.end());
-    Wr32(out.index, 0x12345678u);
-    out.index.insert(out.index.end(), records.begin(), records.end());
-    // the footer: the three time stamps the index ends with, then the position of this last number
-    if (raw_index_.size() >= 32) out.index.insert(out.index.end(), raw_index_.end() - 32, raw_index_.end() - 8);
-    Wr64(out.index, uint64_t(out.index.size()));
     return out;
 }
 
