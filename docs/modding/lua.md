@@ -132,6 +132,21 @@ end)
 
 Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
 
+### The cars of the race: `dcmod.cars()`
+
+`dcmod.cars()` returns a list with one entry per car of the race (the player and the AI), or an empty list when no race is loaded:
+
+| Field | Meaning |
+|---|---|
+| `name` | The vehicle name, for example `ferrari_458_italia` |
+| `progress` | How far round the lap the car is, 0 to 1 (the game's `Poslen` property; it wraps to 0 at the line) |
+| `player` | `true` for the car the player drives |
+| `actor` | The game's actor object, for the game's own functions (`Actor.GetVehicleName(actor)`, `actor.UnderPlayerControl`, ...) |
+
+This is all the game's script layer tells about other cars: actors have the property `Poslen`, `UnderPlayerControl` and the like, but no position, speed or orientation (checked: `position`, `speed`, `velocity`, `rotation`, `name` all read `nil`). Sort by lap count plus `progress` for a leaderboard.
+
+Checked in the game (Race mode on Chile, Ferrari 458 with seven AI cars): all eight cars listed with their names, the progress of each changed live and wrapped at the line, and the player flag was set on the right car. The example `tools/modkit/examples/race-board` draws a live leaderboard from it: its order and the player's place (5th of 8) matched the game's own position display. Laps counted by the script include the start line that the cars cross just after the start.
+
 ### Keyboard and mouse: `dcmod.input()` and `dcmod.key(name)`
 
 `dcmod.input()` returns a table while the game window has the focus, and `nil` while another window has it (a script never sees what the player types elsewhere):

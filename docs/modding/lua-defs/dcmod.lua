@@ -118,6 +118,14 @@ function dcmod.input() end
 ---@param name string|integer
 ---@return boolean
 function dcmod.key(name) end
+---@class dcmod.RaceCar
+---@field name string vehicle name
+---@field progress number 0 to 1 round the lap
+---@field player boolean
+---@field actor userdata the game's actor
+---The cars of the race (empty when no race is loaded).
+---@return dcmod.RaceCar[]
+function dcmod.cars() end
 ---@class dcmod.Gui
 ---@field text fun(self: dcmod.Gui, text: string)
 ---@field button fun(self: dcmod.Gui, label: string): boolean

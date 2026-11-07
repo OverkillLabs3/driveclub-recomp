@@ -47,6 +47,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | The time of day and the weather of a race, scripted | `dcmod.time`, `dcmod.set_time`, `dcmod.race_weather` ([lua.md](lua.md)) |
 | A different chase, bonnet or dashboard camera | a `text.replace` patch on the camera file ([cameras.md](cameras.md)) |
 | One change for a whole group of cars, tracks or files | `"each"` in a patch ([patches.md](patches.md)) |
+| The cars of a race with their progress (leaderboards, gap displays) | `dcmod.cars` ([lua.md](lua.md)) |
 | An app with buttons, switches and sliders over the game | `dcmod.gui.app` ([lua.md](lua.md)) |
 | Keys and mouse for your own controls | `dcmod.input`, `dcmod.key` ([lua.md](lua.md)) |
 | Live car data and your own HUD in the game | `dcmod.car()`, `dcmod.ui` ([lua.md](lua.md)) |

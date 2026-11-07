@@ -187,6 +187,26 @@ function dcmod.gui.app(title, fn, options)
     was_left = s.left
   end)
 end
+-- dcmod.cars(): the cars of the race, a list of { name = "ferrari_458_italia", progress = 0..1 (how far round the lap), player = true/false }
+-- sorted by name order of the game (the player first). Empty when no race is loaded. progress is the game's own "Poslen" property of the
+-- car's actor; nothing else (position, speed) is exposed to scripts by the game for other cars.
+function dcmod.cars()
+  local out = {}
+  local ok = pcall(function()
+    local all = Actor.AllActorsWithProperty("Poslen")
+    local count = Actor.CollectionSize(all)
+    local my_id = Actor.GetActorId(Actor.GetPlayer())
+    for i = 0, count do   -- the game counts from 1; index 0 is empty
+      local actor = Actor.GetActorFromColIdx(all, i)
+      if actor then
+        out[#out + 1] = { name = Actor.GetVehicleName(actor), progress = actor.Poslen,
+          player = Actor.GetActorId(actor) == my_id, actor = actor }
+      end
+    end
+  end)
+  if not ok then return {} end
+  return out
+end
 local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
   VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
   WetToDry = "Wet To Dry" }
