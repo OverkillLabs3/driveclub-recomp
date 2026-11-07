@@ -98,6 +98,12 @@ function dcmod.time() end
 ---Moves the clock of the scene to an hour (0 to 24).
 ---@param hour number
 function dcmod.set_time(hour) end
+---@class dcmod.RaceWeather
+---@field rain string|nil Heavy, Mid, Light, VeryLight, Wet, Damp, DryToWet, WetToDry or a full preset name
+---@field weather string|nil Clear, Cloudy, Overcast or Stormy
+---The weather of the races that load from now on (an empty table gives the choice back to the game).
+---@param settings dcmod.RaceWeather
+function dcmod.race_weather(settings) end
 
 -- Functions of the game that are not part of Lua 5.1
 ---@type fun(...): any

@@ -10,7 +10,9 @@
  *   dcmod/postfx/use/<name>           the post-processing filter postfx/<name>.spv of a mods folder (use/off: none)
  *   dcmod/postfx/param/<i>/<value>    number i (0 to 15) the filter reads, value in thousandths (negative: n before the digits)
  *   dcmod/env/time/<hour*1000>        sets the hour of the day (the game's clock)
- *   dcmod/state/env.lua.bin           a Lua chunk with the hour of the day and the clock's compression
+ *   dcmod/env/rain/<name>             sets the race config's precipitation preset (Dry, Light, Mid, Heavy, ...)
+ *   dcmod/env/weather/<name>          sets the race config's weather name (Clear, Cloudy, Overcast, Stormy)
+ *   dcmod/state/env.lua.bin          a Lua chunk with the hour of the day and the clock's compression
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
  * The game lower-cases the paths it opens, so a script writes each capital letter as '^' and the lower-case letter
@@ -125,6 +127,13 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         const size_t written = fwrite(chunk, 1, length, f);
         fclose(f);
         return written == length ? 2 : 1;
+    }
+    if (!strncasecmp(call, "env/rain/", 9) || !strncasecmp(call, "env/weather/", 12)) {
+        const int weather = call[4] == 'w' || call[4] == 'W';
+        char name[64];
+        unescape(call + (weather ? 12 : 9), name, sizeof(name));
+        runtime_wish_race_config(weather, name);   /* kept: applied again whenever a race loads */
+        return 1;
     }
     if (!strncasecmp(call, "env/time/", 9)) {
         const long thousandths = atol(call + 9);   /* hour of the day times 1000 */

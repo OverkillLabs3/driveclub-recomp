@@ -85,6 +85,34 @@ end
 function dcmod.set_time(hour)
   loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
 end
+local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
+  VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
+  WetToDry = "Wet To Dry" }
+-- dcmod.race_weather{ rain = "Heavy", weather = "Overcast" }: every race starts with this weather (nil keeps the
+-- game's choice). The race config is set while a race loads and the rain is started when the car can be driven.
+local wanted, started
+function dcmod.race_weather(settings)
+  local first = wanted == nil
+  wanted = settings or {}
+  -- the runtime keeps the names and assigns them to the race config whenever a race loads
+  loadfile("dcmod/env/weather/" .. dcmod_escape(wanted.weather or "off", 60))
+  loadfile("dcmod/env/rain/" .. dcmod_escape(rain_names[wanted.rain] or wanted.rain or "off", 60))
+  if not first then return end
+  dcmod.every(0.25, function()
+    if dcmod.car() then
+      if not started then
+        started = true
+        if wanted.rain then pcall(Event.SendEvent, global, "StartDrivingPrecipitation") end
+      end
+    else
+      started = false
+      if wanted.rain and dcmod.time() then
+        pcall(Event.SendEvent, global, "SetPrecipitationFromGameConfig")
+        pcall(Event.SendEvent, global, "SetInitialPrecipitationState")
+      end
+    end
+  end)
+end
 -- dcmod.postfx: a post-processing filter, a SPIR-V fragment shader `postfx/<name>.spv` that a mod ships (see
 -- docs/modding/postfx.md). use(name) picks it ("off" or nil: none), param(i, v) sets one of the 16 numbers it reads.
 dcmod.postfx = {}

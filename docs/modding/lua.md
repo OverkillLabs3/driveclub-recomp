@@ -130,6 +130,23 @@ end)
 
 Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
 
+### Weather: `dcmod.race_weather{ rain = ..., weather = ... }`
+
+```lua
+dcmod.race_weather({ rain = "Heavy", weather = "Overcast" })   -- every race from now on
+dcmod.race_weather({})                                          -- back to the game's own choice
+```
+
+`rain` is one of the game's precipitation presets: `Heavy`, `Mid`, `Light`, `VeryLight`, `Wet` (wet road, no rain), `Damp`, `DryToWet`, `WetToDry`, or the preset's full name (`Heavy Precipitation`). `weather` is the sky: `Clear`, `Cloudy`, `Overcast` or `Stormy`. Leave one out to keep the game's choice for it.
+
+The setting applies to races that load after the call, not to the race that is already running (checked: changing the config in a running race does nothing, the weather is built while the race loads). Call it when the mod starts, or from a menu action, and the next race has that weather.
+
+Checked in the game (Ferrari 458 on Chile at 14:00, Time Trial): without the mod a clear dry day; with `dcmod.race_weather({ rain = "Heavy", weather = "Overcast" })` in a mod script the race loaded with heavy rain, a dark overcast sky, a flooded road with reflections and drops on the screen. Not checked: the other presets and weathers one by one, races started from the menus (the test starts the race with the benchmark helper), Linux.
+
+The whole example is `tools/modkit/examples/rainy-night`; with it, a race at 18:00 on Chile loaded in heavy rain under a dark overcast sky.
+
+How it works, for people who extend it: the race config of the game is C++ data, so the script cannot set it (the copy in Lua, `GameConfig.data`, is not read). The script opens `dcmod/env/rain/<name>` and `dcmod/env/weather/<name>`; the runtime keeps the two names and writes them into the config's name strings (with the game's own string assign, `runtime_set_race_config_name` in `src/runtime_benchmark.c`) on every file open, so the config has them whenever a race loads. While the race clock runs and the car is not driven the script also sends the game's `SetPrecipitationFromGameConfig` and `SetInitialPrecipitationState` events, and `StartDrivingPrecipitation` when the car can be driven, the same sequence the benchmark helper uses.
+
 ### Post-processing: `dcmod.postfx`
 
 `dcmod.postfx.use(name)` switches on a filter shader that the mod ships (`postfx/<name>.spv`), `dcmod.postfx.param(i, value)` sets the numbers it reads. See [postfx.md](postfx.md).

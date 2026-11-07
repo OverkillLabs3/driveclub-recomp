@@ -244,6 +244,7 @@ static int translate(const char *guest,char *out,size_t size) {
         if (mod==1) return ENOENT;
         if (mod==2) return 0;
     }
+    runtime_apply_race_config_wishes();   /* a mod's weather: the race config exists only while a race loads */
     char buffer[1024];
     guest_key(guest,buffer,sizeof(buffer));
     for (const char *p=buffer;(p=strstr(p,".."));p+=2)

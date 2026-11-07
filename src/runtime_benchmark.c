@@ -342,6 +342,35 @@ static void set_guest_rain(void) {
     fflush(stdout);
 }
 
+/* The same assignment for a mod script (dcmod.set_rain, dcmod.set_weather): weather = 0 the precipitation preset,
+ * 1 the weather name (Clear, Cloudy, ...). Runs on the game's thread, from the file open of a dcmod/env path. */
+static char wishes[2][64];
+static volatile int wishes_any;
+void runtime_wish_race_config(int weather, const char *name) {
+    if (!name || !strcmp(name, "off")) name = "";
+    snprintf(wishes[weather ? 1 : 0], sizeof wishes[0], "%s", name);
+    wishes_any = wishes[0][0] || wishes[1][0];
+    runtime_apply_race_config_wishes();
+}
+void runtime_apply_race_config_wishes(void) {
+    if (!wishes_any) return;
+    for (int w = 0; w < 2; ++w) if (wishes[w][0]) runtime_set_race_config_name(w, wishes[w]);
+}
+void runtime_set_race_config_name(int weather, const char *name) {
+    if (!name || !*name || !runtime_image_base) return;
+    const unsigned char *g = *(unsigned char *const *)(runtime_image_base + 0x1911100);
+    const unsigned char *p = g ? *(unsigned char *const *)(g + 0x970) : NULL;
+    unsigned char *base = p ? *(unsigned char *const *)(p + 0xf8) : NULL;
+    if (!base) return;   /* no race chosen yet: a script that repeats the call is applied once there is one */
+    unsigned char *config = base[0x780] == 0 ? base + 0x3b8 : base + 8;
+    unsigned char *field = config + (weather ? 0x208 : 0x230);
+    if (!strcmp(guest_string(field), name)) return;   /* already set: scripts may repeat the call every tick */
+    const uint64_t args[2] = {(uint64_t)(uintptr_t)field, (uint64_t)(uintptr_t)name};
+    guest_cpu_call(runtime_image_base + 0xe978b0, 2, args); /* guest_string_assign */
+    printf("Mod: race %s is now '%.40s'\n", weather ? "weather" : "precipitation", guest_string(field));
+    fflush(stdout);
+}
+
 /* Called for every guest path the file system resolves; returns 1 for the script's progress markers. */
 int runtime_benchmark_marker(const char *guest) {
     if (phase == OFF || strncmp(guest, MARKER_PREFIX, sizeof(MARKER_PREFIX) - 1)) return 0;

@@ -91,6 +91,9 @@ int runtime_mod_car_state(double *values, int max);
 /* The game's clock (runtime_scene_debug.inc): hour of the day and time compression; and a request for an hour. */
 int runtime_mod_env_state(double *values, int max);
 void runtime_mod_set_hours(float hours);
+void runtime_set_race_config_name(int weather, const char *name);
+void runtime_wish_race_config(int weather, const char *name);
+void runtime_apply_race_config_wishes(void);
 /* Whether a folder of mods has the file (a path below the game's root such as scripts/bootscripts/x). */
 int runtime_file_mods_have(const char *relative);
 void runtime_benchmark_flip(void);
