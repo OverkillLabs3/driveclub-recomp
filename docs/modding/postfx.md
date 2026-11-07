@@ -52,6 +52,45 @@ A filter can also be chosen without a script: set `DC_POSTFX=<name>` in the envi
 
 The game checks the file about once a second while a filter is active and loads it again when it changed, so the effect can be tuned while the game runs (`dcmod mod watch` into the game's `mods` folder).
 
+## The HDR stage: slots 3 to 5
+
+Slots 0 to 2 work on the finished picture. Slots 3 to 5 run earlier, on the linear HDR picture right after the upscaler and before the game's own bloom, tone mapping and HUD. That is where the graphics packs of other games do their work (exposure, grading in linear light, fog, ambient occlusion, depth of field), and it is the only stage that can read the scene's depth. Use the slot number in the calls:
+
+```lua
+dcmod.postfx.use("hdr_grade", 3)        -- first HDR filter
+dcmod.postfx.param(0, 0.15, 3)          -- its first number
+dcmod.postfx.use("hdr_depth_fx", 4)     -- second HDR filter, reads what slot 3 made
+```
+
+The shader has more to read here:
+
+```glsl
+layout(binding = 0) uniform sampler2D picture;       // linear HDR (RGBA16F), the upscaled picture
+layout(binding = 1) uniform sampler2D linear_depth;  // distance from the camera in metres (R32F), the sky is 1e6
+layout(binding = 2) uniform sampler2D motion;        // pixels, previous minus current (RG16F)
+layout(binding = 3) uniform sampler2D gbuffer;       // RGBA8 g-buffer, the alpha holds the object number
+layout(binding = 4) uniform sampler2D params;        // 4 by 1 texels (RGBA32F), see below
+layout(push_constant) uniform P { vec2 resolution; float time; float has_depth; vec4 values[4]; } p;
+```
+
+`has_depth` (the old `pad`) is 1 when bindings 1 to 4 hold the scene and 0 on the finished picture, where the picture stands in at each of them. The depth, motion and g-buffer images are the size of the game's render resolution, the picture is the output size; sample them with the same `uv`.
+
+**View position from the depth.** `params` texel 0 is `a`, texel 1 is `b` (`texelFetch(params, ivec2(i, 0), 0)`):
+
+```glsl
+vec2 ray = vec2((a.x * uv.x + a.z) * b.z + b.x, (a.y * uv.y + a.w) * b.w + b.y);
+float z = texture(linear_depth, uv).r;
+vec3 view = vec3(z * ray, -z);           // right handed, forward is -z, units are metres
+```
+
+Normals follow from the cross product of the neighbours' view positions (use the texel size of the depth image, `1.0 / textureSize(linear_depth, 0)`, not the output's).
+
+The example `tools/modkit/examples/hdr-grade` is a cinematic grade in linear light (exposure in stops, contrast around middle grey, saturation, split toning, vignette, grain). `tools/modkit/examples/hdr-depth-fx` has distance fog that takes the colour of the sky, a depth of field that focuses on the car, and ambient occlusion from the depth, plus two views for checking (param 3 set to 1 shows the distance, 2 shows the normals).
+
+Checked in the game (Ferrari 458 on Chile, DLSS Performance at 4K): the grade made the reds richer, the horizon warmer and the shadows teal with the HUD untouched; the distance view showed near ground dark and far hills fading to white; the normals view showed the road flat and up-facing and the car and palms in detail; the depth effects gave soft contact shading, a blur that grows away from the car, and haze that matched the sky in the afternoon and in the evening, at 83 to 103 frames a second (the grade alone cost about 5 ms at 4K).
+
+Limits of the HDR stage: it lives in the game's anti-aliasing pass, so it only runs while DLSS or FSR anti-aliasing is on (the same condition as the motion vectors); up to three filters; the depth is the game's own (the transparent things, glass and smoke, are not in it); there is no previous-frame input yet.
+
 ## Example
 
 `tools/modkit/examples/vignette-filter` has the shader (`vignette.frag`), the compiled `files/postfx/vignette.spv` and the script. Checked in the game (Ferrari 458 on Chile, DLSS Performance): with the mod the corners of the picture are dark and the colours warmer, at 96 frames a second.

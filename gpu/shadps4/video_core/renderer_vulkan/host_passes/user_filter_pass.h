@@ -26,11 +26,30 @@ public:
         float values[16];
     };
 
+    /// What the HDR stage can also read (all in General layout): the view-space distance of every pixel, the motion
+    /// vectors (pixels, previous minus current), the g-buffer and the view ray parameters. Without them (the stage
+    /// on the finished picture) the picture itself stands in at each binding and `pad` is 0.
+    struct Extras {
+        vk::ImageView depth{}, motion{}, gbuffer{}, params{};
+        bool valid = false;
+    };
+
     void Create(vk::Device device, VmaAllocator allocator, vk::Format format, int slot = 0);
 
     /// `input` (ShaderReadOnlyOptimal) comes back when no filter is active; otherwise the filtered picture (also
     /// ShaderReadOnlyOptimal), drawn into an image of the same size.
-    vk::ImageView Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size);
+    vk::ImageView Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size,
+                         vk::ImageLayout input_layout, const Extras& extras);
+    vk::ImageView Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size) {
+        return Render(cmdbuf, input, size, vk::ImageLayout::eShaderReadOnlyOptimal, Extras{});
+    }
+
+    /// The image the last Render drew into (valid while Render returned its view).
+    [[nodiscard]] vk::Image OutputImage() const {
+        return vk::Image(image);
+    }
+    /// True when a filter is chosen for this slot (whether or not it loaded).
+    [[nodiscard]] bool WantsToRun() const;
 
 private:
     bool LoadShader(const std::string& name);
@@ -41,6 +60,7 @@ private:
     VmaAllocator allocator{};
     vk::Format format{};
     vk::UniqueSampler sampler{};
+    vk::UniqueSampler nearest{};
     vk::UniqueDescriptorSetLayout desc_set_layout{};
     vk::UniquePipelineLayout pipeline_layout{};
     vk::UniqueShaderModule vertex_module{};

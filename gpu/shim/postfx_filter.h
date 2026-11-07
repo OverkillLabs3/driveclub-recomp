@@ -11,7 +11,8 @@
 namespace ModPostFx {
 
 // Filters run one after the other, slot 0 first; each slot has its own shader name and its own 16 numbers.
-constexpr int kSlots = 3;
+// Slots 3 to 5 run earlier, on the upscaled HDR image (DriveAA), before the game's bloom and tone mapping.
+constexpr int kSlots = 6;   // 0 to 2 on the finished picture, 3 to 5 on the HDR image before the game's own post
 
 inline std::mutex& NameMutex() {
     static std::mutex m;

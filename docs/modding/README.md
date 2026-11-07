@@ -43,7 +43,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
 | Car and model geometry (positions, triangles, skin weights, materials of a part) | `dcmod mesh` and Blender ([models.md](models.md)) |
 | A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
-| A shader over the whole picture (grading, vignette, grain), scripted | `dcmod.postfx`, `postfx/<name>.spv` ([postfx.md](postfx.md)) |
+| A shader over the whole picture, or on the HDR picture with depth (grading, fog, occlusion, depth of field), scripted | `dcmod.postfx`, `postfx/<name>.spv` ([postfx.md](postfx.md)) |
 | The time of day and the weather of a race, scripted | `dcmod.time`, `dcmod.set_time`, `dcmod.race_weather` ([lua.md](lua.md)) |
 | A different chase, bonnet or dashboard camera | a `text.replace` patch on the camera file ([cameras.md](cameras.md)) |
 | One change for a whole group of cars, tracks or files | `"each"` in a patch ([patches.md](patches.md)) |

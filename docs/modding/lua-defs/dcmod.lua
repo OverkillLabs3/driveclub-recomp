@@ -57,7 +57,7 @@ function dcmod.ui.clear(id) end
 ---@class dcmod.postfx
 ---Switches the filter postfx/<name>.spv of a mod on; "off" or nil switches filters off.
 ---@param name string|nil
----@param slot integer|nil 0 to 2 (0 by default): the filters of the slots run one after the other
+---@param slot integer|nil 0 to 2 on the finished picture, 3 to 5 on the HDR picture before the game's own post (0 by default); the slots run in order
 function dcmod.postfx.use(name, slot) end
 ---Sets one of the 16 numbers the filter reads (push constants values[i / 4][i % 4]).
 ---@param index integer 0 to 15

@@ -68,14 +68,22 @@ void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::For
         .addressModeU = vk::SamplerAddressMode::eClampToEdge,
         .addressModeV = vk::SamplerAddressMode::eClampToEdge,
     }));
-    const std::array bindings{
-        vk::DescriptorSetLayoutBinding{
-            .binding = 0,
+    nearest = Check<"create user filter nearest sampler">(device.createSamplerUnique({
+        .magFilter = vk::Filter::eNearest,
+        .minFilter = vk::Filter::eNearest,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+    }));
+    std::array<vk::DescriptorSetLayoutBinding, 5> bindings{};
+    for (u32 i = 0; i < bindings.size(); ++i) {
+        bindings[i] = vk::DescriptorSetLayoutBinding{
+            .binding = i,
             .descriptorType = vk::DescriptorType::eCombinedImageSampler,
             .descriptorCount = 1,
             .stageFlags = vk::ShaderStageFlagBits::eFragment,
-        },
-    };
+        };
+    }
     desc_set_layout = Check<"create user filter descriptor set layout">(device.createDescriptorSetLayoutUnique({
         .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
         .bindingCount = static_cast<u32>(bindings.size()),
@@ -202,7 +210,8 @@ bool UserFilterPass::EnsureImage(vk::Extent2D size) {
         .arrayLayers = 1,
         .samples = vk::SampleCountFlagBits::e1,
         .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+        .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+                 vk::ImageUsageFlagBits::eTransferSrc,
         .initialLayout = vk::ImageLayout::eUndefined,
     });
     auto view = device.createImageViewUnique({
@@ -219,7 +228,12 @@ bool UserFilterPass::EnsureImage(vk::Extent2D size) {
     return true;
 }
 
-vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size) {
+bool UserFilterPass::WantsToRun() const {
+    return !ModPostFx::Name(slot).empty();
+}
+
+vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size,
+                                     vk::ImageLayout input_layout, const Extras& extras) {
     const std::string name = ModPostFx::Name(slot);
     if (name.empty() || !desc_set_layout) {
         return input;
@@ -272,17 +286,26 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
     for (int i = 0; i < 16; ++i) {
         constants.values[i] = ModPostFx::Values(slot)[i].load(std::memory_order_relaxed);
     }
-    const vk::DescriptorImageInfo image_info{
-        .sampler = *sampler,
-        .imageView = input,
-        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-    };
-    const std::array set_writes{vk::WriteDescriptorSet{
-        .dstBinding = 0,
-        .descriptorCount = 1,
-        .descriptorType = vk::DescriptorType::eCombinedImageSampler,
-        .pImageInfo = &image_info,
+    constants.pad = extras.valid ? 1.0f : 0.0f;
+    // 0 picture; 1 view-space distance; 2 motion; 3 g-buffer; 4 view ray parameters (the picture stands in without them)
+    const std::array<vk::DescriptorImageInfo, 5> image_infos = {{
+        {*sampler, input, input_layout},
+        {*nearest, extras.valid ? extras.depth : input,
+         extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*sampler, extras.valid ? extras.motion : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*nearest, extras.valid ? extras.gbuffer : input,
+         extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*nearest, extras.valid ? extras.params : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
     }};
+    std::array<vk::WriteDescriptorSet, 5> set_writes{};
+    for (u32 i = 0; i < set_writes.size(); ++i) {
+        set_writes[i] = vk::WriteDescriptorSet{
+            .dstBinding = i,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+            .pImageInfo = &image_infos[i],
+        };
+    }
     cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
     cmdbuf.setViewport(0, vk::Viewport{.width = static_cast<float>(size.width),
                                         .height = static_cast<float>(size.height),
