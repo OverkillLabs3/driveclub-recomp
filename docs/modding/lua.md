@@ -118,6 +118,18 @@ The whole example is `tools/modkit/examples/speed-hud`. Checked in the game (Fer
 
 Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
 
+### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
+
+`dcmod.time()` returns the hour of the day of the scene (0 to 24, for example 18.5 is 18:30) and the speed of the clock (`hour, compression`), or `nil` when no race is loaded. `dcmod.set_time(hour)` moves the clock to that hour; the sky, the lights and the shadows follow, and the clock keeps running from there. Values are kept to a thousandth of an hour.
+
+```lua
+dcmod.on_ready(function()
+  dcmod.after(5, function() dcmod.set_time(3) end)   -- five seconds into the race: night
+end)
+```
+
+Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
+
 ### Post-processing: `dcmod.postfx`
 
 `dcmod.postfx.use(name)` switches on a filter shader that the mod ships (`postfx/<name>.spv`), `dcmod.postfx.param(i, value)` sets the numbers it reads. See [postfx.md](postfx.md).

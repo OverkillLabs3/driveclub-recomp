@@ -73,6 +73,18 @@ end
 function dcmod.ui.clear(id)
   loadfile("dcmod/ui/clear/" .. safeid(id))
 end
+-- dcmod.time(): the hour of the day (0 to 24) and the game's time compression, or nil when the clock is not running.
+-- dcmod.set_time(hour): moves the clock to an hour (a script that steps it every frame makes a day pass faster).
+function dcmod.time()
+  local chunk = loadfile("dcmod/state/env.lua.bin")
+  if not chunk then return nil end
+  local v = { chunk() }
+  if v[2] ~= 1 then return nil end
+  return v[3], v[4]
+end
+function dcmod.set_time(hour)
+  loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
+end
 -- dcmod.postfx: a post-processing filter, a SPIR-V fragment shader `postfx/<name>.spv` that a mod ships (see
 -- docs/modding/postfx.md). use(name) picks it ("off" or nil: none), param(i, v) sets one of the 16 numbers it reads.
 dcmod.postfx = {}

@@ -9,6 +9,8 @@
  *       x, y, w, h in thousandths of the screen, size in pixels, ttl in milliseconds; an item with the same id is replaced
  *   dcmod/postfx/use/<name>           the post-processing filter postfx/<name>.spv of a mods folder (use/off: none)
  *   dcmod/postfx/param/<i>/<value>    number i (0 to 15) the filter reads, value in thousandths (negative: n before the digits)
+ *   dcmod/env/time/<hour*1000>        sets the hour of the day (the game's clock)
+ *   dcmod/state/env.lua.bin           a Lua chunk with the hour of the day and the clock's compression
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
  * The game lower-cases the paths it opens, so a script writes each capital letter as '^' and the lower-case letter
@@ -102,25 +104,32 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
     static double last_ms;
     if (!guest || strncasecmp(guest, MOD_PREFIX, sizeof(MOD_PREFIX) - 1)) return 0;
     const char *call = guest + sizeof(MOD_PREFIX) - 1;
-    if (!strcasecmp(call, "state/car.lua.bin")) {
-        /* values: 1 layout version, 2 car found (1/0), 3 speed m/s, 4 rpm, 5 maximum rpm, 6 rev limiter rpm, 7 gear (-1
+    const int is_car = !strcasecmp(call, "state/car.lua.bin"), is_env = !strcasecmp(call, "state/env.lua.bin");
+    if (is_car || is_env) {
+        /* car: values 1 layout version, 2 car found (1/0), 3 speed m/s, 4 rpm, 5 maximum rpm, 6 rev limiter rpm, 7 gear (-1
          * reverse, 0 neutral), 8 throttle 0..1, 9 brake 0..1, 10 steering -1..1, then four wheels (right front, left front,
-         * right rear, left rear) of five numbers: load N, lateral force N, longitudinal force N, slip ratio, slip angle */
+         * right rear, left rear) of five numbers: load N, lateral force N, longitudinal force N, slip ratio, slip angle
+         * env: values 1 layout version, 2 clock running (1/0), 3 hour of the day 0..24, 4 the game's time compression */
         double values[48];
-        int n = runtime_mod_car_state(values + 2, 46);
+        int n = is_car ? runtime_mod_car_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);
         values[0] = 1;
         values[1] = n > 0;
         if (n < 0) n = 0;
-        static const char *dir_name = "/dcmod_state_car.luac";
+        const char *file_name = is_car ? "/dcmod_state_car.luac" : "/dcmod_state_env.luac";
         const char *user = runtime_file_user_dir();
         uint8_t chunk[1024];
         const size_t length = numbers_chunk(chunk, sizeof(chunk), values, n + 2);
-        if (!user || !*user || !length || (size_t)snprintf(out, size, "%s%s", user, dir_name) >= size) return 1;
+        if (!user || !*user || !length || (size_t)snprintf(out, size, "%s%s", user, file_name) >= size) return 1;
         FILE *f = fopen(out, "wb");
         if (!f) return 1;
         const size_t written = fwrite(chunk, 1, length, f);
         fclose(f);
         return written == length ? 2 : 1;
+    }
+    if (!strncasecmp(call, "env/time/", 9)) {
+        const long thousandths = atol(call + 9);   /* hour of the day times 1000 */
+        runtime_mod_set_hours((float)thousandths / 1000.0f);
+        return 1;
     }
     if (!strncasecmp(call, "ui/", 3)) {
         char text[512];

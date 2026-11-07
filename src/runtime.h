@@ -88,6 +88,9 @@ int runtime_mod_marker(const char *guest, char *out, size_t size);
 /* The values of the car the player drives (runtime_pad.c): fills `values` with up to `max` numbers in the order of
  * docs/modding/lua.md and returns how many; 0 when no car is driven. */
 int runtime_mod_car_state(double *values, int max);
+/* The game's clock (runtime_scene_debug.inc): hour of the day and time compression; and a request for an hour. */
+int runtime_mod_env_state(double *values, int max);
+void runtime_mod_set_hours(float hours);
 /* Whether a folder of mods has the file (a path below the game's root such as scripts/bootscripts/x). */
 int runtime_file_mods_have(const char *relative);
 void runtime_benchmark_flip(void);

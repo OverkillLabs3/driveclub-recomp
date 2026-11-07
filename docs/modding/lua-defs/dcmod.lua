@@ -91,6 +91,13 @@ function dcmod.setting(mod, name, fallback) end
 ---The live state of the car the player drives, or nil when no car is driven.
 ---@return dcmod.Car|nil
 function dcmod.car() end
+---The hour of the day of the scene (0 to 24) and the speed of the clock, or nil when no race is loaded.
+---@return number|nil hour
+---@return number|nil compression
+function dcmod.time() end
+---Moves the clock of the scene to an hour (0 to 24).
+---@param hour number
+function dcmod.set_time(hour) end
 
 -- Functions of the game that are not part of Lua 5.1
 ---@type fun(...): any

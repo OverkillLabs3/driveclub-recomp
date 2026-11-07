@@ -4,7 +4,10 @@
 typedef void(ABI *SceneTimeUpdate)(void *, float);
 static SceneTimeUpdate scene_time_original;
 static uint64_t scene_time_values, scene_time_stamp;
+static uint32_t mod_hours_bits = 0xffffffffu;   /* an hour a mod script asked for (dcmod.set_time); all ones (a NaN) means none */
 static ABI void scene_time_update(void *self, float dt) {
+  const uint32_t asked = __atomic_exchange_n(&mod_hours_bits, 0xffffffffu, __ATOMIC_ACQ_REL);
+  if (asked != 0xffffffffu) memcpy((unsigned char *)self + 0xc, &asked, 4);   /* the clock's hour, before the game advances it */
   scene_time_original(self, env_time_delta(self,dt));
   uint64_t values;
   memcpy(&values, (const unsigned char *)self + 0xc, sizeof(values));
@@ -18,6 +21,11 @@ static ABI void scene_time_update(void *self, float dt) {
   }
   __atomic_store_n(&scene_time_values, values, __ATOMIC_RELAXED);
   __atomic_store_n(&scene_time_stamp, GetTickCount64(), __ATOMIC_RELEASE);
+}
+void runtime_mod_set_hours(float hours) {
+  uint32_t bits;
+  memcpy(&bits, &hours, 4);
+  __atomic_store_n(&mod_hours_bits, bits, __ATOMIC_RELEASE);
 }
 int runtime_scene_debug_time(float *hours, float *compression) {
   uint64_t stamp = __atomic_load_n(&scene_time_stamp, __ATOMIC_ACQUIRE);
@@ -68,6 +76,16 @@ static void scene_debug_install(void) {
   puts("Scene overlay: current time-of-day telemetry enabled");
 }
 #else
+void runtime_mod_set_hours(float hours) { (void)hours; }
 int runtime_scene_debug_time(float *hours, float *compression) { return 0; }
 static void scene_debug_install(void) {}
 #endif
+/* The game's clock for mod scripts (dcmod/state/env.lua.bin): hour of the day 0..24 and the game's time compression;
+ * 0 when the clock is not running (menus). */
+int runtime_mod_env_state(double *v, int max) {
+    float hours, compression;
+    if (max < 2 || !runtime_scene_debug_time(&hours, &compression)) return 0;
+    v[0] = hours;
+    v[1] = compression;
+    return 2;
+}
