@@ -232,6 +232,14 @@ function dcmod.store.get(name, default)
   if type(default) == "boolean" then return found == "true" end
   return found
 end
+-- dcmod.ai_drive(on): true hands the player's car to the game's AI driver, false gives it back; without an argument it
+-- returns whether the AI is driving. (The game's own property `UnderPlayerControl` of the player's actor.)
+function dcmod.ai_drive(on)
+  local ok, player = pcall(Actor.GetPlayer)
+  if not ok or not player then return nil end
+  if on == nil then return not player.UnderPlayerControl end
+  player.UnderPlayerControl = not on
+end
 local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
   VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
   WetToDry = "Wet To Dry" }

@@ -132,6 +132,10 @@ end)
 
 Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
 
+### Letting the AI drive: `dcmod.ai_drive(on)`
+
+`dcmod.ai_drive(true)` hands the player's car to the game's AI driver, `dcmod.ai_drive(false)` gives it back, `dcmod.ai_drive()` tells who is driving. It is the game's own property `Actor.GetPlayer().UnderPlayerControl` (the benchmark helper uses it too). Checked in the game (Ferrari 458 on Chile, car coasting under the player's control): after the call `UnderPlayerControl` read `false`, and the car, which had been slowing from 185 to 160 km/h, accelerated again and went on round the lap (progress 0.02 to 0.26 in 11 s). Not checked: handing the car back mid-corner, and the other direction while the player is pressing the pedals.
+
 ### Keeping values between runs: `dcmod.store`
 
 ```lua

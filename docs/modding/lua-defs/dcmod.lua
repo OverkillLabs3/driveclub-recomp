@@ -118,6 +118,10 @@ function dcmod.input() end
 ---@param name string|integer
 ---@return boolean
 function dcmod.key(name) end
+---True hands the player's car to the AI driver, false gives it back, nil asks who drives (returns true when the AI does).
+---@param on boolean|nil
+---@return boolean|nil
+function dcmod.ai_drive(on) end
 ---@class dcmod.store
 dcmod.store = {}
 ---A value kept between runs: the type of default (number, boolean, text) decides the type that comes back.
