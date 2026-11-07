@@ -18,6 +18,7 @@ The mod kit has three parts:
 | [File formats](formats.md) | Archive, resource packs, tables, XML, Lua |
 | [Lua scripts](lua.md) | Mod scripts, logging, and the game's script layer: [the live API](lua-api.md) and [the names its scripts use](lua-names.md) |
 | [Cars and dashboards](cars.md) | What a car is, what can be changed, the instrument displays |
+| [Cameras](cameras.md) | The camera text files of every car, changing a view |
 | [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
 | [Music and sound](audio.md) | FMOD banks: hear, extract, replace and encode your own sounds and music |
 | [Native plugins](plugins.md) | DLLs that hook the game's code (opt-in, for code you trust) |
@@ -44,6 +45,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
 | A shader over the whole picture (grading, vignette, grain), scripted | `dcmod.postfx`, `postfx/<name>.spv` ([postfx.md](postfx.md)) |
 | The time of day and the weather of a race, scripted | `dcmod.time`, `dcmod.set_time`, `dcmod.race_weather` ([lua.md](lua.md)) |
+| A different chase, bonnet or dashboard camera | a `text.replace` patch on the camera file ([cameras.md](cameras.md)) |
 | One change for a whole group of cars, tracks or files | `"each"` in a patch ([patches.md](patches.md)) |
 | An app with buttons, switches and sliders over the game | `dcmod.gui.app` ([lua.md](lua.md)) |
 | Keys and mouse for your own controls | `dcmod.input`, `dcmod.key` ([lua.md](lua.md)) |
