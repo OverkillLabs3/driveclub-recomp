@@ -113,6 +113,8 @@ mkdir -p "$tmp/lm" && cat > "$tmp/lm/mod.json" <<'JSON'
 JSON
 "$exe" mod build "$tmp/lm" -o "$tmp/lmb" | grep -q "1 files written"
 "$exe" car lights fe_458 | grep -q "^3 .*76 "
+"$exe" car custom ALL | tail -1 | grep -q " 0 problems"
+"$exe" car custom fe_458 | grep -q "^HeadLight .* 184 "
 echo "ok car lights"
 
 "$exe" archive verify > /dev/null

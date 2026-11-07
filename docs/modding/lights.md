@@ -61,3 +61,30 @@ Fields of `set`:
 | 6 | 10 | One light with no range. Not checked. |
 
 Other cars use the same types; use `dcmod car lights NAME` to see them, then change one light at a time and look at the result in the game.
+
+# The glow of the lamps
+
+A second resource of the car pack, `vehicle_custom_data`, has the named glow settings of the lamps and of the dashboard backlight: `HeadLight`, `SideLight`, `TailLight`, `BrakeLight`, `DashDisplayBacklight1` and `DashDisplayBacklight2` (all 137 cars have these six; more numbers follow them in tables that the kit keeps as they are).
+
+```bash
+dcmod car custom fe_458          # the entries of a car
+dcmod car custom fe_458 --json
+dcmod car custom ALL             # checks all cars
+```
+
+```
+name                     color                    intensity f4 .. f7
+HeadLight                0.893   0.935   1       184       1 1 1 100
+TailLight                1       0.00137 0.000299 8         1 1 1 100
+BrakeLight               1       0.00137 0.000299 100       1 1 1 100
+```
+
+`custom.set` changes them, with `match` `{"name": "TailLight"}`, a list of names or `{"all": true}`, and `set` with `color` `[r, g, b]`, `intensity` and `f4` to `f7`:
+
+```json
+{ "op": "custom.set", "file": "vehicles/ferrari_458_italia.rpk",
+  "match": { "name": ["TailLight", "BrakeLight"] },
+  "set": { "color": [0, 1, 0], "intensity": 60 } }
+```
+
+Checked in the game (Ferrari 458 at night): `TailLight` colour `[0, 1, 0]`, intensity 60, and `BrakeLight` colour `[0, 1, 0]`, intensity 300, made both rear lamps glow bright green with a halo around them. The entries are the glow of the lamp meshes, while the table above (`dcmod car lights`) holds the light sources that light the road. A car's headlights change in both places: the lamp glow here and the beam there.

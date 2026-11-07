@@ -250,6 +250,7 @@
             "rpk.copy",
             "rpk.replace",
             "light.set",
+            "custom.set",
             "archive.register"
           ],
           "description": "The operation. See docs/modding/patches.md."

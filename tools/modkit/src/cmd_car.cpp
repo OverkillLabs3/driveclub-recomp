@@ -4,6 +4,7 @@
 // of them under a new name with `file.copy` patches and adds the row, so it holds none of the game's data.
 #include "cli.hpp"
 #include "csv.hpp"
+#include "customdata.hpp"
 #include "lights.hpp"
 #include "rpk.hpp"
 #include "mod.hpp"
@@ -82,6 +83,32 @@ int RunCar(const std::vector<std::string>& argv) {
         std::printf("%zu cars\n", doc.rows.size() - 1);
         return 0;
     }
+    if (cmd == "custom" && args.positional[1] == "ALL") {
+        size_t packs = 0, bad = 0;
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            const std::string a = doc.Get(r, size_t(asset_col));
+            const std::string path = source.Canonical("vehicles/" + a + ".rpk");
+            if (a.empty() || path.empty()) continue;
+            try {
+                const RpkPack pack = RpkPack::Parse(source.Read(path));
+                for (const RpkResource& res : pack.resources) {
+                    if (int(res.Type()) != RpkTypeFromName("vehicle_custom_data")) continue;
+                    const CustomTable t = ParseCustom(res.data);
+                    ++packs;
+                    const bool same = WriteCustom(t) == res.data;
+                    std::string names;
+                    for (const CustomRecord& c : t.records) names += (names.empty() ? "" : ", ") + c.name;
+                    std::printf("%-34s %zu entries: %s%s\n", a.c_str(), t.records.size(), names.c_str(), same ? "" : "  (does not write back to the same bytes)");
+                    bad += !same;
+                }
+            } catch (const std::exception& e) {
+                std::printf("%-34s %s\n", a.c_str(), e.what());
+                ++bad;
+            }
+        }
+        std::printf("%zu packs with custom data, %zu problems\n", packs, bad);
+        return bad ? 1 : 0;
+    }
     if (cmd == "lights" && args.positional[1] == "ALL") {
         // dcmod car lights ALL: checks that every car's light table has the layout the kit knows (read and written back to the same bytes)
         size_t cars = 0, bad = 0;
@@ -128,6 +155,31 @@ int RunCar(const std::vector<std::string>& argv) {
         }
         std::printf("\n%zu files are named after the asset \"%s\":\n", files.size(), asset.c_str());
         for (const std::string& f : files) std::printf("  %s\n", f.c_str());
+        return 0;
+    }
+    if (cmd == "custom") {
+        // dcmod car custom NAME [--json]: the named glow settings of the car (HeadLight, TailLight, BrakeLight ...)
+        const std::string path = source.Canonical("vehicles/" + asset + ".rpk");
+        if (path.empty()) throw Error("vehicles/" + asset + ".rpk is not in the game's files");
+        const RpkPack pack = RpkPack::Parse(source.Read(path));
+        const RpkResource* res = nullptr;
+        for (const RpkResource& r : pack.resources) {
+            if (int(r.Type()) == RpkTypeFromName("vehicle_custom_data")) res = &r;
+        }
+        if (!res) throw Error("the pack has no vehicle_custom_data resource");
+        const CustomTable t = ParseCustom(res->data);
+        if (args.Has("--json")) {
+            std::fputs(CustomToJson(t).Dump().c_str(), stdout);
+            return 0;
+        }
+        std::printf("%s: %zu entries (resource %s, %zu more bytes of tables after them)\n", asset.c_str(), t.records.size(), HexId(res->id).c_str(), t.tail.size());
+        std::printf("%-24s %-24s %-9s %s\n", "name", "color", "intensity", "f4 .. f7");
+        for (const CustomRecord& r : t.records) {
+            std::printf("%-24s %-7.3g %-7.3g %-7.3g %-9.4g", r.name.c_str(), r.f[0], r.f[1], r.f[2], r.f[3]);
+            for (int k = 4; k < 8; ++k) std::printf(" %.4g", r.f[k]);
+            std::printf("\n");
+        }
+        std::puts("\nChange them with a custom.set patch (docs/modding/lights.md).");
         return 0;
     }
     if (cmd == "lights") {

@@ -102,6 +102,7 @@ A pack that is changed is written again with its resources in their original ord
 
 `rpk.replace`: `file` (a pack), `resource` (id or name), `find`, `replace` (the same length). Replaces text inside the payload of a resource of any type, at every place it occurs (for example the layer names `Cana_C02_Tier1` in a world's patch pack). Fails when the text is not there. With `"hash": "crc32"` `find` and `replace` are names (they may differ in length) and the CRC32 of the first, as 4 little endian bytes, is replaced by the CRC32 of the second: the world stores the names of its scene objects that way.
 `light.set`: `file` (a vehicle pack), `match` (`index`: a number or list, `type`, `node` or `all`), `set` (`color` [r, g, b], `intensity`, `node`, `type`, `flags`, `f6` to `f14`). Changes the car's light sources, see [lights.md](lights.md). Fails when no light matches.
+`custom.set`: `file` (a vehicle pack), `match` (`name`: a name or list, or `all`), `set` (`color` [r, g, b], `intensity`, `f4` to `f7`). Changes the glow of the car's lamps (HeadLight, TailLight, BrakeLight, SideLight, the dashboard backlights), see [lights.md](lights.md).
 
 `rpk.copy`: `file` (a pack), `resource` (an existing resource), `name` (the copy's name). Adds a copy of the resource under a new name and a new identifier.
 

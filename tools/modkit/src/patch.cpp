@@ -4,6 +4,7 @@
 #include "csv.hpp"
 #include "lua.hpp"
 #include "image.hpp"
+#include "customdata.hpp"
 #include "lights.hpp"
 #include "tex.hpp"
 #include "xml.hpp"
@@ -852,6 +853,49 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         const std::string from = p.Str("from"), file = p.Str("file");
         p.Done();
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
+        return;
+    }
+    if (name == "custom.set") {
+        // custom.set: the named glow settings of a car (the `vehicle_custom_data` resource of its pack): HeadLight, TailLight,
+        // BrakeLight, SideLight, DashDisplayBacklight1 ... "match" is {"name": "TailLight"}, {"name": ["TailLight", "BrakeLight"]}
+        // or {"all": true}.
+        const std::string file = p.Str("file");
+        const Json* match = p.Get("match");
+        const Json* set = p.Get("set");
+        p.Done();
+        if (!set) throw Error("the field \"set\" (the fields to change) is required");
+        if (!match || !match->IsObject()) throw Error("the field \"match\" is required: {\"name\": \"TailLight\"} or {\"all\": true}");
+        RpkPack& pack = ws.Pack(file);
+        const int custom_type = RpkTypeFromName("vehicle_custom_data");
+        RpkResource* res = nullptr;
+        for (RpkResource& r : pack.resources) {
+            if (int(r.Type()) == custom_type) res = &r;
+        }
+        if (!res) throw Error(file + " has no vehicle_custom_data resource");
+        CustomTable table = ParseCustom(res->data);
+        std::vector<std::string> names;
+        if (const Json* n = match->Find("name")) {
+            if (n->IsArray()) {
+                for (const Json& v : n->Items()) names.push_back(Lower(v.AsString()));
+            } else {
+                names.push_back(Lower(n->AsString()));
+            }
+        }
+        const bool all = match->GetBool("all", false);
+        if (!all && names.empty()) throw Error("\"match\" needs a \"name\" or \"all\": true");
+        size_t changed = 0;
+        for (CustomRecord& r : table.records) {
+            if (!all && std::find(names.begin(), names.end(), Lower(r.name)) == names.end()) continue;
+            ApplyCustomSet(r, *set);
+            ++changed;
+        }
+        if (!changed) {
+            std::string have;
+            for (const CustomRecord& r : table.records) have += (have.empty() ? "" : ", ") + r.name;
+            throw Error("no entry has that name (the pack has: " + have + ")");
+        }
+        res->data = WriteCustom(table);
+        ws.PackChanged(file, env.mod, action(std::to_string(changed) + " entries"));
         return;
     }
     if (name == "light.set") {
