@@ -109,6 +109,30 @@ static bool tele_wanted(void) { return false; }
 static void tele_install(void) {}
 #endif
 static bool pad_was_read;
+/* The values of the car the player drives, for mod scripts (dcmod/state/car, runtime_modapi.c): speed in m/s, engine speed,
+ * highest engine speed, rev limiter, gear, throttle, brake, steering, then per wheel (right front, left front, right
+ * rear, left rear) load, lateral force, longitudinal force, slip ratio and slip angle. 0 when no car is driven. */
+int runtime_mod_car_state(double *v, int max) {
+#ifdef _WIN32
+    if (max < 28 || !tele_car.us || now_us() - tele_car.us > 500000) return 0;
+    const uint8_t *state = (const uint8_t *)tele_car.state;
+    PadData p;
+    pthread_mutex_lock(&lock);
+    p = pad_last_read;
+    pthread_mutex_unlock(&lock);
+    v[0] = tele_car.speed; v[1] = tele_engine.rpm; v[2] = tele_engine.max_rpm; v[3] = tele_engine.limiter; v[4] = tele_engine.gear;
+    v[5] = p.r2 / 255.0; v[6] = p.l2 / 255.0; v[7] = ((int)p.left_x - 128) / 127.0;
+    const float *load = (const float *)(state + 0xa50), *lat = (const float *)(state + 0xa60), *lon = (const float *)(state + 0xa70),
+                *ratio = (const float *)(state + 0xb30), *angle = (const float *)(state + 0xb50);
+    for (int i = 0; i < 4; ++i) {
+        v[8 + 5 * i] = load[i]; v[9 + 5 * i] = lat[i]; v[10 + 5 * i] = lon[i]; v[11 + 5 * i] = ratio[i]; v[12 + 5 * i] = angle[i];
+    }
+    return 28;
+#else
+    (void)v; (void)max;
+    return 0;
+#endif
+}
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
     WheelExtension w; memcpy(&w,wheel_last_read.extension,sizeof w);

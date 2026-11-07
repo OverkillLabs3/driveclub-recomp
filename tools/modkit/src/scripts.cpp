@@ -23,6 +23,26 @@ function dcmod.log(...)
   text = string.gsub(text, "%u", function(c) return "^" .. string.lower(c) end)
   loadfile("dcmod/log/" .. text)
 end
+-- dcmod.car(): the live state of the car the player drives, or nil when none is driven. The runtime makes a Lua chunk
+-- that returns the numbers (see src/runtime_modapi.c); speed is in m/s, wheels are right front, left front, right rear,
+-- left rear.
+local carKeys = { "speed", "rpm", "max_rpm", "limiter", "gear", "throttle", "brake", "steer" }
+local wheelKeys = { "load", "lateral", "longitudinal", "slip_ratio", "slip_angle" }
+function dcmod.car()
+  local chunk = loadfile("dcmod/state/car.lua.bin")
+  if not chunk then return nil end
+  local v = { chunk() }
+  if v[2] ~= 1 then return nil end
+  local car = { wheels = {} }
+  for i = 1, #carKeys do car[carKeys[i]] = v[2 + i] end
+  for w = 0, 3 do
+    local wheel = {}
+    for k = 1, #wheelKeys do wheel[wheelKeys[k]] = v[10 + w * 5 + k] end
+    car.wheels[w + 1] = wheel
+  end
+  car.kmh = car.speed * 3.6
+  return car
+end
 -- Timers and events. The game's event system does not exist while the boot script runs, so dcmod.on_ready and
 -- dcmod.on wait until dcmod.ready_delay seconds after the start (20 by default).
 local function guarded(what, fn, ...)

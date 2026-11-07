@@ -207,6 +207,13 @@ void runtime_file_add_mods(const char *dir) {
 }
 /* The i-th mods folder (for the GPU layer's shader patches), or NULL. */
 const char *runtime_file_mods_dir(int i) { return i>=0 && i<mods_count ? mods_dirs[i] : NULL; }
+int runtime_file_mods_have(const char *relative) {
+    for (int i=0;i<mods_count;++i) {
+        char path[1100];
+        if ((size_t)snprintf(path,sizeof(path),"%s/%s",mods_dirs[i],relative)<sizeof(path) && access(path,F_OK)==0) return 1;
+    }
+    return 0;
+}
 /* Probe /app0 folder `key` (length bytes) in every overlay. Only ENOENT proves absence:
  * an existing file or another stat error must not poison that path as missing.
  * Runs under `lock`; `host` is the /app0 mount's host folder. */
@@ -232,7 +239,11 @@ static int folder_present(const char *key,size_t length,const char *host) {
 /* Resolve a guest path to a host path; returns 0 or a host errno. */
 static int translate(const char *guest,char *out,size_t size) {
     if (!guest || !*guest) return ENOENT;
-    if (runtime_mod_marker(guest)) return ENOENT; /* a call from a mod script (runtime_modapi.c), before the path is lower-cased */
+    {   /* a call from a mod script (runtime_modapi.c), before the path is lower-cased */
+        const int mod=runtime_mod_marker(guest,out,size);
+        if (mod==1) return ENOENT;
+        if (mod==2) return 0;
+    }
     char buffer[1024];
     guest_key(guest,buffer,sizeof(buffer));
     for (const char *p=buffer;(p=strstr(p,".."));p+=2)

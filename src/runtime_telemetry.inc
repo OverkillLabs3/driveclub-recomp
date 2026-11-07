@@ -306,6 +306,11 @@ static bool tele_wanted(void) {
     if (wanted < 0) {
         const char *a = getenv("BB_TELEMETRY"), *b = getenv("BB_ADAPTIVE_TRIGGERS"), *c = getenv("BB_IMPULSE_TRIGGERS");
         wanted = (a && *a && *a != '0') || (b && *b && *b != '0') || (c && *c && *c != '0');
+        /* a mod with scripts may read the car (dcmod/state/car): its boot script is in a mods folder */
+        if (!wanted && runtime_file_mods_have("scripts/bootscripts/defaultbootscript.lua.bin")) {
+            wanted = 1;
+            printf("Runtime: a mod has scripts: the car state is available to them (dcmod.car)\n");
+        }
     }
     return wanted;
 }
