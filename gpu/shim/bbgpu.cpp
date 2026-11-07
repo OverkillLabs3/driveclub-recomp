@@ -525,6 +525,11 @@ extern "C" void bbgpu_postfx_use(int slot, const char* name) {
         ModPostFx::SetName(name ? name : "", slot);
     }
 }
+extern "C" void bbgpu_postfx_scale(int slot, float value) {
+    if (slot >= 0 && slot < ModPostFx::kSlots) {
+        ModPostFx::Scale(slot).store(value < 0.05f ? 0.05f : (value > 1.0f ? 1.0f : value), std::memory_order_relaxed);
+    }
+}
 extern "C" void bbgpu_postfx_param(int slot, int index, float value) {
     if (slot >= 0 && slot < ModPostFx::kSlots && index >= 0 && index < 16) {
         ModPostFx::Values(slot)[index].store(value, std::memory_order_relaxed);

@@ -30,7 +30,7 @@ public:
     /// vectors (pixels, previous minus current), the g-buffer and the view ray parameters. Without them (the stage
     /// on the finished picture) the picture itself stands in at each binding and `pad` is 0.
     struct Extras {
-        vk::ImageView depth{}, motion{}, gbuffer{}, params{};
+        vk::ImageView depth{}, motion{}, gbuffer{}, params{}, scene{};   // scene: the HDR picture before the first HDR slot
         bool valid = false;
     };
 

@@ -45,6 +45,7 @@ end)
 |---|---|
 | `dcmod.postfx.use(name [, slot])` | Switches the filter `postfx/<name>.spv` on in a slot (0 to 2, 0 by default). `"off"` or `nil` switches the slot off. |
 | `dcmod.postfx.param(i, value [, slot])` | Sets number `i` (0 to 15) of that slot's filter. Values are kept to a thousandth. |
+| `dcmod.postfx.scale(fraction, slot)` | The size a slot draws at, 0.05 to 1 of the picture (for chains that downsample, see the HDR stage). |
 
 The slots run one after the other, slot 0 first, each reading the picture the one before made and each with its own 16 numbers: `dcmod.postfx.use("grade", 0)` then `dcmod.postfx.use("vignette", 1)` gives a colour grade with a vignette over it. A mod that wants a single effect never needs the slot.
 
@@ -52,9 +53,9 @@ A filter can also be chosen without a script: set `DC_POSTFX=<name>` in the envi
 
 The game checks the file about once a second while a filter is active and loads it again when it changed, so the effect can be tuned while the game runs (`dcmod mod watch` into the game's `mods` folder).
 
-## The HDR stage: slots 3 to 5
+## The HDR stage: slots 3 to 8
 
-Slots 0 to 2 work on the finished picture. Slots 3 to 5 run earlier, on the linear HDR picture right after the upscaler and before the game's own bloom, tone mapping and HUD. That is where the graphics packs of other games do their work (exposure, grading in linear light, fog, ambient occlusion, depth of field), and it is the only stage that can read the scene's depth. Use the slot number in the calls:
+Slots 0 to 2 work on the finished picture. Slots 3 to 8 (six of them) run earlier, on the linear HDR picture right after the upscaler and before the game's own bloom, tone mapping and HUD. That is where the graphics packs of other games do their work (exposure, grading in linear light, fog, ambient occlusion, depth of field), and it is the only stage that can read the scene's depth. Use the slot number in the calls:
 
 ```lua
 dcmod.postfx.use("hdr_grade", 3)        -- first HDR filter
@@ -70,6 +71,7 @@ layout(binding = 1) uniform sampler2D linear_depth;  // distance from the camera
 layout(binding = 2) uniform sampler2D motion;        // pixels, previous minus current (RG16F)
 layout(binding = 3) uniform sampler2D gbuffer;       // RGBA8 g-buffer, the alpha holds the object number
 layout(binding = 4) uniform sampler2D params;        // 4 by 1 texels (RGBA32F), see below
+layout(binding = 5) uniform sampler2D scene;         // the HDR picture as it was before the first HDR slot
 layout(push_constant) uniform P { vec2 resolution; float time; float has_depth; vec4 values[4]; } p;
 ```
 
@@ -85,11 +87,13 @@ vec3 view = vec3(z * ray, -z);           // right handed, forward is -z, units a
 
 Normals follow from the cross product of the neighbours' view positions (use the texel size of the depth image, `1.0 / textureSize(linear_depth, 0)`, not the output's).
 
+**Chains with other sizes.** `binding 0` is what the slot before drew (the scene for the first one). `dcmod.postfx.scale(fraction, slot)` sets the size a slot draws at (0.05 to 1 of the picture, 1 by default): the next slot reads the smaller image, and `scene` (binding 5) is still the full-size picture, so a chain can downsample, blur, upsample and put the result back on the scene, the way a bloom does. If the last slot draws smaller than the picture it is scaled back up (linear). The example `tools/modkit/examples/hdr-bloom` is a bloom with an anamorphic glare made of five slots of one shader (bright pass at half size, two blurs at a quarter and an eighth, a tent upsample, a composite at full size).
+
 The example `tools/modkit/examples/hdr-grade` is a cinematic grade in linear light (exposure in stops, contrast around middle grey, saturation, split toning, vignette, grain). `tools/modkit/examples/hdr-depth-fx` has distance fog that takes the colour of the sky, a depth of field that focuses on the car, and ambient occlusion from the depth, plus two views for checking (param 3 set to 1 shows the distance, 2 shows the normals).
 
 Checked in the game (Ferrari 458 on Chile, DLSS Performance at 4K): the grade made the reds richer, the horizon warmer and the shadows teal with the HUD untouched; the distance view showed near ground dark and far hills fading to white; the normals view showed the road flat and up-facing and the car and palms in detail; the depth effects gave soft contact shading, a blur that grows away from the car, and haze that matched the sky in the afternoon and in the evening, at 83 to 103 frames a second (the grade alone cost about 5 ms at 4K).
 
-Limits of the HDR stage: it lives in the game's anti-aliasing pass, so it only runs while DLSS or FSR anti-aliasing is on (the same condition as the motion vectors); up to three filters; the depth is the game's own (the transparent things, glass and smoke, are not in it); there is no previous-frame input yet.
+The bloom chain was checked with exaggerated settings first (threshold 0.25, bloom 1.6, glare 1.2): the grandstand roof and the haze glowed and a soft streak came off the lights, at 82 frames a second; the example's own defaults are milder. Limits of the HDR stage: it lives in the game's anti-aliasing pass, so it only runs while DLSS or FSR anti-aliasing is on (the same condition as the motion vectors); up to six filters; the depth is the game's own (the transparent things, glass and smoke, are not in it); there is no previous-frame input yet.
 
 ## Example
 
@@ -101,7 +105,7 @@ In the game (Ferrari 458 on Chile): the filter switches on from a script (dark c
 
 ## Limits
 
-- Three filters in a chain, one pass each, reading only the picture before them (no depth, no motion vectors, no previous frame yet).
+- Slots 0 to 2 on the finished picture read only that picture (no depth, motion or previous frame); there is no previous-frame input yet in the HDR stage either.
 - The picture is the one the game made, with its HUD: a filter cannot leave the HUD out.
 - Skipped with HDR output.
 - The file is looked up in the mods folders by name: names use letters, digits, `_` and `-`.

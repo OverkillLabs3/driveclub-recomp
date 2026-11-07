@@ -1464,12 +1464,12 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     // The HDR filters of a mod run on the upscaled picture, before the game's own bloom and tone mapping.
     {
         bool want = false;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 6; ++i) {
             want = want || !ModPostFx::Name(3 + i).empty();
         }
         if (want) {
             if (!hdr_filters_created) {
-                for (int i = 0; i < 3; ++i) {
+                for (int i = 0; i < 6; ++i) {
                     hdr_filter[i].Create(instance.GetDevice(), instance.GetAllocator(),
                                          vk::Format::eR16G16B16A16Sfloat, 3 + i);
                 }
@@ -1484,19 +1484,27 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &written});
             vk::ImageView view = *result_view;
             vk::Image last{};
+            vk::Extent2D last_size{ow, oh};
             vk::ImageLayout layout = vk::ImageLayout::eGeneral;
-            for (int i = 0; i < 3; ++i) {
+            const vk::ImageView scene_view = *result_view;
+            for (int i = 0; i < 6; ++i) {
                 if (!hdr_filter[i].WantsToRun()) {
                     continue;
                 }
+                const float fraction = ModPostFx::Scale(3 + i).load(std::memory_order_relaxed);
+                const vk::Extent2D slot_size{std::max(1u, u32(float(ow) * fraction)),
+                                             std::max(1u, u32(float(oh) * fraction))};
                 HostPasses::UserFilterPass::Extras extras{};
                 if (mod_buffers_valid && gbuffer_view) {
-                    extras = {*linear_depth_view, *motion_view, gbuffer_view, *params_view, true};
+                    extras = {*linear_depth_view, *motion_view, gbuffer_view, *params_view, scene_view, true};
+                } else {
+                    extras.scene = scene_view;
                 }
-                const vk::ImageView out = hdr_filter[i].Render(cmdbuf, view, {ow, oh}, layout, extras);
+                const vk::ImageView out = hdr_filter[i].Render(cmdbuf, view, slot_size, layout, extras);
                 if (out != view) {
                     view = out;
                     last = hdr_filter[i].OutputImage();
+                    last_size = slot_size;
                     layout = vk::ImageLayout::eShaderReadOnlyOptimal;
                 }
             }
@@ -1521,13 +1529,15 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                      .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}},
                 }};
                 cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = to_copy.data()});
-                const vk::ImageCopy region{
+                // a last slot that drew smaller than the picture is scaled back up (linear)
+                const vk::ImageBlit region{
                     .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .srcOffsets = {{vk::Offset3D{0, 0, 0}, vk::Offset3D{int32_t(last_size.width), int32_t(last_size.height), 1}}},
                     .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-                    .extent = {ow, oh, 1},
+                    .dstOffsets = {{vk::Offset3D{0, 0, 0}, vk::Offset3D{int32_t(ow), int32_t(oh), 1}}},
                 };
-                cmdbuf.copyImage(last, vk::ImageLayout::eTransferSrcOptimal, vk::Image(result_image),
-                                 vk::ImageLayout::eTransferDstOptimal, region);
+                cmdbuf.blitImage(last, vk::ImageLayout::eTransferSrcOptimal, vk::Image(result_image),
+                                 vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eLinear);
                 const vk::ImageMemoryBarrier2 back{
                     .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
                     .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,

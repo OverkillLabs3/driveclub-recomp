@@ -59,6 +59,10 @@ function dcmod.ui.clear(id) end
 ---@param name string|nil
 ---@param slot integer|nil 0 to 2 on the finished picture, 3 to 5 on the HDR picture before the game's own post (0 by default); the slots run in order
 function dcmod.postfx.use(name, slot) end
+---The size a filter slot draws at, 0.05 to 1 of the picture (1 by default), for chains that downsample and blur.
+---@param fraction number
+---@param slot integer
+function dcmod.postfx.scale(fraction, slot) end
 ---Sets one of the 16 numbers the filter reads (push constants values[i / 4][i % 4]).
 ---@param index integer 0 to 15
 ---@param value number

@@ -75,7 +75,7 @@ void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::For
         .addressModeU = vk::SamplerAddressMode::eClampToEdge,
         .addressModeV = vk::SamplerAddressMode::eClampToEdge,
     }));
-    std::array<vk::DescriptorSetLayoutBinding, 5> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 6> bindings{};
     for (u32 i = 0; i < bindings.size(); ++i) {
         bindings[i] = vk::DescriptorSetLayoutBinding{
             .binding = i,
@@ -288,7 +288,7 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
     }
     constants.pad = extras.valid ? 1.0f : 0.0f;
     // 0 picture; 1 view-space distance; 2 motion; 3 g-buffer; 4 view ray parameters (the picture stands in without them)
-    const std::array<vk::DescriptorImageInfo, 5> image_infos = {{
+    const std::array<vk::DescriptorImageInfo, 6> image_infos = {{
         {*sampler, input, input_layout},
         {*nearest, extras.valid ? extras.depth : input,
          extras.valid ? vk::ImageLayout::eGeneral : input_layout},
@@ -296,8 +296,9 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         {*nearest, extras.valid ? extras.gbuffer : input,
          extras.valid ? vk::ImageLayout::eGeneral : input_layout},
         {*nearest, extras.valid ? extras.params : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*sampler, extras.scene ? extras.scene : input, extras.scene ? vk::ImageLayout::eGeneral : input_layout},
     }};
-    std::array<vk::WriteDescriptorSet, 5> set_writes{};
+    std::array<vk::WriteDescriptorSet, 6> set_writes{};
     for (u32 i = 0; i < set_writes.size(); ++i) {
         set_writes[i] = vk::WriteDescriptorSet{
             .dstBinding = i,

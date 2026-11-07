@@ -41,6 +41,7 @@ void bbgpu_overlay_mod_item(const char *id, int kind, float x, float y, float w,
 
 void bbgpu_postfx_use(int slot, const char *name);
 void bbgpu_postfx_param(int slot, int index, float value);
+void bbgpu_postfx_scale(int slot, float value);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -333,6 +334,8 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         if (sscanf(text, "slot%d/%n", &slot, &skip) == 1 && skip > 0) rest = text + skip;   /* slot<k>/use/..., slot<k>/param/... */
         if (sscanf(rest, "use/%95[^/]", name) == 1) {
             bbgpu_postfx_use(slot, strcmp(name, "off") ? name : "");
+        } else if (sscanf(rest, "scale/%ld", &thousandths) == 1) {
+            bbgpu_postfx_scale(slot, (float)thousandths / 1000.0f);
         } else if (sscanf(rest, "param/%d/%ld", &index, &thousandths) == 2) {
             bbgpu_postfx_param(slot, index, (float)thousandths / 1000.0f);
         } else if (sscanf(rest, "param/%d/n%ld", &index, &thousandths) == 2) {

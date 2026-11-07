@@ -176,9 +176,9 @@ private:
     bool mod_buffers_valid = false; ///< written by this frame's motion pass
     VideoCore::UniqueImage depth_copy_image;
     vk::UniqueImageView depth_copy_view;
-    /// The HDR filters of a mod (slots 3 to 5, docs/modding/postfx.md): run on the upscaled picture before the
+    /// The HDR filters of a mod (slots 3 to 8, docs/modding/postfx.md): run on the upscaled picture before the
     /// game's own bloom and tone mapping.
-    HostPasses::UserFilterPass hdr_filter[3];
+    HostPasses::UserFilterPass hdr_filter[6];
     bool hdr_filters_created = false;
     vk::UniqueDescriptorSetLayout dc_motion_desc_layout;
     vk::UniquePipelineLayout dc_motion_pipeline_layout;

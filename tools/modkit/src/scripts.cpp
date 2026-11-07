@@ -281,6 +281,11 @@ local function slot_path(slot) return slot and slot > 0 and ("slot" .. math.floo
 function dcmod.postfx.use(name, slot)
   loadfile("dcmod/postfx/" .. slot_path(slot) .. "use/" .. dcmod_escape(name or "off", 60))
 end
+-- dcmod.postfx.scale(fraction, slot): the size a slot draws at (0.05 to 1 of the picture, 1 by default), for chains that
+-- downsample, blur and put the result back (a bloom): the next slot reads this one at its smaller size
+function dcmod.postfx.scale(fraction, slot)
+  loadfile(string.format("dcmod/postfx/%sscale/%d", slot_path(slot), math.floor(fraction * 1000 + 0.5)))
+end
 function dcmod.postfx.param(index, value, slot)
   local v = math.floor(math.abs(value) * 1000 + 0.5)
   loadfile(string.format("dcmod/postfx/%sparam/%d/%s%d", slot_path(slot), index, value < 0 and "n" or "", v))
