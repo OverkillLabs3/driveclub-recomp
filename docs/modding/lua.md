@@ -213,6 +213,13 @@ How it works, for people who extend it: the race config of the game is C++ data,
 
 All the globals the game's own scripts use exist when a mod script runs. [lua-api.md](lua-api.md) lists every global with its members, for example `Event.Listen`, `Event.SendEvent`, `Actor.GetPlayer`, `Actor.SpawnActor`, `GameState.StartGame`, `GUIOptions.Set`, `Rewards`, `Vehicles`, `Tracks`, `Tour`, `LAMS`, `HUD`, `Stats`. It was read from the running game. What each function takes is learned from the game's scripts: `dcmod lua dis` shows how they call them, and `dcmod lua survey` lists the calls.
 
+### Things that go wrong in scripts
+
+- **Globals are locked.** Reading or writing a global that does not exist stops the script with `Attempt to read nil global 'x'. Globals are locked to prevent typo/spelling bugs`. Use `local` for your own variables. The log line is `Mod: error in timer ...`.
+- **Timers run from the front end, not during a loading screen.** `dcmod.after` and `dcmod.every` tick in the menus and in a race, and stop while a race loads. Anything that must happen before a race loads has to be set up in advance (`dcmod.race_weather` does this: the runtime applies it while the race loads).
+- **Keep listeners.** The value `Event.Listen` returns has to be kept in a variable (`dcmod.on` does); a listener that is thrown away stops being called.
+- **Events seen in tests.** `dcmod.on("NewLap", ...)` is checked. In a test that started the race with the benchmark helper, listeners for `RaceState` and `AnimLibPlaySqMsg` were not called (that helper waits for them in its own way), so do not rely on those two without trying them in your own setup.
+
 ### Finding out more
 
 A mod script can walk any table and log it, which is how lua-api.md was made:
