@@ -115,6 +115,20 @@ JSON
 "$exe" car lights fe_458 | grep -q "^3 .*76 "
 "$exe" car custom ALL | tail -1 | grep -q " 0 problems"
 "$exe" car custom fe_458 | grep -q "^HeadLight .* 184 "
+# patches that cannot apply fail with a message that says why (nothing is written)
+bad() {
+    rm -rf "$tmp/bad" && mkdir -p "$tmp/bad"
+    printf '{ "id": "t.bad", "name": "t", "version": "1.0", "patches": [ %s ] }' "$1" > "$tmp/bad/mod.json"
+    if "$exe" mod check "$tmp/bad" > "$tmp/bad.out" 2>&1; then echo "expected a failure: $1"; exit 1; fi
+    grep -q "$2" "$tmp/bad.out" || { echo "wrong message for $1:"; cat "$tmp/bad.out"; exit 1; }
+}
+bad '{ "op": "light.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "index": 99 }, "set": { "intensity": 1 } }' "no light matches"
+bad '{ "op": "light.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "index": 3 }, "set": { "bogus": 1 } }' "unknown light field"
+bad '{ "op": "light.set", "file": "vehicles/ferrari_458_italia.rpk", "set": { "intensity": 1 } }' "match"
+bad '{ "op": "light.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "type": 3 }, "set": { "color": [1, 2] } }' "three numbers"
+bad '{ "op": "custom.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "name": "nosuch" }, "set": { "intensity": 1 } }' "no entry has that name"
+bad '{ "op": "custom.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "name": "headlight" }, "set": { "f9": 1 } }' "unknown field"
+bad '{ "op": "light.set", "file": "vehicles/nosuchcar.rpk", "match": { "all": true }, "set": { "intensity": 1 } }' "has no file"
 echo "ok car lights"
 
 "$exe" archive verify > /dev/null
