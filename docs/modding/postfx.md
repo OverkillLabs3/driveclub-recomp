@@ -54,6 +54,10 @@ The game checks the file about once a second while a filter is active and loads 
 
 `tools/modkit/examples/vignette-filter` has the shader (`vignette.frag`), the compiled `files/postfx/vignette.spv` and the script. Checked in the game (Ferrari 458 on Chile, DLSS Performance): with the mod the corners of the picture are dark and the colours warmer, at 96 frames a second.
 
+## What was checked
+
+In the game (Ferrari 458 on Chile): the filter switches on from a script (dark corners, warm tint) with DLSS Performance and with no upscaler at 4K native; changing a parameter while racing changes the picture; `dcmod.postfx.use("off")` restores the plain picture; replacing the `.spv` file during the race loaded the new shader within a few seconds (a red-only filter, HUD included); a missing name, a text file and random bytes each give a warning in the log and leave the picture alone, and switching back to a good filter works. Not checked: frame generation, HDR (skipped by design), Linux.
+
 ## Limits
 
 - One filter at a time, one pass, reading only the picture (no depth, no motion vectors, no previous frame yet).

@@ -88,6 +88,8 @@ dcmod.every(1, function()
 end)
 ```
 
+Windows only: on Linux `dcmod.car()` always returns `nil` (the car hook is not built there). The controller values are the pad's: with the AI driving they are 0 unless the pad is used; with `BB_PAD_FILE` holding `l2 lx=40` they read `brake` 1 and `steer` -0.69, which is (40 - 128) / 127.
+
 Checked in the game (Ferrari 458 on Chile, 50 seconds of AI driving): speed went from 106 to 226 km/h, the gear from 3 to 6, and the front wheel load from 0 N in the air to 6800 N in a braking zone. The car is read through the same code as the telemetry output; the runtime installs it when a mods folder has scripts (the log says `a mod has scripts: the car state is available to them`).
 
 How it works, for people who extend it: `dcmod.car()` calls `loadfile("dcmod/state/car.lua.bin")`. The runtime sees the path (`src/runtime_modapi.c`), writes a small Lua 5.1 chunk that returns the numbers into the user data folder and opens that file. The name must end in `.lua.bin`: the game's `loadfile` stops the game with an assertion for a path without it.
