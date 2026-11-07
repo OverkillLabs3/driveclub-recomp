@@ -106,5 +106,14 @@ cmp -n 44 "$tmp/s.wav" "$tmp/s2.wav"
 echo "ok audio import"
 echo "ok audio replace"
 
+# every car's light table has the layout the kit knows and writes back to the same bytes; a light.set patch changes the colour
+"$exe" car lights ALL | tail -1 | grep -q " 0 problems"
+mkdir -p "$tmp/lm" && cat > "$tmp/lm/mod.json" <<'JSON'
+{ "id": "t.lights", "name": "t", "version": "1.0", "patches": [ { "op": "light.set", "file": "vehicles/ferrari_458_italia.rpk", "match": { "index": [3, 4] }, "set": { "color": [0, 0.2, 1], "intensity": 1500 } } ] }
+JSON
+"$exe" mod build "$tmp/lm" -o "$tmp/lmb" | grep -q "1 files written"
+"$exe" car lights fe_458 | grep -q "^3 .*76 "
+echo "ok car lights"
+
 "$exe" archive verify > /dev/null
 echo "all real data checks passed"

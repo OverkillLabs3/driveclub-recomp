@@ -21,6 +21,7 @@ The mod kit has three parts:
 | [Models and Blender](models.md) | Export model geometry to glTF, edit, import back |
 | [Music and sound](audio.md) | FMOD banks: hear, extract, replace and encode your own sounds and music |
 | [Native plugins](plugins.md) | DLLs that hook the game's code (opt-in, for code you trust) |
+| [Car lights](lights.md) | Read and change the colour and brightness of a car's lights |
 | [Tracks](tracks.md) | what a track is, what can be changed, a copy of a track under a new name |
 | [Tutorial: a new car](tutorial-new-car.md) | clone a car, reshape it in Blender, share it as two mods |
 | [Shaders and graphics](shaders.md) | dump the game's shaders, edit the SPIR-V, replace them in a mod |
@@ -40,6 +41,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | A car with another car's model, or a new row with its own physics | `dcmod car swap`, `dcmod car variant` ([cars.md](cars.md)) |
 | Car and model geometry (positions, triangles, skin weights, materials of a part) | `dcmod mesh` and Blender ([models.md](models.md)) |
 | A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
+| The lights of a car (headlights, brake lights) | `dcmod car lights`, `light.set` patch ([lights.md](lights.md)) |
 | Music and sound effects (FMOD banks), your own WAV files, which stream an event plays, loops | `dcmod audio import`, `audio set` ([audio.md](audio.md)) |
 | Shaders (the look of surfaces, lighting, post effects) | `dcmod shader` and `shaders\` in a mod ([shaders.md](shaders.md)) |
 | Anything else | replacement files, `bytes.*` patches |

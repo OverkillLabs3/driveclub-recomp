@@ -249,6 +249,7 @@
             "rpk.rename",
             "rpk.copy",
             "rpk.replace",
+            "light.set",
             "archive.register"
           ],
           "description": "The operation. See docs/modding/patches.md."

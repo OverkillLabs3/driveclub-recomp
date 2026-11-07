@@ -4,6 +4,8 @@
 // of them under a new name with `file.copy` patches and adds the row, so it holds none of the game's data.
 #include "cli.hpp"
 #include "csv.hpp"
+#include "lights.hpp"
+#include "rpk.hpp"
 #include "mod.hpp"
 
 #include <algorithm>
@@ -80,6 +82,31 @@ int RunCar(const std::vector<std::string>& argv) {
         std::printf("%zu cars\n", doc.rows.size() - 1);
         return 0;
     }
+    if (cmd == "lights" && args.positional[1] == "ALL") {
+        // dcmod car lights ALL: checks that every car's light table has the layout the kit knows (read and written back to the same bytes)
+        size_t cars = 0, bad = 0;
+        for (size_t r = 1; r < doc.rows.size(); ++r) {
+            const std::string a = doc.Get(r, size_t(asset_col));
+            const std::string path = source.Canonical("vehicles/" + a + ".rpk");
+            if (a.empty() || path.empty()) continue;
+            try {
+                const RpkPack pack = RpkPack::Parse(source.Read(path));
+                for (const RpkResource& res : pack.resources) {
+                    if (int(res.Type()) != RpkTypeFromName("lights")) continue;
+                    const LightTable t = ParseLights(res.data);
+                    ++cars;
+                    const bool same = WriteLights(t) == res.data;
+                    std::printf("%-34s %2zu lights, tail %zu bytes%s\n", a.c_str(), t.records.size(), t.tail.size(), same ? "" : "  (does not write back to the same bytes)");
+                    bad += !same;
+                }
+            } catch (const std::exception& e) {
+                std::printf("%-34s %s\n", a.c_str(), e.what());
+                ++bad;
+            }
+        }
+        std::printf("%zu packs with lights, %zu problems\n", cars, bad);
+        return bad ? 1 : 0;
+    }
     const std::string& name = args.positional[1];
     size_t row = 0;
     for (size_t r = 1; r < doc.rows.size(); ++r) {
@@ -101,6 +128,33 @@ int RunCar(const std::vector<std::string>& argv) {
         }
         std::printf("\n%zu files are named after the asset \"%s\":\n", files.size(), asset.c_str());
         for (const std::string& f : files) std::printf("  %s\n", f.c_str());
+        return 0;
+    }
+    if (cmd == "lights") {
+        // dcmod car lights NAME [--json]: the car's light sources
+        const std::string path = source.Canonical("vehicles/" + asset + ".rpk");
+        if (path.empty()) throw Error("vehicles/" + asset + ".rpk is not in the game's files");
+        const RpkPack pack = RpkPack::Parse(source.Read(path));
+        const RpkResource* res = nullptr;
+        for (const RpkResource& r : pack.resources) {
+            if (int(r.Type()) == RpkTypeFromName("lights")) res = &r;
+        }
+        if (!res) throw Error("the pack has no lights resource");
+        const LightTable t = ParseLights(res->data);
+        if (args.Has("--json")) {
+            std::fputs(LightsToJson(t).Dump().c_str(), stdout);
+            return 0;
+        }
+        std::printf("%s: %zu lights (resource %s)\n", asset.c_str(), t.records.size(), HexId(res->id).c_str());
+        std::printf("%-5s %-4s %-24s %-9s %-18s %s\n", "index", "type", "color", "intensity", "node", "f6 .. f14");
+        for (size_t i = 0; i < t.records.size(); ++i) {
+            const LightRecord& r = t.records[i];
+            std::printf("%-5zu %-4d %-7.3g %-7.3g %-7.3g %-9.4g %-18s", i, int(r.type), r.color[0], r.color[1], r.color[2], r.intensity,
+                        r.node ? HexId(r.node).c_str() : "-");
+            for (float v : r.f) std::printf(" %.4g", v);
+            std::printf("\n");
+        }
+        std::puts("\nChange them with a light.set patch (docs/modding/lights.md).");
         return 0;
     }
     if (cmd == "swap") {

@@ -4,6 +4,7 @@
 #include "csv.hpp"
 #include "lua.hpp"
 #include "image.hpp"
+#include "lights.hpp"
 #include "tex.hpp"
 #include "xml.hpp"
 
@@ -851,6 +852,57 @@ void ApplyOne(const Json& opjson, PatchEnv& env) {
         const std::string from = p.Str("from"), file = p.Str("file");
         p.Done();
         ws.Write(file, ws.Read(from), env.mod, action("from " + from));
+        return;
+    }
+    if (name == "light.set") {
+        // light.set: the car's own light sources (the `lights` resource of its pack): colour, intensity and the other fields
+        // of the records picked by "match" ({"index": 3}, {"index": [3, 4]}, {"type": 1}, {"node": "hex"} or {"all": true}).
+        const std::string file = p.Str("file");
+        const Json* match = p.Get("match");
+        const Json* set = p.Get("set");
+        p.Done();
+        if (!set) throw Error("the field \"set\" (the fields to change) is required");
+        if (!match || !match->IsObject()) throw Error("the field \"match\" is required: {\"index\": 3}, {\"type\": 1}, {\"node\": \"hex\"} or {\"all\": true}");
+        RpkPack& pack = ws.Pack(file);
+        const int lights_type = RpkTypeFromName("lights");
+        RpkResource* res = nullptr;
+        for (RpkResource& r : pack.resources) {
+            if (int(r.Type()) == lights_type) res = &r;
+        }
+        if (!res) throw Error(file + " has no lights resource");
+        LightTable table = ParseLights(res->data);
+        const auto wanted = [&](size_t i, const LightRecord& r) {
+            if (match->GetBool("all", false)) return true;
+            bool any_key = false, ok = true;
+            if (const Json* ix = match->Find("index")) {
+                any_key = true;
+                bool hit = false;
+                if (ix->IsArray()) {
+                    for (const Json& v : ix->Items()) hit = hit || size_t(v.AsInt()) == i;
+                } else {
+                    hit = size_t(ix->AsInt()) == i;
+                }
+                ok = ok && hit;
+            }
+            if (const Json* t = match->Find("type")) {
+                any_key = true;
+                ok = ok && int(r.type) == t->AsInt();
+            }
+            if (const Json* n = match->Find("node")) {
+                any_key = true;
+                ok = ok && r.node == ParseHexId(n->AsString());
+            }
+            return any_key && ok;
+        };
+        size_t changed = 0;
+        for (size_t i = 0; i < table.records.size(); ++i) {
+            if (!wanted(i, table.records[i])) continue;
+            ApplyLightSet(table.records[i], *set);
+            ++changed;
+        }
+        if (!changed) throw Error("no light matches (the pack has " + std::to_string(table.records.size()) + " lights; dcmod car lights shows them)");
+        res->data = WriteLights(table);
+        ws.PackChanged(file, env.mod, action(std::to_string(changed) + " lights"));
         return;
     }
     if (name == "rpk.set" || name == "rpk.patch" || name == "rpk.add" || name == "rpk.remove" || name == "tex.set" || name == "rpk.rename" || name == "rpk.copy" || name == "rpk.replace") {
