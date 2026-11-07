@@ -47,6 +47,8 @@ function dcmod.car()
     for k = 1, #wheelKeys do wheel[wheelKeys[k]] = v[10 + w * 5 + k] end
     car.wheels[w + 1] = wheel
   end
+  car.position = { x = v[31], y = v[32], z = v[33] }
+  car.heading = v[34]
   car.kmh = car.speed * 3.6
   return car
 end

@@ -22,6 +22,8 @@
 ---@field brake number 0 to 1, from the controller.
 ---@field steer number -1 to 1, from the controller.
 ---@field wheels dcmod.CarWheel[] Right front, left front, right rear, left rear.
+---@field position {x: number, y: number, z: number} World position in metres, the middle of the four wheels.
+---@field heading number Radians, atan2(x, z) of the way the car points.
 
 ---@alias dcmod.Color number[] {r, g, b, a} with values from 0 to 1
 

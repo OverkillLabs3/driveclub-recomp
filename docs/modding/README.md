@@ -51,6 +51,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | The cars of a race with their progress (leaderboards, gap displays) | `dcmod.cars` ([lua.md](lua.md)) |
 | An app with buttons, switches and sliders over the game | `dcmod.gui.app` ([lua.md](lua.md)) |
 | Keys and mouse for your own controls | `dcmod.input`, `dcmod.key` ([lua.md](lua.md)) |
+| Where the car is in the world (maps, anchors) | `dcmod.car().position`, `.heading` ([lua.md](lua.md)) |
 | Live car data and your own HUD in the game | `dcmod.car()`, `dcmod.ui` ([lua.md](lua.md)) |
 | The lights of a car (headlights, brake lights) | `dcmod car lights`, `light.set` patch ([lights.md](lights.md)) |
 | Music and sound effects (FMOD banks), your own WAV files, which stream an event plays, loops | `dcmod audio import`, `audio set` ([audio.md](audio.md)) |

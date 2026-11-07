@@ -80,6 +80,8 @@ Timers, the boot hook, `dcmod.on` and `dcmod.log` have been run in the game. The
 | `gear` | 1 and up forward, -1 reverse. |
 | `throttle`, `brake`, `steer` | What the controller gives: 0 to 1, 0 to 1, -1 to 1 (steering wheels are not read yet). |
 | `wheels[1..4]` | Right front, left front, right rear, left rear: `load`, `lateral`, `longitudinal` (forces in N), `slip_ratio`, `slip_angle`. |
+| `position` | `{ x, y, z }`: where the car is in the world, in metres, the middle of the four wheels (`y` is up). |
+| `heading` | The way the car points, in radians, `atan2(x, z)` of the direction from the rear axle to the front axle (0 along +z, rising towards +x). |
 
 ```lua
 dcmod.every(1, function()
@@ -91,6 +93,8 @@ end)
 Windows only: on Linux `dcmod.car()` always returns `nil` (the car hook is not built there). The controller values are the pad's: with the AI driving they are 0 unless the pad is used; with `BB_PAD_FILE` holding `l2 lx=40` they read `brake` 1 and `steer` -0.69, which is (40 - 128) / 127.
 
 Checked in the game (Ferrari 458 on Chile, 50 seconds of AI driving): speed went from 106 to 226 km/h, the gear from 3 to 6, and the front wheel load from 0 N in the air to 6800 N in a braking zone. The car is read through the same code as the telemetry output; the runtime installs it when a mods folder has scripts (the log says `a mod has scripts: the car state is available to them`).
+
+The position was found by dumping the car's state block while the car drove and looking for floats that moved by speed times time: the world positions of the four wheels sit at `state + 0x180`, `+0x1c0`, `+0x200`, `+0x240` (right front, left front, right rear, left rear; `drive + 0x1a0` and others hold copies). Checked in the game (Chile, AI driving): the distance between two samples one second apart was within 5 percent of the speed (54.1 m at 55.2 m/s, 34.7 m at 34.9 m/s), and `heading` followed the direction of travel through the corners (0.52 against 0.79 into a bend: the heading leads the chord of the path). This is the player's car only; the cars of the AI have no position in the script layer, see `dcmod.cars()`. The example `tools/modkit/examples/track-map` draws the track from where the car has been, a dot every 25 m, scaled into a box with the car as a marker; after one lap its outline matched the game's own mini map.
 
 How it works, for people who extend it: `dcmod.car()` calls `loadfile("dcmod/state/car.lua.bin")`. The runtime sees the path (`src/runtime_modapi.c`), writes a small Lua 5.1 chunk that returns the numbers into the user data folder and opens that file. The name must end in `.lua.bin`: the game's `loadfile` stops the game with an assertion for a path without it.
 

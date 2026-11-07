@@ -111,10 +111,11 @@ static void tele_install(void) {}
 static bool pad_was_read;
 /* The values of the car the player drives, for mod scripts (dcmod/state/car, runtime_modapi.c): speed in m/s, engine speed,
  * highest engine speed, rev limiter, gear, throttle, brake, steering, then per wheel (right front, left front, right
- * rear, left rear) load, lateral force, longitudinal force, slip ratio and slip angle. 0 when no car is driven. */
+ * rear, left rear) load, lateral force, longitudinal force, slip ratio and slip angle, then the car's place in the world (x, y, z
+ * of the middle of the four wheels, metres) and its heading (radians, atan2(x, z) of the way it points). 0 when no car is driven. */
 int runtime_mod_car_state(double *v, int max) {
 #ifdef _WIN32
-    if (max < 28 || !tele_car.us || now_us() - tele_car.us > 500000) return 0;
+    if (max < 32 || !tele_car.us || now_us() - tele_car.us > 500000) return 0;
     const uint8_t *state = (const uint8_t *)tele_car.state;
     PadData p;
     pthread_mutex_lock(&lock);
@@ -127,7 +128,18 @@ int runtime_mod_car_state(double *v, int max) {
     for (int i = 0; i < 4; ++i) {
         v[8 + 5 * i] = load[i]; v[9 + 5 * i] = lat[i]; v[10 + 5 * i] = lon[i]; v[11 + 5 * i] = ratio[i]; v[12 + 5 * i] = angle[i];
     }
-    return 28;
+    /* the four wheel contact points in the world (right front, left front, right rear, left rear): x, y, z each, 0x40 apart */
+    float wheel[4][3];
+    for (int i = 0; i < 4; ++i) memcpy(wheel[i], state + 0x180 + 0x40 * i, 12);
+    v[28] = (wheel[0][0] + wheel[1][0] + wheel[2][0] + wheel[3][0]) / 4.0;
+    v[29] = (wheel[0][1] + wheel[1][1] + wheel[2][1] + wheel[3][1]) / 4.0;
+    v[30] = (wheel[0][2] + wheel[1][2] + wheel[2][2] + wheel[3][2]) / 4.0;
+    {   /* the way the car points: from the middle of the rear axle to the middle of the front axle, seen from above */
+        const double fx = (wheel[0][0] + wheel[1][0]) / 2.0 - (wheel[2][0] + wheel[3][0]) / 2.0;
+        const double fz = (wheel[0][2] + wheel[1][2]) / 2.0 - (wheel[2][2] + wheel[3][2]) / 2.0;
+        v[31] = atan2(fx, fz);
+    }
+    return 32;
 #else
     (void)v; (void)max;
     return 0;
