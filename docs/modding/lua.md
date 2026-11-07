@@ -265,6 +265,7 @@ All the globals the game's own scripts use exist when a mod script runs. [lua-ap
 ### Tried and not working
 
 - `TimeManager.SetGameSpeed` (slow motion) exists in the game's script layer but none of the game's own scripts call it. Called from a mod it fails with `bad argument #N (number expected, got no value)` where N is always one more than the number of arguments given (tried 1, 2 and 3 numbers), and as a method (`TimeManager:SetGameSpeed(0.25)`) with `calling 'SetGameSpeed' on bad self (number expected, got table)`. The game clock (`GameState.CurrentGameTime()`) kept running at normal speed throughout. The binding's real signature is not known.
+- Hiding the HUD with the event the game's own `osd` script sends, `Event.SendEvent(global, "OSDVisible", 0, "Disable")` (and `1, "Enable"` to bring it back): the call succeeds and nothing changes on the screen (timer, speedometer and score stay). A HUD replacement has to draw over the game's HUD for now.
 - Setting the weather of a race that is already running, see [Weather](#weather-dcmodrace_weather-rain--weather--).
 
 ### Finding out more
