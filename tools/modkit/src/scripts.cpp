@@ -200,7 +200,10 @@ function dcmod.cars()
       local actor = Actor.GetActorFromColIdx(all, i)
       if actor then
         out[#out + 1] = { name = Actor.GetVehicleName(actor), progress = actor.Poslen,
-          player = Actor.GetActorId(actor) == my_id, actor = actor }
+          player = Actor.GetActorId(actor) == my_id, actor = actor,
+          laps = actor.CompletedLaps, distance = actor.RaceDistance, finish = actor.FinishPosition,
+          car_collisions = actor.TotalActorToActorCollisions, world_collisions = actor.TotalActorToWorldCollisions,
+          wheelie_score = actor.AccumulatedWheelieScore }
       end
     end
   end)

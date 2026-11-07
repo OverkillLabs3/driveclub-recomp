@@ -141,6 +141,12 @@ function dcmod.store.remove(name) end
 ---@field progress number 0 to 1 round the lap
 ---@field player boolean
 ---@field actor userdata the game's actor
+---@field laps integer laps completed
+---@field distance number distance along the race, a fraction of a lap
+---@field finish integer finish position, 0 until finished
+---@field car_collisions integer
+---@field world_collisions integer
+---@field wheelie_score number
 ---The cars of the race (empty when no race is loaded).
 ---@return dcmod.RaceCar[]
 function dcmod.cars() end

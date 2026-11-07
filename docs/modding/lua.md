@@ -159,11 +159,18 @@ How it works: values are written by a call to a path the runtime recognises (`dc
 | `name` | The vehicle name, for example `ferrari_458_italia` |
 | `progress` | How far round the lap the car is, 0 to 1 (the game's `Poslen` property; it wraps to 0 at the line) |
 | `player` | `true` for the car the player drives |
+| `laps` | Laps completed (`CompletedLaps`) |
+| `distance` | Distance along the race (`RaceDistance`, a fraction of a lap, negative before the line) |
+| `finish` | Finish position, 0 until the car has finished (`FinishPosition`) |
+| `car_collisions`, `world_collisions` | Collisions with cars and with the world so far |
+| `wheelie_score` | The accumulated wheelie score |
 | `actor` | The game's actor object, for the game's own functions (`Actor.GetVehicleName(actor)`, `actor.UnderPlayerControl`, ...) |
 
-This is all the game's script layer tells about other cars: actors have the property `Poslen`, `UnderPlayerControl` and the like, but no position, speed or orientation (checked: `position`, `speed`, `velocity`, `rotation`, `name` all read `nil`). Sort by lap count plus `progress` for a leaderboard.
+This is all the game's script layer tells about other cars. Looking for every name the game's scripts use on a car's actor found these properties: `AccumulatedWheelieScore`, `ActorName` (`racer_HUMAN8` for the player), `CleanSplitPassedThisFrame`, `CompletedLaps`, `FinishPosition`, `IsFinished`, `IsPlayer`, `Performance`, `Poslen`, `RTTEnabled`, `RaceDistance`, `StartLineCrossed`, `TopSpeedThreshold`, `TotalActorToActorCollisions`, `TotalActorToWorldCollisions` and `UnderPlayerControl`. There is no position, speed or orientation (`position`, `speed`, `velocity`, `rotation` read `nil`). Sort by `laps` plus `progress` for a leaderboard.
 
-Checked in the game (Race mode on Chile, Ferrari 458 with seven AI cars): all eight cars listed with their names, the progress of each changed live and wrapped at the line, and the player flag was set on the right car. The example `tools/modkit/examples/race-board` draws a live leaderboard from it: its order and the player's place (5th of 8) matched the game's own position display. Laps counted by the script include the start line that the cars cross just after the start.
+`Performance` (1 for every car) can be read and written, and the value stays, but it did not change how fast the AI cars drove: all seven AI cars set to 0.3 in one race and to 2.0 in another covered the same distances after eight seconds. It is probably read when the race is set up. Do not rely on it as a difficulty setting.
+
+Checked in the game (Race mode on Chile, Ferrari 458 with seven AI cars): all eight cars listed with their names, the progress of each changed live and wrapped at the line, and the player flag was set on the right car. The example `tools/modkit/examples/race-board` draws a live leaderboard from it: its order, the player's place (5th of 8) and the lap (1 of 5) matched the game's own display.
 
 ### Keyboard and mouse: `dcmod.input()` and `dcmod.key(name)`
 
