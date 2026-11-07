@@ -10,7 +10,7 @@ namespace DriveClub.Launcher;
 
 public partial class MainWindow
 {
-    private const int ModsPage = 7;
+    private int ModsPage => Array.IndexOf(names, "Mods");  // by name: the VR tab moved it from 7 to 8
     private ModLibrary? modLibrary;
     private ModLibraryState modState = new();
     private string? selectedMod;
