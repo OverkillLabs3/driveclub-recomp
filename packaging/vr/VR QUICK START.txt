@@ -18,7 +18,7 @@ LAUNCHER: THE VR TAB (the test PC's settings)
   Anti-aliasing in VR   TAA (game's, soft) / Off (sharp, jagged) / SMAA (sharp, smooth edges)
                         / DLSS (RTX, steadiest far away; its quality on the next row)
   Glow in VR            20% (the game's bloom looks like a film over the edges in the headset)
-  Exposure in VR        0; lower if the sky is too bright
+  Exposure in VR        0; + brighter, - darker
   Foveated rendering    Medium (a few FPS when the graphics card is the limit)
   Edge margin           Off (only for frame generation on the PC)
 

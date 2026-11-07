@@ -656,7 +656,7 @@ bool VrPatchRow(const Ctl& c) {
 bool VrHidesRow(const Ctl& c) {
   if (!VrChosen()) return false;
   if (VrPatchRow(c)) return true;
-  for (int row : {g_fov, g_camera_patch_row, g_camera_shake, g_lock_horizon_row, g_gfx[kGfxDynres], g_gfx[kGfxBlur]})
+  for (int row : {g_fov, g_camera_patch_row, g_camera_shake, g_lock_horizon_row, g_gfx[kGfxDynres], g_gfx[kGfxBlur], g_gfx[kGfxDust]})
     if (row >= 0 && &c == &g_c[row]) return true;
   return false;
 }
@@ -3876,7 +3876,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
     gc.motion_blur = BlurLocked() ? 1 : VrChosen() ? (VrTaaChosen() ? 1 : 0) : sel(kGfxBlur, 1);  // VR: see the blur patch
-    gc.lens_dust = sel(kGfxDust, 1);
+    gc.lens_dust = VrChosen() ? 0 : sel(kGfxDust, 1);  // VR: a camera's lens, not an eye
     gc.heat_haze = sel(kGfxHaze, 1);
     gc.fxaa = sel(kGfxFxaa, 1);
     gc.dynamic_res = VrChosen() ? 0 : sel(kGfxDynres, 1);

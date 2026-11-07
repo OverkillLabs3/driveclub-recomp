@@ -105,6 +105,7 @@ void SetShift(float shift);
 extern "C" uintptr_t runtime_image_base; // src/probe.c: where the guest's image is
 extern "C" volatile int runtime_image_ready; // src/probe.c: set once the loader has finished with its protection
 extern "C" int runtime_vehicle_camera_at(const float* position); // src/runtime_horizon_lock.inc
+extern "C" int runtime_scene_debug_time(float* hours, float* compression); // src/runtime_scene_debug.inc
 
 namespace BbVr {
 std::mutex* g_queue_mutex = nullptr; // set by the presenter: every queue submission is made under it
@@ -205,6 +206,11 @@ struct Settings {
     // (the dark dash and the bright sky swung it by three stops and more). exposure_filter = 0: the game's own.
     bool exposure_filter = true;
     float exposure_bias = 0.0f, exposure_time = 1.0f, exposure_hold = 15.0f;
+    // exposure_rate: in the car (after its first 3 s) the exposure moves at most this many stops a minute (0: no cap).
+    // The game meters the whole frame, so a shaded turn or the dark dash raised it and the road flashed white when
+    // the turn opened up; a few seconds of that now move it by a fraction of a stop, while a sunset in a race (a
+    // slower change) is followed as the game sets it. No fixed ceiling: night tracks need 7-9 stops more than day.
+    float exposure_rate = 3.0f;
     float ffr_inner = 35.0f, ffr_outer = 42.0f, ffr_down = 0.8f;
     // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
     uint64_t hidden_targets[4]{};
@@ -277,6 +283,7 @@ std::atomic<int> headset_shot{0};       // the . key: frames still to save (the 
 std::atomic<bool> resample_key_off{false}; // the / key: the runtime's own stretch, to compare
 std::atomic<int> half_rate_key{-1};         // the , key: half the headset's rate on (1) or off (0); -1 vr.ini's
 std::atomic<bool> ffr_key_off{false};  // the ' key: foveated rendering off to compare (FfrOn)
+std::atomic<long long> cockpit_since_us{0}; // when the in-car view began (0: not in it), for exposure_rate
 std::atomic<int> glow_key{-1};         // Shift and the \ key: the glow as the game draws it (1) or as set (0)
 std::atomic<int> smaa_key{-1};         // the \ key: SMAA on (1) or off (0); -1 vr.ini's / the launcher's
 bool mv_shift_on = true; // multiview: each eye's clip shift (key 8 turns it off to compare)
@@ -568,6 +575,7 @@ void ReadSettings() {
         else if (k == "exposure_bias" && value >= -4.0f && value <= 4.0f) settings.exposure_bias = value;
         else if (k == "exposure_time" && value >= 0.0f && value <= 10.0f) settings.exposure_time = value;
         else if (k == "exposure_hold" && value >= 0.0f && value <= 90.0f) settings.exposure_hold = value;
+        else if (k == "exposure_rate" && value >= 0.0f && value <= 600.0f) settings.exposure_rate = value;
         else if (k == "ffr_inner" && value >= 5.0f && value <= 80.0f) settings.ffr_inner = value;
         else if (k == "ffr_outer" && value >= 5.0f && value <= 85.0f) settings.ffr_outer = value;
         else if (k == "ffr_down" && value >= 0.3f && value <= 2.0f) settings.ffr_down = value;
@@ -2759,7 +2767,7 @@ bool EyeDump() {
 }
 
 void FilterExposure(float* value) {
-    // value: the scene's average luminance and the exposure the game takes from it (their product is the game's key)
+    // value: the exposure the picture is scaled by (bigger: brighter, so a + bias brightens) and its reciprocal term, their product the game's key
     if (!Active() || !settings.exposure_filter || !(value[0] > 0.0f) || !(value[1] > 0.0f)) {
         return;
     }
@@ -2775,12 +2783,42 @@ void FilterExposure(float* value) {
         held = measured;
         started = true;
     }
-    // looking down at the dash or up at the sky: keep the road's exposure
-    if (std::fabs(HeadPitch()) < settings.exposure_hold) {
-        const float a = settings.exposure_time > 0.0f ? 1.0f - std::exp(-dt / settings.exposure_time) : 1.0f;
-        held += a * (measured - held);
+    // Getting into the car: the next 3 s of exposure values (counted as they arrive: the game sends none while the
+    // car loads, and a night race after a day one is 11 stops away) take the track's level quickly and uncapped
+    static long long settled_for = 0;
+    static float settle_left = 0.0f;
+    const long long since = cockpit_since_us.load(std::memory_order_relaxed);
+    if (since != settled_for) {
+        settled_for = since;
+        settle_left = since != 0 ? 3.0f : 0.0f;
+        if (since != 0 && settings.exposure_log) {
+            std::printf("VR: exposure settles in the car (3 s of values)\n");
+            std::fflush(stdout);
+        }
     }
-    const float luminance = std::exp(held) * std::exp2(-settings.exposure_bias);
+    const bool settling = settle_left > 0.0f;
+    if (settling) {
+        settle_left -= dt;
+    }
+    // looking down at the dash or up at the sky: keep the road's exposure
+    if (settling || std::fabs(HeadPitch()) < settings.exposure_hold) {
+        const float time = settling ? std::min(settings.exposure_time, 0.5f) : settings.exposure_time;
+        const float a = time > 0.0f ? 1.0f - std::exp(-dt / time) : 1.0f;
+        float next = held + a * (measured - held);
+        // exposure_rate: in the car after that, the step is capped at exposure_rate stops a minute either way, more
+        // in a race with the time sped up (a dawn at 15x took the game's exposure down 4.7 stops a minute)
+        if (settings.exposure_rate > 0.0f && since != 0 && !settling) {
+            float hours = 0.0f, compression = 1.0f;
+            if (!runtime_scene_debug_time(&hours, &compression) || !std::isfinite(compression)) {
+                compression = 1.0f;
+            }
+            const float rate = settings.exposure_rate * std::clamp(compression / 5.0f, 1.0f, 40.0f);
+            const float step = rate / 60.0f * dt * 0.6931472f;
+            next = std::clamp(next, held - step, held + step);
+        }
+        held = next;
+    }
+    const float luminance = std::exp(held) * std::exp2(settings.exposure_bias);
     value[0] = luminance;
     value[1] = key / luminance;
 }
@@ -4039,6 +4077,7 @@ void AfterSubmit() {
         const bool cockpit = st.cockpit_now;
         if (cockpit != st.cockpit_shown) {
             st.cockpit_shown = cockpit;
+            cockpit_since_us = cockpit ? NowUs() : 0;
             // Getting into the car (a race starts, a restart, another car): the player sits as they drive now, so the
             // head is recentred there, unless the cockpit view was left only for a moment.
             if (cockpit && settings.auto_recentre && (!st.cockpit_left_us || NowUs() - st.cockpit_left_us > 3000000)) {
