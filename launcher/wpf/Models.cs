@@ -69,6 +69,8 @@ public sealed class LauncherState
     public string UpdateNote { get; set; } = "";
     public uint ShellProcessId { get; set; }
     public bool RestartRequired { get; set; }
+    public string WheelDetected { get; set; } = "";       // the wheel's name as the game found it, for Tune my wheel
+    public int WheelDetectedType { get; set; } = -1;      // and its kind: 0 direct drive, 1 belt, 2 gear, -1 not yet seen
 }
 public sealed class Backend
 {

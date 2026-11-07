@@ -160,8 +160,32 @@ public partial class MainWindow
         Place(row, button, 0, 238, width, 36);
     }
 
+    // A force feedback row by its default.ini key, as the page has it now (Adopt replaces the rows after each change).
+    internal Setting? FfbSetting(string key) => state.Controls.FirstOrDefault(c => c.Tag == "@ffb:" + key);
+
+    // Tune my wheel: one force feedback row changed and written, as a change on the page is, and the page shown with it.
+    internal async Task<bool> ChangeFfbSetting(string key, int value)
+    {
+        if (busy || FfbSetting(key) is not { } setting) return false;
+        int changed = ++revision;
+        suppress = true; setting.Selected = value; suppress = false;
+        state.ChangedId = setting.Id;
+        try
+        {
+            var result = await backend.Call("validate", state);
+            if (changed == revision) { Adopt(result); OperationStatus(result.Message.Length > 0 ? result.Message : "Force feedback saved."); }
+            return true;
+        }
+        catch (Exception ex) { SetStatus(ex.Message, true); return false; }
+    }
+
     private void ConfigureNativeButton(Button button, Setting setting)
     {
+        if (setting.Tag == "@ffbguide")
+        {
+            button.Click += (_, _) => { if (!busy) new FfbGuideDialog(this, state.WheelDetected, state.WheelDetectedType).ShowDialog(); };
+            return;
+        }
         button.Click += async (_, _) => await ActivateNativeButton(button, setting);
         if (setting.Tag is not ("@ffbgainup" or "@ffbgaindown")) return;
         var menu = new ContextMenu(); var clear = new MenuItem { Header = "Clear assignment" };

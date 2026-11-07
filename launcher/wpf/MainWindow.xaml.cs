@@ -37,7 +37,7 @@ public partial class MainWindow : Window
     private Action? arrangeHome;
     private readonly string root = AppContext.BaseDirectory;
     private int currentPage, revision, pageGeneration;
-    // data\user\input_config\default.ini, where the force feedback rows live (FFB Tuner writes it too), and its time
+    // data\user\input_config\default.ini, where the force feedback rows live (Live FFB Tuner writes it too), and its time
     // when the backend last read it
     private string WheelIni => Path.Combine(root, "data", "user", "input_config", "default.ini");
     private DateTime wheelIniTime;
@@ -116,7 +116,7 @@ public partial class MainWindow : Window
             refreshRate = hz > 1 ? hz : 240;
         };
         Closing += (_, e) => { if (busy && !allowClose) { e.Cancel = true; SetStatus("Please wait for the current operation to finish."); } };
-        // Back from FFB Tuner: the force feedback rows as default.ini has them now. The backend takes those rows from
+        // Back from Live FFB Tuner: the force feedback rows as default.ini has them now. The backend takes those rows from
         // the file and keeps every other unsaved change on the page.
         Activated += async (_, _) =>
         {
@@ -128,7 +128,7 @@ public partial class MainWindow : Window
                 var result = await backend.Call("validate", state);
                 if (at != revision || busy) return;
                 bool differs = result.Controls.Any(c => c.Tag.StartsWith("@ffb:") && state.Controls.FirstOrDefault(s => s.Id == c.Id) is { } shown && (shown.Selected != c.Selected || shown.Hidden != c.Hidden));
-                if (differs) { Adopt(result); SetStatus("Force feedback updated from FFB Tuner."); }
+                if (differs) { Adopt(result); SetStatus("Force feedback updated from Live FFB Tuner."); }
                 else wheelIniTime = WriteTime(WheelIni);
             }
             catch (Exception ex) { SetStatus(ex.Message, true); }
@@ -304,9 +304,9 @@ public partial class MainWindow : Window
         state.ChangedId = setting.Id;
         if (args.PropertyName == "Selected")
         {
-            string action = setting.Id == state.PresetId ? "preset" : setting.Tag == "@drive_preset" ? "drive-preset" : setting.Tag == "@wheelpreset" ? "wheel-preset" : "validate";
+            string action = setting.Id == state.PresetId ? "preset" : setting.Tag == "@drive_preset" ? "drive-preset" : "validate";
             // force feedback rows are written at once (the backend says so), the others on Save
-            bool ffb = setting.Tag.StartsWith("@ffb:") || setting.Tag == "@wheelpreset";
+            bool ffb = setting.Tag.StartsWith("@ffb:");
             try { var result = await backend.Call(action, state); if (changed == revision) { Adopt(result); OperationStatus(ffb && result.Message.Length > 0 ? result.Message : "Unsaved changes"); } }
             catch (Exception ex) { SetStatus(ex.Message, true); }
         }

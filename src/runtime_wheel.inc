@@ -66,7 +66,19 @@ static int ffb_center, ffb_slide;
  * wheel's maximum), filter, minimum force and a steady damper; the road and kerbs always at their real strength, kickback
  * with the detail. On by default: wheel_ffb_model = original is the game's own force, the PS4 game's light spring. */
 static bool ffb_physics=true;
-static int ffb_ph_gain=100, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=5, ffb_ph_effects=100, ffb_ph_max_force=100;
+static int ffb_ph_gain=80, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=0, ffb_ph_effects=0, ffb_ph_max_force=100;
+/* wheel_ffb_physics_power_steering = off: the tyres' force as it is, with no power assist (direct drive wheels: they
+ * have the torque for a whole corner); on: the assist lightens the big forces of a heavy car, so a gear or belt wheel's
+ * motor keeps detail in fast corners instead of running out. wheel_ffb_physics_friction: the steering's friction, percent
+ * of the wheel at gain 100 (the wheelbase's friction effect). */
+static bool ffb_ph_power_steering;
+static int ffb_ph_friction=6;
+/* wheel_ffb_wheel_type = direct, belt or gear: the kind of wheelbase, for the settings above that suit each kind
+ * (FFB_WHEEL_DEFAULTS) where default.ini has no line of its own; auto (no line): from the wheel's name. */
+enum { FFB_WHEEL_DIRECT, FFB_WHEEL_BELT, FFB_WHEEL_GEAR };
+static int ffb_wheel_type=-1, ffb_wheel_detected=FFB_WHEEL_BELT;
+static unsigned ffb_ph_set;   /* the settings of FFB_WHEEL_DEFAULTS that default.ini has (FFB_SET_ bits) */
+enum { FFB_SET_DETAIL=1, FFB_SET_DAMPER=2, FFB_SET_MIN_FORCE=4, FFB_SET_COUNTERSTEER=8, FFB_SET_POWER=16, FFB_SET_FRICTION=32 };
 /* The 0.4.1 force, which bikes keep (the tyre formula above needs four wheels), and the switches below it: the tyres'
  * trail follows how much of their grip the game's forces say is used (light at the real limit) and the force keeps
  * falling past it; wheel_ffb_physics_tyre = classic: the trail from the brush model's slip, as before. */
@@ -75,8 +87,8 @@ static bool ffb_ph_tyre_grip=true;
  * feels; wheel_ffb_physics_countersteer = off: the game's automatic countersteer left out (runtime_pad.c). */
 static int ffb_ph_detail=100;
 static bool ffb_ph_countersteer_off;
-/* wheel_ffb_physics_hit_protection = off: the force is not held down after a hit (ffb_physics_pass) */
-static bool ffb_ph_hit_protection=true;
+/* wheel_ffb_physics_hit_protection = on: the force is held down after a hit (ffb_physics_pass) */
+static bool ffb_ph_hit_protection;
 /* The front tyres' braking and drive forces through the scrub radius (runtime_logiwheel.inc); wheel_ffb_physics_scrub =
  * off leaves them out. */
 static bool ffb_ph_scrub=true;
@@ -212,18 +224,25 @@ static void wheel_parse(const char *lhs, char *rhs) {
     /* original: the game's own force. "game" was its name until 0.4.1, when the launcher wrote it for every player who
      * left the row as it came; it reads as physics now, like any value but original and software. */
     if (!strcmp(key,"ffb_model")) { lower(rhs); ffb_software=!strcmp(rhs,"software"); ffb_physics=!ffb_software && strcmp(rhs,"original"); return; }
+    if (!strcmp(key,"ffb_wheel_type")) {
+        lower(rhs);
+        ffb_wheel_type=!strncmp(rhs,"direct",6) ? FFB_WHEEL_DIRECT : !strcmp(rhs,"belt") ? FFB_WHEEL_BELT : !strcmp(rhs,"gear") ? FFB_WHEEL_GEAR : -1;
+        return;
+    }
     if (!strncmp(key,"ffb_physics_",12)) {
         const char *k=key+12; const int v=atoi(rhs);
         if (!strcmp(k,"gain")) ffb_ph_gain=v<0 ? 0 : v>500 ? 500 : v;
         else if (!strcmp(k,"filter")) ffb_ph_filter=v<0 ? 0 : v>100 ? 100 : v;
-        else if (!strcmp(k,"min_force")) ffb_ph_min_force=v<0 ? 0 : v>30 ? 30 : v;
+        else if (!strcmp(k,"min_force")) { ffb_ph_min_force=v<0 ? 0 : v>30 ? 30 : v; ffb_ph_set|=FFB_SET_MIN_FORCE; }
         else if (!strcmp(k,"max_force")) ffb_ph_max_force=v<30 ? 30 : v>100 ? 100 : v;
-        else if (!strcmp(k,"detail")) ffb_ph_detail=v<0 ? 0 : v>200 ? 200 : v;
-        else if (!strcmp(k,"countersteer")) { lower(rhs); ffb_ph_countersteer_off=!strcmp(rhs,"off") || !strcmp(rhs,"false") || !strcmp(rhs,"0"); }
+        else if (!strcmp(k,"detail")) { ffb_ph_detail=v<0 ? 0 : v>200 ? 200 : v; ffb_ph_set|=FFB_SET_DETAIL; }
+        else if (!strcmp(k,"countersteer")) { lower(rhs); ffb_ph_countersteer_off=!strcmp(rhs,"off") || !strcmp(rhs,"false") || !strcmp(rhs,"0"); ffb_ph_set|=FFB_SET_COUNTERSTEER; }
         else if (!strcmp(k,"hit_protection")) { lower(rhs); ffb_ph_hit_protection=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
+        else if (!strcmp(k,"power_steering")) { lower(rhs); ffb_ph_power_steering=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); ffb_ph_set|=FFB_SET_POWER; }
+        else if (!strcmp(k,"friction")) { ffb_ph_friction=v<0 ? 0 : v>30 ? 30 : v; ffb_ph_set|=FFB_SET_FRICTION; }
         /* kerbs, road and slip are no settings any more (older files have them): the road at its full strength, no buzz;
          * nor chain (test builds wrote it): the steering force is column's */
-        else if (!strcmp(k,"damper")) ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v;
+        else if (!strcmp(k,"damper")) { ffb_ph_damper=v<0 ? 0 : v>100 ? 100 : v; ffb_ph_set|=FFB_SET_DAMPER; }
         else if (!strcmp(k,"effects")) ffb_ph_effects=v<0 ? 0 : v>100 ? 100 : v;
         else if (!strcmp(k,"tyre")) { lower(rhs); ffb_ph_tyre_grip=strncmp(rhs,"classic",7)!=0; }
         else if (!strcmp(k,"scrub")) { lower(rhs); ffb_ph_scrub=strcmp(rhs,"off") && strcmp(rhs,"false") && strcmp(rhs,"0"); }
@@ -363,19 +382,24 @@ static const char wheel_default_config[]=
     "# wheel_ffb_smoothing: milliseconds (0..100); wheel_ffb_soft_lock: game (the steering lock the game asks for),\n"
     "# off, or degrees lock to lock: a force stops the wheel there.\n"
     "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim: the\n"
-    "# game's own tyre formula at the wheel's position now, with power assist and steady damping. Its settings, percent:\n"
-    "# wheel_ffb_physics_gain (0..300; 100: a 1 g corner at about 60% of the wheel's maximum),\n"
-    "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force (0..30, for gear and belt wheels),\n"
+    "# game's own tyre formula at the wheel's position now. wheel_ffb_wheel_type: direct, belt or gear (no line: from\n"
+    "# the wheel's name); the settings marked * below suit each kind when they have no line of their own. Settings, percent:\n"
+    "# wheel_ffb_physics_gain (0..300, 80; 100: a 1 g corner at about 60% of the wheel's maximum with power steering),\n"
+    "# wheel_ffb_physics_power_steering* (on: the big forces of heavy cars lightened, for gear and belt wheels; off: the\n"
+    "# tyres' force as it is, for direct drive), wheel_ffb_physics_friction* (0..30: the steering's friction),\n"
+    "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force* (0..30, for gear wheels),\n"
     "# wheel_ffb_physics_max_force (30..100, 100: the most of the wheel's force the steering asks for; stronger forces\n"
-    "# bend smoothly toward it), wheel_ffb_physics_detail (0..200, 100: how much of the quick changes in the force you feel),\n"
-    "# wheel_ffb_physics_countersteer (on, or off: the road wheels follow only your wheel, without the game's extra angle\n"
+    "# bend smoothly toward it), wheel_ffb_physics_detail* (0..200: how much of the quick changes in the force you feel),\n"
+    "# wheel_ffb_physics_countersteer* (on, or off: the road wheels follow only your wheel, without the game's extra angle\n"
     "# when you countersteer; this changes how the car handles, not only the force feedback),\n"
     "# wheel_ffb_physics_hit_protection (on: after a hit from a wall or another car the force is held down for about half\n"
-    "# a second, so it cannot throw the wheel; off: every hit at full force),\n"
-    "# wheel_ffb_physics_damper (0..100, 5), wheel_ffb_physics_effects (0..100, 100; 0 off: a buzz from a tyre past its grip,\n"
-    "# a front sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
-    "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs) is always at its full strength, and kickback\n"
-    "# follows wheel_ffb_physics_detail.\n"
+    "# a second, so it cannot throw the wheel; off, the default: every hit at full force),\n"
+    "# wheel_ffb_physics_damper* (0..100), wheel_ffb_physics_effects (0..100, 0; a buzz from a tyre past its grip, a front\n"
+    "# sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
+    "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs, and their kickback) is always at its full strength.\n"
+    "# Direct drive: detail 75, damper 0, friction 6, countersteer off, power steering off. Belt: detail 100, damper 0,\n"
+    "# friction 2, countersteer on, power steering on. Gear: detail 60, damper 0, minimum force 5, friction 0,\n"
+    "# countersteer on, power steering on.\n"
     "# Bikes keep the 0.4.1 force (the tyre formula needs four wheels); wheel_ffb_physics_tyre = classic,\n"
     "# wheel_ffb_physics_scrub = off, wheel_ffb_physics_combined = off, wheel_ffb_physics_centre = off and\n"
     "# wheel_ffb_physics_relax = off change that one.\n"
@@ -404,6 +428,59 @@ static void wheel_config_append(const char *path) {
     fwrite(wheel_default_config,1,sizeof(wheel_default_config)-1,f);
     fclose(f);
     printf("Runtime: steering wheel settings added to %s\n",path);
+}
+
+/* The kind of wheelbase from its name (wheel_ffb_wheel_type = auto). Direct drive: the motor on the steering shaft
+ * (Fanatec DD and today's Fanatec bases, Moza, Simagic, Simucube...); belt: Thrustmaster's T300 family, Fanatec CSL Elite
+ * and ClubSport V2; gear: Logitech's G-series, Thrustmaster's T150 family and the like. A name it does not know: belt,
+ * the settings in between. */
+static int ffb_wheel_kind(const char *name) {
+    char n[160]; snprintf(n,sizeof n," %s ",name ? name : ""); lower(n);
+    static const char *const direct[]={" dd","dd1","dd2","direct drive","podium","g pro","pro racing","t818","t598","moza","simagic",
+                                       "simucube","cammus","asetek","invicta","forte","la prima","vrs","openffboard","ffboard",
+                                       "conspit","accuforce","simxperience","leo bodnar","augury","simsonn"};
+    static const char *const belt[]={"csl elite","clubsport wheel base v","csr elite","t300","t500","tx racing","ts-pc","ts-xw","t-gt"};
+    static const char *const gear[]={"g29","g920","g923","g27","g25","dfgt","driving force","momo","formula force","t150","tmx",
+                                     "t128","t248","t80","ferrari 458","pxn","hori","speedlink","saitek"};
+    for (size_t i=0;i<sizeof direct/sizeof *direct;++i) if (strstr(n,direct[i])) return FFB_WHEEL_DIRECT;
+    for (size_t i=0;i<sizeof belt/sizeof *belt;++i) if (strstr(n,belt[i])) return FFB_WHEEL_BELT;
+    for (size_t i=0;i<sizeof gear/sizeof *gear;++i) if (strstr(n,gear[i])) return FFB_WHEEL_GEAR;
+    if (strstr(n,"fanatec")) return FFB_WHEEL_DIRECT;
+    if (strstr(n,"logitech")) return FFB_WHEEL_GEAR;
+    return FFB_WHEEL_BELT;
+}
+static const char *const ffb_wheel_names[3]={"direct","belt","gear"};
+/* The settings that suit each kind of wheelbase, for those default.ini has no line of: direct drive as a player tuned
+ * theirs against Assetto Corsa (the base's own damper at 20); belt and gear lighten the big forces with the power
+ * assist, so their weaker motors keep detail in fast corners, and leave out the friction their belts and gears have of
+ * their own; gear wheels rattle with much detail and need a little force to move through their gears' play. */
+static const struct { int detail, damper, min_force, friction; bool countersteer, power; } FFB_WHEEL_DEFAULTS[3]={
+    {75,0,0,6,false,false},    /* direct drive */
+    {100,0,0,2,true,true},     /* belt */
+    {60,0,5,0,true,true}};     /* gear */
+static void ffb_wheel_defaults(void) {
+    const int t=ffb_wheel_type>=0 ? ffb_wheel_type : ffb_wheel_detected;
+    if (!(ffb_ph_set&FFB_SET_DETAIL)) ffb_ph_detail=FFB_WHEEL_DEFAULTS[t].detail;
+    if (!(ffb_ph_set&FFB_SET_DAMPER)) ffb_ph_damper=FFB_WHEEL_DEFAULTS[t].damper;
+    if (!(ffb_ph_set&FFB_SET_MIN_FORCE)) ffb_ph_min_force=FFB_WHEEL_DEFAULTS[t].min_force;
+    if (!(ffb_ph_set&FFB_SET_FRICTION)) ffb_ph_friction=FFB_WHEEL_DEFAULTS[t].friction;
+    if (!(ffb_ph_set&FFB_SET_COUNTERSTEER)) ffb_ph_countersteer_off=!FFB_WHEEL_DEFAULTS[t].countersteer;
+    if (!(ffb_ph_set&FFB_SET_POWER)) ffb_ph_power_steering=FFB_WHEEL_DEFAULTS[t].power;
+}
+/* The wheel opened: its kind from its name, for the settings above, and for the launcher and Live FFB Tuner, which show
+ * those settings as the game will use them (input_config/wheel_detected.txt, written when it changes). */
+static void ffb_wheel_opened(const char *name) {
+    ffb_wheel_detected=ffb_wheel_kind(name);
+    ffb_wheel_defaults();
+    const int t=ffb_wheel_type>=0 ? ffb_wheel_type : ffb_wheel_detected;
+    printf("Runtime: FFB wheel \"%s\": %s (%s)\n",name,ffb_wheel_names[t],ffb_wheel_type>=0 ? "wheel_ffb_wheel_type" : "from its name");
+    char path[600], want[256], have[256]="";
+    const char *user=runtime_file_user_dir();
+    snprintf(path,sizeof path,"%s/input_config/wheel_detected.txt",user && *user ? user : ".");
+    snprintf(want,sizeof want,"type = %s\nname = %s\n",ffb_wheel_names[ffb_wheel_detected],name);
+    FILE *f=fopen(path,"rb");
+    if (f) { const size_t n=fread(have,1,sizeof have-1,f); have[n]=0; fclose(f); }
+    if (strcmp(have,want) && (f=fopen(path,"wb"))) { fputs(want,f); fclose(f); }
 }
 static bool pedals_separate(void) {
     char want[64]; snprintf(want,sizeof want,"%s",pedals_device); lower(want); trim(want);
