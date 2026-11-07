@@ -112,6 +112,24 @@ function dcmod.input() end
 ---@param name string|integer
 ---@return boolean
 function dcmod.key(name) end
+---@class dcmod.Gui
+---@field text fun(self: dcmod.Gui, text: string)
+---@field button fun(self: dcmod.Gui, label: string): boolean
+---@field checkbox fun(self: dcmod.Gui, label: string, value: boolean): boolean
+---@field slider fun(self: dcmod.Gui, label: string, value: number, min: number, max: number): number
+---@class dcmod.GuiOptions
+---@field key string|nil key that shows and hides the panel (F8)
+---@field x number|nil 0 to 1, where the panel starts
+---@field y number|nil
+---@field width number|nil 0 to 1 of the screen width
+---@field shown boolean|nil true: visible from the start
+---@class dcmod.gui
+dcmod.gui = {}
+---A panel over the game that fn(g) describes about 15 times a second while it is shown.
+---@param title string
+---@param fn fun(g: dcmod.Gui)
+---@param options dcmod.GuiOptions|nil
+function dcmod.gui.app(title, fn, options) end
 ---@class dcmod.RaceWeather
 ---@field rain string|nil Heavy, Mid, Light, VeryLight, Wet, Damp, DryToWet, WetToDry or a full preset name
 ---@field weather string|nil Clear, Cloudy, Overcast or Stormy

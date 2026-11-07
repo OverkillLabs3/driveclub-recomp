@@ -155,6 +155,35 @@ Checked in the game (hidden test window with the focus, keys sent with `keybd_ev
 
 How it works: `dcmod/state/input.lua.bin` is a Lua chunk like the car and clock ones (`src/runtime_modapi.c`, `input_state`). The game's own input system is not touched: pressing a key a mod reads still does what the game does with it.
 
+### Panels with buttons and sliders: `dcmod.gui.app`
+
+```lua
+local level, on, clicks = 0.5, false, 0
+dcmod.gui.app("My app", function(g)
+  g:text("clicks " .. clicks)
+  if g:button("Click me") then clicks = clicks + 1 end
+  on = g:checkbox("A switch", on)
+  level = g:slider("Level", level, 0, 1)
+end)
+```
+
+`dcmod.gui.app(title, fn [, options])` draws a panel over the game and calls `fn(g)` about 15 times a second while it is shown (immediate mode: `fn` describes the panel each time, the values live in your script). F8 shows and hides it (`options.key` for another key, `options.x`, `options.y`, `options.width` for the place as fractions of the screen, `options.shown = true` to start shown). While the panel is shown a small pointer follows the mouse; use the left mouse button.
+
+| Call | Does |
+|---|---|
+| `g:text(s)` | A line of text |
+| `g:button(label)` | A button; returns `true` in the call where it was clicked |
+| `g:checkbox(label, value)` | A switch; returns the new value |
+| `g:slider(label, value, min, max)` | A slider you drag; returns the new value |
+
+Sizes follow the height of the game window. Several apps can run at once (give each its own key). The panel only reacts while the game window has the focus, like `dcmod.input()`.
+
+Checked in the game (Ferrari 458 on Chile, mouse and keys fed through `DC_INPUT_FILE`, see below): the panel drew with its title, text, button, switch and slider; a click on the button gave `clicks=1`, a click on the switch turned it on, pressing on the slider and dragging moved the value from 0.50 to 0.15 and then 0.65, and the slider and its number followed. Not checked: the real mouse driving the panel (only the keys were checked with the real keyboard), several apps at once, other window sizes.
+
+For tests, `DC_INPUT_FILE=<file>` replaces what `dcmod.input()` reads with the line in that file, without the window needing the focus, for example `mx 0.1 my 0.32 left 1 w 1902 h 1033 keys 118 65` (mouse position 0 to 1, left button, window size, held key codes). The file is read on every call.
+
+The whole example is `tools/modkit/examples/tuning-panel` (the time of day by slider, a speed read-out).
+
 ### Weather: `dcmod.race_weather{ rain = ..., weather = ... }`
 
 ```lua

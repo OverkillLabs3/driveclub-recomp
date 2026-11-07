@@ -26,6 +26,7 @@
 #endif
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <strings.h>
 #include <ctype.h>
 #include <time.h>
@@ -104,30 +105,60 @@ static double now_ms(void) {
 
 /* The keyboard and the mouse for scripts (dcmod/state/input.lua.bin): values 3 the game window has the focus (1/0),
  * 4 and 5 the mouse in the game window, 0..1 from the left and from the top, 6 mouse buttons (1 left, 2 right,
- * 4 middle), 7 the number of keys held, then their Windows virtual key codes. Nothing is reported (0 keys, buttons 0)
+ * 4 middle), 7 and 8 the size of the game window in pixels, 9 the number of keys held, then their Windows virtual key
+ * codes. Nothing is reported (0 keys, buttons 0)
  * while another window has the focus, so a script does not read what the player types elsewhere. */
 static int input_state(double *v, int cap) {
+    /* DC_INPUT_FILE=<file>: a test can set what scripts read, for example "mx 0.1 my 0.3 left 1 w 1902 h 1033 keys 118 65"
+     * (the file is read on every call; the window focus is not needed) */
+    const char *test = getenv("DC_INPUT_FILE");
+    if (test && *test && cap >= 8) {
+        FILE *f = fopen(test, "rb");
+        if (f) {
+            char text[512];
+            const size_t got = fread(text, 1, sizeof text - 1, f);
+            fclose(f);
+            text[got] = 0;
+            double mx = 0, my = 0, left = 0, width = 1920, height = 1080;
+            int n = 0;
+            for (char *tok = strtok(text, " \r\n\t"); tok;) {
+                if (!strcmp(tok, "mx")) { tok = strtok(NULL, " \r\n\t"); if (tok) mx = atof(tok); }
+                else if (!strcmp(tok, "my")) { tok = strtok(NULL, " \r\n\t"); if (tok) my = atof(tok); }
+                else if (!strcmp(tok, "left")) { tok = strtok(NULL, " \r\n\t"); if (tok) left = atof(tok); }
+                else if (!strcmp(tok, "w")) { tok = strtok(NULL, " \r\n\t"); if (tok) width = atof(tok); }
+                else if (!strcmp(tok, "h")) { tok = strtok(NULL, " \r\n\t"); if (tok) height = atof(tok); }
+                else if (!strcmp(tok, "keys")) {
+                    while ((tok = strtok(NULL, " \r\n\t")) && 7 + n < cap && atoi(tok) > 0) v[7 + n++] = atoi(tok);
+                    continue;
+                }
+                tok = strtok(NULL, " \r\n\t");
+            }
+            v[0] = 1; v[1] = mx; v[2] = my; v[3] = left ? 1 : 0; v[4] = width; v[5] = height; v[6] = n;
+            return 7 + n;
+        }
+    }
 #ifdef _WIN32
-    if (cap < 6) return 0;
+    if (cap < 8) return 0;
     HWND game = GetForegroundWindow();
     DWORD owner = 0;
     if (game) GetWindowThreadProcessId(game, &owner);
     const int focus = game && owner == GetCurrentProcessId();
-    v[0] = focus; v[1] = 0; v[2] = 0; v[3] = 0; v[4] = 0;
-    if (!focus) return 5;
+    v[0] = focus; v[1] = 0; v[2] = 0; v[3] = 0; v[4] = 0; v[5] = 0; v[6] = 0;
+    if (!focus) return 7;
     POINT p; RECT r;
     if (GetCursorPos(&p) && ScreenToClient(game, &p) && GetClientRect(game, &r) && r.right > 0 && r.bottom > 0) {
         v[1] = (double)p.x / r.right; v[2] = (double)p.y / r.bottom;
+        v[4] = r.right; v[5] = r.bottom;
     }
     v[3] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000 ? 1 : 0) | (GetAsyncKeyState(VK_RBUTTON) & 0x8000 ? 2 : 0) |
            (GetAsyncKeyState(VK_MBUTTON) & 0x8000 ? 4 : 0);
     int n = 0;
-    for (int k = 8; k < 255 && 5 + n < cap; ++k) {
+    for (int k = 8; k < 255 && 7 + n < cap; ++k) {
         if (k == VK_LBUTTON || k == VK_RBUTTON || k == VK_MBUTTON) continue;
-        if (GetAsyncKeyState(k) & 0x8000) v[5 + n++] = k;
+        if (GetAsyncKeyState(k) & 0x8000) v[7 + n++] = k;
     }
-    v[4] = n;
-    return 5 + n;
+    v[6] = n;
+    return 7 + n;
 #else
     (void)v; (void)cap;
     return 0;

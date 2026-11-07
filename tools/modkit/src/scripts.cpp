@@ -98,8 +98,8 @@ function dcmod.input()
   local v = { chunk() }
   if v[2] ~= 1 or v[3] ~= 1 then return nil end
   local state = { focus = true, mx = v[4], my = v[5], left = v[6] % 2 == 1, right = math.floor(v[6] / 2) % 2 == 1,
-    middle = math.floor(v[6] / 4) % 2 == 1, keys = {} }
-  for i = 1, v[7] do state.keys[v[7 + i]] = true end
+    middle = math.floor(v[6] / 4) % 2 == 1, width = v[7], height = v[8], keys = {} }
+  for i = 1, v[9] do state.keys[v[9 + i]] = true end
   return state
 end
 function dcmod.key(name)
@@ -111,6 +111,75 @@ function dcmod.key(name)
   end
   if state.keys[code] then return true end
   return false
+end
+-- dcmod.gui.app(title, fn [, options]): a small panel (an "app") drawn over the game, one key shows and hides it
+-- (F8 by default). fn(g) is called about 15 times a second while the panel is shown and describes the panel:
+--   g:text(s)  g:button(label) -> true on the click  g:checkbox(label, value) -> value  g:slider(label, value, min, max) -> value
+-- A pointer is drawn where the mouse is; clicking and dragging use the left mouse button. options: key ("F8"), x, y
+-- (0 to 1, where the panel starts), width (0 to 1 of the screen width), shown (true: visible from the start).
+dcmod.gui = {}
+function dcmod.gui.app(title, fn, options)
+  options = options or {}
+  local key, shown, was_key, was_left, last_height, drag = options.key or "F8", options.shown or false, false, false, 0.2, nil
+  local id = safeid("gui_" .. title)
+  dcmod.every(0.066, function()
+    local s = dcmod.input()
+    if not s then was_left = false return end
+    local down = dcmod.key(key)
+    if down and not was_key then shown = not shown end
+    was_key = down
+    local H, W = s.height, s.width
+    local size = math.max(12, math.floor(H * 0.019))
+    local row = size * 1.55 / H
+    local x0, y0, w = options.x or 0.02, options.y or 0.25, options.width or 0.2
+    if not shown then
+      dcmod.ui.text(id .. "_tag", x0, y0, key .. ": " .. title, size, { 1, 1, 1, 0.55 }, 0.3)
+      was_left = s.left
+      return
+    end
+    local clicked, y = s.left and not was_left, y0 + row
+    local g = {}
+    local function inside(x, yy, ww, hh) return s.mx >= x and s.mx <= x + ww and s.my >= yy and s.my <= yy + hh end
+    dcmod.ui.rect(id .. "_bg", x0 - 0.006, y0 - 0.006, w + 0.012, last_height + 0.012, { 0.04, 0.04, 0.05, 0.82 }, 0.3)
+    dcmod.ui.text(id .. "_title", x0, y0, title, size, { 1, 0.85, 0.2, 1 }, 0.3)
+    local n = 0
+    local function next_id() n = n + 1 return id .. "_" .. n end
+    function g.text(_, text) dcmod.ui.text(next_id(), x0, y, text, size, { 1, 1, 1, 1 }, 0.3) y = y + row end
+    function g.button(_, label)
+      local hot = inside(x0, y, w, row * 0.9)
+      dcmod.ui.rect(next_id(), x0, y, w, row * 0.9, hot and { 0.3, 0.45, 0.9, 1 } or { 0.2, 0.22, 0.3, 1 }, 0.3)
+      dcmod.ui.text(next_id(), x0 + 0.006, y + row * 0.12, label, size, { 1, 1, 1, 1 }, 0.3)
+      y = y + row
+      return hot and clicked
+    end
+    function g.checkbox(_, label, value)
+      local hot = inside(x0, y, w, row * 0.9)
+      if hot and clicked then value = not value end
+      dcmod.ui.rect(next_id(), x0, y + row * 0.1, row * 0.6 * H / W, row * 0.6, value and { 0.3, 0.8, 0.4, 1 } or { 0.25, 0.25, 0.3, 1 }, 0.3)
+      dcmod.ui.text(next_id(), x0 + row * 0.9 * H / W, y + row * 0.08, label, size, { 1, 1, 1, 1 }, 0.3)
+      y = y + row
+      return value
+    end
+    function g.slider(_, label, value, lo, hi)
+      local sid = label
+      local bar_y = y + row * 0.7
+      local hot = inside(x0, bar_y - row * 0.2, w, row * 0.7)
+      if hot and clicked then drag = sid end
+      if not s.left then drag = nil end
+      if drag == sid then value = lo + (hi - lo) * math.max(0, math.min(1, (s.mx - x0) / w)) end
+      local f = (value - lo) / (hi - lo)
+      dcmod.ui.text(next_id(), x0, y, string.format("%s: %.2f", label, value), size, { 1, 1, 1, 1 }, 0.3)
+      dcmod.ui.rect(next_id(), x0, bar_y, w, row * 0.18, { 0.25, 0.25, 0.3, 1 }, 0.3)
+      dcmod.ui.rect(next_id(), x0 + f * w - 0.003, bar_y - row * 0.12, 0.006, row * 0.42, { 0.95, 0.8, 0.2, 1 }, 0.3)
+      y = y + row * 1.2
+      return value
+    end
+    local ok, problem = pcall(fn, g)
+    if not ok then dcmod.log("error in app", title, problem) end
+    last_height = y - y0
+    dcmod.ui.rect(id .. "_cursor", s.mx, s.my, 0.006 * H / W * 1.6, 0.012, { 1, 1, 1, 1 }, 0.3)
+    was_left = s.left
+  end)
 end
 local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
   VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
