@@ -15,14 +15,10 @@ if (-not (Test-Path -LiteralPath $ini)) {
 $settings = @(
     @{ Key='wheel_ffb_model';          Label='Force model';                Kind='choice'; Choices=@('physics','original'); Default='physics'
        Help='physics: the force comes from the car''s front tyres in the game''s simulation, as in a sim (Assetto Corsa style settings). original: the PS4 game''s own forces, a light spring.' }
-    @{ Key='wheel_ffb_physics_detail'; Label='Detail %';                   Kind='slider'; Min=0; Max=200;  Default=100; Group='physics'
-       Help='How much of the quick changes in the force you feel, on top of the steady force. Raise it if the wheel feels dead; lower it if it feels busy.' }
-    @{ Key='wheel_ffb_physics_countersteer'; Label='Automatic countersteer'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
-       Help='on: as the game, which turns the road wheels further than your wheel when you countersteer (up to a third with wheel assist off), and passes less past a steering limit. off: the road wheels follow only your wheel, so you catch the slides yourself. This changes how the car handles, not only the force feedback. Can be changed while driving.' }
-    @{ Key='wheel_ffb_physics_hit_protection'; Label='Hit protection'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
-       Help='on: when the car hits a wall or another car, the force is held down for about half a second, so the hit cannot throw the wheel. off: every hit at full force, so keep your thumbs outside the rim. Can be changed while driving.' }
     @{ Key='wheel_ffb_physics_gain';   Label='Gain %';                     Kind='slider'; Min=0; Max=300;  Default=100; Group='physics'
        Help='The whole steering force. 100: a 1 g corner at about 60% of the wheel''s maximum. Keep the log''s "FFB clipping" lines low.' }
+    @{ Key='wheel_ffb_physics_detail'; Label='Detail %';                   Kind='slider'; Min=0; Max=200;  Default=100; Group='physics'
+       Help='How much of the quick changes in the force you feel, on top of the steady force. Raise it if the wheel feels dead; lower it if it feels busy.' }
     @{ Key='wheel_ffb_physics_filter'; Label='Filter %';                   Kind='slider'; Min=0; Max=100;  Default=0;   Group='physics'
        Help='Smooths the force (100: 40 ms). 0 on a direct drive for every detail; raise it if the wheel feels grainy.' }
     @{ Key='wheel_ffb_physics_min_force'; Label='Minimum force %';         Kind='slider'; Min=0; Max=30;   Default=0;   Group='physics'
@@ -33,6 +29,12 @@ $settings = @(
        Help='Resistance to turning the wheel quickly. Steadies a direct drive. The same at every speed, so start low.' }
     @{ Key='wheel_ffb_physics_effects'; Label='Tyre effects %';            Kind='slider'; Min=0; Max=100;  Default=100; Group='physics'
        Help='A light buzz when a tyre slides past its grip: a front sliding or locking, the rear spinning or sliding; faster the faster it slides. 0: off (only the steering force). Lower it if it is too strong on your wheel.' }
+    @{ Key='wheel_ffb_physics_hit_protection'; Label='Hit protection'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
+       Help='on: when the car hits a wall or another car, the force is held down for about half a second, so the hit cannot throw the wheel. off: every hit at full force, so keep your thumbs outside the rim. Can be changed while driving.' }
+    @{ Key='wheel_ffb_physics_countersteer'; Label='Automatic countersteer'; Kind='choice'; Choices=@('on','off'); Default='on'; Group='physics'
+       Help='on: as the game, which turns the road wheels further than your wheel when you countersteer (up to a third with wheel assist off), and passes less past a steering limit. off: the road wheels follow only your wheel, so you catch the slides yourself. This changes how the car handles, not only the force feedback. Can be changed while driving.' }
+    @{ Key='wheel_ffb_soft_lock';      Label='Soft lock';                  Kind='choice'; Choices=@('game','off','540','720','900','1080'); Default='game'
+       Help='Stops the wheel at the car''s steering lock. game: the lock the game asks for.' }
     @{ Key='wheel_ffb_strength';       Label='Steering strength %';        Kind='slider'; Min=0; Max=500;  Default=100; Group='classic'
        Help='Overall steering force (software model). Keep the log''s "FFB clipping" lines low.' }
     @{ Key='wheel_ffb_center';         Label='Centre weight %';            Kind='slider'; Min=0; Max=100;  Default=0; Group='classic'
@@ -43,8 +45,6 @@ $settings = @(
        Help='Follows how far you steer past where the tyres want the wheel (big countersteer, sawing): the force drops off there. 0 holds it.' }
     @{ Key='wheel_ffb_smoothing';      Label='Smoothing ms';               Kind='slider'; Min=0; Max=50;   Default=8; Group='classic'
        Help='Higher: smoother, slightly slower. Lower: sharper, maybe grainy.' }
-    @{ Key='wheel_ffb_soft_lock';      Label='Soft lock';                  Kind='choice'; Choices=@('game','off','540','720','900','1080'); Default='game'
-       Help='Stops the wheel at the car''s steering lock. game: the lock the game asks for.' }
     @{ Key='wheel_ffb_spring';         Label='Centring stiffness %';       Kind='slider'; Min=0; Max=1000; Default=250; Group='classic'
        Help='How quickly the force builds as the wheel moves off where the tyres want it.' }
     @{ Key='wheel_ffb_spring_limit';   Label='Grip force limit %';         Kind='slider'; Min=5; Max=100;  Default=100; Group='classic'
@@ -65,7 +65,7 @@ $settings = @(
        Help='In the changes mode: how much of a steady surface (gravel) stays. 0 removes it.' }
     @{ Key='wheel_ffb_long_rumble';    Label='Long rumble kept %';         Kind='slider'; Min=0; Max=100;  Default=25; Group='classic'
        Help='Wheelspin and burnouts: the kerb vibration fades to this after half a second, so the wheel does not shake itself loose. Short kerbs keep their full strength.' }
-    @{ Key='wheel_ffb_vibration_wave'; Label='Vibration wave';             Kind='choice'; Choices=@('sine','square'); Default='sine'; Group='classic'
+    @{ Key='wheel_ffb_vibration_wave'; Label='Vibration wave';             Kind='choice'; Choices=@('sine','square'); Default='square'; Group='classic'
        Help='sine: smooth texture. square: harsher, as the game asks. (The physics model has no vibrations: the road comes at its full strength.)' }
     @{ Key='wheel_ffb_invert';         Label='Invert forces';              Kind='check';  Default='false'
        Help='Only if the wheel pulls the wrong way.' }
@@ -99,6 +99,8 @@ $loaded = Read-Values
 if ($loaded['wheel_ffb_model'] -eq 'game') { $loaded['wheel_ffb_model'] = 'physics' }
 $script:backedUp = $false
 $script:syncing = $false
+$script:shown = @{}   # each setting's value as the file has it (as shown when it was read or written)
+$script:seen = [IO.File]::GetLastWriteTimeUtc($ini)
 $controls = @{}
 
 $form = New-Object Windows.Forms.Form
@@ -134,14 +136,41 @@ function Value-Of($key) {
         'check'  { if ($c.Box.Checked) { return 'true' } else { return 'false' } }
     }
 }
-# Every setting's line; a slider with Also writes its value to that key as well.
+# The lines of the settings changed here since the file was last read or written (only those are written, so what the
+# launcher changed meanwhile in other lines stays); a slider with Also writes its value to that key as well.
 function Collect-Values {
     $values = [ordered]@{}
     foreach ($s in $settings) {
-        $values[$s.Key] = Value-Of $s.Key
-        if ($s.Also) { $values[$s.Also] = $values[$s.Key] }
+        $v = Value-Of $s.Key
+        if ($v -ceq $script:shown[$s.Key]) { continue }
+        $values[$s.Key] = $v
+        if ($s.Also) { $values[$s.Also] = $v }
     }
     return $values
+}
+# Writes those lines; from then on they are what the file has.
+function Save-Values($values) {
+    Write-Values $values
+    foreach ($k in @($values.Keys)) { $script:shown[$k] = $values[$k] }
+}
+# The launcher (or an editor) changed the file: its values are shown here, without being saved back. A setting changed
+# here and not saved yet keeps its value. True when something changed.
+function Sync-FromDisk {
+    $script:seen = [IO.File]::GetLastWriteTimeUtc($ini)
+    $now = Read-Values
+    if ($now['wheel_ffb_model'] -eq 'game') { $now['wheel_ffb_model'] = 'physics' }
+    $any = $false
+    foreach ($s in $settings) {
+        $v = $now[$s.Key]
+        if ($null -eq $v) { $v = $s.Default }
+        if ([string]$v -ceq [string]$script:shown[$s.Key]) { continue }
+        if ((Value-Of $s.Key) -cne $script:shown[$s.Key]) { continue }
+        Show-Value $s.Key $v
+        $script:shown[$s.Key] = Value-Of $s.Key
+        $any = $true
+    }
+    if ($any) { Update-Groups }
+    return $any
 }
 function Show-Value($key, $value) {
     $c = $controls[$key]; $s = $c.Setting
@@ -273,6 +302,7 @@ foreach ($s in $settings) {
     $value = $loaded[$s.Key]
     if ($null -eq $value) { $value = $s.Default }
     Show-Value $s.Key $value
+    $script:shown[$s.Key] = Value-Of $s.Key
     $row++
 }
 Update-Groups
@@ -280,13 +310,27 @@ Update-Groups
 $timer.Add_Tick({
     $timer.Stop()
     try {
-        if (-not $script:backedUp) { Copy-Item -LiteralPath $ini -Destination "$ini.tuner-backup" -Force; $script:backedUp = $true }
-        Write-Values (Collect-Values)
+        $values = Collect-Values
+        if ($values.Count) {
+            if (-not $script:backedUp) { Copy-Item -LiteralPath $ini -Destination "$ini.tuner-backup" -Force; $script:backedUp = $true }
+            Save-Values $values
+        }
+        [void](Sync-FromDisk)   # what the launcher wrote meanwhile into other lines
         $status.Text = 'Saved ' + (Get-Date -Format 'HH:mm:ss') + '. Felt on the wheel within a second if the game is running.'
     } catch {
         $status.Text = 'Could not save: ' + $_.Exception.Message
     }
 })
+# Changes the launcher makes while this window is open show up here within half a second.
+$watch = New-Object Windows.Forms.Timer
+$watch.Interval = 500
+$watch.Add_Tick({
+    try {
+        if ($timer.Enabled -or [IO.File]::GetLastWriteTimeUtc($ini) -eq $script:seen) { return }   # a save here is pending: after it
+        if (Sync-FromDisk) { $status.Text = 'Updated from the launcher at ' + (Get-Date -Format 'HH:mm:ss') + '.' }
+    } catch { }
+})
+$watch.Start()
 
 $buttons = New-Object Windows.Forms.FlowLayoutPanel
 $buttons.AutoSize = $true; $buttons.FlowDirection = 'LeftToRight'
@@ -303,5 +347,8 @@ $table.Controls.Add($status, 0, $row); $table.SetColumnSpan($status, 3); $row++
 $table.Controls.Add($buttons, 0, $row); $table.SetColumnSpan($buttons, 3)
 $form.Controls.Add($table)
 # a save still pending when the window closes is made first
-$form.Add_FormClosing({ if ($timer.Enabled) { $timer.Stop(); Write-Values (Collect-Values) } })
+$form.Add_FormClosing({
+    $watch.Stop()
+    if ($timer.Enabled) { $timer.Stop(); $values = Collect-Values; if ($values.Count) { Save-Values $values } }
+})
 [void]$form.ShowDialog()

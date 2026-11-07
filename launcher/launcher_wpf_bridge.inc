@@ -130,6 +130,10 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
     }else if(argc>=4){
       std::ifstream in(argv[2],std::ios::binary);const Json request=Json::parse(in);ImportUiState(request);
+      // The force feedback rows as default.ini has them: FFB Tuner may have changed it while the window showed older
+      // values. Rows changed now (a row, a preset, a reset) take the window's value and are written at once.
+      const bool wheel_file=WheelIniReady();std::vector<int> ffb_window(g_c.size(),-1);
+      if(wheel_file)for(size_t i=0;i<g_c.size();++i)if(IsFfbKeyRow(g_c[i])){ffb_window[i]=g_c[i].sel;g_c[i].sel=g_c[i].loaded;}
       if(command==L"--ui-reset-page"){
         const int page=request.value("ResetPage",-2), sub=request.value("ResetSubpage",-1);
         if(page < -1 || page >= kTabCount || (page==kTabDriving && (sub<0 || sub>=kSubCount)))
@@ -148,11 +152,15 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         }
         DerivePreset();
         if(page==kTabDriving && sub==kSubAssists)DeriveDrivePreset();
-        if(page==kTabDriving && sub==kSubWheel)DeriveWheelPreset();
+        if(page==kTabDriving && sub==kSubWheel){
+          std::vector<int> ffb;for(int id:ids)if(IsFfbKeyRow(g_c[id]))ffb.push_back(id);
+          SaveWheelRows(ffb);DeriveWheelPreset();
+        }
         NameNativeUpscale();ShowBenchChoices();
       }
       else if(command==L"--ui-validate"){
         const int changed=request.value("ChangedId",-1);
+        if(wheel_file && changed>=0 && changed<int(g_c.size()) && IsFfbKeyRow(g_c[changed])){g_c[changed].sel=ffb_window[changed];SaveWheelRows({changed});}
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_aspect && g_c[g_aspect].sel>0){g_c[g_outres].sel=g_c[g_inres].sel=0;}
         if((changed==g_outres || changed==g_inres) && (g_c[g_outres].sel>0 || g_c[g_inres].sel>0)){
@@ -166,7 +174,9 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       }
       else if(command==L"--ui-preset")ApplyPreset(g_c[g_preset].sel);
       else if(command==L"--ui-drive-preset"){if(g_c[g_drive_preset].sel>=0)ApplyDrivePreset(g_c[g_drive_preset].sel);}
-      else if(command==L"--ui-wheel-preset"){if(g_c[g_ffb_preset].sel>=0)ApplyWheelPreset(g_c[g_ffb_preset].sel);}
+      else if(command==L"--ui-wheel-preset"){
+        if(g_c[g_ffb_preset].sel>=0){ApplyWheelPreset(g_c[g_ffb_preset].sel);SaveWheelRows(std::vector<int>(g_ffb_slider,g_ffb_slider+6));}
+      }
       else if(command==L"--ui-wheelsetup"){
         OpenWheelSetup();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
