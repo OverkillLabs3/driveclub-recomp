@@ -64,9 +64,14 @@ The VR tab's card *VR picture and frame rate*, in both stereo modes:
 - **Glow in VR**: how much of the game's glow (bloom) the headset gets. The game lays a blurred copy of the picture
   over it: on a screen it looks like haze and light, in the headset like a soft film over every edge. 100% is as the
   game draws it; lower gives clearer edges and deeper shadows; at 0% bright skies lose their halo. No cost in FPS.
-- **Exposure in VR**: the game's auto-exposure in the headset adapts over about a second and holds while you look
-  down at the dash or up at the sky, so they do not flash the picture. Lower it if the sky and the road are too
-  bright. In game **[** and **]** change it by a quarter stop.
+- **Exposure in VR**: makes the whole picture brighter (+) or darker (-); in game **[** and **]** change it by a
+  quarter stop. The game sets its exposure from how bright the whole picture is, like a camera: a shaded turn or
+  the dark dash raised it, and the road flashed white when the turn opened up. In the headset, in the car, it now
+  brightens by at most 3 stops a minute (more in a race with the time sped up), so turns and shade barely change it
+  while a sunset is still followed; it darkens as fast as the game's, and comes back quickly after a short bright
+  stretch. The first seconds in the car take the track's level at once, day or night, and
+  it holds while you look down at the dash or up at the sky. `exposure_rate` in `vr.ini` sets the 3 (0: the
+  game's speed). Lens dust is off in VR: it is a camera's lens, not an eye.
 - **Foveated rendering**: the edges of each eye, which the lenses blur anyway, are drawn with less detail. Light,
   Medium (full detail within about 35 degrees of the middle) or Strong. It helps a few FPS when the graphics card is
   the limit.
