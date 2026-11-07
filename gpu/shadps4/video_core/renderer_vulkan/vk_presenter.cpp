@@ -676,7 +676,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const u32 src_w = upscaled ? display.width : attribute.attrib.width;
     const u32 src_h = upscaled ? display.height : attribute.attrib.height;
     if (src_w > 0 && src_h > 0) {
-        const float new_ratio = static_cast<float>(src_w) / static_cast<float>(src_h);
+        // bbport: VR: the window shows BbVr::NoteFrame's picture (one eye at 16:9), not the display buffer's shape;
+        // its ratio is known after the frame is taken, so the last frame's is used (else every frame was made at the
+        // eye's nearly square shape and the 16:9 picture squeezed into it)
+        const float new_ratio = BbVr::Active() && vr_window_ratio > 0.0f
+                                    ? vr_window_ratio
+                                    : static_cast<float>(src_w) / static_cast<float>(src_h);
         if (new_ratio != expected_ratio) {
             expected_ratio = new_ratio;
             const vk::Extent2D extent = swapchain.GetExtent();
@@ -780,6 +785,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     BbFrame::NoteOutput(image_size.width, image_size.height);
     image_size = window_size;
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
+    vr_window_ratio = BbVr::Active() ? expected_ratio : 0.0f;
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);

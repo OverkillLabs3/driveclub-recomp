@@ -3260,11 +3260,12 @@ VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView s
         Barrier(cmd, gpu.window.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
         gpu.window_valid = true;
-        static bool told = false;
-        if (!told) {
-            told = true;
-            std::printf("VR: the window shows the %s eye at %ux%u (vr.ini window = 0: every frame)\n",
-                        settings.window_eye == 0 ? "left" : "right", width, band);
+        static uint32_t told = 0;
+        if (const uint32_t key = (width << 16) ^ (band << 1) ^ (fit ? 1u : 0u); key != told) {
+            told = key;
+            std::printf("VR: the window shows the %s eye at %ux%u%s (vr.ini window = 0: every frame)\n",
+                        settings.window_eye == 0 ? "left" : "right", width, band,
+                        fit ? ", the game's canvas whole over it" : ", the game's canvas stretched back to 16:9");
         }
     }
     if (window_width) *window_width = width;
