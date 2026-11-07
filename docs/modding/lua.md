@@ -116,6 +116,10 @@ The whole example is `tools/modkit/examples/speed-hud`. Checked in the game (Fer
 
 Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
 
+### Editor support
+
+`docs/modding/lua-defs/dcmod.lua` holds type definitions for the `dcmod` library and every global table of the game (names and kinds of the members; the arguments of the game's functions are not known), in the EmmyLua format that the Lua language server of VS Code and IntelliJ read. Add the folder to the library paths of the editor and `dcmod.car()`, `dcmod.ui.text(...)` and the game's tables complete as you type.
+
 ### What a script can use
 
 All the globals the game's own scripts use exist when a mod script runs. [lua-api.md](lua-api.md) lists every global with its members, for example `Event.Listen`, `Event.SendEvent`, `Actor.GetPlayer`, `Actor.SpawnActor`, `GameState.StartGame`, `GUIOptions.Set`, `Rewards`, `Vehicles`, `Tracks`, `Tour`, `LAMS`, `HUD`, `Stats`. It was read from the running game. What each function takes is learned from the game's scripts: `dcmod lua dis` shows how they call them, and `dcmod lua survey` lists the calls.
