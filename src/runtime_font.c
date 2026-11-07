@@ -15,6 +15,7 @@
 #pragma clang diagnostic ignored "-Wmissing-field-initializers"
 #include "../gpu/third_party/imgui/imstb_truetype.h"
 #pragma clang diagnostic pop
+#include "runtime_font_fallback.inc"
 
 #define FONT_OK 0
 #define FONT_ERR_PARAM ((int32_t)0x80460002)
@@ -41,7 +42,7 @@ typedef struct { float baselineOffset, lineAdvance, decorationExtent; } Horizont
 typedef struct { float offsetX, offsetY, positionX, positionY; } Kerning;
 
 static Font *font_of(void *h) { Font *f=h; return f && f->valid ? f : NULL; }
-static float scale_for(const Font *f,float pixels) { return pixels>0 ? stbtt_ScaleForMappingEmToPixels(&f->info,pixels) : 0.f; }
+static float scale_for(const Font *f,float pixels) { return bb_scale(&f->info,pixels); }
 
 static ABI int32_t font_mem_init(void *mem,void *region,uint32_t size,const void *iface,void *mspace,void *destroy,void *ctx) {
     (void)region;(void)size;(void)iface;(void)mspace;(void)destroy;(void)ctx;
@@ -105,11 +106,13 @@ static ABI int32_t font_horizontal_layout(void *h,HorizontalLayout *out) {
     out->baselineOffset=asc*s; out->lineAdvance=(asc-desc+gap)*s; out->decorationExtent=0.f;
     return FONT_OK;
 }
-static void glyph_metrics(Font *f,uint32_t code,float sx,float sy,GlyphMetrics *m,int *x0,int *y0,int *x1,int *y1) {
-    int g=stbtt_FindGlyphIndex(&f->info,(int)code);
-    float xs=scale_for(f,sx), ys=scale_for(f,sy);
-    int adv,lsb; stbtt_GetGlyphHMetrics(&f->info,g,&adv,&lsb);
-    stbtt_GetGlyphBitmapBox(&f->info,g,xs,ys,x0,y0,x1,y1);
+static void glyph_metrics(Font *f,uint32_t code,float sx,float sy,GlyphMetrics *m,
+                          int *x0,int *y0,int *x1,int *y1,BBGlyphChoice *choice) {
+    BBGlyphChoice c=bb_glyph_choose(&f->info,code);
+    if (choice) *choice=c;
+    float xs=bb_scale(c.info,sx), ys=bb_scale(c.info,sy);
+    int adv,lsb; stbtt_GetGlyphHMetrics(c.info,c.glyph,&adv,&lsb);
+    stbtt_GetGlyphBitmapBox(c.info,c.glyph,xs,ys,x0,y0,x1,y1);
     memset(m,0,sizeof(*m));
     m->width=(float)(*x1-*x0); m->height=(float)(*y1-*y0);
     m->hbx=(float)*x0; m->hby=(float)-*y0; m->hadv=adv*xs;
@@ -118,7 +121,7 @@ static ABI int32_t font_char_metrics(void *h,uint32_t code,GlyphMetrics *out) {
     Font *f=font_of(h);
     if (!f) return FONT_ERR_HANDLE;
     if (!out) return FONT_ERR_PARAM;
-    int a,b,c,d; glyph_metrics(f,code,f->sx,f->sy,out,&a,&b,&c,&d);
+    int a,b,c,d; glyph_metrics(f,code,f->sx,f->sy,out,&a,&b,&c,&d,NULL);
     return FONT_OK;
 }
 static ABI int32_t font_kerning(void *h,uint32_t pre,uint32_t code,Kerning *out) {
@@ -126,6 +129,9 @@ static ABI int32_t font_kerning(void *h,uint32_t pre,uint32_t code,Kerning *out)
     if (!f) return FONT_ERR_HANDLE;
     if (!out) return FONT_ERR_PARAM;
     memset(out,0,sizeof(*out));
+    /* A fallback glyph has no kern pair in the primary face. */
+    if (!stbtt_FindGlyphIndex(&f->info,(int)pre) || !stbtt_FindGlyphIndex(&f->info,(int)code))
+        return FONT_OK;
     out->positionX=stbtt_GetCodepointKernAdvance(&f->info,(int)pre,(int)code)*scale_for(f,f->sx);
     return FONT_OK;
 }
@@ -135,7 +141,8 @@ static ABI int32_t font_render_glyph(void *h,uint32_t code,Surface *surf,float x
     if (!surf || !result) return FONT_ERR_PARAM;
     GlyphMetrics local; if (!metrics) metrics=&local;
     int x0,y0,x1,y1;
-    glyph_metrics(f,code,f->rx,f->ry,metrics,&x0,&y0,&x1,&y1);
+    BBGlyphChoice choice;
+    glyph_metrics(f,code,f->rx,f->ry,metrics,&x0,&y0,&x1,&y1,&choice);
     int gw=x1-x0, gh=y1-y0, bpp=surf->pixelSizeByte;
     int dest_x=(int)floorf(x)+x0, dest_y=(int)floorf(y)+y0;
     int cx0=(int)surf->sc_x0, cy0=(int)surf->sc_y0, cx1=(int)surf->sc_x1, cy1=(int)surf->sc_y1;
@@ -145,7 +152,8 @@ static ABI int32_t font_render_glyph(void *h,uint32_t code,Surface *surf,float x
     if (gw>0 && gh>0 && bpp>0 && surf->buffer && cx1>cx0 && cy1>cy0) {
         uint8_t *bitmap=malloc((size_t)gw*gh);
         if (!bitmap) return FONT_ERR_FATAL;
-        stbtt_MakeGlyphBitmap(&f->info,bitmap,gw,gh,gw,scale_for(f,f->rx),scale_for(f,f->ry),stbtt_FindGlyphIndex(&f->info,(int)code));
+        stbtt_MakeGlyphBitmap(choice.info,bitmap,gw,gh,gw,
+                              bb_scale(choice.info,f->rx),bb_scale(choice.info,f->ry),choice.glyph);
         int r0=dest_y>cy0?dest_y:cy0, r1=dest_y+gh<cy1?dest_y+gh:cy1;
         int c0=dest_x>cx0?dest_x:cx0, c1=dest_x+gw<cx1?dest_x+gw:cx1;
         ux=c0; uy=r0; uw=c1>c0?c1-c0:0; uh=r1>r0?r1-r0:0;
