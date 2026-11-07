@@ -92,6 +92,30 @@ Checked in the game (Ferrari 458 on Chile, 50 seconds of AI driving): speed went
 
 How it works, for people who extend it: `dcmod.car()` calls `loadfile("dcmod/state/car.lua.bin")`. The runtime sees the path (`src/runtime_modapi.c`), writes a small Lua 5.1 chunk that returns the numbers into the user data folder and opens that file. The name must end in `.lua.bin`: the game's `loadfile` stops the game with an assertion for a path without it.
 
+### Drawing on the screen: `dcmod.ui`
+
+A script can draw text and filled rectangles over the game (the same layer as the FPS counter, so they also show over the menus). Positions and sizes are fractions of the screen, `size` is the height of the text in pixels, a colour is `{r, g, b, a}` with values from 0 to 1, and `ttl` is how many seconds an item stays when it is not drawn again (1 by default). An item with the same `id` is replaced, so a script that draws every 0.1 seconds with a `ttl` of 0.5 shows a live value and loses it when the script stops.
+
+| Call | Does |
+|---|---|
+| `dcmod.ui.text(id, x, y, text, size, color, ttl)` | Text at (x, y), at most about 100 characters; any character works. |
+| `dcmod.ui.rect(id, x, y, w, h, color, ttl)` | A filled rectangle of w by h. |
+| `dcmod.ui.clear(id)` | Removes an item. |
+
+```lua
+dcmod.every(0.1, function()
+  local car = dcmod.car()
+  if not car then return end
+  dcmod.ui.rect("bg", 0.40, 0.82, 0.20, 0.12, { 0, 0, 0, 0.55 }, 0.5)
+  dcmod.ui.text("kmh", 0.42, 0.83, "Speed " .. math.floor(car.kmh) .. " km/h", 44, { 1, 0.8, 0, 1 }, 0.5)
+  dcmod.ui.rect("rpm", 0.42, 0.935, 0.16 * (car.rpm / car.max_rpm), 0.012, { 1, 0.2, 0.1, 1 }, 0.5)
+end)
+```
+
+The whole example is `tools/modkit/examples/speed-hud`. Checked in the game (Ferrari 458 on Chile): the box, the speed in yellow, the gear and engine speed in white and the red engine speed bar were drawn over the race and followed the car, at 88 frames a second with the upscaler on.
+
+Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
+
 ### What a script can use
 
 All the globals the game's own scripts use exist when a mod script runs. [lua-api.md](lua-api.md) lists every global with its members, for example `Event.Listen`, `Event.SendEvent`, `Actor.GetPlayer`, `Actor.SpawnActor`, `GameState.StartGame`, `GUIOptions.Set`, `Rewards`, `Vehicles`, `Tracks`, `Tour`, `LAMS`, `HUD`, `Stats`. It was read from the running game. What each function takes is learned from the game's scripts: `dcmod lua dis` shows how they call them, and `dcmod lua survey` lists the calls.

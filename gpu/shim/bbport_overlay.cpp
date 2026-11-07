@@ -1006,8 +1006,75 @@ bool HandleEvent(const SDL_Event& event) {
     }
 }
 
+namespace {
+struct ModItemData {
+    std::string id;
+    int kind = 0;
+    float x = 0, y = 0, w = 0, h = 0, size = 20;
+    uint32_t color = 0xFFFFFFFF;
+    std::chrono::steady_clock::time_point until;
+    std::string text;
+};
+std::mutex mod_mutex; // the items of mod scripts, never held together with imgui_mutex
+std::vector<ModItemData> mod_items;
+std::atomic<bool> mod_items_active{false};
+} // namespace
+
+void ModItem(const std::string& id, int kind, float x, float y, float w, float h, float size, uint32_t color, int ttl_ms,
+             const std::string& text) {
+    std::scoped_lock lock{mod_mutex};
+    ModItemData item;
+    item.id = id;
+    item.kind = kind;
+    item.x = x;
+    item.y = y;
+    item.w = w;
+    item.h = h;
+    item.size = size;
+    item.color = color;
+    item.until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl_ms > 0 ? ttl_ms : 1000);
+    item.text = text;
+    for (ModItemData& existing : mod_items) {
+        if (existing.id == id) {
+            existing = std::move(item);
+            return;
+        }
+    }
+    if (mod_items.size() < 256) {
+        mod_items.push_back(std::move(item));
+        mod_items_active = true;
+    }
+}
+
+void ModItemClear(const std::string& id) {
+    std::scoped_lock lock{mod_mutex};
+    std::erase_if(mod_items, [&](const ModItemData& item) { return item.id == id; });
+    mod_items_active = !mod_items.empty();
+}
+
+// Present thread, inside Render (the ImGui frame is open): draws what mod scripts asked for and drops what has run out.
+static void DrawModItems(ImVec2 display) {
+    std::vector<ModItemData> items;
+    {
+        std::scoped_lock lock{mod_mutex};
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(mod_items, [&](const ModItemData& item) { return item.until < now; });
+        items = mod_items;
+        mod_items_active = !mod_items.empty();
+    }
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    for (const ModItemData& item : items) {
+        const ImVec2 at(item.x * display.x, item.y * display.y);
+        if (item.kind == 1) {
+            draw->AddRectFilled(at, ImVec2(at.x + item.w * display.x, at.y + item.h * display.y), item.color);
+        } else {
+            draw->AddText(ImGui::GetFont(), item.size > 4.0f ? item.size : 20.0f, at, item.color, item.text.c_str());
+        }
+    }
+}
+
 bool Visible() {
-    return initialized && (runtime_exit_captures() || menu_open || text_entry_active || note_active || trophy_active || BbSettings::Get().show_fps ||
+    return initialized && (mod_items_active.load() || runtime_exit_captures() || menu_open || text_entry_active || note_active || trophy_active || BbSettings::Get().show_fps ||
                            BbSettings::Get().show_pedals || picture_row >= 0);
 }
 
@@ -1116,6 +1183,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (BbSettings::Get().show_pedals && !menu_open) {
         PedalPanel();
     }
+    DrawModItems(io.DisplaySize);
     if (picture_row >= 0 && !menu_open) {
         PicturePanel();
     }

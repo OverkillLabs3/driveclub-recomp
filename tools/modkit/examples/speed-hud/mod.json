@@ -1,0 +1,1 @@
+{ "id": "example.speed-hud", "name": "Speed HUD", "version": "1.0", "description": "Speed, gear, rpm and an rpm bar drawn over the race with dcmod.car and dcmod.ui.", "scripts": [ "scripts/mods/hud/main.lua" ] }

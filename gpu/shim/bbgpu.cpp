@@ -511,6 +511,14 @@ extern "C" void bbgpu_mouse_stick_capture(int capture) { BbOverlay::RequestMouse
 extern "C" void bbgpu_overlay_trophy(int id, int grade, const char* title_utf8, const char* description_utf8) {
     BbOverlay::Trophy(id, grade, title_utf8 ? title_utf8 : "", description_utf8 ? description_utf8 : "");
 }
+extern "C" void bbgpu_overlay_mod_item(const char* id, int kind, float x, float y, float w, float h, float size,
+                                       unsigned color, int ttl_ms, const char* text_utf8) {
+    if (kind < 0) {
+        BbOverlay::ModItemClear(id ? id : "");
+    } else {
+        BbOverlay::ModItem(id ? id : "", kind, x, y, w, h, size, color, ttl_ms, text_utf8 ? text_utf8 : "");
+    }
+}
 extern "C" void bbgpu_overlay_note(const char* text_utf8) {
     BbOverlay::Note(text_utf8 ? text_utf8 : "");
 }

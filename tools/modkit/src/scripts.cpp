@@ -15,13 +15,20 @@ original()
 local dcmod = { version = 1 }
 -- dcmod.log(...) writes a line to the game log, starting with "Mod: ". The log call is a failed loadfile of a path
 -- that the runtime recognises; capital letters are sent as ^ and the letter because the game lower-cases paths.
+-- Text in a call: the game lower-cases paths, so a capital is sent as ^ and the letter and every other character
+-- except letters, digits and " .:=_,-()[]" as ~ and two hex digits (the runtime decodes both).
+local function dcmod_escape(text, limit)
+  text = string.sub(text, 1, limit)
+  text = string.gsub(text, "[^%l%d %.:=_,%-%(%)%[%]]", function(c)
+    if string.find(c, "%u") then return "^" .. string.lower(c) end
+    return string.format("~%02x", string.byte(c))
+  end)
+  return text
+end
 function dcmod.log(...)
   local parts = {}
   for i = 1, select("#", ...) do parts[#parts + 1] = tostring((select(i, ...))) end
-  local text = string.sub(table.concat(parts, " "), 1, 380)
-  text = string.gsub(text, "[^%w%s%.:=_,%-%(%)%[%]]", "?")
-  text = string.gsub(text, "%u", function(c) return "^" .. string.lower(c) end)
-  loadfile("dcmod/log/" .. text)
+  loadfile("dcmod/log/" .. dcmod_escape(table.concat(parts, " "), 160))
 end
 -- dcmod.car(): the live state of the car the player drives, or nil when none is driven. The runtime makes a Lua chunk
 -- that returns the numbers (see src/runtime_modapi.c); speed is in m/s, wheels are right front, left front, right rear,
@@ -42,6 +49,29 @@ function dcmod.car()
   end
   car.kmh = car.speed * 3.6
   return car
+end
+-- dcmod.ui: things a script draws on the screen. Each call is a path the runtime recognises (like dcmod.log), so the
+-- text is limited to about 100 characters (any character works, it is escaped); positions are fractions of the screen (0 to 1), `size` is the
+-- height of the text in pixels, a colour is {r, g, b, a} with values 0 to 1 and `ttl` is how long an item stays without
+-- being drawn again (seconds, 1 by default). An item with the same id is replaced.
+dcmod.ui = {}
+local function hexcolor(c)
+  c = c or { 1, 1, 1, 1 }
+  local function byte(v) return math.max(0, math.min(255, math.floor((v or 1) * 255 + 0.5))) end
+  return string.format("%02x%02x%02x%02x", byte(c[1]), byte(c[2]), byte(c[3]), byte(c[4] == nil and 1 or c[4]))
+end
+local function permille(v) return math.max(0, math.min(1000, math.floor(v * 1000 + 0.5))) end
+local function safeid(id) return (string.gsub(tostring(id), "[^%w_]", "_")) end
+function dcmod.ui.text(id, x, y, text, size, color, ttl)
+  loadfile(string.format("dcmod/ui/text/%s/%d/%d/%d/%s/%d/%s", safeid(id), permille(x), permille(y), size or 24,
+    hexcolor(color), math.floor((ttl or 1) * 1000), dcmod_escape(tostring(text), 100)))
+end
+function dcmod.ui.rect(id, x, y, w, h, color, ttl)
+  loadfile(string.format("dcmod/ui/rect/%s/%d/%d/%d/%d/%s/%d", safeid(id), permille(x), permille(y), permille(w), permille(h),
+    hexcolor(color), math.floor((ttl or 1) * 1000)))
+end
+function dcmod.ui.clear(id)
+  loadfile("dcmod/ui/clear/" .. safeid(id))
 end
 -- Timers and events. The game's event system does not exist while the boot script runs, so dcmod.on_ready and
 -- dcmod.on wait until dcmod.ready_delay seconds after the start (20 by default).

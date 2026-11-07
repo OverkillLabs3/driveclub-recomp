@@ -3,6 +3,10 @@
  * resolves, and acts on these:
  *
  *   dcmod/log/<text>    writes "Mod: <text>" to the log (the game's own print output does not reach the log)
+ *   dcmod/ui/text/<id>/<x>/<y>/<size>/<rrggbbaa>/<ttl>/<text>   text on the screen
+ *   dcmod/ui/rect/<id>/<x>/<y>/<w>/<h>/<rrggbbaa>/<ttl>          a filled rectangle
+ *   dcmod/ui/clear/<id>                                          removes an item
+ *       x, y, w, h in thousandths of the screen, size in pixels, ttl in milliseconds; an item with the same id is replaced
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
  * The game lower-cases the paths it opens, so a script writes each capital letter as '^' and the lower-case letter
@@ -16,6 +20,9 @@
 #include <ctype.h>
 #include <time.h>
 #include <stdint.h>
+
+void bbgpu_overlay_mod_item(const char *id, int kind, float x, float y, float w, float h, float size, unsigned color, int ttl_ms,
+                            const char *text);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -56,6 +63,26 @@ static size_t numbers_chunk(uint8_t *buf, size_t cap, const double *v, int n) {
     return at;
 }
 
+/* The text of a call: the game lower-cases paths, so a capital letter is sent as '^' and the lower-case letter, and any
+ * other character as '~' and two hex digits ("~2f" is '/', and the bytes of UTF-8 text work the same way). */
+static size_t unescape(const char *in, char *out, size_t cap) {
+    size_t n = 0;
+    for (const char *p = in; *p && n < cap - 1; ++p) {
+        unsigned hex;
+        if (*p == '^' && p[1]) {
+            out[n++] = (char)toupper((unsigned char)p[1]);
+            ++p;
+        } else if (*p == '~' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2]) && sscanf(p + 1, "%2x", &hex) == 1) {
+            out[n++] = (char)hex;
+            p += 2;
+        } else {
+            out[n++] = *p;
+        }
+    }
+    out[n] = 0;
+    return n;
+}
+
 static double now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -90,18 +117,26 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         fclose(f);
         return written == length ? 2 : 1;
     }
+    if (!strncasecmp(call, "ui/", 3)) {
+        char text[512];
+        unescape(call + 3, text, sizeof(text));
+        char id[64];
+        int x, y, w, h, size, ttl, consumed = 0;
+        unsigned rgba;
+        if (sscanf(text, "clear/%63[^/]", id) == 1) {
+            bbgpu_overlay_mod_item(id, -1, 0, 0, 0, 0, 0, 0, 0, "");
+        } else if (sscanf(text, "text/%63[^/]/%d/%d/%d/%8x/%d/%n", id, &x, &y, &size, &rgba, &ttl, &consumed) == 6 && consumed > 0) {
+            const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
+            bbgpu_overlay_mod_item(id, 0, x / 1000.0f, y / 1000.0f, 0, 0, (float)size, abgr, ttl, text + consumed);
+        } else if (sscanf(text, "rect/%63[^/]/%d/%d/%d/%d/%8x/%d", id, &x, &y, &w, &h, &rgba, &ttl) == 7) {
+            const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
+            bbgpu_overlay_mod_item(id, 1, x / 1000.0f, y / 1000.0f, w / 1000.0f, h / 1000.0f, 0, abgr, ttl, "");
+        }
+        return 1;
+    }
     if (!strncasecmp(call, "log/", 4)) {
         char text[512];
-        size_t n = 0;
-        for (const char *p = call + 4; *p && n < sizeof(text) - 1; ++p) {
-            if (*p == '^' && p[1]) {
-                text[n++] = (char)toupper((unsigned char)p[1]);
-                ++p;
-            } else {
-                text[n++] = *p;
-            }
-        }
-        text[n] = 0;
+        unescape(call + 4, text, sizeof(text));
         const double t = now_ms();
         if (!strcmp(text, last) && t - last_ms < 5.0) return 1;
         snprintf(last, sizeof(last), "%s", text);
