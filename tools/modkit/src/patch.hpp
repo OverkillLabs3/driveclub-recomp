@@ -21,6 +21,8 @@ public:
     // The file's name as the game spells it (the archive's lower case path), or empty when there is no such file.
     virtual std::string Canonical(const std::string& path) = 0;
     virtual Bytes Read(const std::string& canonical) = 0;
+    // Every file the source knows (lower case game paths), for patches that name files by a pattern.
+    virtual std::vector<std::string> List() { return {}; }
     // A new index and volume that add `files` to the game's archive; false when the source has no archive.
     virtual bool ExtendArchive(const std::vector<std::pair<std::string, Bytes>>&, std::map<std::string, Bytes>&) { return false; }
 };
@@ -33,6 +35,11 @@ public:
         return files.count(k) ? k : std::string();
     }
     Bytes Read(const std::string& canonical) override { return files.at(canonical); }
+    std::vector<std::string> List() override {
+        std::vector<std::string> out;
+        for (const auto& kv : files) out.push_back(kv.first);
+        return out;
+    }
 };
 
 // The game folders and archive, in the order the game itself looks: loose files in the update folder, then the base
@@ -42,6 +49,7 @@ public:
     GameSource(Archive& archive, std::vector<fs::path> folders) : archive_(archive), folders_(std::move(folders)) {}
     std::string Canonical(const std::string& path) override;
     Bytes Read(const std::string& canonical) override;
+    std::vector<std::string> List() override;
     bool ExtendArchive(const std::vector<std::pair<std::string, Bytes>>& files, std::map<std::string, Bytes>& out) override;
 
 private:
@@ -64,6 +72,8 @@ public:
     Workspace(FileSource& source, PatchReport& report) : source_(source), report_(report) {}
 
     bool Exists(const std::string& path);
+    // The files of the game (and the loose files of the folders) that a pattern with '*' and '?' matches, lower case paths.
+    std::vector<std::string> Match(const std::string& pattern);
     Bytes Read(const std::string& path);
     void Write(const std::string& path, Bytes data, const std::string& mod, const std::string& action);
 

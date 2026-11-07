@@ -147,6 +147,14 @@
         "optional": {
           "type": "boolean"
         },
+        "each": {
+          "description": "A pattern ('*' and '?') or list of patterns for game paths: the patch is repeated for every file that matches, with file set to it. {name} in a text of the patch is the file's name without folder and extension, {file} its whole path.",
+          "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ]
+        },
+        "except": {
+          "description": "With each: patterns of files to leave out.",
+          "oneOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ]
+        },
         "find": {},
         "replace": {},
         "regex": {

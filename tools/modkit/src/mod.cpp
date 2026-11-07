@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "mod.hpp"
 
+#include "cli.hpp"
+
 #include <algorithm>
 
 namespace dcmod {
@@ -113,6 +115,68 @@ Json Substitute(const Json& j, const Mod& m) {
         return out;
     }
     return j;
+}
+
+// A patch with "each" (a pattern or a list of patterns for game paths, '*' and '?') is repeated for every file that
+// matches, with "file" set to it; "except" lists patterns to leave out. "{name}" in a text of the patch stands for the
+// file's name without folder and extension, "{file}" for its whole path.
+std::string ReplaceAll(std::string text, const std::string& what, const std::string& with) {
+    for (size_t at = text.find(what); at != std::string::npos; at = text.find(what, at + with.size())) text.replace(at, what.size(), with);
+    return text;
+}
+Json Fill(const Json& j, const std::string& name, const std::string& file) {
+    if (j.IsString()) return Json(ReplaceAll(ReplaceAll(j.AsString(), "{name}", name), "{file}", file));
+    if (j.IsObject()) {
+        Json out = Json::Object();
+        for (const auto& [k, v] : j.Members()) out.Set(k, Fill(v, name, file));
+        return out;
+    }
+    if (j.IsArray()) {
+        Json out = Json::Array();
+        for (const Json& v : j.Items()) out.Push(Fill(v, name, file));
+        return out;
+    }
+    return j;
+}
+std::vector<std::string> Patterns(const Json& j) {
+    std::vector<std::string> out;
+    if (j.IsString()) out.push_back(j.AsString());
+    else if (j.IsArray()) for (const Json& v : j.Items()) out.push_back(v.AsString());
+    else throw Error("\"each\" and \"except\" take a pattern or a list of patterns");
+    return out;
+}
+Json ExpandEach(const Json& patches, Workspace& ws) {
+    Json out = Json::Array();
+    for (const Json& patch : patches.Items()) {
+        const Json* each = patch.IsObject() ? patch.Find("each") : nullptr;
+        if (!each) { out.Push(patch); continue; }
+        std::vector<std::string> skip;
+        if (const Json* except = patch.Find("except")) skip = Patterns(*except);
+        std::vector<std::string> files;
+        for (const std::string& pattern : Patterns(*each)) {
+            for (const std::string& f : ws.Match(pattern)) {
+                bool left_out = false;
+                for (const std::string& s : skip) left_out = left_out || WildMatch(Lower(GamePath(s)), f);
+                if (!left_out && std::find(files.begin(), files.end(), f) == files.end()) files.push_back(f);
+            }
+        }
+        if (files.empty()) {
+            if (patch.GetBool("optional")) continue;
+            throw Error("\"each\" matches no file of the game");
+        }
+        for (const std::string& f : files) {
+            const size_t slash = f.find_last_of('/');
+            std::string name = slash == std::string::npos ? f : f.substr(slash + 1);
+            if (const size_t dot = name.find('.'); dot != std::string::npos) name.resize(dot);
+            Json one = Json::Object();
+            for (const auto& [k, v] : patch.Members()) {
+                if (k != "each" && k != "except") one.Set(k, Fill(v, name, f));
+            }
+            one.Set("file", f);
+            out.Push(one);
+        }
+    }
+    return out;
 }
 
 std::string LuaLiteral(const Json& v) {
@@ -272,7 +336,7 @@ std::map<std::string, Bytes> BuildMods(const std::vector<Mod>& ordered, FileSour
                 }
             }
             PatchEnv env{ws, m.id, m.dir};
-            ApplyPatches(Substitute(m.patches, m), env);
+            ApplyPatches(ExpandEach(Substitute(m.patches, m), ws), env);
         } catch (const Error& e) {
             throw Error(m.id + ": " + e.what());
         }

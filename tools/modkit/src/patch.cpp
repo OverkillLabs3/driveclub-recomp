@@ -9,6 +9,8 @@
 #include "tex.hpp"
 #include "xml.hpp"
 
+#include "cli.hpp"
+
 #include <algorithm>
 #include <regex>
 
@@ -34,6 +36,24 @@ Bytes GameSource::Read(const std::string& canonical) {
     const IndexEntry* e = archive_.Find(canonical);
     if (!e) throw Error("the game has no file " + canonical);
     return archive_.Read(*e);
+}
+
+std::vector<std::string> GameSource::List() {
+    std::vector<std::string> out;
+    for (const IndexEntry& e : archive_.Entries()) out.push_back(Lower(e.name));
+    return out;
+}
+
+std::vector<std::string> Workspace::Match(const std::string& pattern) {
+    std::set<std::string> found;
+    const std::string wanted = Lower(GamePath(pattern));
+    for (const std::string& name : source_.List()) {
+        if (WildMatch(wanted, Lower(name))) found.insert(Lower(name));
+    }
+    for (const auto& kv : items_) {
+        if (WildMatch(wanted, kv.first)) found.insert(kv.first);
+    }
+    return {found.begin(), found.end()};
 }
 
 Workspace::Item& Workspace::Get(const std::string& path, bool must_exist) {

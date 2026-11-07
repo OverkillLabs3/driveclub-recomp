@@ -4,6 +4,17 @@ A patch is an object in the `patches` list of `mod.json`. Every patch has `"op"`
 
 Text in patches is UTF-8. Line breaks are matched whatever the file uses (`\n` in the patch matches a CRLF file) and the file's own line breaks and Latin-1 encoding are kept.
 
+## Many files at once: `each`
+
+A patch may have `"each"`, a pattern for game paths (`*` and `?`) or a list of patterns, instead of `"file"`. The patch is repeated for every file of the game that matches, with `"file"` set to that file. `"except"` lists patterns to leave out. In the texts of the patch `{name}` stands for the file's name without folder and extension and `{file}` for its whole path. A patch whose pattern matches nothing fails (with `"optional": true` it is skipped).
+
+```json
+{ "op": "light.set", "each": "vehicles/ferrari_*.rpk", "except": "*top_mips*",
+  "match": { "all": true }, "set": { "intensity": 900 } }
+```
+
+This is how one mod changes a whole group of cars, tracks or tables, the way a per-name configuration does in other games. Checked on the real game files: the patch above matched 15 Ferrari packs and wrote them all; reading one of them back with `dcmod car lights` gave 900 for its lights (they were 0.021 to 0.15). The patterns see the game's archive; loose files in the game folders are not listed. Mods are applied in order, so a later patch with `"file"` can still refine one car after an `each` patch.
+
 ## Whole files
 
 | Operation | Fields |

@@ -131,5 +131,14 @@ bad '{ "op": "custom.set", "file": "vehicles/ferrari_458_italia.rpk", "match": {
 bad '{ "op": "light.set", "file": "vehicles/nosuchcar.rpk", "match": { "all": true }, "set": { "intensity": 1 } }' "has no file"
 echo "ok car lights"
 
+# "each" repeats a patch for every file a pattern matches
+mkdir -p "$tmp/em" && cat > "$tmp/em/mod.json" <<'JSON'
+{ "id": "t.each", "name": "t", "version": "1.0", "patches": [ { "op": "light.set", "each": "vehicles/ferrari_*.rpk", "except": "*top_mips*", "match": { "all": true }, "set": { "intensity": 900 } } ] }
+JSON
+expect=$("$exe" archive list "vehicles/ferrari_*.rpk" | grep -vc top_mips)
+"$exe" mod build "$tmp/em" -o "$tmp/emb" | grep -q "$expect files written"
+bad '{ "op": "light.set", "each": "vehicles/nosuchmake_*.rpk", "match": { "all": true }, "set": { "intensity": 1 } }' "matches no file"
+echo "ok each"
+
 "$exe" archive verify > /dev/null
 echo "all real data checks passed"
