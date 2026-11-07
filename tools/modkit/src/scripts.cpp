@@ -85,6 +85,33 @@ end
 function dcmod.set_time(hour)
   loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
 end
+-- dcmod.input(): { focus, mx, my, left, right, middle, keys = { [vk] = true } } while the game window has the focus
+-- (mx, my are 0..1 across the game window), or nil when the window does not have it. dcmod.key("F7") or
+-- dcmod.key(0x76) tells if a key is held. Letters and digits are their own code ("A", "5"), F1 to F12, "SPACE", "ENTER",
+-- "ESC", "TAB", "UP", "DOWN", "LEFT", "RIGHT", "SHIFT", "CTRL", "ALT".
+local key_codes = { SPACE = 32, ENTER = 13, ESC = 27, TAB = 9, UP = 38, DOWN = 40, LEFT = 37, RIGHT = 39,
+  SHIFT = 16, CTRL = 17, ALT = 18, BACKSPACE = 8, DELETE = 46, HOME = 36, END = 35 }
+for i = 1, 12 do key_codes["F" .. i] = 111 + i end
+function dcmod.input()
+  local chunk = loadfile("dcmod/state/input.lua.bin")
+  if not chunk then return nil end
+  local v = { chunk() }
+  if v[2] ~= 1 or v[3] ~= 1 then return nil end
+  local state = { focus = true, mx = v[4], my = v[5], left = v[6] % 2 == 1, right = math.floor(v[6] / 2) % 2 == 1,
+    middle = math.floor(v[6] / 4) % 2 == 1, keys = {} }
+  for i = 1, v[7] do state.keys[v[7 + i]] = true end
+  return state
+end
+function dcmod.key(name)
+  local state = dcmod.input()
+  if not state then return false end
+  local code = name
+  if type(name) == "string" then
+    code = key_codes[string.upper(name)] or (#name == 1 and string.byte(string.upper(name)) or nil)
+  end
+  if state.keys[code] then return true end
+  return false
+end
 local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
   VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
   WetToDry = "Wet To Dry" }

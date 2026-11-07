@@ -44,6 +44,7 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
 | A shader over the whole picture (grading, vignette, grain), scripted | `dcmod.postfx`, `postfx/<name>.spv` ([postfx.md](postfx.md)) |
 | The time of day and the weather of a race, scripted | `dcmod.time`, `dcmod.set_time`, `dcmod.race_weather` ([lua.md](lua.md)) |
+| Keys and mouse for your own controls | `dcmod.input`, `dcmod.key` ([lua.md](lua.md)) |
 | Live car data and your own HUD in the game | `dcmod.car()`, `dcmod.ui` ([lua.md](lua.md)) |
 | The lights of a car (headlights, brake lights) | `dcmod car lights`, `light.set` patch ([lights.md](lights.md)) |
 | Music and sound effects (FMOD banks), your own WAV files, which stream an event plays, loops | `dcmod audio import`, `audio set` ([audio.md](audio.md)) |

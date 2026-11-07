@@ -98,6 +98,20 @@ function dcmod.time() end
 ---Moves the clock of the scene to an hour (0 to 24).
 ---@param hour number
 function dcmod.set_time(hour) end
+---@class dcmod.Input
+---@field mx number 0 to 1 from the left of the game window
+---@field my number 0 to 1 from the top of the game window
+---@field left boolean
+---@field right boolean
+---@field middle boolean
+---@field keys table<integer, boolean> Windows virtual key codes of the keys held
+---Keys and mouse while the game window has the focus, nil otherwise.
+---@return dcmod.Input|nil
+function dcmod.input() end
+---True while a key is held ("F7", "A", "SPACE", "UP", ... or a virtual key number).
+---@param name string|integer
+---@return boolean
+function dcmod.key(name) end
 ---@class dcmod.RaceWeather
 ---@field rain string|nil Heavy, Mid, Light, VeryLight, Wet, Damp, DryToWet, WetToDry or a full preset name
 ---@field weather string|nil Clear, Cloudy, Overcast or Stormy

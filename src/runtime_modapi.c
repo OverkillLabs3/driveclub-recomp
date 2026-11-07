@@ -13,6 +13,7 @@
  *   dcmod/env/rain/<name>             sets the race config's precipitation preset (Dry, Light, Mid, Heavy, ...)
  *   dcmod/env/weather/<name>          sets the race config's weather name (Clear, Cloudy, Overcast, Stormy)
  *   dcmod/state/env.lua.bin          a Lua chunk with the hour of the day and the clock's compression
+ *   dcmod/state/input.lua.bin        a Lua chunk with the keys held and the mouse (only while the game window has the focus)
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
  * The game lower-cases the paths it opens, so a script writes each capital letter as '^' and the lower-case letter
@@ -20,6 +21,9 @@
  * digits and " .:=_,-()[]" by '?'. At most 20000 lines are written per run; a line repeated within 5 ms is one call
  * that the file system saw twice, and is written once. */
 #include "runtime.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -98,6 +102,38 @@ static double now_ms(void) {
     return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
 }
 
+/* The keyboard and the mouse for scripts (dcmod/state/input.lua.bin): values 3 the game window has the focus (1/0),
+ * 4 and 5 the mouse in the game window, 0..1 from the left and from the top, 6 mouse buttons (1 left, 2 right,
+ * 4 middle), 7 the number of keys held, then their Windows virtual key codes. Nothing is reported (0 keys, buttons 0)
+ * while another window has the focus, so a script does not read what the player types elsewhere. */
+static int input_state(double *v, int cap) {
+#ifdef _WIN32
+    if (cap < 6) return 0;
+    HWND game = GetForegroundWindow();
+    DWORD owner = 0;
+    if (game) GetWindowThreadProcessId(game, &owner);
+    const int focus = game && owner == GetCurrentProcessId();
+    v[0] = focus; v[1] = 0; v[2] = 0; v[3] = 0; v[4] = 0;
+    if (!focus) return 5;
+    POINT p; RECT r;
+    if (GetCursorPos(&p) && ScreenToClient(game, &p) && GetClientRect(game, &r) && r.right > 0 && r.bottom > 0) {
+        v[1] = (double)p.x / r.right; v[2] = (double)p.y / r.bottom;
+    }
+    v[3] = (GetAsyncKeyState(VK_LBUTTON) & 0x8000 ? 1 : 0) | (GetAsyncKeyState(VK_RBUTTON) & 0x8000 ? 2 : 0) |
+           (GetAsyncKeyState(VK_MBUTTON) & 0x8000 ? 4 : 0);
+    int n = 0;
+    for (int k = 8; k < 255 && 5 + n < cap; ++k) {
+        if (k == VK_LBUTTON || k == VK_RBUTTON || k == VK_MBUTTON) continue;
+        if (GetAsyncKeyState(k) & 0x8000) v[5 + n++] = k;
+    }
+    v[4] = n;
+    return 5 + n;
+#else
+    (void)v; (void)cap;
+    return 0;
+#endif
+}
+
 /* Called with every guest path before it is resolved: 0 when the path is not a mod call, 1 when it is a call without a
  * file (the open fails), 2 when the runtime made a file for the script (its host path is written to `out`). */
 int runtime_mod_marker(const char *guest, char *out, size_t size) {
@@ -107,17 +143,18 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
     if (!guest || strncasecmp(guest, MOD_PREFIX, sizeof(MOD_PREFIX) - 1)) return 0;
     const char *call = guest + sizeof(MOD_PREFIX) - 1;
     const int is_car = !strcasecmp(call, "state/car.lua.bin"), is_env = !strcasecmp(call, "state/env.lua.bin");
-    if (is_car || is_env) {
+    const int is_input = !strcasecmp(call, "state/input.lua.bin");
+    if (is_car || is_env || is_input) {
         /* car: values 1 layout version, 2 car found (1/0), 3 speed m/s, 4 rpm, 5 maximum rpm, 6 rev limiter rpm, 7 gear (-1
          * reverse, 0 neutral), 8 throttle 0..1, 9 brake 0..1, 10 steering -1..1, then four wheels (right front, left front,
          * right rear, left rear) of five numbers: load N, lateral force N, longitudinal force N, slip ratio, slip angle
          * env: values 1 layout version, 2 clock running (1/0), 3 hour of the day 0..24, 4 the game's time compression */
         double values[48];
-        int n = is_car ? runtime_mod_car_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);
+        int n = is_car ? runtime_mod_car_state(values + 2, 46) : is_input ? input_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);
         values[0] = 1;
         values[1] = n > 0;
         if (n < 0) n = 0;
-        const char *file_name = is_car ? "/dcmod_state_car.luac" : "/dcmod_state_env.luac";
+        const char *file_name = is_car ? "/dcmod_state_car.luac" : is_input ? "/dcmod_state_input.luac" : "/dcmod_state_env.luac";
         const char *user = runtime_file_user_dir();
         uint8_t chunk[1024];
         const size_t length = numbers_chunk(chunk, sizeof(chunk), values, n + 2);

@@ -130,6 +130,31 @@ end)
 
 Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
 
+### Keyboard and mouse: `dcmod.input()` and `dcmod.key(name)`
+
+`dcmod.input()` returns a table while the game window has the focus, and `nil` while another window has it (a script never sees what the player types elsewhere):
+
+| Field | Meaning |
+|---|---|
+| `mx`, `my` | The mouse in the game window, 0 to 1 from the left and from the top (outside 0 to 1 when the pointer is outside the window) |
+| `left`, `right`, `middle` | Mouse buttons held (`true`/`false`) |
+| `keys` | A table with `keys[code] = true` for every key held, by Windows virtual key code (65 is A, 118 is F7) |
+
+`dcmod.key("F7")` tells if a key is held: letters and digits by their character (`"A"`, `"5"`), `"F1"` to `"F12"`, `"SPACE"`, `"ENTER"`, `"ESC"`, `"TAB"`, `"UP"`, `"DOWN"`, `"LEFT"`, `"RIGHT"`, `"SHIFT"`, `"CTRL"`, `"ALT"`, `"BACKSPACE"`, `"DELETE"`, `"HOME"`, `"END"`, or a virtual key number.
+
+```lua
+local was = false
+dcmod.every(0.1, function()
+  local down = dcmod.key("F7")
+  if down and not was then dcmod.race_weather({ rain = "Heavy" }) end   -- F7 starts a rainy next race
+  was = down
+end)
+```
+
+Checked in the game (hidden test window with the focus, keys sent with `keybd_event`): holding F7 and A together gave `keys` 65 and 118 and `dcmod.key("F7")` and `dcmod.key("a")` true, releasing them gave an empty table; the pointer position was reported. Not checked: the mouse buttons, the wheel (not reported), the Linux build (always `nil`, the keys come from the Windows API).
+
+How it works: `dcmod/state/input.lua.bin` is a Lua chunk like the car and clock ones (`src/runtime_modapi.c`, `input_state`). The game's own input system is not touched: pressing a key a mod reads still does what the game does with it.
+
 ### Weather: `dcmod.race_weather{ rain = ..., weather = ... }`
 
 ```lua
