@@ -5,6 +5,7 @@
  *   dcmod/log/<text>    writes "Mod: <text>" to the log (the game's own print output does not reach the log)
  *   dcmod/ui/text/<id>/<x>/<y>/<size>/<rrggbbaa>/<ttl>/<text>   text on the screen
  *   dcmod/ui/rect/<id>/<x>/<y>/<w>/<h>/<rrggbbaa>/<ttl>          a filled rectangle
+ *   dcmod/ui/image/<id>/<x>/<y>/<w>/<h>/<rrggbbaa tint>/<ttl>/<name>   the picture images/<name>.png of a mods folder
  *   dcmod/ui/clear/<id>                                          removes an item
  *       x, y, w, h in thousandths of the screen, size in pixels, ttl in milliseconds; an item with the same id is replaced
  *   dcmod/postfx/use/<name>           the post-processing filter postfx/<name>.spv of a mods folder (use/off: none)
@@ -220,6 +221,9 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         } else if (sscanf(text, "text/%63[^/]/%d/%d/%d/%8x/%d/%n", id, &x, &y, &size, &rgba, &ttl, &consumed) == 6 && consumed > 0) {
             const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
             bbgpu_overlay_mod_item(id, 0, x / 1000.0f, y / 1000.0f, 0, 0, (float)size, abgr, ttl, text + consumed);
+        } else if (sscanf(text, "image/%63[^/]/%d/%d/%d/%d/%8x/%d/%n", id, &x, &y, &w, &h, &rgba, &ttl, &consumed) == 7 && consumed > 0) {
+            const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
+            bbgpu_overlay_mod_item(id, 2, x / 1000.0f, y / 1000.0f, w / 1000.0f, h / 1000.0f, 0, abgr, ttl, text + consumed);
         } else if (sscanf(text, "rect/%63[^/]/%d/%d/%d/%d/%8x/%d", id, &x, &y, &w, &h, &rgba, &ttl) == 7) {
             const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
             bbgpu_overlay_mod_item(id, 1, x / 1000.0f, y / 1000.0f, w / 1000.0f, h / 1000.0f, 0, abgr, ttl, "");

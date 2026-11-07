@@ -70,6 +70,12 @@ function dcmod.ui.rect(id, x, y, w, h, color, ttl)
   loadfile(string.format("dcmod/ui/rect/%s/%d/%d/%d/%d/%s/%d", safeid(id), permille(x), permille(y), permille(w), permille(h),
     hexcolor(color), math.floor((ttl or 1) * 1000)))
 end
+-- dcmod.ui.image(id, name, x, y, w, h [, tint, ttl]): the picture images/<name>.png of the mod (8 bit RGB or RGBA PNG, at most
+-- 2048 by 2048), x, y, w, h as fractions of the screen; tint multiplies the colours (white keeps them).
+function dcmod.ui.image(id, name, x, y, w, h, tint, ttl)
+  loadfile(string.format("dcmod/ui/image/%s/%d/%d/%d/%d/%s/%d/%s", safeid(id), permille(x), permille(y), permille(w), permille(h),
+    hexcolor(tint), math.floor((ttl or 1) * 1000), dcmod_escape(tostring(name), 60)))
+end
 function dcmod.ui.clear(id)
   loadfile("dcmod/ui/clear/" .. safeid(id))
 end

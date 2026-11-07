@@ -44,6 +44,10 @@ function dcmod.ui.text(id, x, y, text, size, color, ttl) end
 ---@param color? dcmod.Color
 ---@param ttl? number
 function dcmod.ui.rect(id, x, y, w, h, color, ttl) end
+---A picture of the mod (images/<name>.png, 8 bit RGB or RGBA PNG, at most 2048 by 2048) drawn over the game.
+---@param name string
+---@param tint table|nil {r, g, b, a} multiplied with the picture
+function dcmod.ui.image(id, name, x, y, w, h, tint, ttl) end
 ---Removes an item.
 ---@param id string
 function dcmod.ui.clear(id) end

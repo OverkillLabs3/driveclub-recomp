@@ -102,6 +102,7 @@ A script can draw text and filled rectangles over the game (the same layer as th
 |---|---|
 | `dcmod.ui.text(id, x, y, text, size, color, ttl)` | Text at (x, y), at most about 100 characters; any character works. |
 | `dcmod.ui.rect(id, x, y, w, h, color, ttl)` | A filled rectangle of w by h. |
+| `dcmod.ui.image(id, name, x, y, w, h [, tint, ttl])` | The picture `images/<name>.png` of the mod, stretched to w by h; `tint` multiplies its colours (and alpha). 8 bit RGB or RGBA PNG, at most 2048 by 2048, no interlacing. A name that cannot be loaded draws nothing and the log says why. |
 | `dcmod.ui.clear(id)` | Removes an item. |
 
 ```lua
@@ -115,6 +116,7 @@ end)
 ```
 
 The whole example is `tools/modkit/examples/speed-hud`. Checked in the game (Ferrari 458 on Chile): the box, the speed in yellow, the gear and engine speed in white and the red engine speed bar were drawn over the race and followed the car, at 88 frames a second with the upscaler on.
+nPictures: a 256 by 256 RGBA PNG with a transparent corner area drew with its transparency, and a second copy with a red half-transparent tint drew tinted next to it, over the race at 89 frames a second; a name with no file drew nothing. The pictures are loaded the first time they are drawn and kept, so change the file and restart to see a new one. Textures come from the ImGui texture system (no Vulkan code of the mod kit), they belong to the overlay and are not filtered by `dcmod.postfx`.
 
 Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
 
