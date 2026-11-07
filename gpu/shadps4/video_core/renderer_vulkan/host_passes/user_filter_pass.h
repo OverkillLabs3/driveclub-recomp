@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// bbport: a post-processing filter from a mod: a SPIR-V fragment shader `postfx/<name>.spv` in a mods folder, drawn over
+// a post-processing filter from a mod: a SPIR-V fragment shader `postfx/<name>.spv` in a mods folder, drawn over
 // the game's picture (the UI is in it) before the picture settings. The shader reads the picture at binding 0 and these
 // push constants, and writes location 0:
 //   layout(location = 0) in vec2 uv;

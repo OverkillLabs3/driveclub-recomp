@@ -782,7 +782,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.power = hdr_output ? 1.0f : float(picture.picture_gamma.load()) / 220.0f;
     pp_settings.contrast = hdr_output ? 1.0f : float(picture.picture_contrast.load()) / 100.0f;
     pp_settings.brightness = hdr_output ? 0.0f : float(picture.picture_brightness.load()) / 400.0f;
-    // bbport: the post-processing filter of a mod, on the picture before the picture settings (SDR only).
+    // the post-processing filter of a mod, on the picture before the picture settings (SDR only).
     if (!hdr_output && !frame->is_hdr) {
         image_view = user_filter_pass.Render(cmdbuf, image_view, {frame->width, frame->height});
     }

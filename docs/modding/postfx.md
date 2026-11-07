@@ -46,7 +46,7 @@ end)
 | `dcmod.postfx.use(name)` | Switches the filter `postfx/<name>.spv` on. `"off"` or `nil` switches filters off. One filter is active at a time. |
 | `dcmod.postfx.param(i, value)` | Sets number `i` (0 to 15). Values are kept to a thousandth. |
 
-A filter can also be chosen without a script: set `BB_POSTFX=<name>` in the environment, with the file in a mods folder.
+A filter can also be chosen without a script: set `DC_POSTFX=<name>` in the environment, with the file in a mods folder.
 
 The game checks the file about once a second while a filter is active and loads it again when it changed, so the effect can be tuned while the game runs (`dcmod mod watch` into the game's `mods` folder).
 

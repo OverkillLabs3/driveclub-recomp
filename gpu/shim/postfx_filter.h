@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Post-processing filter chosen by mods (dcmod.postfx in the mod kit) or BB_POSTFX: the name of a SPIR-V fragment shader
+// Post-processing filter chosen by mods (dcmod.postfx in the mod kit) or DC_POSTFX: the name of a SPIR-V fragment shader
 // `postfx/<name>.spv` in a mods folder, and 16 numbers it reads from its push constants.
 #pragma once
 
@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 
-namespace BbPostFx {
+namespace ModPostFx {
 
 inline std::mutex& NameMutex() {
     static std::mutex m;
@@ -16,7 +16,7 @@ inline std::mutex& NameMutex() {
 }
 inline std::string& NameStore() {
     static std::string name = [] {
-        const char* env = std::getenv("BB_POSTFX");
+        const char* env = std::getenv("DC_POSTFX");
         return std::string(env ? env : "");
     }();
     return name;
@@ -34,4 +34,4 @@ inline std::array<std::atomic<float>, 16>& Values() {
     return values;
 }
 
-} // namespace BbPostFx
+} // namespace ModPostFx

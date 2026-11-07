@@ -13,7 +13,7 @@
 
 #include "common/assert.h"
 #include "common/logging/log.h"
-#include "bbport_postfx.h"
+#include "postfx_filter.h"
 #include "video_core/host_shaders/fs_tri_vert.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -219,7 +219,7 @@ bool UserFilterPass::EnsureImage(vk::Extent2D size) {
 }
 
 vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size) {
-    const std::string name = BbPostFx::Name();
+    const std::string name = ModPostFx::Name();
     if (name.empty() || !desc_set_layout) {
         return input;
     }
@@ -269,7 +269,7 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
     constants.resolution[1] = static_cast<float>(size.height);
     constants.time = static_cast<float>(now - start_ms) / 1000.0f;
     for (int i = 0; i < 16; ++i) {
-        constants.values[i] = BbPostFx::Values()[i].load(std::memory_order_relaxed);
+        constants.values[i] = ModPostFx::Values()[i].load(std::memory_order_relaxed);
     }
     const vk::DescriptorImageInfo image_info{
         .sampler = *sampler,

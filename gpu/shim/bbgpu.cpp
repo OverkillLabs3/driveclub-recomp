@@ -4,7 +4,7 @@
 #include "bbport_write_log.h"
 // bbport: glue between the C loader and the vendored shadPS4 video core.
 #include "bbport_overlay.h"
-#include "bbport_postfx.h"
+#include "postfx_filter.h"
 #include "bbport_safe_start.h"
 #include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "bbport_settings.h"
@@ -521,11 +521,11 @@ extern "C" void bbgpu_overlay_mod_item(const char* id, int kind, float x, float 
     }
 }
 extern "C" void bbgpu_postfx_use(const char* name) {
-    BbPostFx::SetName(name ? name : "");
+    ModPostFx::SetName(name ? name : "");
 }
 extern "C" void bbgpu_postfx_param(int index, float value) {
     if (index >= 0 && index < 16) {
-        BbPostFx::Values()[index].store(value, std::memory_order_relaxed);
+        ModPostFx::Values()[index].store(value, std::memory_order_relaxed);
     }
 }
 extern "C" void bbgpu_overlay_note(const char* text_utf8) {
