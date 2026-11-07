@@ -182,6 +182,7 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // bbport: frames are composed in RGBA8 (what frame generation reads and writes) and
     // blitted into the swapchain's format.
     pp_pass.Create(device, FrameGenerator::ColorFormat);
+    user_filter_pass.Create(device, instance.GetAllocator(), FrameGenerator::ColorFormat);
     // bbport: HDR output (BB_HDR=1, display in HDR mode): the swapchain in HDR10 from the start,
     // each frame converted by hdr_pass, and the overlay drawn into the SDR frame before that.
     if (EmulatorSettings.IsHdrAllowed()) {
@@ -781,6 +782,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.power = hdr_output ? 1.0f : float(picture.picture_gamma.load()) / 220.0f;
     pp_settings.contrast = hdr_output ? 1.0f : float(picture.picture_contrast.load()) / 100.0f;
     pp_settings.brightness = hdr_output ? 0.0f : float(picture.picture_brightness.load()) / 400.0f;
+    // bbport: the post-processing filter of a mod, on the picture before the picture settings (SDR only).
+    if (!hdr_output && !frame->is_hdr) {
+        image_view = user_filter_pass.Render(cmdbuf, image_view, {frame->width, frame->height});
+    }
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     // Neural rendering on the finished, display-referred frame (the UI is in it), before the HDR conversion.

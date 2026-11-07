@@ -48,7 +48,17 @@ function dcmod.ui.rect(id, x, y, w, h, color, ttl) end
 ---@param id string
 function dcmod.ui.clear(id) end
 
+---@class dcmod.postfx
+---Switches the filter postfx/<name>.spv of a mod on; "off" or nil switches filters off.
+---@param name string|nil
+function dcmod.postfx.use(name) end
+---Sets one of the 16 numbers the filter reads (push constants values[i / 4][i % 4]).
+---@param index integer 0 to 15
+---@param value number
+function dcmod.postfx.param(index, value) end
+
 ---@class dcmod
+---@field postfx dcmod.postfx
 ---@field version integer
 ---@field ui dcmod.ui
 ---@field ready_delay number Seconds after the start before dcmod.on_ready and dcmod.on callbacks run (20).

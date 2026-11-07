@@ -116,6 +116,10 @@ The whole example is `tools/modkit/examples/speed-hud`. Checked in the game (Fer
 
 Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
 
+### Post-processing: `dcmod.postfx`
+
+`dcmod.postfx.use(name)` switches on a filter shader that the mod ships (`postfx/<name>.spv`), `dcmod.postfx.param(i, value)` sets the numbers it reads. See [postfx.md](postfx.md).
+
 ### Editor support
 
 `docs/modding/lua-defs/dcmod.lua` holds type definitions for the `dcmod` library and every global table of the game (names and kinds of the members; the arguments of the game's functions are not known), in the EmmyLua format that the Lua language server of VS Code and IntelliJ read. Add the folder to the library paths of the editor and `dcmod.car()`, `dcmod.ui.text(...)` and the game's tables complete as you type.

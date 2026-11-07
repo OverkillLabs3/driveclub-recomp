@@ -7,6 +7,8 @@
  *   dcmod/ui/rect/<id>/<x>/<y>/<w>/<h>/<rrggbbaa>/<ttl>          a filled rectangle
  *   dcmod/ui/clear/<id>                                          removes an item
  *       x, y, w, h in thousandths of the screen, size in pixels, ttl in milliseconds; an item with the same id is replaced
+ *   dcmod/postfx/use/<name>           the post-processing filter postfx/<name>.spv of a mods folder (use/off: none)
+ *   dcmod/postfx/param/<i>/<value>    number i (0 to 15) the filter reads, value in thousandths (negative: n before the digits)
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
  * The game lower-cases the paths it opens, so a script writes each capital letter as '^' and the lower-case letter
@@ -23,6 +25,9 @@
 
 void bbgpu_overlay_mod_item(const char *id, int kind, float x, float y, float w, float h, float size, unsigned color, int ttl_ms,
                             const char *text);
+
+void bbgpu_postfx_use(const char *name);
+void bbgpu_postfx_param(int index, float value);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -131,6 +136,21 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         } else if (sscanf(text, "rect/%63[^/]/%d/%d/%d/%d/%8x/%d", id, &x, &y, &w, &h, &rgba, &ttl) == 7) {
             const unsigned abgr = (rgba >> 24 & 0xff) | ((rgba >> 16 & 0xff) << 8) | ((rgba >> 8 & 0xff) << 16) | ((rgba & 0xff) << 24);
             bbgpu_overlay_mod_item(id, 1, x / 1000.0f, y / 1000.0f, w / 1000.0f, h / 1000.0f, 0, abgr, ttl, "");
+        }
+        return 1;
+    }
+    if (!strncasecmp(call, "postfx/", 7)) {
+        char text[256];
+        unescape(call + 7, text, sizeof(text));
+        char name[96];
+        int index;
+        long thousandths;
+        if (sscanf(text, "use/%95[^/]", name) == 1) {
+            bbgpu_postfx_use(strcmp(name, "off") ? name : "");
+        } else if (sscanf(text, "param/%d/%ld", &index, &thousandths) == 2) {
+            bbgpu_postfx_param(index, (float)thousandths / 1000.0f);
+        } else if (sscanf(text, "param/%d/n%ld", &index, &thousandths) == 2) {
+            bbgpu_postfx_param(index, -(float)thousandths / 1000.0f);
         }
         return 1;
     }
