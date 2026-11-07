@@ -67,8 +67,9 @@ The VR tab's card *VR picture and frame rate*, in both stereo modes:
 - **Exposure in VR**: makes the whole picture brighter (+) or darker (-); in game **[** and **]** change it by a
   quarter stop. The game sets its exposure from how bright the whole picture is, like a camera: a shaded turn or
   the dark dash raised it, and the road flashed white when the turn opened up. In the headset, in the car, it now
-  moves by at most 3 stops a minute (more in a race with the time sped up), so turns and shade barely change it
-  while a sunset is still followed. The first seconds in the car take the track's level at once, day or night, and
+  brightens by at most 3 stops a minute (more in a race with the time sped up), so turns and shade barely change it
+  while a sunset is still followed; it darkens as fast as the game's, and comes back quickly after a short bright
+  stretch. The first seconds in the car take the track's level at once, day or night, and
   it holds while you look down at the dash or up at the sky. `exposure_rate` in `vr.ini` sets the 3 (0: the
   game's speed). Lens dust is off in VR: it is a camera's lens, not an eye.
 - **Foveated rendering**: the edges of each eye, which the lenses blur anyway, are drawn with less detail. Light,

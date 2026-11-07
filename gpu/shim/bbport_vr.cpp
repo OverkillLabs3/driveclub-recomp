@@ -206,7 +206,8 @@ struct Settings {
     // (the dark dash and the bright sky swung it by three stops and more). exposure_filter = 0: the game's own.
     bool exposure_filter = true;
     float exposure_bias = 0.0f, exposure_time = 1.0f, exposure_hold = 15.0f;
-    // exposure_rate: in the car (after its first 3 s) the exposure moves at most this many stops a minute (0: no cap).
+    // exposure_rate: in the car (after its first 3 s) the exposure brightens at most this many stops a minute beyond its
+    // level of the last minutes (0: no cap); it darkens as the game's does.
     // The game meters the whole frame, so a shaded turn or the dark dash raised it and the road flashed white when
     // the turn opened up; a few seconds of that now move it by a fraction of a stop, while a sunset in a race (a
     // slower change) is followed as the game sets it. No fixed ceiling: night tracks need 7-9 stops more than day.
@@ -1863,7 +1864,7 @@ struct WindowPush {
     float band_y;
     float encode;
     float mode;
-    float pad;
+    float fit; // the canvas has the frame's shape: shown whole at the window's height (vr_window.comp)
 };
 
 template <size_t N>
@@ -2805,8 +2806,15 @@ void FilterExposure(float* value) {
         const float time = settling ? std::min(settings.exposure_time, 0.5f) : settings.exposure_time;
         const float a = time > 0.0f ? 1.0f - std::exp(-dt / time) : 1.0f;
         float next = held + a * (measured - held);
-        // exposure_rate: in the car after that, the step is capped at exposure_rate stops a minute either way, more
-        // in a race with the time sped up (a dawn at 15x took the game's exposure down 4.7 stops a minute)
+        // exposure_rate: in the car after that, brightening is capped at exposure_rate stops a minute (more in a race
+        // with the time sped up: a sunset at 15x moves the game's exposure 4.7 stops a minute), so a shaded turn
+        // cannot raise it and flash the road when the turn opens up. Darkening (a sunnier stretch, out of a tunnel)
+        // follows the game: capped, the road stayed 2-3 stops too bright for 5-7 s. Brightening back to the level of
+        // the last minutes (after the sun in the eyes, a bright stretch) is not capped either: `recent`, which sinks to
+        // the exposure used by half exposure_rate (scaled alike with the time, so a dawn does not keep the night's).
+        // Replayed on a 31-minute log: >1 stop brighter than the game 18 s (176 s capped both ways), >1 stop darker
+        // 158 s (170 s; the shade it does not follow).
+        static float recent = 0.0f;
         if (settings.exposure_rate > 0.0f && since != 0 && !settling) {
             float hours = 0.0f, compression = 1.0f;
             if (!runtime_scene_debug_time(&hours, &compression) || !std::isfinite(compression)) {
@@ -2814,7 +2822,12 @@ void FilterExposure(float* value) {
             }
             const float rate = settings.exposure_rate * std::clamp(compression / 5.0f, 1.0f, 40.0f);
             const float step = rate / 60.0f * dt * 0.6931472f;
-            next = std::clamp(next, held - step, held + step);
+            recent = std::max(held, recent - 0.5f * step);
+            if (next > held) {
+                next = std::min(next, std::max(recent, held + step));
+            }
+        } else {
+            recent = held;
         }
         held = next;
     }
@@ -3195,15 +3208,22 @@ void QueueDump(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t heig
 }
 
 // The window's picture (settings.window): 16:9 from one eye's frames, the other eye's showing the last one again
-// (vr_window.comp; `mode` its mode). Null when the game's canvas has the frame's own shape (nothing to stretch back).
+// (vr_window.comp; `mode` its mode). When the game's canvas has the frame's own shape (the full HUD sizes in the car:
+// nothing to stretch back) the window is 16:9 all the same, the canvas whole over the scene's band (fit); before, the
+// monitor showed the eye's nearly square frame between black bars.
 VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView scene, int mode, bool encode,
                           uint32_t width, uint32_t height, const FrameCamera& camera, uint32_t* window_width,
                           uint32_t* window_height) {
     const float game = GameAspect(), render = RenderAspect();
-    if (!settings.window || !gpu.window_pipeline || !canvas || !scene || !game || !render || game < render * 1.05f) {
+    if (!settings.window || !gpu.window_pipeline || !canvas || !scene || !game || !render) {
         return VK_NULL_HANDLE;
     }
-    const uint32_t band = std::min(height, uint32_t(float(width) / game + 0.5f)) & ~1u;
+    const bool fit = game < render * 1.05f;
+    const float aspect = fit ? 16.0f / 9.0f : game;
+    if (float(width) / float(height) * 1.05f > aspect) {
+        return VK_NULL_HANDLE; // the frame is about as wide as the window would be already
+    }
+    const uint32_t band = std::min(height, uint32_t(float(width) / aspect + 0.5f)) & ~1u;
     const VkImage before = gpu.window.image;
     if (!band || !MakeImage(gpu.window, width, band, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                             VK_FORMAT_R8G8B8A8_UNORM, true)) {
@@ -3232,7 +3252,7 @@ VkImageView WindowPicture(VkCommandBuffer cmd, VkImageView canvas, VkImageView s
             writes[i].pImageInfo = &infos[i];
         }
         const WindowPush push{{float(width), float(band)}, {float(width), float(height)}, float((height - band) / 2),
-                              encode ? 1.0f : 0.0f, float(mode), 0.0f};
+                              encode ? 1.0f : 0.0f, float(mode), fit ? 1.0f : 0.0f};
         VKF.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.window_pipeline);
         VKF.vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gpu.window_layout, 0, 3, writes);
         VKF.vkCmdPushConstants(cmd, gpu.window_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, &push);
