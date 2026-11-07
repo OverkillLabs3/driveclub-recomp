@@ -10,28 +10,33 @@
 
 namespace ModPostFx {
 
+// Filters run one after the other, slot 0 first; each slot has its own shader name and its own 16 numbers.
+constexpr int kSlots = 3;
+
 inline std::mutex& NameMutex() {
     static std::mutex m;
     return m;
 }
-inline std::string& NameStore() {
-    static std::string name = [] {
+inline std::array<std::string, kSlots>& NameStore() {
+    static std::array<std::string, kSlots> names = [] {
+        std::array<std::string, kSlots> n;
         const char* env = std::getenv("DC_POSTFX");
-        return std::string(env ? env : "");
+        n[0] = env ? env : "";
+        return n;
     }();
-    return name;
+    return names;
 }
-inline std::string Name() {
+inline std::string Name(int slot = 0) {
     std::scoped_lock lock{NameMutex()};
-    return NameStore();
+    return NameStore()[slot];
 }
-inline void SetName(const std::string& name) {
+inline void SetName(const std::string& name, int slot = 0) {
     std::scoped_lock lock{NameMutex()};
-    NameStore() = name;
+    NameStore()[slot] = name;
 }
-inline std::array<std::atomic<float>, 16>& Values() {
-    static std::array<std::atomic<float>, 16> values{};
-    return values;
+inline std::array<std::atomic<float>, 16>& Values(int slot = 0) {
+    static std::array<std::array<std::atomic<float>, 16>, kSlots> values{};
+    return values[slot];
 }
 
 } // namespace ModPostFx

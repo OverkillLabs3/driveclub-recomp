@@ -520,12 +520,14 @@ extern "C" void bbgpu_overlay_mod_item(const char* id, int kind, float x, float 
         BbOverlay::ModItem(id ? id : "", kind, x, y, w, h, size, color, ttl_ms, text_utf8 ? text_utf8 : "");
     }
 }
-extern "C" void bbgpu_postfx_use(const char* name) {
-    ModPostFx::SetName(name ? name : "");
+extern "C" void bbgpu_postfx_use(int slot, const char* name) {
+    if (slot >= 0 && slot < ModPostFx::kSlots) {
+        ModPostFx::SetName(name ? name : "", slot);
+    }
 }
-extern "C" void bbgpu_postfx_param(int index, float value) {
-    if (index >= 0 && index < 16) {
-        ModPostFx::Values()[index].store(value, std::memory_order_relaxed);
+extern "C" void bbgpu_postfx_param(int slot, int index, float value) {
+    if (slot >= 0 && slot < ModPostFx::kSlots && index >= 0 && index < 16) {
+        ModPostFx::Values(slot)[index].store(value, std::memory_order_relaxed);
     }
 }
 extern "C" void bbgpu_overlay_note(const char* text_utf8) {

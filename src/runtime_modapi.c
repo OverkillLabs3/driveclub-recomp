@@ -8,6 +8,7 @@
  *   dcmod/ui/clear/<id>                                          removes an item
  *       x, y, w, h in thousandths of the screen, size in pixels, ttl in milliseconds; an item with the same id is replaced
  *   dcmod/postfx/use/<name>           the post-processing filter postfx/<name>.spv of a mods folder (use/off: none)
+ *   dcmod/postfx/slot<k>/use/<name>   the same for filter slot k (0 to 2; slots run in order, plain use/ is slot 0)
  *   dcmod/postfx/param/<i>/<value>    number i (0 to 15) the filter reads, value in thousandths (negative: n before the digits)
  *   dcmod/env/time/<hour*1000>        sets the hour of the day (the game's clock)
  *   dcmod/env/rain/<name>             sets the race config's precipitation preset (Dry, Light, Mid, Heavy, ...)
@@ -35,8 +36,8 @@
 void bbgpu_overlay_mod_item(const char *id, int kind, float x, float y, float w, float h, float size, unsigned color, int ttl_ms,
                             const char *text);
 
-void bbgpu_postfx_use(const char *name);
-void bbgpu_postfx_param(int index, float value);
+void bbgpu_postfx_use(int slot, const char *name);
+void bbgpu_postfx_param(int slot, int index, float value);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -229,14 +230,16 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         char text[256];
         unescape(call + 7, text, sizeof(text));
         char name[96];
-        int index;
+        int index, slot = 0, skip = 0;
         long thousandths;
-        if (sscanf(text, "use/%95[^/]", name) == 1) {
-            bbgpu_postfx_use(strcmp(name, "off") ? name : "");
-        } else if (sscanf(text, "param/%d/%ld", &index, &thousandths) == 2) {
-            bbgpu_postfx_param(index, (float)thousandths / 1000.0f);
-        } else if (sscanf(text, "param/%d/n%ld", &index, &thousandths) == 2) {
-            bbgpu_postfx_param(index, -(float)thousandths / 1000.0f);
+        const char *rest = text;
+        if (sscanf(text, "slot%d/%n", &slot, &skip) == 1 && skip > 0) rest = text + skip;   /* slot<k>/use/..., slot<k>/param/... */
+        if (sscanf(rest, "use/%95[^/]", name) == 1) {
+            bbgpu_postfx_use(slot, strcmp(name, "off") ? name : "");
+        } else if (sscanf(rest, "param/%d/%ld", &index, &thousandths) == 2) {
+            bbgpu_postfx_param(slot, index, (float)thousandths / 1000.0f);
+        } else if (sscanf(rest, "param/%d/n%ld", &index, &thousandths) == 2) {
+            bbgpu_postfx_param(slot, index, -(float)thousandths / 1000.0f);
         }
         return 1;
     }

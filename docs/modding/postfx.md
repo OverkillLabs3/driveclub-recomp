@@ -43,8 +43,10 @@ end)
 
 | Call | Does |
 |---|---|
-| `dcmod.postfx.use(name)` | Switches the filter `postfx/<name>.spv` on. `"off"` or `nil` switches filters off. One filter is active at a time. |
-| `dcmod.postfx.param(i, value)` | Sets number `i` (0 to 15). Values are kept to a thousandth. |
+| `dcmod.postfx.use(name [, slot])` | Switches the filter `postfx/<name>.spv` on in a slot (0 to 2, 0 by default). `"off"` or `nil` switches the slot off. |
+| `dcmod.postfx.param(i, value [, slot])` | Sets number `i` (0 to 15) of that slot's filter. Values are kept to a thousandth. |
+
+The slots run one after the other, slot 0 first, each reading the picture the one before made and each with its own 16 numbers: `dcmod.postfx.use("grade", 0)` then `dcmod.postfx.use("vignette", 1)` gives a colour grade with a vignette over it. A mod that wants a single effect never needs the slot.
 
 A filter can also be chosen without a script: set `DC_POSTFX=<name>` in the environment, with the file in a mods folder.
 
@@ -56,11 +58,11 @@ The game checks the file about once a second while a filter is active and loads 
 
 ## What was checked
 
-In the game (Ferrari 458 on Chile): the filter switches on from a script (dark corners, warm tint) with DLSS Performance and with no upscaler at 4K native; changing a parameter while racing changes the picture; `dcmod.postfx.use("off")` restores the plain picture; replacing the `.spv` file during the race loaded the new shader within a few seconds (a red-only filter, HUD included); a missing name, a text file and random bytes each give a warning in the log and leave the picture alone, and switching back to a good filter works. Not checked: frame generation, HDR (skipped by design), Linux.
+In the game (Ferrari 458 on Chile): the filter switches on from a script (dark corners, warm tint) with DLSS Performance and with no upscaler at 4K native; changing a parameter while racing changes the picture; `dcmod.postfx.use("off")` restores the plain picture; replacing the `.spv` file during the race loaded the new shader within a few seconds (a red-only filter, HUD included); a missing name, a text file and random bytes each give a warning in the log and leave the picture alone, and switching back to a good filter works. Two filters in a chain (the vignette in slot 0, a red-only filter in slot 1) gave the dark corners and the red-only picture together. Not checked: frame generation, HDR (skipped by design), Linux.
 
 ## Limits
 
-- One filter at a time, one pass, reading only the picture (no depth, no motion vectors, no previous frame yet).
+- Three filters in a chain, one pass each, reading only the picture before them (no depth, no motion vectors, no previous frame yet).
 - The picture is the one the game made, with its HUD: a filter cannot leave the HUD out.
 - Skipped with HDR output.
 - The file is looked up in the mods folders by name: names use letters, digits, `_` and `-`.

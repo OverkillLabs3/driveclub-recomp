@@ -212,12 +212,14 @@ end
 -- dcmod.postfx: a post-processing filter, a SPIR-V fragment shader `postfx/<name>.spv` that a mod ships (see
 -- docs/modding/postfx.md). use(name) picks it ("off" or nil: none), param(i, v) sets one of the 16 numbers it reads.
 dcmod.postfx = {}
-function dcmod.postfx.use(name)
-  loadfile("dcmod/postfx/use/" .. dcmod_escape(name or "off", 60))
+-- slot (0 to 2, 0 by default): filters of the slots run one after the other, slot 0 first, each with its own 16 numbers
+local function slot_path(slot) return slot and slot > 0 and ("slot" .. math.floor(slot) .. "/") or "" end
+function dcmod.postfx.use(name, slot)
+  loadfile("dcmod/postfx/" .. slot_path(slot) .. "use/" .. dcmod_escape(name or "off", 60))
 end
-function dcmod.postfx.param(index, value)
+function dcmod.postfx.param(index, value, slot)
   local v = math.floor(math.abs(value) * 1000 + 0.5)
-  loadfile(string.format("dcmod/postfx/param/%d/%s%d", index, value < 0 and "n" or "", v))
+  loadfile(string.format("dcmod/postfx/%sparam/%d/%s%d", slot_path(slot), index, value < 0 and "n" or "", v))
 end
 -- Timers and events. The game's event system does not exist while the boot script runs, so dcmod.on_ready and
 -- dcmod.on wait until dcmod.ready_delay seconds after the start (20 by default).

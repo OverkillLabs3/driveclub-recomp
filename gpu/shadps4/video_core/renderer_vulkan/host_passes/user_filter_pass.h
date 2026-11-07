@@ -26,7 +26,7 @@ public:
         float values[16];
     };
 
-    void Create(vk::Device device, VmaAllocator allocator, vk::Format format);
+    void Create(vk::Device device, VmaAllocator allocator, vk::Format format, int slot = 0);
 
     /// `input` (ShaderReadOnlyOptimal) comes back when no filter is active; otherwise the filtered picture (also
     /// ShaderReadOnlyOptimal), drawn into an image of the same size.
@@ -36,6 +36,7 @@ private:
     bool LoadShader(const std::string& name);
     bool EnsureImage(vk::Extent2D size);
 
+    int slot = 0;
     vk::Device device{};
     VmaAllocator allocator{};
     vk::Format format{};

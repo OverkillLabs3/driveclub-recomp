@@ -51,11 +51,13 @@ function dcmod.ui.clear(id) end
 ---@class dcmod.postfx
 ---Switches the filter postfx/<name>.spv of a mod on; "off" or nil switches filters off.
 ---@param name string|nil
-function dcmod.postfx.use(name) end
+---@param slot integer|nil 0 to 2 (0 by default): the filters of the slots run one after the other
+function dcmod.postfx.use(name, slot) end
 ---Sets one of the 16 numbers the filter reads (push constants values[i / 4][i % 4]).
 ---@param index integer 0 to 15
 ---@param value number
-function dcmod.postfx.param(index, value) end
+---@param slot integer|nil the slot of the filter (0 by default)
+function dcmod.postfx.param(index, value, slot) end
 
 ---@class dcmod
 ---@field postfx dcmod.postfx
