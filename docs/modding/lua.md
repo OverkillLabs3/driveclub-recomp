@@ -222,6 +222,11 @@ All the globals the game's own scripts use exist when a mod script runs. [lua-ap
 - **Keep listeners.** The value `Event.Listen` returns has to be kept in a variable (`dcmod.on` does); a listener that is thrown away stops being called.
 - **Events seen in tests.** `dcmod.on("NewLap", ...)` is checked. In a test that started the race with the benchmark helper, listeners for `RaceState` and `AnimLibPlaySqMsg` were not called (that helper waits for them in its own way), so do not rely on those two without trying them in your own setup.
 
+### Tried and not working
+
+- `TimeManager.SetGameSpeed` (slow motion) exists in the game's script layer but none of the game's own scripts call it. Called from a mod it fails with `bad argument #N (number expected, got no value)` where N is always one more than the number of arguments given (tried 1, 2 and 3 numbers), and as a method (`TimeManager:SetGameSpeed(0.25)`) with `calling 'SetGameSpeed' on bad self (number expected, got table)`. The game clock (`GameState.CurrentGameTime()`) kept running at normal speed throughout. The binding's real signature is not known.
+- Setting the weather of a race that is already running, see [Weather](#weather-dcmodrace_weather-rain--weather--).
+
 ### Finding out more
 
 A mod script can walk any table and log it, which is how lua-api.md was made:
