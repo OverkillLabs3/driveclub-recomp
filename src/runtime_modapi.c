@@ -15,6 +15,8 @@
  *   dcmod/env/rain/<name>             sets the race config's precipitation preset (Dry, Light, Mid, Heavy, ...)
  *   dcmod/env/weather/<name>          sets the race config's weather name (Clear, Cloudy, Overcast, Stormy)
  *   dcmod/state/env.lua.bin          a Lua chunk with the hour of the day and the clock's compression
+ *   dcmod/store/set/<name>/<value>    keeps a value between runs (dcmod.store); store/del/<name> removes it
+ *   dcmod/state/store.lua.bin         a Lua chunk that returns name1, value1, name2, value2, ... of everything kept
  *   dcmod/state/input.lua.bin        a Lua chunk with the keys held and the mouse (only while the game window has the focus)
  *   dcmod/state/car.lua.bin  a Lua chunk that returns the live state of the player's car as numbers (see below)
  *
@@ -46,7 +48,7 @@ void bbgpu_postfx_param(int slot, int index, float value);
 /* A Lua 5.1 chunk (the game's own build: 4 byte int, 8 byte size_t, 8 byte numbers) that is `return n1, n2, ...`: one
  * LOADK per number and a RETURN. The script loads it with loadfile and calls it; the file is written again at each
  * open, so it always holds the values of that moment. Returns the length. */
-static size_t numbers_chunk(uint8_t *buf, size_t cap, const double *v, int n) {
+static size_t values_chunk(uint8_t *buf, size_t cap, const double *v, const char *const *text, int n) {
     size_t at = 0;
 #define PUT(p, len) do { if (at + (len) > cap) return 0; memcpy(buf + at, (p), (len)); at += (len); } while (0)
 #define PUT32(x) do { const uint32_t t_ = (uint32_t)(x); PUT(&t_, 4); } while (0)
@@ -65,9 +67,17 @@ static size_t numbers_chunk(uint8_t *buf, size_t cap, const double *v, int n) {
     PUT32(30u | ((uint32_t)(n + 1) << 23));                                               /* RETURN R(0) with n values */
     PUT32(n);                    /* constants */
     for (int i = 0; i < n; ++i) {
-        const uint8_t type = 3;  /* number */
-        PUT(&type, 1);
-        PUT(&v[i], 8);
+        if (text && text[i]) {
+            const uint8_t type = 4;  /* string: size_t length with the closing zero, then the bytes */
+            const uint64_t length = strlen(text[i]) + 1;
+            PUT(&type, 1);
+            PUT(&length, 8);
+            PUT(text[i], length);
+        } else {
+            const uint8_t type = 3;  /* number */
+            PUT(&type, 1);
+            PUT(&v[i], 8);
+        }
     }
     PUT32(0);                    /* functions */
     PUT32(n + 1);                /* line info: line 1 for every instruction */
@@ -77,6 +87,64 @@ static size_t numbers_chunk(uint8_t *buf, size_t cap, const double *v, int n) {
 #undef PUT32
 #undef PUT
     return at;
+}
+
+static size_t numbers_chunk(uint8_t *buf, size_t cap, const double *v, int n) {
+    return values_chunk(buf, cap, v, NULL, n);
+}
+
+/* Values a mod keeps between runs (dcmod.store): lines "name<TAB>value" in <user>/dcmod_store.tsv, at most 256 entries of
+ * names up to 63 and values up to 255 characters. */
+#define STORE_MAX 256
+typedef struct { char name[64], value[256]; } StoreEntry;
+static int store_load(StoreEntry *entries) {
+    const char *user = runtime_file_user_dir();
+    char path[1024];
+    if (!user || !*user || (size_t)snprintf(path, sizeof path, "%s/dcmod_store.tsv", user) >= sizeof path) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    int n = 0;
+    char line[400];
+    while (n < STORE_MAX && fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = 0;
+        char *nl = strpbrk(tab + 1, "\r\n");
+        if (nl) *nl = 0;
+        snprintf(entries[n].name, sizeof entries[n].name, "%s", line);
+        snprintf(entries[n].value, sizeof entries[n].value, "%s", tab + 1);
+        ++n;
+    }
+    fclose(f);
+    return n;
+}
+static void store_save(const StoreEntry *entries, int n) {
+    const char *user = runtime_file_user_dir();
+    char path[1024];
+    if (!user || !*user || (size_t)snprintf(path, sizeof path, "%s/dcmod_store.tsv", user) >= sizeof path) return;
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    for (int i = 0; i < n; ++i) fprintf(f, "%s\t%s\n", entries[i].name, entries[i].value);
+    fclose(f);
+}
+static void store_set(const char *name, const char *value) {   /* value NULL: remove */
+    static StoreEntry entries[STORE_MAX];
+    int n = store_load(entries), at = -1;
+    for (int i = 0; i < n; ++i) if (!strcmp(entries[i].name, name)) at = i;
+    if (!value) {
+        if (at < 0) return;
+        entries[at] = entries[--n];
+    } else {
+        if (at < 0) {
+            if (n >= STORE_MAX) return;
+            at = n++;
+        }
+        snprintf(entries[at].name, sizeof entries[at].name, "%s", name);
+        /* a value never holds a tab or a line break, they are the file's separators */
+        snprintf(entries[at].value, sizeof entries[at].value, "%s", value);
+        for (char *c = entries[at].value; *c; ++c) if (*c == 0x09 || *c == 0x0d || *c == 0x0a) *c = 0x20;
+    }
+    store_save(entries, n);
 }
 
 /* The text of a call: the game lower-cases paths, so a capital letter is sent as '^' and the lower-case letter, and any
@@ -197,6 +265,31 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         const size_t written = fwrite(chunk, 1, length, f);
         fclose(f);
         return written == length ? 2 : 1;
+    }
+    if (!strcasecmp(call, "state/store.lua.bin")) {
+        /* a chunk that returns name1, value1, name2, value2, ... (all text) */
+        static StoreEntry entries[STORE_MAX];
+        static const char *text[STORE_MAX * 2];
+        static double unused[STORE_MAX * 2];
+        static uint8_t chunk[STORE_MAX * 330];
+        const int n = store_load(entries);
+        for (int i = 0; i < n; ++i) { text[i * 2] = entries[i].name; text[i * 2 + 1] = entries[i].value; }
+        const size_t length = values_chunk(chunk, sizeof chunk, unused, text, n * 2);
+        const char *user = runtime_file_user_dir();
+        if (!user || !*user || !length || (size_t)snprintf(out, size, "%s/dcmod_state_store.luac", user) >= size) return 1;
+        FILE *f = fopen(out, "wb");
+        if (!f) return 1;
+        const size_t written = fwrite(chunk, 1, length, f);
+        fclose(f);
+        return written == length ? 2 : 1;
+    }
+    if (!strncasecmp(call, "store/", 6)) {
+        char text[512], name[64];
+        unescape(call + 6, text, sizeof text);
+        int skip = 0;
+        if (sscanf(text, "set/%63[^/]/%n", name, &skip) == 1 && skip > 0) store_set(name, text + skip);
+        else if (sscanf(text, "del/%63[^/]", name) == 1) store_set(name, NULL);
+        return 1;
     }
     if (!strncasecmp(call, "env/rain/", 9) || !strncasecmp(call, "env/weather/", 12)) {
         const int weather = call[4] == 'w' || call[4] == 'W';

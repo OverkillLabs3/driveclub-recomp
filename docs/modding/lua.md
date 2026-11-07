@@ -132,6 +132,20 @@ end)
 
 Checked in the game (Ferrari 458 on Chile, started at 18:00): the log read hour 18.00, after `dcmod.set_time(3)` it read 3.00 and stayed there, and the picture went from dusk to a dark night with stars and the car's tail lights on. The same `dcmod/state/env.lua.bin` route as `dcmod.car()` is used, and the request is a `dcmod/env/time/<hour * 1000>` path (`src/runtime_modapi.c`).
 
+### Keeping values between runs: `dcmod.store`
+
+```lua
+local best = dcmod.store.get("mymod.best_lap", 0)      -- the default says what type comes back
+dcmod.store.set("mymod.best_lap", 83.4)
+dcmod.store.remove("mymod.best_lap")
+```
+
+`dcmod.store.get(name, default)` returns the value kept under `name`, or `default` when there is none. The type of the default decides what comes back: a number gives a number, `true`/`false` gives a boolean, anything else gives the text. `dcmod.store.set(name, value)` keeps a number, a boolean or text (up to 255 characters); `dcmod.store.remove(name)` forgets it. Names use letters, digits, `_`, `.` and `-` (start them with your mod's id so mods do not meet); at most 256 values are kept in all. Everything is in the file `dcmod_store.tsv` in the game's user data folder.
+
+Checked in the game over two runs: the first run read the defaults and wrote a number, a text with `/`, `%` and brackets, a boolean and one value it removed again; the second run read the number back as 1 (and wrote 2), the same text, `true`, and found the removed one gone.
+
+How it works: values are written by a call to a path the runtime recognises (`dcmod/store/set/<name>/<value>`) and read from a Lua chunk the runtime writes (`dcmod/state/store.lua.bin`, which returns every name and value as text), the same way as the car and clock state.
+
 ### The cars of the race: `dcmod.cars()`
 
 `dcmod.cars()` returns a list with one entry per car of the race (the player and the AI), or an empty list when no race is loaded:

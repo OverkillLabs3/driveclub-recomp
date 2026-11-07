@@ -207,6 +207,31 @@ function dcmod.cars()
   if not ok then return {} end
   return out
 end
+-- dcmod.store: values a mod keeps between runs of the game (the settings of an app, a best time). Names use letters, digits, '_', '.'
+-- and '-' (put the mod's id first); a value is text up to 255 characters, numbers and true/false are turned into text and
+-- get() turns them back according to the default you give. At most 256 values are kept in all.
+dcmod.store = {}
+local function store_name(name) return (string.gsub(tostring(name), "[^%w_%.%-]", "_")) end
+function dcmod.store.set(name, value)
+  loadfile("dcmod/store/set/" .. dcmod_escape(store_name(name), 63) .. "/" .. dcmod_escape(tostring(value), 200))
+end
+function dcmod.store.remove(name)
+  loadfile("dcmod/store/del/" .. dcmod_escape(store_name(name), 63))
+end
+function dcmod.store.get(name, default)
+  local chunk = loadfile("dcmod/state/store.lua.bin")
+  local wanted, found = store_name(name), nil
+  if chunk then
+    local v = { chunk() }
+    for i = 1, #v, 2 do
+      if v[i] == wanted then found = v[i + 1] end
+    end
+  end
+  if found == nil then return default end
+  if type(default) == "number" then return tonumber(found) or default end
+  if type(default) == "boolean" then return found == "true" end
+  return found
+end
 local rain_names = { Heavy = "Heavy Precipitation", Mid = "Mid Precipitation", Light = "Light Precipitation",
   VeryLight = "Very Light Precipitation", Wet = "Wet Track", Damp = "Damp Track", DryToWet = "Dry To Wet",
   WetToDry = "Wet To Dry" }

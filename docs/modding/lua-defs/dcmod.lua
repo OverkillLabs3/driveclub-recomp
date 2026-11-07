@@ -118,6 +118,20 @@ function dcmod.input() end
 ---@param name string|integer
 ---@return boolean
 function dcmod.key(name) end
+---@class dcmod.store
+dcmod.store = {}
+---A value kept between runs: the type of default (number, boolean, text) decides the type that comes back.
+---@param name string
+---@param default any
+---@return any
+function dcmod.store.get(name, default) end
+---Keeps a number, boolean or text (up to 255 characters).
+---@param name string
+---@param value any
+function dcmod.store.set(name, value) end
+---Forgets a value.
+---@param name string
+function dcmod.store.remove(name) end
 ---@class dcmod.RaceCar
 ---@field name string vehicle name
 ---@field progress number 0 to 1 round the lap
