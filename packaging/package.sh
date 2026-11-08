@@ -31,6 +31,10 @@ cp -r docs/modding/. "$OUT/modkit/docs/modding/"
 cp docs/MODDING.md "$OUT/modkit/docs/"
 cp tools/modkit/mod.schema.json "$OUT/modkit/"
 cp -r tools/modkit/examples/. "$OUT/modkit/examples/"
+# The graphics filter examples (post-processing shaders) stay in the source tree: the download must not change how the game looks.
+for example in "$OUT/modkit/examples"/*/; do
+  if [ -d "${example}files/postfx" ]; then rm -rf "$example"; fi
+done
 cp tools/blender/driveclub_modkit.py "$OUT/modkit/blender/"
 # The WPF launcher: its bootstrapper replaces DriveClub.exe; the Win32 launcher stays as DriveClub.Native.exe for
 # Wine and for PCs without the .NET 8 desktop runtime. Needs the .NET 8 SDK (dotnet) on PATH.
