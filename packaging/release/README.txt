@@ -24,7 +24,7 @@ If Windows shows "Windows protected your PC", press More info, then Run anyway. 
 
 Anti-aliasing (DLAA and FSR)
 ----------------------------
-The launcher can replace the game's own anti-aliasing with AMD FSR 3.1 (any graphics card) or NVIDIA DLAA (GeForce RTX): a sharper, steadier picture, especially on thin lines and foliage. In the game the overlay shows what is active. F9 switches it off and on (to compare), F10 switches between FSR and DLSS.
+The launcher can replace the game's own anti-aliasing with AMD FSR (3.1 on any graphics card, FSR 4 and 4.1 on newer Radeon, GeForce RTX and Intel Arc cards, see the FSR version row) or NVIDIA DLAA (GeForce RTX): a sharper, steadier picture, especially on thin lines and foliage. In the game the overlay shows what is active. F9 switches it off and on (to compare), F10 switches between FSR and DLSS.
 Cars have no motion data of their own yet, so fast cars can leave a faint trail.
 
 Language
@@ -49,6 +49,13 @@ Keyboard (racing layout; change it in data\user\input_config\default.ini):
 Requirements
 ------------
 Windows 10 or 11 (64-bit), a processor from Intel Haswell (2013) or AMD Excavator or Ryzen onward, and a graphics card with a Vulkan 1.3 driver. About 40 GB of free disk space for the game dumps.
+
+Online play (private, with friends)
+-----------------------------------
+In the launcher, General tab, ONLINE: choose Host a session to run a private server on your PC, or Join a session and type the IP address of the friend who hosts. Everyone uses a player name of 3 to 16 letters, digits, - or _.
+Players reach each other over the home network or a VPN (Tailscale, Hamachi, Radmin). The host runs Allow-Firewall.bat once (and every player runs it once for the game) so Windows lets those connections in.
+The host starts the game first and lets the others get in, because the game reads its friend list at start. With Online play Off, the game behaves as always and nothing online is touched.
+The folder server\ holds the community server (GPL-2.0, see licenses\). More in online\README.md.
 
 Known issues
 ------------

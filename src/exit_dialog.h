@@ -19,5 +19,5 @@ void exit_dialog_step(ExitDialog *d, ExitDialogInput in);
 void exit_dialog_click(ExitDialog *d, bool exit_button);
 bool exit_dialog_captures(const ExitDialog *d);
 /* Mapped PS-style pad outputs shared with runtime_pad's existing bindings. */
-unsigned exit_dialog_actions(uint32_t buttons);
+unsigned exit_dialog_actions(uint32_t buttons, uint32_t confirm_button);
 #endif

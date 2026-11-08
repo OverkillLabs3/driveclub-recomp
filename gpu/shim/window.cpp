@@ -6,11 +6,33 @@
 #include "common/logging/log.h"
 #include "sdl_window.h"
 #include "bbport_overlay.h"
+#include "bbport_prompts.h"
 
 namespace Frontend {
 
+/// The buttons a controller has, for its prompts: SDL's type, by vendor and product.
+static BbPrompts::Device PadDevice(SDL_JoystickID id) {
+    switch (SDL_GetGamepadTypeForID(id)) {
+    case SDL_GAMEPAD_TYPE_PS3:
+    case SDL_GAMEPAD_TYPE_PS4:
+    case SDL_GAMEPAD_TYPE_PS5:
+        return BbPrompts::PlayStation;
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+        return BbPrompts::Switch;
+    default:
+        return BbPrompts::Xbox; // Xbox, and the many controllers that copy its buttons
+    }
+}
+
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
+    // RAWINPUT backend is required for Xbox impulse trigger rumble (SDL_RumbleGamepadTriggers).
+    // The hint must be set before SDL initialises the gamepad subsystem.
+    { const char *_at = std::getenv("BB_ADAPTIVE_TRIGGERS"), *_it = std::getenv("BB_IMPULSE_TRIGGERS");
+      if ((_at && *_at && *_at != '0') || (_it && *_it && *_it != '0')) SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1"); }
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
     }
@@ -34,6 +56,7 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 #ifdef _WIN32
     if (driver && !std::strcmp(driver, "windows")) {
         window_info.type = WindowSystemType::Windows;
+        window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, nullptr);
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
     } else
 #endif
@@ -52,6 +75,11 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_GetWindowSizeInPixels(window, &w, &h);
     width = w;
     height = h;
+    const bool is_fullscreen = fullscreen && fullscreen[0] == '1';
+    if (!is_fullscreen && height_ > 0) {
+        const float aspect = static_cast<float>(width_) / static_cast<float>(height_);
+        SDL_SetWindowAspectRatio(window, aspect, aspect);
+    }
     LOG_INFO(Frontend, "Window {}x{} on {}", w, h, driver);
 }
 
@@ -127,6 +155,22 @@ bool WindowSDL::PollEvents() {
             continue;
         }
         switch (event.type) {
+        case SDL_EVENT_KEY_DOWN:
+            if (!event.key.repeat) BbPrompts::OnInput(BbPrompts::Keyboard);
+            break;
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_MOTION:
+            BbPrompts::OnInput(BbPrompts::Keyboard);
+            break;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            BbPrompts::OnInput(PadDevice(event.gbutton.which));
+            break;
+        case SDL_EVENT_GAMEPAD_ADDED:
+            BbPrompts::OnControllerConnected(PadDevice(event.gdevice.which));
+            break;
+        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+            if (std::abs(int(event.gaxis.value)) > 16000) BbPrompts::OnInput(PadDevice(event.gaxis.which));
+            break;
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         case SDL_EVENT_WINDOW_RESIZED: {
             int w = 0, h = 0;
@@ -143,6 +187,7 @@ bool WindowSDL::PollEvents() {
             break;
         }
     }
+    BbPrompts::Apply();
     return is_open;
 }
 

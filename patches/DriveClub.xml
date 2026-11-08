@@ -9,8 +9,20 @@
     </TitleID>
     <Metadata Title="Driveclub"
               Always="true"
+              Name="Native render feedback timing"
+              Note="Keep the native interval in renderer frame-time feedback to avoid fountain mist flicker with high-FPS patches. Simulation and presentation timing are unchanged."
+              Author="HeyOkay"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b3a7f0" Value="b802000000909090" OriginalHash="9b5df33222e489e1"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Always="true"
               Name="Red zone fix (particle curve sampler)"
-              Note="The function at 0x64d980 keeps seven locals below the stack pointer. A memory-tracking fault taken inside it on Windows overwrites them and the game stopped with a read of address 0 at 0x64db13. It gets a real stack frame instead."
+              Note="The function at 0x64d980 keeps seven locals below the stack pointer. A memory-tracking fault taken inside it on Windows overwrites them and the game stopped with a read of address 0 at 0x64db13. It gets a real stack frame instead. A particle system without curve data (a null pointer at [rsi+0x740], seen as a read of 0x140 at 0x64d9b2) now returns instead of crashing."
               Author="Ianespaa"
               PatchVer="1.0"
               AppVer="01.28"
@@ -33,14 +45,14 @@
             <Line Type="bytes" Address="0x00a4e735" Value="488b442430" OriginalHash="469c901fe033edc4"/>
             <Line Type="bytes" Address="0x00a4e8c5" Value="488b442428" OriginalHash="469c981fe033fb5c"/>
             <Line Type="bytes" Address="0x00a4e8f6" Value="e9e531f000909090909090" OriginalHash="b09699eac1a0b4d6"/>
-            <Line Type="bytes" Address="0x01951ac0" Value="554157415641554154534883ec40e9b7be0fff"/>
+            <Line Type="bytes" Address="0x01951ac0" Value="554157415641554154534883ec404883be40070000007408e9adbe0fff"/>
             <Line Type="bytes" Address="0x01951ae0" Value="4883c4405b415c415d415e415f5dc3"/>
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub" 
               isEnabled="true"
               Name="60 FPS with deltatime" 
-              Note="Patch version 2.0 features deltatime. this version will break some things in the game, if that is an issue for you, use the other 60 FPS patch. A frame longer than 33 ms is counted as 33 ms so a slow frame cannot throw the camera." 
+              Note="Patch version 2.0 features deltatime. this version will break some things in the game, if that is an issue for you, use the other 60 FPS patch. A frame longer than 33 ms is counted as 33 ms so a slow frame cannot throw the camera; the rest of it is made up over the next frames (33 ms each at most), so the game clock keeps to the wall clock and race times match between players at different frame rates. A stall over 250 ms (loading) is dropped."
               Author="illusion, u/Charlie_Muggins" 
               PatchVer="2.0" 
               AppVer="01.28" 
@@ -49,7 +61,7 @@
             <Line Type="bytes" Address="0x01184800" Value="b801000000"/>
             <Line Type="bytes" Address="0x01184725" Value="48b001"/>
             <Line Type="bytes" Address="0x00a6306e" Value="e90d50bf0090909090"/>
-            <Line Type="bytes" Address="0x01658080" Value="4889c6482b73084881fe358200007605be35820000e9ddaf40ff"/>
+            <Line Type="bytes" Address="0x01658080" Value="4889c6482b73084881fe90d0030077134881fe35820000760f488b4308480535820000be35820000e9caaf40ff"/>
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
@@ -97,9 +109,11 @@
               AppVer="01.28"
               AppElf="eboot.bin">
         <PatchList>
-            <Line Type="bytes" Address="0xB29978" Value="cdcccc3f" />
+            <Line Type="bytes" Address="0x00b29978" Value="cdcccc3f" />
             <Line Type="bytes" Address="0x00b54c1b" Value="80070000" />
             <Line Type="bytes" Address="0x00b54c21" Value="b0040000" />
+            <Line Type="bytes" Address="0x016d0544" Value="80070000" />
+            <Line Type="bytes" Address="0x016d0554" Value="b0040000" />
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"
@@ -242,6 +256,111 @@
             <Line Type="bytes" Address="0x00b54c21" Value="d0020000"/>
             <Line Type="bytes" Address="0x016d0544" Value="000a0000"/>
             <Line Type="bytes" Address="0x016d0554" Value="d0020000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="800p 16:10 [1280x800] Internal + Output resolution"
+              Note="1280x800 internal render and output resolution - 1 024 000 pixels (0.49x 1080p) - 16:10 aspect ratio (Steam Deck)"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="cdcccc3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="00050000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="20030000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="00050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="20030000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="1200p 16:10 [1920x1200] Internal + Output resolution [DEPTH BUG]"
+              Note="1920x1200 internal render and output resolution - 2 304 000 pixels (1.11x 1080p) - 16:10 aspect ratio - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="cdcccc3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="80070000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="b0040000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="80070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="b0040000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="1600p 16:10 [2560x1600] Internal + Output resolution [DEPTH BUG]"
+              Note="2560x1600 internal render and output resolution - 4 096 000 pixels (1.98x 1080p) - 16:10 aspect ratio - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="cdcccc3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="000a0000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="40060000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="000a0000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="40060000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="960p 4:3 [1280x960] Internal + Output resolution"
+              Note="1280x960 internal render and output resolution - 1 228 800 pixels (0.59x 1080p) - 4:3 aspect ratio"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="abaaaa3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="00050000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="c0030000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="00050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="c0030000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="1080p 4:3 [1440x1080] Internal + Output resolution [DEPTH BUG]"
+              Note="1440x1080 internal render and output resolution - 1 555 200 pixels (0.75x 1080p) - 4:3 aspect ratio - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="abaaaa3f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="a0050000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="38040000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="a0050000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="38040000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="1280p 3:2 [1920x1280] Internal + Output resolution [DEPTH BUG]"
+              Note="1920x1280 internal render and output resolution - 2 457 600 pixels (1.19x 1080p) - 3:2 aspect ratio - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="0000c03f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="80070000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="00050000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="80070000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="00050000"/>
+        </PatchList>
+    </Metadata>
+    <Metadata Title="Driveclub"
+              Name="1440p 3:2 [2160x1440] Internal + Output resolution [DEPTH BUG]"
+              Note="2160x1440 internal render and output resolution - 3 110 400 pixels (1.50x 1080p) - 3:2 aspect ratio (Surface) - WARNING introduces a depth rendering bug, for the fix search for ''Driveclub shader autopatcher'' on the ModDB website"
+              Author="Kravickas"
+              PatchVer="1.0"
+              AppVer="01.28"
+              AppElf="eboot.bin">
+        <PatchList>
+            <Line Type="bytes" Address="0x00b29978" Value="0000c03f"/>
+            <Line Type="bytes" Address="0x00b54c1b" Value="70080000"/>
+            <Line Type="bytes" Address="0x00b54c21" Value="a0050000"/>
+            <Line Type="bytes" Address="0x016d0544" Value="70080000"/>
+            <Line Type="bytes" Address="0x016d0554" Value="a0050000"/>
         </PatchList>
     </Metadata>
     <Metadata Title="Driveclub"

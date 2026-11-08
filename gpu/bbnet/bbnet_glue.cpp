@@ -59,6 +59,13 @@
 #include "core/libraries/np/np_web_api/np_web_api.h"
 #include "core/libraries/np/np_web_api2/np_web_api2.h"
 
+namespace Libraries::Rudp {
+void RegisterLib(Core::Loader::SymbolsResolver* sym);
+}
+namespace Libraries::PngDec {
+void RegisterLib(Core::Loader::SymbolsResolver* sym);
+}
+
 extern "C" {
 int32_t runtime_thread_spawn(void** out, void* PS4_SYSV_ABI (*entry)(void*), void* argument,
                              uint64_t stack, const char* name);
@@ -473,4 +480,6 @@ extern "C" void bbnet_register(void) {
     Libraries::Np::NpTus::RegisterLib(sym);
     Libraries::Np::NpWebApi::RegisterLib(sym);
     Libraries::Np::NpWebApi2::RegisterLib(sym);
+    Libraries::Rudp::RegisterLib(sym);
+    Libraries::PngDec::RegisterLib(sym);
 }

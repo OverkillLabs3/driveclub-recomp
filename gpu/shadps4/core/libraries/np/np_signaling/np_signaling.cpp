@@ -150,6 +150,7 @@ s32 PS4_SYSV_ABI sceNpSignalingCreateContext(const void* npId, void* callback, v
     const bool transport_ready = Stubs::EnsureTransport();
 
     s32 ctx_id = 0;
+    std::vector<s32> adopted;
     {
         SignalingMutexGuard lock;
         if (!g_initialized) {
@@ -177,6 +178,33 @@ s32 PS4_SYSV_ABI sceNpSignalingCreateContext(const void* npId, void* callback, v
         LOG_INFO(Lib_NpSignaling, "ctxId={} owner='{}' callback={} arg={} sdk={:#x} p2p_port={}",
                  ctx_id, OnlineIdToString(owner_online_id), fmt::ptr(callback),
                  fmt::ptr(callbackArg), ctx.compiled_sdk_version, ctx.bound_port);
+
+        // A peer can connect before the game creates the context it means (Driveclub: the P2P
+        // manager's context comes up after the lobby invitation; a guest over the internet may
+        // already be there). Answerer connections then sit on an older context of the same
+        // owner; hand them to the new one, which is the one ActivationRequest would pick now.
+        for (auto& [cid, ci] : g_connections) {
+            if (ci.locally_activated || ci.ctx_id == ctx_id || ci.state == ConnState::Inactive) {
+                continue;
+            }
+            const auto old_ctx = g_contexts.find(ci.ctx_id);
+            if (old_ctx == g_contexts.end() ||
+                std::memcmp(&old_ctx->second.owner_online_id, &owner_online_id,
+                            sizeof(owner_online_id)) != 0) {
+                continue;
+            }
+            g_npid_to_conn.erase(MakeCtxNpIdKey(ci.ctx_id, ci.npid));
+            ci.ctx_id = ctx_id;
+            g_npid_to_conn[MakeCtxNpIdKey(ctx_id, ci.npid)] = cid;
+            if (ci.peer_activated_fired) {
+                adopted.push_back(cid);
+            }
+            LOG_INFO(Lib_NpSignaling, "connId={} peer='{}' moved to the new ctxId={}", cid,
+                     OnlineIdToString(ci.online_id), ctx_id);
+        }
+    }
+    for (const s32 cid : adopted) {
+        DispatchConnectionEvent(cid, ORBIS_NP_SIGNALING_EVENT_PEER_ACTIVATED, 0);
     }
 
     if (transport_ready) {

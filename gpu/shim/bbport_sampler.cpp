@@ -276,6 +276,62 @@ extern "C" void BbStartSampler() {}
 
 // bbport: BB_PIPE_CHECK=1 (see bbport_toggles.h): a scheduler or cache entry point called by a thread other than
 // stage B while stage B runs a draw packet. Each distinct call stack is printed once (first 64).
+#ifndef _WIN32
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
+namespace BbStats {
+// Linux: the same report from backtrace(), addresses as module+offset.
+void PipeCheckViolation(const char* what) {
+    void* frames[10]{};
+    const int n = backtrace(frames, 10);
+    std::uint64_t key = reinterpret_cast<std::uintptr_t>(what);
+    for (int i = 1; i < n && i < 7; ++i) {
+        key = key * 0x9E3779B97F4A7C15ull + reinterpret_cast<std::uintptr_t>(frames[i]);
+    }
+    static std::atomic<std::uint64_t> seen[64]{};
+    static std::atomic<std::uint32_t> count{0};
+    static std::atomic<std::uint64_t> total{0};
+    const std::uint64_t t = total.fetch_add(1, std::memory_order_relaxed) + 1;
+    for (auto& slot : seen) {
+        std::uint64_t cur = slot.load(std::memory_order_relaxed);
+        if (cur == key) {
+            return;
+        }
+        if (cur == 0 && slot.compare_exchange_strong(cur, key)) {
+            break;
+        }
+        if (cur == key) {
+            return;
+        }
+    }
+    if (count.fetch_add(1) >= 64) {
+        return;
+    }
+    std::printf("Pipe check: %s called by thread %ld while stage B runs a packet (violation %llu):", what,
+                static_cast<long>(gettid()), static_cast<unsigned long long>(t));
+    for (int i = 1; i < n; ++i) {
+        Dl_info where{};
+        if (dladdr(frames[i], &where) && where.dli_fname) {
+            const char* name = where.dli_fname;
+            for (const char* c = name; *c; ++c) {
+                if (*c == '/') name = c + 1;
+            }
+            std::printf(" %s+%llx", name,
+                        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(frames[i]) -
+                                                        reinterpret_cast<std::uintptr_t>(where.dli_fbase)));
+        } else {
+            std::printf(" %llx", static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(frames[i])));
+        }
+    }
+    std::printf("\n");
+    std::fflush(stdout);
+}
+} // namespace BbStats
+#else
 namespace BbStats {
 void PipeCheckViolation(const char* what) {
     void* frames[10]{};
@@ -318,3 +374,4 @@ void PipeCheckViolation(const char* what) {
     std::fflush(stdout);
 }
 } // namespace BbStats
+#endif

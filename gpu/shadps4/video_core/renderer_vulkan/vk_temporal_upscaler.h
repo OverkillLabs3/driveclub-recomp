@@ -60,6 +60,8 @@ public:
     [[nodiscard]] bool Enabled() const noexcept {
         return enabled;
     }
+    /// Available and switched on (menu setting, toggle 1 << 24).
+    [[nodiscard]] bool Active() const;
 
     /// A draw into a full-size RGBA16F target with the scene depth: the scene color.
     void OnSceneColor(VideoCore::ImageId color);
@@ -168,8 +170,7 @@ private:
     [[nodiscard]] std::array<u32, 2> SceneSize(u32 w, u32 h) const;
     // The scene color is drawn into a reduced SceneTargets proxy (live presets).
     [[nodiscard]] bool ReducedScene(const VideoCore::Image& color) const;
-    /// Available and switched on (menu setting, toggle 1 << 24).
-    [[nodiscard]] bool Active() const;
+
     [[nodiscard]] bool ReactiveOn() const;
     bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool hdr);
     void CreatePipelines();
@@ -177,7 +178,7 @@ private:
     bool RecordReactive(vk::ImageView color_view);
     /// FSR 4 is selected, possible in this session (not BB_RENDER_RES) and has not failed.
     [[nodiscard]] bool UseFsr4() const;
-    /// bbport: DLSS selected and the bridge is ready (NVIDIA RTX, bbport_dlss.dll).
+    /// bbport: DLSS selected and the bridge is ready (NVIDIA RTX, driveclub_dlss.dll).
     [[nodiscard]] bool UseDlss() const;
     /// Records DLSS into `cmdbuf` (output in General). `hdr`: linear scene color input.
     bool RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource& color,

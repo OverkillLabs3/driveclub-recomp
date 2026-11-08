@@ -690,8 +690,10 @@ void DispatchPeerActivatedEvent(s32 conn_id) {
     const auto owner_it = g_contexts.find(owner_ctx);
     const OrbisNpId local_npid =
         owner_it != g_contexts.end() ? owner_it->second.owner_npid : OrbisNpId{};
+    // The owner context too: Driveclub's P2P manager learns of a joining peer only from this
+    // event on its own context, and answers it with sceNpSignalingActivateConnection.
     for (auto& [cid, ctx] : g_contexts) {
-        if (cid == owner_ctx || !ctx.active) {
+        if (!ctx.active) {
             continue;
         }
         if (std::memcmp(&ctx.owner_npid, &local_npid, sizeof(local_npid)) == 0) {
@@ -1212,10 +1214,13 @@ void HandleControlPacket(u32 from_addr, u16 from_port, const SignalingControl& p
                 char to_id_buf[ORBIS_NP_ONLINEID_MAX_LENGTH + 1]{};
                 std::memcpy(to_id_buf, pkt.online_id_to, ORBIS_NP_ONLINEID_MAX_LENGTH);
                 const std::string to_id(to_id_buf);
+                // A game may own several contexts (Driveclub: one from the system layer, then one
+                // for its P2P manager). The packet does not say which one the peer used, so take
+                // the newest: the one created for the session the peer is joining.
                 for (auto& [cid, ctx] : g_contexts) {
-                    if (ctx.active && OnlineIdEqualsString(ctx.owner_online_id, to_id)) {
+                    if (ctx.active && OnlineIdEqualsString(ctx.owner_online_id, to_id) &&
+                        cid > ctx_id) {
                         ctx_id = cid;
-                        break;
                     }
                 }
                 if (ctx_id == 0) {

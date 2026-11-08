@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "bbport_threads.h"
+#include "bbport_intro_pacing.h"
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -871,7 +872,7 @@ void VideoOutDriver::DrawLastFrame() {
 }
 
 bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
-                                bool is_eop /*= false*/) {
+                                bool is_eop, u64 content_frame_id, u64 flip_ticket) {
     {
         std::unique_lock lock{port->port_mutex};
         if (index != -1 && port->flip_status.flip_pending_num > 16) {
@@ -888,24 +889,35 @@ bool VideoOutDriver::SubmitFlip(VideoOutPort* port, s32 index, s64 flip_arg,
 
     if (!is_eop) {
         // Non EOP flips can arrive from any thread so ask GPU thread to perform them
-        liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop); });
+        liverpool->SendCommand([=, this]() { SubmitFlipInternal(port, index, flip_arg, is_eop, content_frame_id, flip_ticket); });
     } else {
-        SubmitFlipInternal(port, index, flip_arg, is_eop);
+        SubmitFlipInternal(port, index, flip_arg, is_eop, content_frame_id, flip_ticket);
     }
 
     return true;
 }
 
-void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop) {
+void VideoOutDriver::SubmitFlipInternal(VideoOutPort* port, s32 index, s64 flip_arg, bool is_eop,
+                                       u64 content_frame_id, u64 flip_ticket) {
     Vulkan::Frame* frame;
     if (index == -1) {
-        frame = presenter->PrepareBlankFrame(false);
+        frame = presenter->PrepareBlankFrame(false, content_frame_id);
     } else {
         const auto& buffer = port->buffer_slots[index];
         ASSERT_MSG(buffer.group_index >= 0, "Trying to flip an unregistered buffer!");
         const auto& group = port->groups[buffer.group_index];
-        frame = presenter->PrepareFrame(group, buffer.address_left);
+        frame = presenter->PrepareFrame(group, buffer.address_left, content_frame_id);
     }
+    // Capture identity at the guest's accepted flip request, not from a later
+    // global simulation counter on the GPU/presentation worker.
+    frame->content_frame_id = content_frame_id;
+    // Zero is also an explicitly captured identity (startup without a pad poll).
+    // Preserve it rather than borrowing the following frame's live counter.
+    frame->reflex_frame_id = content_frame_id;
+    // bbport: the bounded backlog registers/retires by this accepted-flip ticket, kept separate
+    // from content_frame_id (the Reflex/latency identity). Set unconditionally, including 0, so
+    // a pooled frame can never retire a stale ticket from a previous use.
+    frame->flip_ticket = flip_ticket;
 
     {
         std::scoped_lock lock{mutex};
@@ -936,8 +948,9 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: frame limit (see EmulatorSettings::GetFrameLimit). A request waits in the queue
     // until its slot; slots advance by one period (no drift) but never lag behind by more.
-    const u32 frame_limit = EmulatorSettings.GetFrameLimit();
-    const auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
+    const u32 configured_limit = EmulatorSettings.GetFrameLimit();
+    u32 frame_limit = configured_limit;
+    auto frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
                                           : std::chrono::nanoseconds(0);
     auto next_flip = std::chrono::steady_clock::now();
     // bbport: BB_PACE_CREDIT=<percent of a period, default 0>: how much earlier than one
@@ -950,7 +963,7 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
     // 5.23 -> 3.66 ms, 1% low 29.1 -> 31.5 FPS, menus sd 5.07 -> 2.89 ms.
     const long credit_pct =
         std::clamp<long>(EmulatorSettingsImpl::Number("BB_PACE_CREDIT", 0), 0, 200);
-    const auto credit = frame_period * credit_pct / 100;
+    auto credit = frame_period * credit_pct / 100;
     // Off the old rule the waits for a slot use the precise sleep: a release that wakes late
     // would otherwise come out short of its period.
     const bool precise_wait = credit_pct != 200;
@@ -985,9 +998,19 @@ void VideoOutDriver::PresentThread(std::stop_token token) {
 
     // bbport: with a frame limit (uncapped presets) a queued flip is presented as soon as it
     // arrives and its slot allows, between vblanks, instead of on the next vblank tick.
-    const bool immediate_flips = frame_limit != 0;
-
     while (!token.stop_requested()) {
+        const u32 effective_limit = BbIntroPacing::EffectiveLimit(configured_limit);
+        if (effective_limit != frame_limit) {
+            frame_limit = effective_limit;
+            frame_period = frame_limit ? std::chrono::nanoseconds(1000000000 / frame_limit)
+                                       : std::chrono::nanoseconds(0);
+            credit = frame_period * credit_pct / 100;
+            // Rebase the schedule so changing caps cannot release a burst of queued flips.
+            next_flip = std::chrono::steady_clock::now() + frame_period;
+            std::printf("VideoOut: presentation cap %u FPS (configured %u; intro pacing %s)\n",
+                        frame_limit, configured_limit, frame_limit != configured_limit ? "active" : "restored");
+        }
+        const bool immediate_flips = frame_limit != 0;
         timer.Start();
         const auto tick_deadline = std::chrono::steady_clock::now() + vblank_period;
 

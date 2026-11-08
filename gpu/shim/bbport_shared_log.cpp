@@ -20,6 +20,7 @@
 #include <unordered_set>
 #include "../bbgpu.h"
 #include "bbport_shared_log.h"
+#include "bbport_guest_call.h"
 #include "common/types.h"
 
 namespace {
@@ -61,7 +62,7 @@ u64 PS4_SYSV_ABI Allocate(u32 size, u32 align, u32 tag, u32 site) {
         size = (size + 4095u) & ~4095u;
         align = align > 4096 ? align : 4096;
     }
-    const u64 result = (site == 0x7584e1 ? g_real_video : g_real)(size, align, tag);
+    const u64 result = GuestCall(site == 0x7584e1 ? g_real_video : g_real, size, align, tag);
     if (padded && result == 0) {
         g_failed.fetch_add(1, std::memory_order_relaxed);
         std::printf("BB_SHARED_PAD: allocation of %u (asked %u) at site %x FAILED (%llu failures)\n", size, asked, site,

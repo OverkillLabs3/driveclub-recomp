@@ -40,7 +40,8 @@ constexpr vk::ImageUsageFlags HudlessUsage = vk::ImageUsageFlagBits::eSampled |
                                               vk::ImageUsageFlagBits::eTransferDst;
 
 constexpr vk::ImageUsageFlags InputUsage =
-    vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled;
+    vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
 
 // Search radius of the player's car vector per pyramid level (1/8, 1/4, 1/2 of the picture): up to
 // about 100 pixels of the picture in total.
@@ -74,6 +75,11 @@ void DumpFrame(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer
     cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eGeneral, buffer,
                              vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
                                                  .imageExtent = {w, h, 1}});
+    const vk::MemoryBarrier2 host_read{.srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eHost,
+        .dstAccessMask = vk::AccessFlagBits2::eHostRead};
+    cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &host_read});
     const char* dir = BB_DIAGNOSTIC_ENV("BB_DUMP_DIR");
     char path[512];
     std::snprintf(path, sizeof(path), "%s/fg_%s_f%u_%ux%u.raw", dir && *dir ? dir : "out/dump", name,
@@ -89,7 +95,9 @@ void DumpFrame(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer
     });
 }
 
+#ifdef _WIN32
 extern "C" short __stdcall GetAsyncKeyState(int key);
+#endif
 
 bool DumpWindow() {
     static const char* env = BB_DIAGNOSTIC_ENV("BB_FG_DUMP");
@@ -98,7 +106,11 @@ bool DumpWindow() {
     if (!env) {
         return false;
     }
+#ifdef _WIN32
     const bool now = (GetAsyncKeyState(0x7A) & 0x8000) != 0;
+#else
+    const bool now = false; // BB_FG_DUMP's F11 trigger is Windows-only
+#endif
     if (now && !down) {
         left = 3;
     }
@@ -113,7 +125,7 @@ bool DumpWindow() {
 } // namespace
 
 void FgProfiler::Init(const Instance& instance) {
-    const char* env = BB_DIAGNOSTIC_ENV("BB_FG_PROFILE");
+    const char* env = std::getenv("BB_FG_PROFILE");   // also in the normal build: the one way to see where the time goes
     if (!env || env[0] != '1' || instance_ptr) {
         return;
     }
@@ -223,7 +235,7 @@ FrameGenerator::FrameGenerator(const Instance& instance_, Scheduler& scheduler_)
     if (settings.frame_gen == BbSettings::FrameGenDlss && dlss_max < 1) {
         const Dlss* dlss = Dlss::Get();
         std::printf("Frame generation: DLSS Frame Generation unavailable (%s); using FSR 3.1\n",
-                    !dlss ? "bbport_dlss.dll and nvngx_dlss.dll are not installed"
+                    !dlss ? "driveclub_dlss.dll and nvngx_dlss.dll are not installed"
                     : !dlss->Available() ? "DLSS is unavailable on this system"
                                          : "GeForce RTX 40 or newer, nvngx_dlssg.dll and a "
                                            "current driver are needed");
@@ -975,8 +987,6 @@ u32 FrameGenerator::Generate(vk::CommandBuffer cmdbuf, vk::Image color, vk::Imag
     if (with_hudless) {
         auto hudless_ready = color_ready;
         hudless_ready.image = hudless;
-        hudless_ready.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-        hudless_ready.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal; // as CaptureHudless left it
         cmdbuf.pipelineBarrier2(
             {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &hudless_ready});
     }

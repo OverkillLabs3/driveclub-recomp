@@ -20,6 +20,6 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Miniz configuration failed' }
     & (Join-Path $Toolchain 'cmake.exe') --build $minizBuild --target miniz
     if ($LASTEXITCODE -ne 0) { throw 'Miniz compilation failed' }
-    & (Join-Path $Toolchain 'clang++.exe') -O2 -std=c++20 -municode -mwindows -static "-I$minizSource" "-I$minizBuild" -DMINIZ_STATIC_DEFINE -o (Join-Path $taskOutput 'DriveClub.exe') launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp $resource (Join-Path $minizBuild 'libminiz.a') -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt -lcomctl32
+    & (Join-Path $Toolchain 'clang++.exe') -O2 -std=c++20 -municode -mwindows -static "-I$minizSource" "-I$minizBuild" -DMINIZ_STATIC_DEFINE -o (Join-Path $taskOutput 'DriveClub.exe') launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp $resource (Join-Path $minizBuild 'libminiz.a') -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt -lcomctl32 -loleaut32 -lwbemuuid -liphlpapi
     if ($LASTEXITCODE -ne 0) { throw 'Launcher compilation failed' }
 } finally { Pop-Location }

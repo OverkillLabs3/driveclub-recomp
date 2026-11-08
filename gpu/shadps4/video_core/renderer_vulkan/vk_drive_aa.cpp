@@ -5,18 +5,20 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 #include <vk_mem_alloc.h>
-#include <string>
 
 #include "bbport_frame_info.h"
 #include "bbport_settings.h"
 #include "ffx_vk_portable.h"
 #include "video_core/host_shaders/drive_aa_copy_comp.h"
 #include "video_core/host_shaders/drive_aa_sharpen_comp.h"
+#include "video_core/host_shaders/dc_motion_comp.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "bbport_neural_settings.h"
 #include "video_core/renderer_vulkan/vk_drive_motion.h"
@@ -55,6 +57,203 @@ FfxVkPortableImage Describe(vk::Image image, vk::Format format, u32 width, u32 h
     out.aspect = static_cast<VkImageAspectFlags>(aspect);
     out.state = state;
     return out;
+}
+
+// FSR's Vulkan calls, logged when they fail. AMD's backend inside the FSR library loads its Vulkan functions through
+// the getDeviceProcAddr it is given, and the library reports any failure as one result code: these wrappers say which
+// call failed, with what and why, so a context that cannot be created on a driver names the reason in the log.
+struct FsrCalls {
+    PFN_vkGetDeviceProcAddr get = nullptr;
+    PFN_vkCreateImage create_image = nullptr;
+    PFN_vkCreateBuffer create_buffer = nullptr;
+    PFN_vkAllocateMemory allocate_memory = nullptr;
+    PFN_vkBindImageMemory bind_image = nullptr;
+    PFN_vkBindBufferMemory bind_buffer = nullptr;
+    PFN_vkCreateImageView create_view = nullptr;
+    PFN_vkCreateShaderModule create_module = nullptr;
+    PFN_vkCreateComputePipelines create_pipelines = nullptr;
+    PFN_vkCreatePipelineLayout create_layout = nullptr;
+    PFN_vkCreateDescriptorSetLayout create_set_layout = nullptr;
+    PFN_vkCreateDescriptorPool create_pool = nullptr;
+    PFN_vkAllocateDescriptorSets allocate_sets = nullptr;
+    PFN_vkCreateSampler create_sampler = nullptr;
+    u32 images = 0, buffers = 0, pipelines = 0, modules = 0, failures = 0;
+    size_t last_module_bytes = 0;
+    std::string missing; // functions the driver does not have
+} g_fsr;
+
+void FsrFailed(const char* call, VkResult result, const std::string& what) {
+    ++g_fsr.failures;
+    std::printf("Anti-aliasing: FSR 3 %s failed (%s)%s%s\n", call, vk::to_string(vk::Result(result)).c_str(),
+                what.empty() ? "" : ": ", what.c_str());
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateImage(VkDevice d, const VkImageCreateInfo* ci, const VkAllocationCallbacks* a,
+                                              VkImage* out) {
+    const VkResult r = g_fsr.create_image(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        char what[200];
+        std::snprintf(what, sizeof(what), "%ux%u %s, usage %s, flags %#x, %u mips", ci->extent.width, ci->extent.height,
+                      vk::to_string(vk::Format(ci->format)).c_str(),
+                      vk::to_string(vk::ImageUsageFlags(ci->usage)).c_str(), ci->flags, ci->mipLevels);
+        FsrFailed("vkCreateImage", r, what);
+    } else {
+        ++g_fsr.images;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateBuffer(VkDevice d, const VkBufferCreateInfo* ci, const VkAllocationCallbacks* a,
+                                               VkBuffer* out) {
+    const VkResult r = g_fsr.create_buffer(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkCreateBuffer", r, std::to_string(ci->size) + " bytes, usage " +
+                                           vk::to_string(vk::BufferUsageFlags(ci->usage)));
+    } else {
+        ++g_fsr.buffers;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrAllocateMemory(VkDevice d, const VkMemoryAllocateInfo* ai,
+                                                 const VkAllocationCallbacks* a, VkDeviceMemory* out) {
+    const VkResult r = g_fsr.allocate_memory(d, ai, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkAllocateMemory", r, std::to_string(ai->allocationSize) + " bytes, memory type " +
+                                             std::to_string(ai->memoryTypeIndex));
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrBindImage(VkDevice d, VkImage i, VkDeviceMemory m, VkDeviceSize o) {
+    const VkResult r = g_fsr.bind_image(d, i, m, o);
+    if (r != VK_SUCCESS) FsrFailed("vkBindImageMemory", r, "");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrBindBuffer(VkDevice d, VkBuffer b, VkDeviceMemory m, VkDeviceSize o) {
+    const VkResult r = g_fsr.bind_buffer(d, b, m, o);
+    if (r != VK_SUCCESS) FsrFailed("vkBindBufferMemory", r, "");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateView(VkDevice d, const VkImageViewCreateInfo* ci, const VkAllocationCallbacks* a,
+                                             VkImageView* out) {
+    const VkResult r = g_fsr.create_view(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateImageView", r, vk::to_string(vk::Format(ci->format)));
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateModule(VkDevice d, const VkShaderModuleCreateInfo* ci,
+                                               const VkAllocationCallbacks* a, VkShaderModule* out) {
+    g_fsr.last_module_bytes = ci->codeSize;
+    const VkResult r = g_fsr.create_module(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateShaderModule", r, std::to_string(ci->codeSize) + " bytes of SPIR-V");
+    else ++g_fsr.modules;
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreatePipelines(VkDevice d, VkPipelineCache c, uint32_t n,
+                                                  const VkComputePipelineCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                  VkPipeline* out) {
+    const VkResult r = g_fsr.create_pipelines(d, c, n, ci, a, out);
+    if (r != VK_SUCCESS) {
+        u32 subgroup = 0;
+        for (auto* next = static_cast<const VkBaseInStructure*>(ci->stage.pNext); next; next = next->pNext) {
+            if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO) {
+                subgroup = reinterpret_cast<const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo*>(next)
+                               ->requiredSubgroupSize;
+            }
+        }
+        FsrFailed("vkCreateComputePipelines", r,
+                  "pipeline " + std::to_string(g_fsr.pipelines + 1) + " (in FSR's order: luma pyramid, RCAS, ...), " +
+                      std::to_string(g_fsr.last_module_bytes) + " bytes of SPIR-V, required subgroup size " +
+                      (subgroup ? std::to_string(subgroup) : std::string("none")));
+    } else {
+        g_fsr.pipelines += n;
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateLayout(VkDevice d, const VkPipelineLayoutCreateInfo* ci,
+                                               const VkAllocationCallbacks* a, VkPipelineLayout* out) {
+    const VkResult r = g_fsr.create_layout(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        FsrFailed("vkCreatePipelineLayout", r, std::to_string(ci->setLayoutCount) + " set layouts, " +
+                                                   std::to_string(ci->pushConstantRangeCount) + " push constant ranges");
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateSetLayout(VkDevice d, const VkDescriptorSetLayoutCreateInfo* ci,
+                                                  const VkAllocationCallbacks* a, VkDescriptorSetLayout* out) {
+    const VkResult r = g_fsr.create_set_layout(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        std::string what = std::to_string(ci->bindingCount) + " bindings:";
+        for (u32 i = 0; i < ci->bindingCount && i < 24; ++i) {
+            what += " " + vk::to_string(vk::DescriptorType(ci->pBindings[i].descriptorType)) + "x" +
+                    std::to_string(ci->pBindings[i].descriptorCount);
+        }
+        FsrFailed("vkCreateDescriptorSetLayout", r, what);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreatePool(VkDevice d, const VkDescriptorPoolCreateInfo* ci,
+                                             const VkAllocationCallbacks* a, VkDescriptorPool* out) {
+    const VkResult r = g_fsr.create_pool(d, ci, a, out);
+    if (r != VK_SUCCESS) {
+        std::string what = std::to_string(ci->maxSets) + " sets:";
+        for (u32 i = 0; i < ci->poolSizeCount; ++i) {
+            what += " " + vk::to_string(vk::DescriptorType(ci->pPoolSizes[i].type)) + "x" +
+                    std::to_string(ci->pPoolSizes[i].descriptorCount);
+        }
+        FsrFailed("vkCreateDescriptorPool", r, what);
+    }
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrAllocateSets(VkDevice d, const VkDescriptorSetAllocateInfo* ai, VkDescriptorSet* out) {
+    const VkResult r = g_fsr.allocate_sets(d, ai, out);
+    if (r != VK_SUCCESS) FsrFailed("vkAllocateDescriptorSets", r, std::to_string(ai->descriptorSetCount) + " sets");
+    return r;
+}
+VKAPI_ATTR VkResult VKAPI_CALL FsrCreateSampler(VkDevice d, const VkSamplerCreateInfo* ci, const VkAllocationCallbacks* a,
+                                                VkSampler* out) {
+    const VkResult r = g_fsr.create_sampler(d, ci, a, out);
+    if (r != VK_SUCCESS) FsrFailed("vkCreateSampler", r, "");
+    return r;
+}
+
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL FsrGetDeviceProcAddr(VkDevice device, const char* name) {
+    const PFN_vkVoidFunction real = g_fsr.get(device, name);
+    if (!real) {
+        if (g_fsr.missing.size() < 600) g_fsr.missing += std::string(g_fsr.missing.empty() ? "" : ", ") + name;
+        return real;
+    }
+#define DC_FSR_WRAP(fn, member, wrapper)                                                                               \
+    if (std::strcmp(name, #fn) == 0) {                                                                                 \
+        g_fsr.member = reinterpret_cast<PFN_##fn>(real);                                                               \
+        return reinterpret_cast<PFN_vkVoidFunction>(wrapper);                                                          \
+    }
+    DC_FSR_WRAP(vkCreateImage, create_image, FsrCreateImage)
+    DC_FSR_WRAP(vkCreateBuffer, create_buffer, FsrCreateBuffer)
+    DC_FSR_WRAP(vkAllocateMemory, allocate_memory, FsrAllocateMemory)
+    DC_FSR_WRAP(vkBindImageMemory, bind_image, FsrBindImage)
+    DC_FSR_WRAP(vkBindBufferMemory, bind_buffer, FsrBindBuffer)
+    DC_FSR_WRAP(vkCreateImageView, create_view, FsrCreateView)
+    DC_FSR_WRAP(vkCreateShaderModule, create_module, FsrCreateModule)
+    DC_FSR_WRAP(vkCreateComputePipelines, create_pipelines, FsrCreatePipelines)
+    DC_FSR_WRAP(vkCreatePipelineLayout, create_layout, FsrCreateLayout)
+    DC_FSR_WRAP(vkCreateDescriptorSetLayout, create_set_layout, FsrCreateSetLayout)
+    DC_FSR_WRAP(vkCreateDescriptorPool, create_pool, FsrCreatePool)
+    DC_FSR_WRAP(vkAllocateDescriptorSets, allocate_sets, FsrAllocateSets)
+    DC_FSR_WRAP(vkCreateSampler, create_sampler, FsrCreateSampler)
+#undef DC_FSR_WRAP
+    return real;
+}
+
+const char* PortableResultName(FfxVkPortableResult result) {
+    switch (result) {
+    case FFX_VK_PORTABLE_OK: return "ok";
+    case FFX_VK_PORTABLE_ERROR_INVALID_POINTER: return "invalid pointer";
+    case FFX_VK_PORTABLE_ERROR_INVALID_STRUCT_SIZE: return "invalid struct size";
+    case FFX_VK_PORTABLE_ERROR_VULKAN: return "a Vulkan call failed (its own images)";
+    case FFX_VK_PORTABLE_ERROR_INVALID_ARGUMENT: return "invalid argument";
+    case FFX_VK_PORTABLE_ERROR_OUT_OF_MEMORY: return "out of memory";
+    case FFX_VK_PORTABLE_ERROR_UNSUPPORTED: return "unsupported (the device's capabilities, or a format or memory type)";
+    case FFX_VK_PORTABLE_ERROR_BACKEND: return "AMD's FSR backend failed (its pipelines or resources)";
+    }
+    return "unknown";
 }
 
 void PrintIssues(const char* what, u64 issues) {
@@ -207,25 +406,35 @@ float DriveAA::MipBias() const {
 void DriveAA::NextFrame() {
     neural->BeginFrame();
     const int mode = BbSettings::Get().aa_mode;
-    if (mode != applied_mode) {
+    const bool mode_changed = mode != applied_mode;
+    if (mode_changed) {
         applied_mode = mode;
         reset = true;
         failed = false;
+        BbSettings::Get().aa_failed = false;
         jitter_index = 0;
     }
     // Called for every draw into the display buffer: "running" means it ran lately.
     BbSettings::Get().aa_running =
         std::chrono::steady_clock::now() - last_run < std::chrono::milliseconds(300);
+    // The upscaled picture stands in for the game's during the one draw that scales it to the
+    // output (OnComposite runs after this, for that draw).
+    redirect_valid = false;
     if (!Active()) {
         jitter = {};
         return;
     }
+    // Driveclub: once per scene, not per display draw (multiple draws a frame would step the
+    // Halton sequence multiple times and leave x in one half of the pixel).
+    if (!mode_changed) {
+        if (!jitter_due) {
+            return;
+        }
+        jitter_due = false;
+    }
     // 8 phases per 1:1 (16 for the native anti-aliasing), more as the scale grows.
     const float factor = Upscaling() && scale > 1.0f ? scale : 1.0f;
     const u32 phases = factor > 1.0f ? u32(std::ceil(8.0f * factor * factor)) : 16u;
-    // The upscaled picture stands in for the game's during the one draw that scales it to the
-    // output (OnComposite runs after this, for that draw).
-    redirect_valid = false;
     jitter_index = jitter_index % phases + 1;
     jitter = {Halton(jitter_index, 2) - 0.5f, Halton(jitter_index, 3) - 0.5f};
     // The game's lighting and shadows rebuild positions from depth with the unshifted camera (it
@@ -236,6 +445,9 @@ void DriveAA::NextFrame() {
     // scale instead (0: none).
     static const float forced_scale = [] {
         const char* env = std::getenv("BB_AA_JITTER");
+        if (!env || !*env) {
+            env = std::getenv("BB_DC_UPSCALE_JITTER");
+        }
         return env && *env ? float(std::atof(env)) : -1.0f;
     }();
     const float jitter_scale = forced_scale >= 0.0f ? forced_scale : 1.0f / factor;
@@ -350,7 +562,102 @@ void DriveAA::CreatePipeline() {
         return pipeline;
     };
     copy_pipeline = compute(DRIVE_AA_COPY_COMP);
-    sharpen_pipeline = compute(DRIVE_AA_SHARPEN_COMP);
+
+    const std::array<vk::DescriptorSetLayoutBinding, 4> sharpen_bindings = {{
+        {.binding = 0,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 1,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 2,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 3,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+    }};
+    sharpen_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .bindingCount = static_cast<u32>(sharpen_bindings.size()),
+        .pBindings = sharpen_bindings.data(),
+    }));
+    const vk::PushConstantRange sharpen_range{.stageFlags = vk::ShaderStageFlagBits::eCompute,
+                                              .offset = 0,
+                                              .size = 4 * sizeof(float)};
+    sharpen_pipeline_layout = Check(device.createPipelineLayoutUnique({
+        .setLayoutCount = 1,
+        .pSetLayouts = &*sharpen_desc_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &sharpen_range,
+    }));
+    const auto sharpen_module = CompileSPV(DRIVE_AA_SHARPEN_COMP, device);
+    sharpen_pipeline = Check(device.createComputePipelineUnique(
+        {}, vk::ComputePipelineCreateInfo{
+                .stage = {.stage = vk::ShaderStageFlagBits::eCompute,
+                          .module = sharpen_module,
+                          .pName = "main"},
+                .layout = *sharpen_pipeline_layout,
+            }));
+    device.destroyShaderModule(sharpen_module);
+
+    const std::array<vk::DescriptorSetLayoutBinding, 7> dc_bindings = {{
+        {.binding = 0,
+         .descriptorType = vk::DescriptorType::eStorageBuffer,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 1,
+         .descriptorType = vk::DescriptorType::eStorageBuffer,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 2,
+         .descriptorType = vk::DescriptorType::eStorageBuffer,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 3,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 4,
+         .descriptorType = vk::DescriptorType::eSampledImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 5,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 6,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+    }};
+    dc_motion_desc_layout = Check(device.createDescriptorSetLayoutUnique({
+        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .bindingCount = static_cast<u32>(dc_bindings.size()),
+        .pBindings = dc_bindings.data(),
+    }));
+    const vk::PushConstantRange dc_range{.stageFlags = vk::ShaderStageFlagBits::eCompute,
+                                         .offset = 0,
+                                         .size = 8 * sizeof(u32)};
+    dc_motion_pipeline_layout = Check(device.createPipelineLayoutUnique({
+        .setLayoutCount = 1,
+        .pSetLayouts = &*dc_motion_desc_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &dc_range,
+    }));
+    const auto dc_module = CompileSPV(DC_MOTION_COMP, device);
+    dc_motion_pipeline = Check(device.createComputePipelineUnique(
+        {}, vk::ComputePipelineCreateInfo{
+                .stage = {.stage = vk::ShaderStageFlagBits::eCompute,
+                          .module = dc_module,
+                          .pName = "main"},
+                .layout = *dc_motion_pipeline_layout,
+            }));
+    device.destroyShaderModule(dc_module);
 
 }
 
@@ -364,6 +671,7 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
     for (auto& slot : swizzled_views) {
         slot.second.reset();
     }
+    depth_copy_view.reset();
     if (context) {
         ffxVkPortableUpscaleContextDestroy(context);
         context = nullptr;
@@ -378,7 +686,9 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
         device_info.instance = instance.GetInstance();
         device_info.physicalDevice = instance.GetPhysicalDevice();
         device_info.device = instance.GetDevice();
-        device_info.getDeviceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+        g_fsr = {};
+        g_fsr.get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+        device_info.getDeviceProcAddr = FsrGetDeviceProcAddr;
         device_info.queue = instance.GetGraphicsQueue();
         device_info.queueFamilyIndex = instance.GetGraphicsQueueFamilyIndex();
         device_info.shaderFloat16Enabled = instance.IsShaderFloat16Enabled();
@@ -398,9 +708,26 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
             PrintIssues("create info", issues);
             return false;
         }
-        if (ffxVkPortableUpscaleContextCreate(&device_info, &create_info, &context) !=
-            FFX_VK_PORTABLE_OK) {
-            std::puts("Anti-aliasing: FSR 3 context creation failed");
+        const FfxVkPortableResult created = ffxVkPortableUpscaleContextCreate(&device_info, &create_info, &context);
+        if (created != FFX_VK_PORTABLE_OK) {
+            std::printf("Anti-aliasing: FSR 3 context creation failed: %s (%d), %ux%u to %ux%u\n",
+                        PortableResultName(created), int(created), w, h, ow, oh);
+            // What FSR checks the device for, and how far it got.
+            FfxVkPortableDeviceCapabilities caps{};
+            caps.structSize = sizeof(caps);
+            if (ffxVkPortableQueryDeviceCapabilities(instance.GetPhysicalDevice(), &caps) == FFX_VK_PORTABLE_OK) {
+                std::printf("Anti-aliasing: FSR 3 device check: prerequisites %d (compute queue %d, subgroup operations %d, "
+                            "storage formats %d), subgroup size %u (%u to %u, size control %d), float16 %d; device "
+                            "float16 %d, size control %d\n",
+                            caps.fsr3ComputePrerequisites, caps.hasComputeQueue, caps.subgroupOperations,
+                            caps.requiredFsr3StorageFormats, caps.subgroupSize, caps.minSubgroupSize,
+                            caps.maxSubgroupSize, caps.subgroupSizeControl, caps.shaderFloat16,
+                            int(device_info.shaderFloat16Enabled), int(device_info.subgroupSizeControlEnabled));
+            }
+            std::printf("Anti-aliasing: FSR 3 created %u images, %u buffers, %u shader modules, %u pipelines before it "
+                        "stopped; %u Vulkan calls failed%s%s\n",
+                        g_fsr.images, g_fsr.buffers, g_fsr.modules, g_fsr.pipelines, g_fsr.failures,
+                        g_fsr.missing.empty() ? "" : "; not offered by the driver (FSR falls back to others): ", g_fsr.missing.c_str());
             context = nullptr;
             return false;
         }
@@ -435,6 +762,8 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
              vk::ImageUsageFlagBits::eTransferSrc,
          ow, oh);
+    make(depth_copy_image, depth_copy_view, vk::Format::eR32Sfloat,
+         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h);
     if (dlss) {
         make(raw_image, raw_view, vk::Format::eR16G16B16A16Sfloat,
              vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, ow, oh);
@@ -452,7 +781,8 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss) {
 }
 
 void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
-                    VideoCore::ImageId output_id) {
+                    VideoCore::ImageId output_id, VideoCore::ImageId gbuffer_id,
+                    const DcInputs* dc_inputs) {
     static int reported = 0;
     const auto skip = [&](const char* why) {
         reset = true;
@@ -463,11 +793,21 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
     };
     late_pending = false;
     redirect_valid = false;
+    jitter_due = true;
     if (!Active() || !color_id || !depth_id || !output_id) {
         return skip("no image");
     }
-    if (!motion.Ready()) {
+    if (!dc_inputs && !motion.Ready()) {
         return skip("the game camera is not known yet");
+    }
+    if (dc_inputs) {
+        has_dc_inputs = true;
+        current_dc_inputs = *dc_inputs;
+        current_gbuffer_id = gbuffer_id;
+    } else {
+        has_dc_inputs = false;
+        current_dc_inputs = {};
+        current_gbuffer_id = {};
     }
     auto& color = texture_cache.GetImage(color_id);
     auto& depth = texture_cache.GetImage(depth_id);
@@ -519,6 +859,9 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
     late_jitter = jitter;  // the jitter the scene was drawn with (NextFrame moves on before the composite)
     late_width = w;
     late_height = h;
+    late_has_dc_inputs = has_dc_inputs;
+    late_dc_inputs = current_dc_inputs;
+    late_gbuffer_id = current_gbuffer_id;
 }
 
 bool DriveAA::WantsComposite(const VideoCore::Image& image) const {
@@ -529,6 +872,9 @@ bool DriveAA::WantsComposite(const VideoCore::Image& image) const {
 
 void DriveAA::OnComposite(VideoCore::ImageId color_id) {
     late_pending = false;
+    has_dc_inputs = late_has_dc_inputs;
+    current_dc_inputs = late_dc_inputs;
+    current_gbuffer_id = late_gbuffer_id;
     static int reported = 0;
     if (reported++ < 2) {
         const auto& color = texture_cache.GetImage(color_id);
@@ -567,6 +913,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         reset = true;
         return;
     }
+    const int selected_upscaler = BbSettings::Get().upscaler;
+    const bool want_amd = !want_dlss && !amd_failed && selected_upscaler == BbSettings::UpscalerAmd;
+    const bool want_fsr4 = !want_dlss && !want_amd && !fsr4_failed && BbSettings::IsFsr4(selected_upscaler) &&
+                           (selected_upscaler == BbSettings::UpscalerFsr411 ? instance.IsFsr411Supported()
+                                                                            : instance.IsFsr4Int8Supported());
     // Upscaled to the game's output size (its display buffer).
     const u32 ow = upscale ? BbFrame::output_w.load(std::memory_order_relaxed) : w;
     const u32 oh = upscale ? BbFrame::output_h.load(std::memory_order_relaxed) : h;
@@ -574,6 +925,7 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     scale = factor;
     if (!EnsureResources(w, h, ow, oh, want_dlss)) {
         failed = true;
+        BbSettings::Get().aa_failed = true;
         return;
     }
     const auto color_format = color.info.pixel_format;
@@ -604,6 +956,11 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         runtime.Transit(output, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
                         vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
     }
+    if (has_dc_inputs && current_gbuffer_id) {
+        auto& gbuffer = texture_cache.GetImage(current_gbuffer_id);
+        runtime.Transit(&gbuffer, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+    }
     runtime.FlushBarriers();
     const auto cmdbuf = scheduler.CommandBuffer();
 
@@ -629,9 +986,107 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     barrier(vk::Image(result_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
             all, rw);
 
-    // Driveclub-specific single-dispatch path: build camera vectors and fuse valid car vectors
-    // in one pass. The legacy CameraMotion path requires constants from another title.
-    if (dlss && camera_motion.Ready()) {
+    const bool has_stencil = depth.info.pixel_format == vk::Format::eD32SfloatS8Uint ||
+                             depth.info.pixel_format == vk::Format::eD24UnormS8Uint ||
+                             depth.info.pixel_format == vk::Format::eD16UnormS8Uint;
+    const auto mask_view = has_stencil
+                               ? View(depth, depth.info.pixel_format, vk::ImageAspectFlagBits::eStencil)
+                               : depth_view;
+
+    vk::ImageView gbuffer_view{};
+    if (has_dc_inputs && current_gbuffer_id) {
+        auto& gbuffer = texture_cache.GetImage(current_gbuffer_id);
+        const auto gbuffer_format = gbuffer.info.pixel_format;
+        gbuffer_view = View(gbuffer, gbuffer_format, vk::ImageAspectFlagBits::eColor);
+        barrier(vk::Image(depth_copy_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
+
+        const vk::DescriptorBufferInfo buf0_info{
+            current_dc_inputs.buffers[0].buffer,
+            current_dc_inputs.buffers[0].offset,
+            current_dc_inputs.buffers[0].size,
+        };
+        const vk::DescriptorBufferInfo buf1_info{
+            current_dc_inputs.buffers[1].buffer,
+            current_dc_inputs.buffers[1].offset,
+            current_dc_inputs.buffers[1].size,
+        };
+        const vk::DescriptorBufferInfo buf2_info{
+            current_dc_inputs.buffers[2].buffer,
+            current_dc_inputs.buffers[2].offset,
+            current_dc_inputs.buffers[2].size,
+        };
+        const vk::DescriptorImageInfo gbuffer_desc_info{
+            .imageView = gbuffer_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const vk::DescriptorImageInfo depth_desc_info{
+            .imageView = depth_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const vk::DescriptorImageInfo motion_desc_info{
+            .imageView = *motion_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const vk::DescriptorImageInfo depth_copy_desc_info{
+            .imageView = *depth_copy_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+
+        const std::array<vk::WriteDescriptorSet, 7> writes = {{
+            {.dstBinding = 0,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageBuffer,
+             .pBufferInfo = &buf0_info},
+            {.dstBinding = 1,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageBuffer,
+             .pBufferInfo = &buf1_info},
+            {.dstBinding = 2,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageBuffer,
+             .pBufferInfo = &buf2_info},
+            {.dstBinding = 3,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &gbuffer_desc_info},
+            {.dstBinding = 4,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &depth_desc_info},
+            {.dstBinding = 5,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &motion_desc_info},
+            {.dstBinding = 6,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &depth_copy_desc_info},
+        }};
+        const struct {
+            float size_x, size_y;
+            float jitter_x, jitter_y;
+            u32 offset_frame, offset_camera, offset_objects, pad;
+        } dc_push{
+            .size_x = float(w),
+            .size_y = float(h),
+            .jitter_x = frame_jitter[0],
+            .jitter_y = frame_jitter[1],
+            .offset_frame = current_dc_inputs.dword_offsets[0],
+            .offset_camera = current_dc_inputs.dword_offsets[1],
+            .offset_objects = current_dc_inputs.dword_offsets[2],
+            .pad = 0,
+        };
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *dc_motion_pipeline);
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *dc_motion_pipeline_layout, 0,
+                                    writes);
+        cmdbuf.pushConstants(*dc_motion_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                             sizeof(dc_push), &dc_push);
+        cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+        barrier(vk::Image(depth_copy_image), vk::ImageLayout::eGeneral,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
+                vk::AccessFlagBits2::eShaderRead);
+    } else if (dlss && camera_motion.Ready()) {
         camera_motion.RecordMotion(cmdbuf, depth_view, *motion_view, w, h, color_view);
     } else {
         vk::ImageView object_view{};
@@ -640,8 +1095,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             object_view = camera_motion.PrepareObjectMotion(cmdbuf, w, h, object_valid);
             if (!object_valid) object_view = vk::ImageView{};
         }
-        motion.Record(cmdbuf, depth_view, depth_view, *motion_view, w, h, w, h, false,
-                      object_view, object_view ? color_view : vk::ImageView{});
+        motion.Record(cmdbuf, depth_view, mask_view, *motion_view, w, h, w, h, false,
+                      object_view, object_view ? color_view : vk::ImageView{}, frame_jitter);
     }
     barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral,
             vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
@@ -710,11 +1165,16 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     const auto& settings = BbSettings::Get();
     const float sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f;
     // DLSS ignores its sharpness since 2.5.1: RCAS sharpens its result afterwards (FSR has its own).
-    const bool sharpen_after = dlss && sharpness > 0.0f && raw_image;
-    if (sharpen_after) {
+    // Always route DLSS through raw_image so sharpen_pipeline sanitizes and clamps its output.
+    const bool dlss_sanitize = dlss && raw_image;
+    if (dlss_sanitize) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 all, rw);
     }
+    // The menu's invert-jitter option applies to FSR 3 and DLSS here too (A/B of the convention).
+    const float sign = BbToggle::Disabled(1u << 26) != BbSettings::Get().fsr4_invert_jitter.load()
+                           ? -1.0f
+                           : 1.0f;
     if (dlss) {
         bool ok = true;
         if (new_feature) {
@@ -730,18 +1190,100 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                            vk::ImageAspectFlagBits::eDepth, w, h},
                  .motion = {vk::Image(motion_image), *motion_view, vk::Format::eR16G16Sfloat,
                             vk::ImageAspectFlagBits::eColor, w, h},
-                 .output = {sharpen_after ? vk::Image(raw_image) : vk::Image(result_image),
-                            sharpen_after ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
+                 .output = {dlss_sanitize ? vk::Image(raw_image) : vk::Image(result_image),
+                            dlss_sanitize ? *raw_view : *result_view, vk::Format::eR16G16B16A16Sfloat,
                             vk::ImageAspectFlagBits::eColor, ow, oh},
-                 .jitter_x = frame_jitter[0],
-                 .jitter_y = frame_jitter[1],
+                 .jitter_x = sign * frame_jitter[0],
+                 .jitter_y = sign * frame_jitter[1],
                  .reset = reset,
                  .frame_ms = frame_ms,
-                 .sharpness = sharpness});
+                 .sharpness = dlss_sanitize ? 0.0f : sharpness});
         }
         if (!ok) {
             std::puts("Anti-aliasing: DLSS failed; using FSR 3.1");
             BbSettings::Get().aa_mode = BbSettings::AaFsr3;
+            reset = true;
+            return;
+        }
+        dispatched = true;
+    } else if (want_amd) {
+        if (!amd_ffx) {
+            amd_ffx = std::make_unique<AmdFfxUpscaler>(instance, scheduler);
+        }
+        const bool ok = amd_ffx->Record({
+            .cmdbuf = cmdbuf,
+            .color = {color.GetImage(), color_format, color.usage_flags, w, h},
+            .depth = {depth.GetImage(), depth_format, depth.usage_flags, w, h},
+            .motion = {vk::Image(motion_image), vk::Format::eR16G16Sfloat,
+                       vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h},
+            .output = {vk::Image(result_image), vk::Format::eR16G16B16A16Sfloat,
+                       vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                           vk::ImageUsageFlagBits::eTransferSrc,
+                       ow, oh},
+            .render_width = w,
+            .render_height = h,
+            .jitter = {frame_jitter[0], frame_jitter[1]},
+            .frame_ms = frame_ms,
+            .near_plane = motion.Near(),
+            .far_plane = 3000.0f,
+            .vertical_fov = motion.VerticalFov(),
+            .sharpness = sharpness,
+            .sharpen = settings.sharpen,
+            .reset = reset,
+            .auto_exposure = settings.fsr4_auto_exposure,
+        });
+        if (!ok) {
+            if (amd_ffx->Fatal()) {
+                const bool int8 = instance.IsFsr4Int8Supported();
+                std::printf("Anti-aliasing: AMD FSR 4.1 is not available; using %s\n", int8 ? "FSR 4 (INT8)" : "FSR 3.1");
+                BbSettings::Get().upscaler = int8 ? BbSettings::UpscalerFsr4 : BbSettings::UpscalerFsr3;
+                amd_failed = true;
+            }
+            reset = true;
+            return;
+        }
+        dispatched = true;
+    } else if (want_fsr4) {
+        if (!fsr4) {
+            fsr4 = std::make_unique<Fsr4Upscaler>(instance, scheduler);
+        }
+        // The model is per preset: the one whose ratio is closest to the real render / output ratio.
+        const int preset = factor < 1.05f   ? BbSettings::NativeAA
+                           : factor < 1.6f  ? BbSettings::Quality
+                           : factor < 1.85f ? BbSettings::Balanced
+                           : factor < 2.5f  ? BbSettings::Performance
+                                            : BbSettings::UltraPerformance;
+        const bool ok = fsr4->Record({
+            .cmdbuf = cmdbuf,
+            .color = {color.GetImage(), color_view, w, h},
+            .depth = {depth.GetImage(), depth_view, w, h},
+            .motion = {vk::Image(motion_image), *motion_view, w, h},
+            .output = {vk::Image(result_image), *result_view, ow, oh},
+            .render_width = w,
+            .render_height = h,
+            .preset = preset,
+            .jitter = {frame_jitter[0], frame_jitter[1]},
+            .frame_ms = frame_ms,
+            .near_plane = motion.Near(),
+            .far_plane = 3000.0f,
+            .vertical_fov = motion.VerticalFov(),
+            .sharpness = sharpness,
+            .sharpen = settings.sharpen,
+            .reset = reset,
+            .auto_exposure = settings.fsr4_auto_exposure,
+        });
+        if (!ok) {
+            static std::string shown;
+            const char* problem = fsr4->Problem();
+            if (problem && shown != problem) {
+                shown = problem;
+                std::printf("Anti-aliasing: FSR 4 failed: %s\n", problem);
+            }
+            if (fsr4->Fatal()) {
+                std::puts("Anti-aliasing: FSR 4 is not available; using FSR 3.1");
+                BbSettings::Get().upscaler = BbSettings::UpscalerFsr3;
+                fsr4_failed = true;
+            }
             reset = true;
             return;
         }
@@ -769,15 +1311,17 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         info.reactiveMask.structSize = sizeof(info.reactiveMask);
         info.transparencyAndCompositionMask.structSize =
             sizeof(info.transparencyAndCompositionMask);
-        info.jitterOffset = {frame_jitter[0], frame_jitter[1]};
+        info.jitterOffset = {sign * frame_jitter[0], sign * frame_jitter[1]};
         info.motionVectorScale = {1.0f, 1.0f};
         info.renderSize = {w, h};
         info.outputSize = {ow, oh};
         info.frameTimeMilliseconds = frame_ms;
         info.preExposure = 1.0f;
         info.cameraNear = motion.Near();
-        info.cameraFar = 3000.0f;
-        info.cameraVerticalFovRadians = motion.VerticalFov();
+        info.cameraFar = 1.0e6f;
+        info.cameraVerticalFovRadians = (has_dc_inputs && current_dc_inputs.tan_half_fov_y != 0.0f)
+                                            ? 2.0f * std::atan(std::abs(current_dc_inputs.tan_half_fov_y))
+                                            : motion.VerticalFov();
         info.viewSpaceToMeters = 1.0f;
         info.sharpness = sharpness;
         info.enableSharpening = settings.sharpen ? VK_TRUE : VK_FALSE;
@@ -794,11 +1338,13 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         if (const u64 issues = ffxVkPortableValidateUpscaleDispatchInfo(&create_info, &info)) {
             PrintIssues("dispatch", issues);
             failed = true;
+            BbSettings::Get().aa_failed = true;
             return;
         }
         if (ffxVkPortableUpscaleContextRecordDispatch(context, &info) != FFX_VK_PORTABLE_OK) {
             std::puts("Anti-aliasing: FSR 3 dispatch failed");
             failed = true;
+            BbSettings::Get().aa_failed = true;
             return;
         }
         dispatched = true;
@@ -811,14 +1357,20 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
     last_run = std::chrono::steady_clock::now();
     BbSettings::Get().aa_running = true;
 
-    if (sharpen_after) {
+    if (dlss_sanitize) {
         barrier(vk::Image(raw_image), vk::ImageLayout::eGeneral, all, rw,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderRead);
         const vk::DescriptorImageInfo raw_info{.imageView = *raw_view,
                                                .imageLayout = vk::ImageLayout::eGeneral};
         const vk::DescriptorImageInfo result_info{.imageView = *result_view,
                                                   .imageLayout = vk::ImageLayout::eGeneral};
-        const std::array<vk::WriteDescriptorSet, 2> writes = {{
+        const vk::DescriptorImageInfo input_color_info{.imageView = color_view,
+                                                       .imageLayout = vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo gbuffer_desc_info{
+            .imageView = gbuffer_view ? gbuffer_view : color_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const std::array<vk::WriteDescriptorSet, 4> writes = {{
             {.dstBinding = 0,
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageImage,
@@ -827,12 +1379,31 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageImage,
              .pImageInfo = &result_info},
+            {.dstBinding = 2,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &input_color_info},
+            {.dstBinding = 3,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eSampledImage,
+             .pImageInfo = &gbuffer_desc_info},
         }};
-        const std::array<float, 2> strength{sharpness, 0.0f};
+        const float active_sharpness = settings.sharpen ? sharpness : 0.0f;
+        const struct {
+            float strength;
+            float pad;
+            float jitter_x;
+            float jitter_y;
+        } sharpen_push{
+            .strength = active_sharpness,
+            .pad = 0.0f,
+            .jitter_x = frame_jitter[0],
+            .jitter_y = frame_jitter[1],
+        };
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, *sharpen_pipeline);
-        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *copy_pipeline_layout, 0, writes);
-        cmdbuf.pushConstants(*copy_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
-                             sizeof(strength), strength.data());
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, *sharpen_pipeline_layout, 0, writes);
+        cmdbuf.pushConstants(*sharpen_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
+                             sizeof(sharpen_push), &sharpen_push);
         cmdbuf.dispatch((ow + 7) / 8, (oh + 7) / 8, 1);
         barrier(vk::Image(result_image), vk::ImageLayout::eGeneral,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all, rw);

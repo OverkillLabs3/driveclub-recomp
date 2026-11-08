@@ -9,10 +9,12 @@ VERSION="${1:-dev}"
 NAME="driveclub-recomp-$VERSION-win64"
 OUT="release/$NAME"
 
+# The player release is built with link-time optimization and the recorded profile (about 10% more FPS).
+if [ -f pgo/default.profdata ]; then export BB_PGO=use BB_LTO=ON; fi
 bash build.sh
 mkdir -p out/launcher
 windres -I launcher launcher/launcher.rc -O coff -o out/launcher/launcher.res.o
-clang++ -O2 -std=c++20 -municode -mwindows -static -Igpu/third_party/miniz -Iout/gpu/third_party/miniz -DMINIZ_STATIC_DEFINE -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp out/launcher/launcher.res.o out/gpu/third_party/miniz/libminiz.a   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt -lcomctl32
+clang++ -O2 -std=c++20 -municode -mwindows -static -Igpu/third_party/miniz -Iout/gpu/third_party/miniz -DMINIZ_STATIC_DEFINE -o out/launcher/DriveClub.exe   launcher/driveclub_launcher.cpp launcher/prepare.cpp launcher/gpu_check.cpp launcher/datx.cpp launcher/unlock.cpp launcher/graphics.cpp launcher/carswitch.cpp launcher/updater.cpp out/launcher/launcher.res.o out/gpu/third_party/miniz/libminiz.a   -lgdiplus -lgdi32 -luser32 -lshell32 -lole32 -ldwmapi -lwinhttp -lbcrypt -lcomctl32 -loleaut32 -lwbemuuid -liphlpapi
 # The steering wheel tools, SDL linked in: WheelSetup is a window; FfbTest a console program (-mconsole after the SDL
 # flags, which bring -mwindows).
 sdl_static="$(pkg-config --static --libs sdl3)"
@@ -22,12 +24,52 @@ clang -O2 -o out/FfbTest.exe tools/ffb_test.c -static $sdl_static -mconsole
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime/patches"
 cp out/launcher/DriveClub.exe out/WheelSetup.exe out/FfbTest.exe "$OUT/"
+# The WPF launcher: its bootstrapper replaces DriveClub.exe; the Win32 launcher stays as DriveClub.Native.exe for
+# Wine and for PCs without the .NET 8 desktop runtime. Needs the .NET 8 SDK (dotnet) on PATH.
+WPF_OUT="${WPF_DIR:-out/wpf}"   # a folder built earlier with launcher/build-wpf.ps1, or built here
+if [ -z "${WPF_DIR:-}" ]; then
+  rm -rf out/wpf
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w launcher/build-wpf.ps1)"   -OutputDirectory "$(cygpath -w "$PWD/out/wpf")" -Toolchain "$(cygpath -w "$(dirname "$(command -v clang++)")")"
+fi
+[ -f "$WPF_OUT/DriveClub.Launcher.exe" ] && [ -f "$WPF_OUT/DriveClub.Native.exe" ] || { echo "The WPF launcher was not built." >&2; exit 1; }
+for f in "$WPF_OUT"/*; do
+  case "$(basename "$f")" in native-build|*.pdb) ;; *) cp -r "$f" "$OUT/" ;; esac
+done
 cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe
 cp out/DriveClubGame.exe "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"
+mkdir -p "$OUT/runtime/skip_intro" && cp -r packaging/skip_intro/. "$OUT/runtime/skip_intro/"   # the "Skip the intro video" option
+# FSR 4 (v07 INT8) model files: MIT, built by Q2RTX from AMD's FidelityFX SDK source. FSR4_ASSETS=<folder> uses a copy
+# already on disk, otherwise they are downloaded (pinned commit). The game finds them through BB_FSR4_DIR (the launcher sets it).
+FSR4_SRC="${FSR4_ASSETS:-out/fsr4_shaders}"
+if [ ! -f "$FSR4_SRC/LICENSE-FSR4-v07.txt" ]; then bash packaging/fetch_fsr4_assets.sh "$FSR4_SRC"; fi
+mkdir -p "$OUT/runtime/fsr4_shaders"
+for f in "$FSR4_SRC"/*; do
+  case "$f" in *_drs_*|*/opt) ;; *) cp -r "$f" "$OUT/runtime/fsr4_shaders/" ;; esac
+done
+# AMD's signed FSR SDK 2.4 Vulkan DLLs for FSR 4.1 on Radeon; the game finds them in runtime/fsr (the launcher sets BB_FFX_DIR).
+AMD_FSR_SRC="${AMD_FSR_DIR:-out/amd_fsr}"
+bash packaging/fetch_amd_fsr.sh "$AMD_FSR_SRC"
+mkdir -p "$OUT/runtime/fsr"
+cp "$AMD_FSR_SRC"/*.dll "$AMD_FSR_SRC"/LICENSE-AMD-FidelityFX-SDK.md "$OUT/runtime/fsr/"
+cp packaging/release/trophies.tsv "$OUT/runtime/"   # trophy banner texts: names, descriptions, grades
 cp packaging/release/README.txt packaging/release/THIRD_PARTY_NOTICES.txt LICENSE "$OUT/"
 echo "$VERSION" > "$OUT/version.txt"
+
+# Online play: the community server (a built folder: driveclubsrv.exe, its DLLs and sqldrivers/), its settings, and
+# the game settings file the launcher copies into place when Online play is on.
+SERVER_BIN="${DC_SERVER_DIR:-packaging/server_bin}"
+if [ ! -f "$SERVER_BIN/driveclubsrv.exe" ]; then
+  echo "The server build is missing: $SERVER_BIN/driveclubsrv.exe (set DC_SERVER_DIR)." >&2
+  exit 1
+fi
+mkdir -p "$OUT/server" "$OUT/online"
+cp -r "$SERVER_BIN"/. "$OUT/server/"
+cp docs/online/server-config.json "$OUT/server/config.json"
+cp docs/online/override-0.tss "$OUT/online/"
+cp docs/online/play/Allow-Firewall.bat docs/online/play/Allow-Firewall.ps1 "$OUT/"   # next to DriveClub.exe: it finds runtime\ and server\ from there
+cp docs/online/README.md docs/online/QUICKSTART.md "$OUT/online/"
 
 # Every non-system DLL the game program loads, so nothing has to be installed.
 ldd out/DriveClubGame.exe | awk '{print $3}' | grep -i -E '/msys64/|^/(clang64|mingw64|ucrt64)/' | sort -u | while read -r dll; do
@@ -47,9 +89,18 @@ if [ ! -f "$OUT/runtime/SDL3.dll" ] || [ "$(find "$OUT/runtime" -name '*.dll' | 
   exit 1
 fi
 # DLSS frame generation: the bridge built from gpu/dlss_bridge and NVIDIA's DLSS libraries.
-cp packaging/dlss_bin/bbport_dlss.dll packaging/dlss_bin/nvngx_dlss.dll packaging/dlss_bin/nvngx_dlssg.dll "$OUT/runtime/"
+cp packaging/dlss_bin/driveclub_dlss.dll packaging/dlss_bin/nvngx_dlss.dll "$OUT/runtime/"
 mkdir -p "$OUT/licenses"
 cp packaging/dlss/NVIDIA-DLSS-LICENSE.txt packaging/dlss/dlss_bridge-LICENSE.txt "$OUT/licenses/"
+# DLSS neural rendering: only the bridge (MIT, gpu/nr_bridge). NVIDIA's nvngx_dlssnr.dll is not shipped: the player supplies it
+# (the launcher shows the option only when runtime/nvngx_dlssnr.dll exists).
+cp packaging/nr_bin/driveclub_nr_nvngx.dll "$OUT/runtime/"
+cp gpu/nr_bridge/LICENSE.txt "$OUT/licenses/nr_bridge-LICENSE.txt"
+# The community server is GPL-2.0 software: its licence and where its source is.
+[ -f "$SERVER_BIN/LICENSE" ] && cp "$SERVER_BIN/LICENSE" "$OUT/licenses/driveclub-server-LICENSE.txt"
+printf 'The program in the server folder is the DriveClub community server, GPL-2.0.
+Source code: https://github.com/shad-net/driveclub-server and https://github.com/Judaswick/driveclub-server (branch coop).
+' > "$OUT/licenses/driveclub-server-SOURCE.txt"
 # DLLs the game program loads by name at run time.
 for extra in SDL3.dll; do
   [ -f "out/$extra" ] && cp "out/$extra" "$OUT/runtime/" || true
@@ -58,8 +109,10 @@ done
 (cd "$OUT/runtime" && find . -type f ! -name files.txt | sed 's|^\./||' | sort > files.txt)
 # Nothing of the game, the console firmware or the player may end up in the package.
 leaks="$(find "$OUT" -type f \( -iname 'eboot.bin' -o -iname '*.sprx' -o -iname '*.prx' -o -iname '*.pkg' -o -iname '*.sfo' \
-  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.spv' -o -iname '*.dmp' \
+  -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.dmp' \
   -o -iname 'launcher.ini' -o -path '*/data/*' -o -path '*/logs/*' -o -path '*/sce_sys/*' \) -print)"
+# SPIR-V is the one allowed kind of shader file: only the FSR 4 model files in runtime/fsr4_shaders (not the game's own shaders).
+more="$(find "$OUT" -type f -iname '*.spv' ! -path "*/runtime/fsr4_shaders/*" -print)"; [ -n "$more" ] && leaks="$leaks$more" || true
 if [ -n "$leaks" ]; then
   echo "Package leak check failed, these files must not ship:" >&2
   echo "$leaks" >&2

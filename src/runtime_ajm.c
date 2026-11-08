@@ -1,4 +1,3 @@
-#include "../gpu/shim/bbport_diagnostics.h"
 /* libSceAjm: audio decoder batches. Batches use the SDK chunk format (the
  * builder functions are imports, but games may also build chunks inline), and
  * run synchronously at submission: decoding a batch takes well under a
@@ -6,6 +5,7 @@
  * LibAtrac9 (MIT, third_party/LibAtrac9). MP3/AAC instances stop explicitly. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

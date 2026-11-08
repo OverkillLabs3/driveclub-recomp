@@ -3,10 +3,12 @@
 #include <math.h>
 
 bool exit_dialog_captures(const ExitDialog *d) { return d->open || d->draining || d->exiting; }
-unsigned exit_dialog_actions(uint32_t buttons) {
+unsigned exit_dialog_actions(uint32_t buttons, uint32_t confirm_button) {
     unsigned actions=0;
-    if(buttons & 0x2000) actions|=EXIT_BACK;
-    if(buttons & 0x4000) actions|=EXIT_CONFIRM;
+    if (confirm_button==0x2000 || confirm_button==0x4000) {
+        if (buttons & (confirm_button ^ 0x6000)) actions|=EXIT_BACK;
+        if (buttons & confirm_button) actions|=EXIT_CONFIRM;
+    }
     if(buttons & (0x10|0x80)) actions|=EXIT_PREVIOUS;
     if(buttons & (0x20|0x40)) actions|=EXIT_NEXT;
     return actions;

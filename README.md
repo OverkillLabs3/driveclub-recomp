@@ -1,6 +1,6 @@
 # DriveClub Recomp
 
-**DriveClub for PS4 (version 1.28), running natively on Windows.**
+**DriveClub for PS4 (version 1.28), running natively on Windows and Linux.**
 
 <img width="1920" height="1080" alt="s009 20" src="https://github.com/user-attachments/assets/4c0fe155-eae9-4c78-aa24-4a5b154e2b9f" />
 
@@ -10,23 +10,8 @@ The source code is in this repository and the build is on the [Releases](../../r
 
 ## Planned for the next major release
 - **DLSS/FSR Frame Generation, DLSS up to 4X, FSR up to 2X**
-- **DLSS Neural Rendering (Standard and Optimised model support)**
+- **Public online lobby** (being tested on our Discord first)
 - **Further performance and stability improvements**
-
-## New in 0.3.0
-- **DLSS and FSR upscaling.** Pick the Output size and a mode from Quality to Ultra Performance: the game renders smaller and DLSS (GeForce RTX) or FSR 3.1 (any card) brings the picture to the output, with a Sharpness slider. Shadows no longer flicker while upscaling, and it works in car selection and the pre-race flyovers.
-- **HDR10 output** on HDR displays, with a brightness control (Page Up / Page Down in the game).
-- **Steering wheels, rewritten.** Force feedback from a physics model of the front tyres or a software model, live tuning in the FFB Tuner, pedals on their own USB device, Fanatec style wheels that show up as two controllers, a handbrake on its own USB or on a button, a Driving tab with assists, and a field of view you can change while playing (F5 / F6).
-- **Faster.** A two-thread draw path is on by default, with far less processor work per draw. Cars load faster in car selection and menus no longer hitch on missing game files.
-
-## New in 0.2.0: DLSS and FSR anti-aliasing
-The game's own anti-aliasing is replaced by a modern one, chosen in the launcher:
-- **NVIDIA DLAA** (GeForce RTX) for the sharpest, steadiest picture: thin lines, wires, fences and foliage stay clean.
-- **AMD FSR 3.1** on any graphics card, with no special hardware and nothing extra to install.
-
-Both use the game's own camera motion. In the game the overlay shows what is active, **F9** switches the new anti-aliasing off and on to compare, and **F10** switches between FSR and DLSS on RTX cards.
-
-**Upscaling** (launcher, next to Anti-aliasing): the game draws at a lower resolution and DLSS or FSR rebuilds the picture at the full output size, after the game's own effects, so it stays sharp. At 5120x1440 on an RTX 4070 Ti the average went from 48 FPS (DLAA) to 80 (DLSS Quality), 88 (Balanced) and 104 (Performance); FSR 3.1 Quality gave 103 (DLSS's transformer model costs about 3 ms a frame there, for a cleaner picture). It works with every output and widescreen size; the render size follows from it. **Sharpness** sharpens the finished picture (AMD's RCAS, also after DLSS, which no longer sharpens by itself).
 
 ## How to play
 1. Download the latest `driveclub-recomp-<version>-win64.zip` from the [Releases](../../releases) page and extract it anywhere you can write to (not `Program Files`).
@@ -39,19 +24,39 @@ Nothing to install. Your own files are never modified or copied, and the folders
 
 Logs are in the `logs` folder.
 
+### Linux (x86_64)
+The AppImage is built by the [AppImage workflow](.github/workflows/appimage.yml), or locally with
+`bash packaging/appimage/build-appimage.sh <version>` (see [BUILDING.md](BUILDING.md#linux-x86_64)).
+It uses the same game dumps and keeps its settings, prepared image, saves and logs in a
+`data/` folder beside the AppImage whenever that folder is writable (otherwise in
+`~/.local/share/driveclub-recomp`). Running the AppImage opens the native Linux launcher, with
+the same game folders, display, driving and patch settings as the Windows launcher. Press
+PLAY there and the recomp prepares and starts; `--play` starts it headlessly with the saved
+settings. Use DATA FOLDER > Change... in the launcher to select another folder or move the
+existing data. Put `update/` and `base/` next to the AppImage, use `--setup UPDATE BASE` once,
+or set `DRIVECLUB_UPDATE_DIR` and `DRIVECLUB_BASE_DIR`. The choice is stored in `data-path`
+beside the AppImage; `DRIVECLUB_DATA_DIR` overrides it, and a `portable` marker selects `data/`
+when no folder has been chosen.
+
 ## Highlights
 - The game's own x86-64 code runs directly on your CPU, with no CPU emulation. The PS4 system libraries are reimplemented and the GPU commands are translated to Vulkan, similar to Wine and DXVK
-- Playable from the menus through races, photo mode and saves
+- Playable from the menus through races, photo mode and saves, with trophies and multiplayer: private sessions with friends, and a public lobby that is being tested on our Discord
 - About 60 FPS at 4K in the heaviest scenes on our test PC (RTX 5070 Ti, Ryzen 7 5800X3D), higher in lighter ones, with an unlocked frame rate option in the launcher that keeps the game at its normal speed
 - Runs on NVIDIA, AMD and Intel graphics through Vulkan, with Resizable BAR used automatically where the driver allows it
 - Keyboard racing layout and any gamepad (Xbox, PlayStation, Switch Pro, 8BitDo)
 - Steering wheels with force feedback from the car's tyre physics, pedals with clutch, an H-pattern shifter and a USB handbrake
 - DLC content (add-on cars, bikes, tours and livery decals) can be unlocked from the launcher, built from your own game files. Cars you earn by playing still unlock through normal progression
 - A launcher window that resizes from every edge and corner and stays sharp at any display scale
-- A `mods` folder for loose-file mods: files in it replace the game's own files of the same path
+- A `mods` folder for loose-file mods: files in it replace the game's own files of the same path. See [Making mods](docs/MODDING.md)
 
 ## Controls
 Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
+
+### Controller button prompts
+Button prompt icons can be configured in the launcher under **Driving > Controller buttons** (or via `button_prompts`, `xbox_buttons`, and `playstation_buttons` in `driveclub.ini`):
+- **Prompts**: `Auto` (automatically follows the controller in use, and shows key caps when you play with the keyboard), `PlayStation`, or `Xbox`.
+- **Xbox buttons**: `Xbox One` (modern flat A/B/X/Y buttons with View icon) or `Xbox 360` (glossy gem buttons with Back pill).
+- **PlayStation buttons**: `PS4` (the game's original symbols) or `PS5` (DualSense-style icons).
 
 | Action | Keyboard |
 |---|---|
@@ -68,7 +73,7 @@ Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.
 | D-pad | Arrow keys |
 | Look around | I J K L or the mouse |
 
-F2 shows how far the clutch, brake and throttle are pressed, as bars with their percentage in the bottom left corner (a pedal at full travel is drawn bright and outlined; without a wheel it shows the gamepad's triggers). The launcher's "Show pedal inputs" turns it on at startup. F5 and F6 narrow and widen the view. F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F12 cycles the performance overlay through hidden, compact and expanded views. If the launcher enables it at startup, it starts compact. The overlay includes a raw present-time graph and rolling 60-second 1% / 0.1% low FPS (averages of the slowest frame times, after a 10-second warm-up). Text readouts refresh every 100 ms (10 Hz); FPS retains its original smoothing. Samples are collected every present, including while hidden. With frame generation, these are presentation statistics, not game-render FPS. On supported Windows game builds it also shows the track, current time of day, time compression, resolved cloud-cover preset and current precipitation intensity. Set `BB_SCENE_OVERLAY=0` to keep only the original readouts. With HDR on, Page Up and Page Down make the picture brighter or darker. The bindings are in `data\user\input_config\default.ini` and can be changed there.
+F2 shows how far the clutch, brake and throttle are pressed, as bars with their percentage in the bottom left corner (a pedal at full travel is drawn bright and outlined; without a wheel it shows the gamepad's triggers). The launcher's "Show pedal inputs" turns it on at startup. Page Up and Page Down make the picture brighter or darker (the launcher's Picture card has the same brightness, contrast and gamma). F4 shows all three: each press of F4 picks the next one for Page Up and Page Down. Changes are kept for the next start. F5 and F6 narrow and widen the view. F7 turns mouse look on or off. F9 and F10 are the anti-aliasing keys above. F11 switches neural rendering off and on and Shift+F11 picks its next style. Print Screen saves a screenshot. F12 cycles the performance overlay through hidden, compact and expanded views. If the launcher enables it at startup, it starts compact. The overlay includes a raw present-time graph and rolling 60-second 1% / 0.1% low FPS (averages of the slowest frame times, after a 10-second warm-up). Text readouts refresh every 100 ms (10 Hz); FPS retains its original smoothing. Samples are collected every present, including while hidden. On supported Windows game builds it also shows the track, current time of day, time compression, resolved cloud-cover preset and current precipitation intensity. Set `BB_SCENE_OVERLAY=0` to keep only the original readouts. With HDR on, Page Up and Page Down set the HDR brightness instead. The bindings are in `data\user\input_config\default.ini` and can be changed there.
 
 ### Steering wheels
 Any wheel that Windows lists as a game controller works: the game sees it as a PS4 wheel. Pedals with a clutch, an H-pattern shifter (on the wheel or as a controller of its own, such as a Logitech Driving Force Shifter on a USB adapter) and a handbrake with a USB of its own work too. Everything is set up on the launcher's **Driving** tab, under **Wheel and force feedback**.
@@ -82,6 +87,8 @@ Any wheel that Windows lists as a game controller works: the game sees it as a P
 The **Handbrake** row listens on every controller, so a USB handbrake is found by pulling it; one that is a switch is mapped as a button. The game has no handbrake for wheels: pulled past 40%, the handbrake presses the circle button, which is the handbrake in a race.
 
 Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that Windows lists as two controllers of one name, as a Fanatec base is, are picked by Wheel Setup (for the second, `wheel_device = FANATEC Wheel @col01`: the HID collection, which stays the same from start to start).
+
+The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a button of any controller, not only the wheel: a button box or a second controller is written with its name (`wheel_button = 3, cross, BBI-32 Button Box`). They also take a key, or a key with Ctrl, Shift or Alt, so a Stream Deck that sends keys works too (F13 to F24 are free for it); keys reach the game while its window is in front. The launcher's FFB gain + and − rows take a button or a key the same way.
 
 **Force feedback**
 - **Reworked Physics** (recommended): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top. It learns each car's tyres in the first corners.
@@ -114,21 +121,21 @@ Tested with a Moza R3, a Fanatec 8 Nm direct drive base with ClubSport Pedals an
 ## Settings
 The window that opens when you start `DriveClub.exe` has every setting. Press **Play** to save them; they are kept for later starts.
 
-**Performance preset:** Handheld, Low, Medium, High or Ultra pick the render and output sizes for your PC. You can still change each size afterwards.
+**Performance preset:** Handheld, Low, Medium, High or Ultra pick the render and output sizes for your PC. Ultra also turns on every Graphics tab feature except neural rendering. You can still change each setting afterwards.
 
-**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, or **Unlocked (VRR)**. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion.
+**Frame rate:** 30, 60 (deltatime), 60 with a fixed tick, **Unlocked (VRR)** or **Unlimited** (no cap and no V-Sync, above your display's refresh rate if your PC can; the picture can tear). **Unlocked (VRR)** is for G-Sync and FreeSync displays. Unlocked runs up to 3 FPS below your display's refresh rate, the game keeps its normal speed, and variable refresh (G-Sync, FreeSync) is on: frames go out in step with the display, so a VRR display shows each one as it comes. For G-Sync, enable it for windowed and full screen mode in the NVIDIA Control Panel (the game's full screen is borderless). **Frame cap** (with Unlocked) sets the highest frame rate: a little below what your PC can hold (for example 90 when it runs at about 95-100) gives the steadiest motion. **No V-Sync** is for displays without variable refresh: unlocked with no cap and no V-Sync, so each frame is shown the moment it is done (expect tearing). Above about 120 FPS the game's movement timing breaks (the car can run slower or behave wrongly), so cap it in your graphics driver if your PC goes past 120.
 
-**High-FPS camera workaround (experimental):** an optional switch under Gameplay → Patches, enabled by default. It bundles the camera/replay changes to reduce shaking above 30 FPS, including replay HUD and driver motion. Camera behavior is still incorrect in some situations and does not match the 30 FPS reference. Restart the game after changing it. This is a workaround requiring further review, not a complete camera accuracy fix.
-
-**Resolution:** output from 720p to 8K, render size from 720p to 8K, and ultrawide sizes with a field-of-view fix. Sizes above 1080p use more memory; the needed memory patch is added for you.
+**Resolution:** output from 720p to 8K, render size from 720p to 8K, an aspect ratio picker with ultrawide sizes and a field-of-view fix. Sizes above 1080p use more memory; the needed memory patch is added for you.
 
 **Mirror and reflection updates:** **Live** (default) draws the small scene of mirrors, rain and reflections every frame. **Static (faster)** draws it once and keeps that picture, which is much faster but stops reflections and rain on the glass from updating. The Handheld preset uses it.
 
-**Anti-aliasing:** **Game** keeps the original. **FSR 3.1** works on any graphics card, **DLSS (RTX)** needs a GeForce RTX card; if it is not available the launcher falls back to FSR. Do not turn on the community patch "Disable motion blur and depth of field" with it: they do not work together and the game keeps its own anti-aliasing then.
+**Anti-aliasing:** **Game** keeps the original. **FSR** has three versions in the **FSR version** row: **FSR 3.1** works on any graphics card, **FSR 4 (INT8)** is sharper but costs more per frame and runs on Radeon RX 6000 and newer, GeForce RTX and Intel Arc, and **FSR 4.1 (Radeon)** is AMD's own newer model for Radeon cards. **DLSS (RTX)** needs a GeForce RTX card; if it is not available the launcher falls back to FSR. Do not turn on the community patch "Disable motion blur and depth of field" with it: they do not work together and the game keeps its own anti-aliasing then.
 
-**Upscaling:** with FSR 3.1 or DLSS: **DLAA** (**Native** with FSR) draws every pixel; **Quality**, **Balanced**, **Performance** and **Ultra Perf.** draw the game at 1/1.5, 1/1.7, 1/2 and 1/3 of the output size and rebuild the full picture, for more FPS each. The Render resolution choice does not apply then. With upscaling, F9 leaves FSR or DLSS on: the game draws at the smaller size, so there is no full-resolution picture to switch to. **Sharpness:** 0 to 100 (80 by default).
+**Upscaling:** with FSR (any version) or DLSS: **DLAA** (**Native** with FSR) draws every pixel; **Quality**, **Balanced**, **Performance** and **Ultra Perf.** draw the game at 1/1.5, 1/1.7, 1/2 and 1/3 of the output size and rebuild the full picture, for more FPS each. The Render resolution choice does not apply then. With upscaling, F9 leaves FSR or DLSS on: the game draws at the smaller size, so there is no full-resolution picture to switch to. **Sharpness:** 0 to 100 (80 by default).
 
-**HDR:** for HDR monitors and TVs; turn on "Use HDR" in Windows' display settings first. The game makes an SDR picture, so the port turns it into HDR10: the HUD and menus at a comfortable white, and the 3D scene's highlights (the sun, lights, reflections, glints) brighter, taken from the game's own scene before its tone mapping where the SDR picture runs out. White surfaces such as snow and painted lines stay white, not glaring. **HDR brightness** (100 to 600 nits, 350 by default; Page Up / Page Down while playing, kept for the next start) sets how bright white is; **HDR peak brightness** (400 to 2000 nits, 1000 by default) should match your screen's HDR peak. Frame generation is off with HDR.
+**HDR:** for HDR monitors and TVs; turn on "Use HDR" in Windows' display settings first. The game makes an SDR picture, so the port turns it into HDR10: the HUD and menus at a comfortable white, and the 3D scene's highlights (the sun, lights, reflections, glints) brighter, taken from the game's own scene before its tone mapping where the SDR picture runs out. White surfaces such as snow and painted lines stay white, not glaring. **HDR brightness** (100 to 600 nits, 350 by default; Page Up / Page Down while playing, kept for the next start) sets how bright white is; **HDR peak brightness** (400 to 2000 nits, 1000 by default) should match your screen's HDR peak.
+
+**Neural rendering** (Graphics tab): DLSS neural rendering on GeForce RTX cards. The row stays locked until `nvngx_dlssnr.dll` is next to the game; the launcher says what is missing. **NVIDIA Reflex** and **AMD Anti-Lag 2** lower the input delay on GeForce and Radeon cards.
 
 **Anisotropic filtering:** keeps textures on roads and terrain sharp at a shallow angle. **Automatic** is 16x (4x on integrated graphics); you can also choose Off, 2x, 4x, 8x or 16x.
 
@@ -138,7 +145,19 @@ The window that opens when you start `DriveClub.exe` has every setting. Press **
 
 **Gameplay:** player name, borderless fullscreen, FPS counter, motion blur and depth of field off, no reset-to-track timer, no track barriers, and photo mode options.
 
-**Driving:** the field of view, the gearbox, brake assist, hardcore handling and wheel assist, and the steering wheel (Wheel Setup and force feedback, see [Steering wheels](#steering-wheels)). **Sim** turns the assists off, with a manual gearbox and hardcore handling; **Assisted** uses an automatic gearbox, brake assist and wheel assist; **Game Defaults** leaves them to the game's own menu. A choice made here wins over the game's menu; **In-game** hands that option back to the menu.
+**Driving:** the field of view, **Lock to horizon** (Off, Cockpit or All views: the horizon stays level while the car leans and dips, as in Assetto Corsa; the driver's head still looks into corners and its sway is smoothed, which is easier on motion sickness; All views does the bonnet, bumper and chase views too), **Camera shake** (0 to 100% of the game's shake over bumps and kerbs; the game's own Options menu has a Camera shake setting that adds more on top, so set it to 0 there too for the calmest view), the gearbox, brake assist, hardcore handling and wheel assist, and the steering wheel (Wheel Setup and force feedback, see [Steering wheels](#steering-wheels)). **Sim** turns the assists off, with a manual gearbox and hardcore handling; **Assisted** uses an automatic gearbox, brake assist and wheel assist; **Game Defaults** leaves them to the game's own menu. A choice made here wins over the game's menu; **In-game** hands that option back to the menu.
+
+**Online play** (General tab): Off, **Host a session** or **Join a session** (type the host's IP address). Players reach each other over a home network or a VPN. Run `Allow-Firewall.bat` once. Both players need the same version. More in [docs/online](docs/online). A public lobby is being tested on our Discord and is not part of this release.
+
+**Telemetry output and DualSense** (General tab): the game can send its telemetry over UDP in the Forza Dash layout for dashboards and motion rigs, and a DualSense connected with the USB cable gets adaptive triggers and haptics. Both are off unless you turn them on.
+
+**Save profile** (General tab, SAVES): four separate careers on one install, a backup of your saves at every start (the last ten are kept), and **Back up now** and **Restore the latest backup** buttons.
+
+**Unlock every car and bike:** off by default. Makes every car and bike available from the first level, including the add-on content. Cars won in events stay as the game has them.
+
+**Picture** (Display tab): brightness, contrast and gamma. In the game, **F4** picks contrast or gamma and **Page Up / Page Down** change the value.
+
+**Lock to horizon** and **Camera shake** (Driving tab): keep the horizon level in corners (cockpit or all views), and lower how much the camera shakes.
 
 **Skip the hardware check:** the launcher checks that your processor and graphics card can run the game (a processor with AVX, BMI1, LZCNT and MOVBE, and Vulkan 1.3). If it ever refuses hardware that works, turn this on to start anyway.
 
@@ -157,8 +176,9 @@ A second line, `Benchmark: ran render=... output=... fps_limit=... aa=...`, list
 - **Static (faster)** stops reflections and rain on the glass from updating.
 - **The processor is the limit.** Heavy scenes (many cars, trees and rain) drop frames first on slower CPUs.
 - **First play builds shaders:** short stutters in the first minutes until they are cached. This gets better on later runs.
-- **Online features do not work.**
-- Tested on an NVIDIA graphics card only. AMD and Intel are untested; reports from AMD and Intel players are welcome.
+- **Online play in this release is private.** It works between friends on a home network or a VPN, with the same version for everyone. A public lobby is being tested on our Discord first.
+- Mostly tested on NVIDIA graphics cards. AMD and Intel players still report colour glitches or "device lost" crashes in some cases; reports with the log files are welcome.
+- Above 120 FPS the game can have issues.
 
 ## Notes
 - You must supply your own, legally obtained dump of the game. No game files are included.
@@ -167,10 +187,13 @@ A second line, `Benchmark: ran render=... output=... fps_limit=... aa=...`, list
 - Requires Windows 10/11 64-bit, a processor from Intel Haswell (2013) or AMD Excavator or Ryzen onward, and a graphics card with a Vulkan 1.3 driver. About 40 GB of free space is needed for the game dumps.
 
 ## Building from source
-See [BUILDING.md](BUILDING.md).
+See [BUILDING.md](BUILDING.md). The Linux build produces a native AppImage (`packaging/appimage/build-appimage.sh`);
+the same document lists its dependencies.
 
 ## Reporting problems
-Open an [issue](../../issues/new/choose) and fill in the form. **Attach the log files**: without them an issue usually cannot be solved. In the folder next to `DriveClub.exe`, open `logs` and drag these into the issue:
+Open an [issue](../../issues/new/choose) and fill in the form. **Attach the bug report**: without it an issue usually cannot be solved. In the launcher press **Save a bug report** (General tab). It makes `bug-report.zip` next to `DriveClub.exe` with everything below and your settings, and no game files. Drag that file into the issue.
+
+By hand, the same files are in the `logs` folder:
 - the newest `driveclub_<date>_<time>.log` (one per start: take the one from the run that went wrong). It starts with your Windows, processor, graphics card, driver and launcher choices, and has a status line every 30 seconds, so nothing else is needed from you.
 - `launcher.log`: what the launcher saw. It exists even when the game never started, for example when the launcher shows an error.
 - any `crash_*.dmp`: a small file written when the game crashes.

@@ -50,6 +50,9 @@ public:
     /// True if any user is currently signed in
     bool IsAnySignedIn() const;
 
+    /// True when BB_NP_LOCAL gives the game an account that lives on this PC (no shadNet server).
+    bool IsLocalAccount() const;
+
     // Set the Appear-Offline preference for all signed-in users (and future logins). While
     // enabled, shadNet handles the user as offline for everyone else. Call from the UI/config.
     void SetAppearOffline(bool enable);

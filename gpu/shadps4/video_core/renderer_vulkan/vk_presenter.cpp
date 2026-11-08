@@ -14,12 +14,14 @@
 #include "common/io_file.h"
 #include "common/path_util.h"
 #include "common/singleton.h"
+#include "common/thread.h"
 #include "core/debug_state.h"
 #include "core/emulator_settings.h"
 #include "sdl_window.h"
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "bbport_overlay.h"
 #include "bbport_neural_settings.h"
@@ -27,11 +29,14 @@
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_reflex.h"
 #include "video_core/texture_cache/image.h"
 
 #include <algorithm>
+#include <miniz.h>
 #include <array>
 #include <atomic>
+#include <thread>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -200,6 +205,11 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     neural = std::make_unique<NeuralRendering>(instance, draw_scheduler);
     swapchain_frame_gen = frame_generator->Wanted();
     rasterizer->GetUpscaler().SetFrameGenerator(frame_generator.get());
+    const vk::Extent2D extent = swapchain.GetExtent();
+    if (extent.width > 0 && extent.height > 0) {
+        expected_ratio = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        SetExpectedGameSize(s32(extent.width), s32(extent.height));
+    }
 }
 
 Presenter::~Presenter() {
@@ -477,6 +487,7 @@ Frame* Presenter::PrepareLastFrame() {
     // Flush frame creation commands.
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
+    frame->source_scheduler = &scheduler;
     SubmitInfo info{};
     scheduler.Flush(info);
     return frame;
@@ -534,27 +545,111 @@ static void DumpRaw(const Instance& instance, Scheduler& scheduler, vk::CommandB
     });
 }
 
+extern "C" void bbgpu_overlay_note(const char* text_utf8);
+
+// Print Screen: the picture the game made for the display (RGBA8, the size it is presented at: with an upscaler the
+// output size, with the overlays, before any HDR conversion) is saved as a PNG in the user folder's screenshots
+// folder once the GPU is done with it. The PNG is made on a thread of its own, so a frame is never held for it.
+static std::atomic<bool> g_screenshot_requested{false};
+static void SaveScreenshot(const Instance& instance, Scheduler& scheduler, vk::CommandBuffer cmdbuf,
+                           vk::Image image, vk::ImageLayout layout, u32 w, u32 h) {
+    const VkBufferCreateInfo buffer_ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                       .size = VkDeviceSize(w) * h * 4,
+                                       .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation,
+                        &info) != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan, "Screenshot: no memory for the copy");
+        return;
+    }
+    cmdbuf.copyImageToBuffer(image, layout, buffer,
+                             vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                                                 .imageExtent = {w, h, 1}});
+    const auto folder = Common::FS::GetUserPath(Common::FS::PathType::UserDir) / "screenshots";
+    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info,
+                                      w, h, folder] {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+        std::vector<u8> rgb(size_t(w) * h * 3);
+        const u8* src = static_cast<const u8*>(info.pMappedData);
+        for (size_t i = 0; i < size_t(w) * h; ++i) {
+            rgb[i * 3 + 0] = src[i * 4 + 0];
+            rgb[i * 3 + 1] = src[i * 4 + 1];
+            rgb[i * 3 + 2] = src[i * 4 + 2];
+        }
+        vmaDestroyBuffer(allocator, buffer, allocation);
+        std::thread([rgb = std::move(rgb), w, h, folder] {
+            size_t png_size = 0;
+            void* png = tdefl_write_image_to_png_file_in_memory_ex(rgb.data(), int(w), int(h), 3, &png_size, 6,
+                                                                   0);
+            if (!png) {
+                LOG_ERROR(Render_Vulkan, "Screenshot: the PNG could not be made");
+                return;
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(folder, ec);
+            const std::time_t now = std::time(nullptr);
+            std::tm local{};
+#ifdef _WIN32
+            localtime_s(&local, &now);
+#else
+            localtime_r(&now, &local);
+#endif
+            char name[64];
+            std::strftime(name, sizeof(name), "DriveClub_%Y%m%d_%H%M%S.png", &local);
+            const auto file = folder / name;
+            bool ok = false;
+            if (std::ofstream out{file, std::ios::binary}) {
+                out.write(static_cast<const char*>(png), std::streamsize(png_size));
+                ok = bool(out);
+            }
+            std::free(png);
+            if (ok) {
+                LOG_INFO(Render_Vulkan, "Screenshot saved: {}", file.string());
+                const std::string note = std::string{"Screenshot saved: "} + name;
+                bbgpu_overlay_note(note.c_str());
+            } else {
+                LOG_ERROR(Render_Vulkan, "Screenshot: {} could not be written", file.string());
+            }
+        }).detach();
+    });
+}
+
 Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
-                               VAddr cpu_address) {
+                               VAddr cpu_address, u64 content_frame_id) {
     const s64 trace_start = BbTrace::enabled ? BbTrace::NowNs() : 0;
 #ifdef _WIN32
     {
-        // Neural rendering (off unless nr_enabled is set): F7 switches it off and on, F6 steps through the styles.
-        static bool f7_down = false, f6_down = false;
+        // Neural rendering (off unless nr_enabled is set): F11 switches it off and on, Shift+F11 steps through the
+        // styles. (F5 and F6 are the field of view, F7 the mouse look: no other key was free.)
+        static bool f11_down = false, prtsc_down = false;
+        {
+            // Print Screen saves a screenshot (SaveScreenshot), while a window of this game is in front.
+            const bool prtsc = (GetAsyncKeyState(VK_SNAPSHOT) & 0x8000) != 0;
+            DWORD focus_pid = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &focus_pid);
+            if (prtsc && !prtsc_down && focus_pid == GetCurrentProcessId()) {
+                g_screenshot_requested = true;
+            }
+            prtsc_down = prtsc;
+        }
         static const bool requested = BbNeural::Snapshot().enabled;
         if (requested) {
-            const bool f7 = (GetAsyncKeyState(VK_F7) & 0x8000) != 0;
-            const bool f6 = (GetAsyncKeyState(VK_F6) & 0x8000) != 0;
-            if (f7 && !f7_down) {
-                BbNeural::Toggle();
+            const bool f11 = (GetAsyncKeyState(VK_F11) & 0x8000) != 0;
+            if (f11 && !f11_down) {
+                if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+                    auto config = BbNeural::Snapshot();
+                    config.passes[0].style = (config.passes[0].style + 1) % BbNeural::StyleCount;
+                    BbNeural::Set(config);
+                } else {
+                    BbNeural::Toggle();
+                }
             }
-            if (f6 && !f6_down) {
-                auto config = BbNeural::Snapshot();
-                config.passes[0].style = (config.passes[0].style + 1) % BbNeural::StyleCount;
-                BbNeural::Set(config);
-            }
-            f7_down = f7;
-            f6_down = f6;
+            f11_down = f11;
         }
     }
 #endif
@@ -566,6 +661,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     static const char* frame_dump_trigger = BB_DIAGNOSTIC_ENV("BB_FRAME_DUMP_TRIGGER");
     static int frame_dump_index = 0;
     const bool frame_dump = frame_dump_trigger && std::remove(frame_dump_trigger) == 0;
+    const bool screenshot = g_screenshot_requested.exchange(false);
     // bbport: scaled upscaler presets: the output-size display buffer drawn by the port.
     TemporalUpscaler::Display display{};
     const bool upscaled = rasterizer->GetUpscaler().DisplayOverride(cpu_address, display);
@@ -576,7 +672,22 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         texture_cache.UpdateImage(image_id);
     }
 
+    const u32 src_w = upscaled ? display.width : attribute.attrib.width;
+    const u32 src_h = upscaled ? display.height : attribute.attrib.height;
+    if (src_w > 0 && src_h > 0) {
+        const float new_ratio = static_cast<float>(src_w) / static_cast<float>(src_h);
+        if (new_ratio != expected_ratio) {
+            expected_ratio = new_ratio;
+            const vk::Extent2D extent = swapchain.GetExtent();
+            SetExpectedGameSize(s32(extent.width), s32(extent.height));
+        }
+    }
+
     Frame* frame = GetRenderFrame();
+    // bbport: the accepted flip identity is authoritative (zero at startup is intentional);
+    // the live counter is what a frame with no accepted flip falls back to.
+    frame->content_frame_id = content_frame_id;
+    frame->reflex_frame_id = content_frame_id;
 
     const auto frame_subresources = vk::ImageSubresourceRange{
         .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -662,13 +773,14 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.srgb_input =
         attribute.attrib.pixel_format == Libraries::VideoOut::PixelFormat::A2R10G10B10Srgb;
     // bbport: TV gamma: the game was made for TVs that decode with 2.4, PC displays decode sRGB
-    // (about 2.2) and showed it washed out. The encoded values to the power 2.4 / 2.2 look on a PC
-    // display as the picture did on a TV. SDR only (HDR maps the picture itself). BB_TV_GAMMA=0: off.
-    static const bool tv_gamma = [] {
-        const char* env = std::getenv("BB_TV_GAMMA");
-        return !env || env[0] != '0';
-    }();
-    pp_settings.power = tv_gamma && !hdr_output ? 2.4f / 2.2f : 1.0f;
+    // (about 2.2) and showed it washed out. The encoded values to the power gamma / 2.2 look on a PC
+    // display as the picture did on a display of that gamma (2.4 by default, 2.2 as encoded).
+    // Then contrast around mid grey and brightness, all from picture.ini or F4 while playing.
+    // SDR only (HDR maps the picture itself).
+    const auto& picture = BbSettings::Get();
+    pp_settings.power = hdr_output ? 1.0f : float(picture.picture_gamma.load()) / 220.0f;
+    pp_settings.contrast = hdr_output ? 1.0f : float(picture.picture_contrast.load()) / 100.0f;
+    pp_settings.brightness = hdr_output ? 0.0f : float(picture.picture_brightness.load()) / 400.0f;
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     // Neural rendering on the finished, display-referred frame (the UI is in it), before the HDR conversion.
@@ -820,10 +932,20 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         DumpRaw(instance, draw_scheduler, cmdbuf, frame->image, vk::ImageLayout::eGeneral,
                 frame->width, frame->height, "output", frame_dump_index);
     }
+    if (screenshot) {
+        const vk::MemoryBarrier2 done{.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+                                      .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                                      .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                                      .dstAccessMask = vk::AccessFlagBits2::eTransferRead};
+        cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &done});
+        SaveScreenshot(instance, draw_scheduler, cmdbuf, frame->image, vk::ImageLayout::eGeneral, frame->width,
+                       frame->height);
+    }
 
     // Flush frame creation commands.
     frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
+    frame->source_scheduler = &draw_scheduler;
     SubmitInfo info{};
     draw_scheduler.Flush(info);
 
@@ -860,11 +982,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     return frame;
 }
 
-Frame* Presenter::PrepareBlankFrame(bool present_thread) {
+Frame* Presenter::PrepareBlankFrame(bool present_thread, u64 content_frame_id) {
     // Request a free presentation frame.
     Frame* frame = GetRenderFrame();
     frame->generated_count = 0;
     frame->hdr_ready = false; // black: the frame itself is presented
+    // The present thread has no accepted flip and keeps the live identity; the flip path
+    // carries the accepted identity explicitly, including zero at startup.
+    frame->content_frame_id = content_frame_id;
+    frame->reflex_frame_id = present_thread ? Reflex::CurrentSimFrameId() : content_frame_id;
 
     auto& scheduler = present_thread ? present_scheduler : draw_scheduler;
     scheduler.EndRendering();
@@ -930,6 +1056,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread) {
     // Flush frame creation commands.
     frame->ready_semaphore = scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = scheduler.CurrentTick();
+    frame->source_scheduler = &scheduler;
     SubmitInfo info{};
     scheduler.Flush(info);
     return frame;
@@ -967,7 +1094,11 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // spaced over the interval between the game's frames (the generated ones belong to the
     // time before this frame). A frame shown again has none.
     u32 generated = is_reusing_frame ? 0 : frame->generated_count;
-    auto start = std::chrono::steady_clock::now();
+    const auto entered = std::chrono::steady_clock::now();
+    auto start = entered;
+    // bbport: the deliberate waiting in this frame, and the wait for the source on the GPU. Both
+    // are the pacer working as designed, so neither may count as the presenter being busy.
+    double slept_ms = 0.0;
     if (!is_reusing_frame && is_game_frame) {
         const double ms =
             std::chrono::duration<double, std::milli>(start - last_game_present).count();
@@ -988,29 +1119,84 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     if (generated && behind()) {
         generated = 0;
     }
-    const auto wait_until = [](std::chrono::steady_clock::time_point at) {
-        // The system sleep is coarse: sleep most of the way, then spin.
-        constexpr auto spin = std::chrono::microseconds(1500);
-        const auto now = std::chrono::steady_clock::now();
-        if (at - now > spin) {
-            std::this_thread::sleep_for(at - now - spin);
-        }
-        while (std::chrono::steady_clock::now() < at) {
-            std::this_thread::yield();
-        }
+    const auto wait_until = [&slept_ms](std::chrono::steady_clock::time_point at) {
+        const auto began = std::chrono::steady_clock::now();
+        Common::PreciseSleepUntil(at);
+        slept_ms += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - began)
+                        .count();
     };
     // A game frame that arrives early must not bunch its frames up behind the last one shown:
     // the first of them waits one step after it.
-    if (generated && g_last_shown.time_since_epoch().count() != 0) {
+    if (generated && !BbSettings::Get().fg_pacing_gpu.load(std::memory_order_relaxed) &&
+        g_last_shown.time_since_epoch().count() != 0) {
         const auto earliest = g_last_shown + step;
         if (start < earliest && earliest - start < std::chrono::milliseconds(50)) {
             wait_until(earliest);
             start = earliest;
         }
     }
+    // DCport #69: pace images the GPU has actually finished, not CPU submissions. Until the
+    // source frame is complete on the GPU, an evenly spaced batch of copies is not an evenly
+    // spaced sequence on the panel.
+    // The source must be complete on the GPU before its images are spaced out.
+    const auto source_began = std::chrono::steady_clock::now();
+    if (frame->source_scheduler) {
+        frame->source_scheduler->Wait(frame->ready_tick);
+    }
+    const auto paced = std::chrono::steady_clock::now();
+    const double source_wait_ms = std::chrono::duration<double, std::milli>(paced - source_began).count();
+    // GPU timing (Ctrl+F8, BB_FG_PACING=gpu): the generated images are spread evenly from the last real image shown to
+    // the moment the GPU finished this frame (or one interval after the last one, when that is later), not from when
+    // the CPU reached this point, so the spacing follows the game's rendered cadence and not the presenter's jitter.
+    static std::chrono::steady_clock::time_point last_completed{}, last_real_shown{};
+    static double completion_ms = 16.7;
+    if (!is_reusing_frame && is_game_frame) {
+        if (last_completed.time_since_epoch().count() != 0) {
+            const double ms = std::chrono::duration<double, std::milli>(paced - last_completed).count();
+            if (ms > 1.0 && ms < 100.0) {
+                completion_ms += (ms - completion_ms) * 0.1;
+            }
+        }
+        last_completed = paced;
+    }
+    const bool gpu_pacing = BbSettings::Get().fg_pacing_gpu.load(std::memory_order_relaxed) && generated &&
+                            !is_reusing_frame && is_game_frame;
+    std::chrono::steady_clock::time_point anchor{}, real_target{};
+    if (gpu_pacing) {
+        const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double, std::milli>(completion_ms));
+        anchor = last_real_shown.time_since_epoch().count() != 0 && paced - last_real_shown < interval * 3
+                     ? last_real_shown
+                     : paced - interval;
+        real_target = std::max(paced, anchor + interval);
+    }
+    const auto image_target = [&](u32 k) { return anchor + (real_target - anchor) * (k + 1) / (generated + 1); };
+    // The input gate bounds unfinished source work, not the CPU sleeps that spread the
+    // generated images over the display interval: let the guest start its next source as soon
+    // as this one is rendered. Holding the slot until the last present starves the GPU.
+    if (is_game_frame && !is_reusing_frame) {
+        Reflex::OnSourceReady(frame->flip_ticket);
+    }
+    // One application-rendered frame owns the whole interpolation group: the ordinary present
+    // markers wrap it and each physical present inside carries out-of-band markers, so the
+    // driver attributes every image to this source instead of mapping one ID several times.
+    reflex_grouped = generated > 0;
+    if (reflex_grouped) {
+        Reflex::OnPresentBegin(frame->reflex_frame_id, true);
+    }
+    Reflex::OnSourceCadence(reflex_grouped ? static_cast<int>(EmulatorSettings.GetFrameLimit())
+                                            : 0,
+                            static_cast<std::int64_t>(game_frame_ms.load() * 1e6),
+                            reflex_grouped);
     u32 shown = 0;
     for (; shown < generated; ++shown) {
-        if (shown > 0) {
+        if (gpu_pacing) {
+            if (shown > 0 && behind()) {
+                break;
+            }
+            wait_until(image_target(shown));
+        } else if (shown > 0) {
             if (behind()) {
                 break;
             }
@@ -1019,10 +1205,17 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         PresentImage(frame, frame->generated[shown].image, false);
     }
     if (shown && !behind()) {
-        wait_until(start + step * shown);
+        wait_until(gpu_pacing ? real_target : start + step * shown);
     }
     const auto presented_generated = std::chrono::steady_clock::now();
+    if (is_game_frame && !is_reusing_frame) {
+        AntiLag::Present(EmulatorSettings.GetFrameLimit());   // AMD Anti-Lag 2: the real frame reaches the display
+    }
     if (!PresentImage(frame, frame->image, true, is_game_frame && !is_reusing_frame)) {
+        if (reflex_grouped) {
+            Reflex::OnPresentEnd(frame->reflex_frame_id, true);
+            reflex_grouped = false;
+        }
         if (shown) {
             // The frame's fence was not reset and so does not cover the generated frames'
             // blits: they must be done before the frame is drawn again.
@@ -1032,9 +1225,24 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         return;
     }
     if (!is_reusing_frame && is_game_frame) {
-        UpdateFrameGenLimit(frame_gen, std::chrono::duration<double, std::milli>(
-                                           std::chrono::steady_clock::now() - start)
-                                           .count());
+        last_real_shown = std::chrono::steady_clock::now();   // the anchor of GPU timing pacing
+    }
+    if (!is_reusing_frame && is_game_frame) {
+        // The presenter's own cost: acquire, copy and vkQueuePresent for every image. The waits
+        // above are the pacing, and the GPU wait is the game's render, so counting them made a
+        // healthy frame look like a presenter that cannot keep up.
+        UpdateFrameGenLimit(frame_gen, std::max(0.0, std::chrono::duration<double, std::milli>(
+                                                         std::chrono::steady_clock::now() - entered)
+                                                         .count() - slept_ms - source_wait_ms));
+    }
+    if (reflex_grouped) {
+        Reflex::OnPresentEnd(frame->reflex_frame_id, true);
+        reflex_grouped = false;
+    }
+    // Every real source frame leaves the bounded backlog when this call returns, including a
+    // minimized window or a skipped present, so a slot can never leak.
+    if (!is_reusing_frame && is_game_frame) {
+        Reflex::OnPresentRetired(frame->flip_ticket);
     }
     // The log shows whether frame generation really made frames: every 10 seconds.
     if (frame_gen && !is_reusing_frame && is_game_frame) {
@@ -1046,6 +1254,16 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         if (now_time - window_start >= std::chrono::seconds(10)) {
             std::printf("Frame generation: %u of %u game frames got a generated frame in the last 10 s\n",
                         with_generated, game_frames);
+            {
+                // GPU memory by the allocator, to tell a leak from the game's own growth (compare across lines).
+                VmaTotalStatistics totals{};
+                vmaCalculateStatistics(instance.GetAllocator(), &totals);
+                std::printf("Memory: GPU allocator %u allocations, %.0f MB in use; driver says %.0f MB used by this process; FSR 3.1 frames waiting %zu\n",
+                            totals.total.statistics.allocationCount,
+                            totals.total.statistics.allocationBytes / 1048576.0,
+                            instance.CanReportMemoryUsage() ? instance.GetDeviceMemoryUsage() / 1048576.0 : 0.0,
+                            frame_generator->PendingFsr3());
+            }
             window_start = now_time;
             game_frames = with_generated = 0;
         }
@@ -1136,7 +1354,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     }
 }
 
-void Presenter::UpdateFrameGenLimit(bool wanted, double present_ms) {
+void Presenter::UpdateFrameGenLimit(bool wanted, double work_ms) {
     auto& settings = BbSettings::Get();
     settings.game_fps = float(1000.0 / game_frame_ms.load(std::memory_order_relaxed));
     if (!wanted) {
@@ -1184,19 +1402,73 @@ void Presenter::UpdateFrameGenLimit(bool wanted, double present_ms) {
         // instead. The pause below still applies.
         limit = FrameGenerator::MaxGenerated;
     }
-    // The share of the game's frame interval spent presenting its images: paced, about
-    // count / (count + 1). Near one the presentation holds the game back (FIFO on a display
-    // slower than measured, a GPU too slow for generation): off for a while, longer each time.
-    present_busy += (present_ms / interval - present_busy) * 0.1;
+    if (fifo && settings.frame_gen_auto) {
+        // Automatic multiplier: with V-Sync the game is paced to refresh / (generated + 1), so a fixed 4x on a
+        // 240 Hz display holds the game at 60 FPS even when it could run 120. Here the count follows the game: down
+        // a step when the game sits at its pacing limit for 3 s (it may be faster, and the lower count lifts the
+        // limit), up a step when it runs well below the limit for 5 s and the display has room. After a step no
+        // opposite step for 15 to 30 s, so a game that sits right on a boundary does not flip back and forth.
+        static u32 auto_count = 0;
+        static auto auto_window = now;
+        static int auto_frames = 0, auto_up_s = 0, auto_capped_s = 0, auto_hold_s = 0;
+        const u32 chosen = std::max(1u, frame_generator->WantedCount());   // the multiplier chosen, within what the card can do
+        if (!auto_count || auto_count > chosen) {
+            auto_count = chosen;
+        }
+        ++auto_frames;
+        const double secs = std::chrono::duration<double>(now - auto_window).count();
+        if (secs >= 1.0) {
+            const double fps = auto_frames / secs;
+            auto_window = now;
+            auto_frames = 0;
+            if (secs < 2.0) { // not the first window, nor after a pause of the game
+                const double cap = double(hz) / (auto_count + 1);
+                if (auto_hold_s > 0) {
+                    --auto_hold_s;
+                }
+                if (fps < cap * 0.92) {
+                    auto_capped_s = 0;
+                    const u32 fit = u32(std::clamp(int(hz / fps) - 1, 1, int(chosen)));
+                    if (fit > auto_count && auto_hold_s <= 0) {
+                        if (++auto_up_s >= 5) {
+                            ++auto_count;
+                            auto_up_s = 0;
+                            auto_hold_s = 30;
+                            std::printf("Frame generation: automatic multiplier up to %ux (game %.0f FPS, display %u Hz)\n",
+                                        auto_count + 1, fps, hz);
+                        }
+                    } else {
+                        auto_up_s = 0;
+                    }
+                } else {
+                    auto_up_s = 0;
+                    if (auto_count > 1 && auto_hold_s <= 0 && ++auto_capped_s >= 8) {
+                        --auto_count;
+                        auto_capped_s = 0;
+                        auto_hold_s = 15;   // a step changes the pacing: let the game settle before the next one
+                        std::printf("Frame generation: automatic multiplier down to %ux (game held at %.0f FPS, display %u Hz)\n",
+                                    auto_count + 1, fps, hz);
+                    }
+                }
+            }
+        }
+        limit = auto_count;
+    }
+    // The share of the game's frame interval spent on presentation work: acquire, copy and
+    // vkQueuePresent for every image. Near one the presentation holds the game back (FIFO on a
+    // display slower than measured, a GPU too slow for generation): off for a while, longer each
+    // time. The pacing sleeps and the GPU wait are excluded; they are the pacer and the game, not
+    // this thread failing.
+    present_busy += (work_ms / interval - present_busy) * 0.1;
     if (before && present_busy > 0.97) {
         frame_gen_hold_seconds =
             now - frame_gen_hold_until > std::chrono::seconds(60)
                 ? 5
                 : std::min(frame_gen_hold_seconds * 2, 120);
         frame_gen_hold_until = now + std::chrono::seconds(frame_gen_hold_seconds);
-        std::printf("Frame generation: paused for %d s, presenting does not keep up (%.1f of "
-                    "%.1f ms per game frame; FIFO present mode or a slower display?)\n",
-                    frame_gen_hold_seconds, present_ms, interval);
+        std::printf("Frame generation: paused for %d s, presenting does not keep up (%.1f ms of "
+                    "presenter work in a %.1f ms game frame; is the display slower than measured?)\n",
+                    frame_gen_hold_seconds, work_ms, interval);
         present_busy = 0.0;
     }
     if (now < frame_gen_hold_until) {
@@ -1253,6 +1525,11 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
     }
     const vk::Image swapchain_image = swapchain.Image();
     auto& scheduler = present_scheduler;
+    // Attribute the copy submission to the source it belongs to. Only a real, ungrouped
+    // present owns the driver's ordinary PRESENT markers.
+    Reflex::SetRecordingFrameId(frame->reflex_frame_id);
+    scheduler.SetFrameId(frame->reflex_frame_id);
+    const bool reflex_ordinary = last && !reflex_grouped;
     const auto cmdbuf = scheduler.CommandBuffer();
 
     if (EmulatorSettings.IsVkHostMarkersEnabled()) {
@@ -1263,6 +1540,7 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
 
     {
         const vk::Extent2D extent = swapchain.GetExtent();
+    BbFrame::NoteDisplay(extent.width, extent.height);
         SetExpectedGameSize(s32(extent.width), s32(extent.height));
         const vk::ImageSubresourceRange color_range{
             .aspectMask = vk::ImageAspectFlagBits::eColor,
@@ -1386,6 +1664,10 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
     }
     scheduler.Flush(info);
 
+    if (last) {
+        Reflex::TraceCpuPresent(frame->content_frame_id);
+    }
+    Reflex::OnPresentBegin(frame->reflex_frame_id, reflex_ordinary);
     // Present to swapchain.
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
@@ -1395,6 +1677,65 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
         }
         if (!presented && window.GetWidth() != 0 && window.GetHeight() != 0) {
             swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
+    }
+    Reflex::OnPresentEnd(frame->reflex_frame_id, reflex_ordinary);
+    static const bool latency_log = [] {
+        if (std::getenv("BB_REFLEX_TIMING")) {
+            return true;
+        }
+        return false;
+    }();
+    if (last && latency_log) {
+        // Driver report queries disturb presentation under GPU load: sample at 1 Hz, or on every
+        // frame when a detailed run asks for it.
+        static auto last_report = std::chrono::steady_clock::time_point{};
+        static auto window_start = std::chrono::steady_clock::now();
+        static u64 last_present_id{};
+        static double sum_input_to_present{}, sum_input_to_gpu{}, sum_sim{}, sum_submit_wait{};
+        static int samples{};
+        const bool raw = std::getenv("BB_REFLEX_TIMING") != nullptr;
+        const bool every = [] {
+            const char* v = std::getenv("BB_REFLEX_DRIVER_TIMING_FULL");
+            return v && v[0] == '1';
+        }();
+        const auto now = std::chrono::steady_clock::now();
+        if (every || now - last_report >= std::chrono::seconds(1)) {
+            last_report = now;
+            Reflex::LatencyReport r{};
+            if (Reflex::QueryLatencyTimings(&r) && r.present_id > last_present_id) {
+                last_present_id = r.present_id;
+                if (raw) {
+                    std::printf("reflex timing: id=%llu input=%llu sim=%llu..%llu render=%llu..%llu "
+                                "present=%llu..%llu gpu=%llu..%llu\n",
+                                (unsigned long long)r.present_id, (unsigned long long)r.input_sample_us,
+                                (unsigned long long)r.sim_start_us, (unsigned long long)r.sim_end_us,
+                                (unsigned long long)r.render_submit_start_us,
+                                (unsigned long long)r.render_submit_end_us,
+                                (unsigned long long)r.present_start_us,
+                                (unsigned long long)r.present_end_us,
+                                (unsigned long long)r.gpu_render_start_us,
+                                (unsigned long long)r.gpu_render_end_us);
+                }
+                if (r.input_sample_us && r.present_end_us > r.input_sample_us && r.gpu_render_end_us > r.input_sample_us) {
+                    sum_input_to_present += double(r.present_end_us - r.input_sample_us) / 1000.0;
+                    sum_input_to_gpu += double(r.gpu_render_end_us - r.input_sample_us) / 1000.0;
+                    sum_sim += double(r.sim_end_us - r.sim_start_us) / 1000.0;
+                    sum_submit_wait += double(r.render_submit_start_us - r.sim_end_us) / 1000.0;
+                    ++samples;
+                }
+            }
+        }
+        if (now - window_start >= std::chrono::seconds(10)) {
+            window_start = now;
+            if (samples) {
+                std::printf("Latency (Reflex, %d samples in 10 s, frame generation %u): input to the end of the game's GPU work %.1f ms, "
+                            "input to the picture handed to the display %.1f ms (game simulation %.1f ms, wait before render submit %.1f ms)\n",
+                            samples, frame_gen_limit.load(), sum_input_to_gpu / samples, sum_input_to_present / samples,
+                            sum_sim / samples, sum_submit_wait / samples);
+            }
+            sum_input_to_present = sum_input_to_gpu = sum_sim = sum_submit_wait = 0;
+            samples = 0;
         }
     }
     g_last_shown = std::chrono::steady_clock::now();

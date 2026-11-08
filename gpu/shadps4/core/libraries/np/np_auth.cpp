@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <mutex>
+#include <cstdlib>
 #include "common/logging/log.h"
 #include "core/emulator_settings.h"
 #include "core/libraries/error_codes.h"
@@ -364,7 +365,10 @@ s32 PS4_SYSV_ABI sceNpAuthDeleteRequest(s32 req_id) {
 }
 
 void RegisterLib(Core::Loader::SymbolsResolver* sym) {
-    g_shadnet_enabled = EmulatorSettings.IsShadNetEnabled();
+    // BB_NP_LOCAL: the local account is signed in, so authorization codes are handed out. A server that
+    // does not check them against shadNet accepts any code.
+    const char* local_account = std::getenv("BB_NP_LOCAL");
+    g_shadnet_enabled = EmulatorSettings.IsShadNetEnabled() || (local_account && *local_account);
 
     LIB_FUNCTION("6bwFkosYRQg", "libSceNpAuth", 1, "libSceNpAuth", sceNpAuthCreateRequest);
     LIB_FUNCTION("N+mr7GjTvr8", "libSceNpAuth", 1, "libSceNpAuth", sceNpAuthCreateAsyncRequest);

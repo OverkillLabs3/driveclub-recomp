@@ -189,7 +189,8 @@ public partial class MainWindow
                 SetStatus("Press a wheel button. Esc: cancel · Delete / Backspace: clear assignment.");
             }
             else button.IsEnabled = false;
-            var response = await backend.Call(gain ? setting.Tag[1..] : "wheelsetup", state,
+            bool saves = setting.Tag is "@savebackup" or "@saverestore";
+            var response = await backend.Call(gain || saves || setting.Tag is "@ffbtuner" or "@benchhistory" or "@bugreport" ? setting.Tag[1..] : "wheelsetup", state,
                 captureCommand: gain ? () => wheelCaptureCommand : null);
             if (gain)
             {
@@ -197,7 +198,7 @@ public partial class MainWindow
                     state.Controls.Single(c => c.Tag == changed.Tag).Options = changed.Options;
                 pages.Remove(currentPage); ShowPage(currentPage, false);
             }
-            SetStatus(response.Message.Length == 0 ? "Wheel Setup opened." : response.Message);
+            SetStatus(response.Message.Length == 0 ? (saves ? "Done." : "Wheel Setup opened.") : response.Message);
         }
         catch (Exception ex) { SetStatus(ex.Message, true); }
         finally

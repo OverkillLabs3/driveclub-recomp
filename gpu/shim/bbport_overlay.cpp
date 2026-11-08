@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_frame_info.h"
+#include <deque>
+#include <fstream>
+#include <cstring>
+#include <zlib.h>
 #include <string>
 #include <vector>
 #include "bbport_overlay.h"
@@ -18,6 +22,8 @@
 
 #include <SDL3/SDL.h>
 #include "bbport_settings.h"
+#include "bbport_neural_settings.h"
+#include "bbport_safe_start.h"
 #include "imgui.h"
 #include "bbport_scene_debug.h"
 #include "../../src/runtime_exit.h"
@@ -48,6 +54,7 @@ asm(".section .rodata\n"
     "bb_font_ttf_end:\n"
     ".previous\n");
 #endif
+extern "C" int runtime_file_translate(const char* guest, char* out, size_t size);
 extern "C" const unsigned char bb_font_ttf[];
 extern "C" const unsigned char bb_font_ttf_end[];
 
@@ -86,6 +93,16 @@ std::string text_entry_prompt, text_entry_text;
 std::string note_text;
 std::chrono::steady_clock::time_point note_until{};
 std::atomic<bool> note_active{false};
+// Trophy banners (Trophy), guarded by imgui_mutex: shown one after another, a few seconds each.
+struct TrophyToast { int grade; std::string title, description; std::vector<ImU32> icon; };
+std::deque<TrophyToast> trophy_queue;
+std::chrono::steady_clock::time_point trophy_shown{};
+bool trophy_showing = false;
+std::atomic<bool> trophy_active{false};
+float fps_panel_bottom = 0.0f; // bottom edge of the FPS panel this frame, 0 when it is not drawn
+// The picture row F4 chose (0 brightness, 1 contrast, 2 gamma), -1 closed; closes by itself at picture_until.
+std::atomic<int> picture_row{-1};
+std::chrono::steady_clock::time_point picture_until{};
 float base_scale = 1.0f;
 ImFont *exit_body=nullptr,*exit_heading=nullptr;
 std::atomic<bool> mouse_capture_requested{false};
@@ -275,15 +292,46 @@ void PollHotkeys() {
     }
     f9_down = f9;
     f10_down = f10;
-    // Page Up / Page Down: HDR brightness (SDR white) in steps of 25 nits, kept for the next start.
+    // F4: the picture (PicturePanel): brightness, contrast, gamma in turn, then closed. SDR only.
+    static bool f4_down = false;
+    if (edge(VK_F4, f4_down) && SDL_GetKeyboardFocus() && !(GetAsyncKeyState(VK_MENU) & 0x8000)) {
+        if (s.hdr_output) {
+            Note("Brightness, contrast and gamma are for SDR   (HDR: Page Up / Page Down)");
+        } else {
+            picture_row = picture_row >= 2 ? -1 : picture_row + 1;
+        }
+        picture_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    }
+    if (picture_row >= 0 && std::chrono::steady_clock::now() > picture_until) {
+        picture_row = -1;
+    }
+    // Page Up / Page Down: the picture row F4 chose; else HDR brightness (SDR white) in steps of 25 nits with HDR on, the
+    // picture's brightness without it. All kept for the next start.
     static bool page_up_down = false, page_down_down = false;
     const bool brighter = edge(VK_PRIOR, page_up_down), darker = edge(VK_NEXT, page_down_down);
-    if (s.hdr_output && (brighter || darker)) {
+    if (picture_row >= 0 && (brighter || darker)) {
+        const int step = brighter ? 1 : -1;
+        if (picture_row == 0) {
+            s.picture_brightness = std::clamp(s.picture_brightness.load() + 2 * step, -50, 50);
+        } else if (picture_row == 1) {
+            s.picture_contrast = std::clamp(s.picture_contrast.load() + 5 * step, 50, 150);
+        } else {
+            s.picture_gamma = std::clamp(s.picture_gamma.load() + 5 * step, 180, 280);
+        }
+        BbSettings::SavePicture();
+        picture_until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    } else if (s.hdr_output && (brighter || darker)) {
         const int now = int(std::lround(s.hdr_paper.load() / 25.0f)) * 25;
         const int next = std::clamp(now + (brighter ? 25 : -25), 100, 600);
         s.hdr_paper = float(next);
         BbSettings::SaveHdrBrightness(next);
         Note("HDR brightness " + std::to_string(next) + " nits   (Page Up / Page Down)");
+    } else if (brighter || darker) {
+        const int next = std::clamp(s.picture_brightness.load() + (brighter ? 2 : -2), -50, 50);
+        s.picture_brightness = next;
+        BbSettings::SavePicture();
+        Note("Brightness " + std::string(next > 0 ? "+" : "") + std::to_string(next) +
+             "   (Page Up / Page Down;  F4: contrast and gamma)");
     }
     // F8: frame generation paused and resumed (everything stays set up).
     static bool f8_down = false;
@@ -291,11 +339,219 @@ void PollHotkeys() {
     if (s.frame_gen != BbSettings::FrameGenOff) {
         g_fg_used = true;
         if (f8 && !f8_down) {
-            s.frame_gen_paused = !s.frame_gen_paused;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+                s.fg_pacing_gpu = !s.fg_pacing_gpu;   // Ctrl+F8: how the images are spaced
+                Note(s.fg_pacing_gpu ? "Frame generation pacing: GPU timing  (Ctrl+F8: standard)"
+                                     : "Frame generation pacing: standard  (Ctrl+F8: GPU timing)");
+            } else {
+                s.frame_gen_paused = !s.frame_gen_paused;
+            }
         }
     }
     f8_down = f8;
 #endif
+}
+
+// The artwork of a trophy sits unencrypted as a PNG in the game's own trophy file (sce_sys/trophy/trophy00.trp), so
+// the banner shows the real picture without any key. It is decoded here (zlib) and shrunk to IconSize squares.
+constexpr int IconSize = 64;
+
+bool DecodePng(const std::vector<unsigned char>& png, int& width, int& height, std::vector<unsigned char>& rgba) {
+    static const unsigned char signature[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    if (png.size() < 33 || std::memcmp(png.data(), signature, 8) != 0) {
+        return false;
+    }
+    const auto be32 = [&](size_t at) {
+        return (uint32_t(png[at]) << 24) | (uint32_t(png[at + 1]) << 16) | (uint32_t(png[at + 2]) << 8) | png[at + 3];
+    };
+    std::vector<unsigned char> packed;
+    int colour_type = 0;
+    size_t at = 8;
+    width = height = 0;
+    while (at + 12 <= png.size()) {
+        const uint32_t length = be32(at);
+        const char* type = reinterpret_cast<const char*>(&png[at + 4]);
+        if (at + 12 + length > png.size()) {
+            return false;
+        }
+        if (!std::memcmp(type, "IHDR", 4) && length >= 13) {
+            width = int(be32(at + 8));
+            height = int(be32(at + 12));
+            colour_type = png[at + 17];
+            if (png[at + 16] != 8 || png[at + 20] != 0) {
+                return false; // 8 bits per channel, not interlaced
+            }
+        } else if (!std::memcmp(type, "IDAT", 4)) {
+            packed.insert(packed.end(), png.begin() + at + 8, png.begin() + at + 8 + length);
+        } else if (!std::memcmp(type, "IEND", 4)) {
+            break;
+        }
+        at += 12 + length;
+    }
+    const int bytes = colour_type == 6 ? 4 : colour_type == 2 ? 3 : 0;
+    if (!bytes || width <= 0 || height <= 0 || width > 2048 || height > 2048) {
+        return false;
+    }
+    const size_t stride = size_t(width) * bytes;
+    std::vector<unsigned char> raw((stride + 1) * size_t(height));
+    uLongf raw_size = uLongf(raw.size());
+    if (uncompress(raw.data(), &raw_size, packed.data(), uLong(packed.size())) != Z_OK || raw_size != raw.size()) {
+        return false;
+    }
+    std::vector<unsigned char> pixels(stride * size_t(height));
+    for (int y = 0; y < height; ++y) {
+        const unsigned char filter = raw[size_t(y) * (stride + 1)];
+        const unsigned char* in = &raw[size_t(y) * (stride + 1) + 1];
+        unsigned char* out = &pixels[size_t(y) * stride];
+        const unsigned char* above = y ? out - stride : nullptr;
+        for (size_t x = 0; x < stride; ++x) {
+            const int a = x >= size_t(bytes) ? out[x - bytes] : 0;
+            const int b = above ? above[x] : 0;
+            const int c = above && x >= size_t(bytes) ? above[x - bytes] : 0;
+            int predictor = 0;
+            switch (filter) {
+            case 1: predictor = a; break;
+            case 2: predictor = b; break;
+            case 3: predictor = (a + b) / 2; break;
+            case 4: {
+                const int p = a + b - c, pa = std::abs(p - a), pb = std::abs(p - b), pc = std::abs(p - c);
+                predictor = pa <= pb && pa <= pc ? a : (pb <= pc ? b : c);
+                break;
+            }
+            default: break;
+            }
+            out[x] = static_cast<unsigned char>(in[x] + predictor);
+        }
+    }
+    rgba.assign(size_t(width) * size_t(height) * 4, 255);
+    for (size_t i = 0; i < size_t(width) * size_t(height); ++i) {
+        for (int k = 0; k < bytes; ++k) {
+            rgba[i * 4 + k] = pixels[i * bytes + k];
+        }
+    }
+    return true;
+}
+
+// Reads trophy `id`'s picture out of the player's own trophy file; empty when it is not there.
+std::vector<ImU32> LoadTrophyIcon(int id) {
+    std::vector<ImU32> icon;
+    char host[1024];
+    if (runtime_file_translate("/app0/sce_sys/trophy/trophy00.trp", host, sizeof(host)) != 0) {
+        return icon;
+    }
+    std::FILE* file = std::fopen(host, "rb");
+    if (!file) {
+        return icon;
+    }
+    unsigned char header[0x60];
+    uint32_t count = 0;
+    std::vector<unsigned char> png;
+    char wanted[16];
+    std::snprintf(wanted, sizeof(wanted), "TROP%03d.PNG", id);
+    if (std::fread(header, 1, sizeof(header), file) == sizeof(header)) {
+        count = (uint32_t(header[0x10]) << 24) | (uint32_t(header[0x11]) << 16) | (uint32_t(header[0x12]) << 8) | header[0x13];
+        for (uint32_t i = 0; i < count && i < 512 && png.empty(); ++i) {
+            unsigned char entry[0x40];
+            if (std::fseek(file, long(0x60 + i * 0x40), SEEK_SET) != 0 || std::fread(entry, 1, sizeof(entry), file) != sizeof(entry)) {
+                break;
+            }
+            if (std::strncmp(reinterpret_cast<const char*>(entry), wanted, 0x20) != 0) {
+                continue;
+            }
+            uint64_t offset = 0, size = 0;
+            for (int k = 0; k < 8; ++k) {
+                offset = (offset << 8) | entry[0x20 + k];
+                size = (size << 8) | entry[0x28 + k];
+            }
+            if (size > 0 && size < (8u << 20) && std::fseek(file, long(offset), SEEK_SET) == 0) {
+                png.resize(size_t(size));
+                if (std::fread(png.data(), 1, png.size(), file) != png.size()) {
+                    png.clear();
+                }
+            }
+            break;
+        }
+    }
+    std::fclose(file);
+    int width = 0, height = 0;
+    std::vector<unsigned char> rgba;
+    if (png.empty() || !DecodePng(png, width, height, rgba)) {
+        return icon;
+    }
+    icon.resize(size_t(IconSize) * IconSize);
+    for (int y = 0; y < IconSize; ++y) {
+        for (int x = 0; x < IconSize; ++x) {
+            const int x0 = x * width / IconSize, x1 = std::max(x0 + 1, (x + 1) * width / IconSize);
+            const int y0 = y * height / IconSize, y1 = std::max(y0 + 1, (y + 1) * height / IconSize);
+            unsigned sum[3] = {0, 0, 0}, n = 0;
+            for (int yy = y0; yy < y1 && yy < height; ++yy) {
+                for (int xx = x0; xx < x1 && xx < width; ++xx) {
+                    const unsigned char* p = &rgba[(size_t(yy) * width + xx) * 4];
+                    sum[0] += p[0]; sum[1] += p[1]; sum[2] += p[2]; ++n;
+                }
+            }
+            n = n ? n : 1;
+            icon[size_t(y) * IconSize + x] = IM_COL32(sum[0] / n, sum[1] / n, sum[2] / n, 255);
+        }
+    }
+    return icon;
+}
+
+void TrophyBanner(const TrophyToast& toast, float age) {
+    // The console's banner: top right, a dark pill with the trophy's own picture on the left, the name over the
+    // description, and the grade's cup at the end. It slides in from the edge and out again.
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float s = base_scale;
+    const float slide = age < 0.35f ? age / 0.35f : (age > 4.65f ? std::max(0.0f, (5.0f - age) / 0.35f) : 1.0f);
+    const float w = 560.0f * s, h = 92.0f * s, margin = 40.0f * s;
+    const float banner_top = fps_panel_bottom > 0.0f ? fps_panel_bottom + 10.0f * s : viewport->WorkPos.y + margin;
+    const ImVec2 pos(viewport->WorkPos.x + viewport->WorkSize.x - w - margin + (1.0f - slide) * (w + margin), banner_top);
+    ImGui::SetNextWindowPos(pos);
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    ImGui::SetNextWindowBgAlpha(0.9f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 14.0f * s);
+    ImGui::Begin("##trophy", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float icon_size = 68.0f * s;
+    const ImVec2 icon_pos(pos.x + 12.0f * s, pos.y + (h - icon_size) * 0.5f);
+    if (!toast.icon.empty()) {
+        const ImDrawListFlags saved = draw->Flags;
+        draw->Flags &= ~ImDrawListFlags_AntiAliasedFill; // keep the picture's pixels edge to edge
+        const float cell = icon_size / IconSize;
+        for (int y = 0; y < IconSize; ++y) {
+            for (int x = 0; x < IconSize; ++x) {
+                const ImVec2 a(icon_pos.x + std::floor(x * cell), icon_pos.y + std::floor(y * cell));
+                const ImVec2 b(icon_pos.x + std::ceil((x + 1) * cell), icon_pos.y + std::ceil((y + 1) * cell));
+                draw->AddRectFilled(a, b, toast.icon[size_t(y) * IconSize + x]);
+            }
+        }
+        draw->Flags = saved;
+        draw->AddRect(icon_pos, ImVec2(icon_pos.x + icon_size, icon_pos.y + icon_size), IM_COL32(255, 255, 255, 70), 0.0f, 0, 1.0f);
+    }
+    static const ImU32 cup[4] = {IM_COL32(190, 220, 245, 255), IM_COL32(240, 190, 60, 255), IM_COL32(200, 205, 215, 255),
+                                 IM_COL32(205, 130, 70, 255)};
+    const ImU32 colour = cup[toast.grade >= 0 && toast.grade < 4 ? toast.grade : 3];
+    const float cx = pos.x + w - 34.0f * s, top = pos.y + h * 0.5f - 18.0f * s;
+    draw->AddRectFilled(ImVec2(cx - 12.0f * s, top), ImVec2(cx + 12.0f * s, top + 17.0f * s), colour, 4.0f * s, ImDrawFlags_RoundCornersBottom);
+    draw->AddRect(ImVec2(cx - 17.0f * s, top + 2.0f * s), ImVec2(cx - 10.0f * s, top + 11.0f * s), colour, 3.0f * s, 0, 2.0f * s);
+    draw->AddRect(ImVec2(cx + 10.0f * s, top + 2.0f * s), ImVec2(cx + 17.0f * s, top + 11.0f * s), colour, 3.0f * s, 0, 2.0f * s);
+    draw->AddRectFilled(ImVec2(cx - 2.5f * s, top + 17.0f * s), ImVec2(cx + 2.5f * s, top + 25.0f * s), colour);
+    draw->AddRectFilled(ImVec2(cx - 9.0f * s, top + 25.0f * s), ImVec2(cx + 9.0f * s, top + 29.0f * s), colour, 2.0f * s);
+    const float text_x = pos.x + 12.0f * s + (toast.icon.empty() ? 0.0f : icon_size + 14.0f * s);
+    ImGui::SetCursorScreenPos(ImVec2(text_x, pos.y + 12.0f * s));
+    ImGui::TextDisabled("Trophy earned");
+    ImGui::SetCursorScreenPos(ImVec2(text_x, pos.y + 31.0f * s));
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::TextUnformatted(toast.title.c_str());
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::SetCursorScreenPos(ImVec2(text_x, pos.y + 58.0f * s));
+    ImGui::PushTextWrapPos(pos.x + w - 60.0f * s);
+    ImGui::TextDisabled("%s", toast.description.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 void NoteBox() {
@@ -356,6 +612,35 @@ void PedalPanel() {
                       bars[i].name);
     }
     ImGui::Dummy(ImVec2(float(count) * bar_w + float(count - 1) * gap, line + space + bar_h + space + line));
+    ImGui::End();
+}
+
+/// The picture (F4), bottom centre: brightness, contrast and gamma, the one Page Up / Page Down changes marked.
+void PicturePanel() {
+    const auto& s = BbSettings::Get();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y - 60.0f * base_scale),
+                            ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    ImGui::Begin("##picture", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::SetWindowFontScale(1.3f);
+    char rows[3][32];
+    std::snprintf(rows[0], sizeof(rows[0]), "Brightness  %+d", s.picture_brightness.load());
+    std::snprintf(rows[1], sizeof(rows[1]), "Contrast  %d%%", s.picture_contrast.load());
+    std::snprintf(rows[2], sizeof(rows[2]), "Gamma  %.2f", float(s.picture_gamma.load()) / 100.0f);
+    for (int i = 0; i < 3; ++i) {
+        if (i) ImGui::SameLine(0.0f, 28.0f * base_scale);
+        if (i == picture_row) {
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.35f, 1.0f), "> %s", rows[i]);
+        } else {
+            ImGui::TextDisabled("  %s", rows[i]);
+        }
+    }
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextDisabled("Page Up / Page Down: change    F4: next    defaults: brightness 0, contrast 100%%, gamma 2.40 (TV)");
     ImGui::End();
 }
 
@@ -444,9 +729,10 @@ void FpsCounter() {
             if (s.frame_gen_paused) {
                 ImGui::Text("Frame generation: paused  (F8 on)");
             } else {
-                ImGui::Text("Frame generation: %s %dx  (F8 pause)",
+                ImGui::Text("Frame generation: %s %dx  (F8 pause, Ctrl+F8 pacing: %s)",
                             s.frame_gen == BbSettings::FrameGenDlss ? "DLSS" : "FSR 3.1",
-                            s.frame_gen == BbSettings::FrameGenDlss ? s.frame_gen_multiplier.load() : 2);
+                            s.frame_gen == BbSettings::FrameGenDlss ? s.frame_gen_multiplier.load() : 2,
+                            s.fg_pacing_gpu ? "GPU timing" : "standard");
             }
         }
         if (s.aa_mode != BbSettings::AaOff) {
@@ -455,11 +741,27 @@ void FpsCounter() {
             const char* keys = up ? (s.dlss_supported ? "F10 FSR/DLSS" : "")
                                   : (s.dlss_supported ? "F9 off, F10 FSR/DLSS" : "F9 off");
             ImGui::Text("%s: %s%s%s%s%s%s%s", up ? "Upscaling" : "AA",
-                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : "FSR 3.1",
+                        s.aa_mode == BbSettings::AaDlss ? (up ? "DLSS" : "DLAA") : BbSettings::IsFsr4(s.upscaler) ? "FSR 4" : "FSR 3.1",
                         up ? " " : "", up ? BbSettings::AaScaleName(s.aa_scale) : "",
-                        s.aa_running ? " on" : " waiting", *keys ? "  (" : "", keys, *keys ? ")" : "");
+                        s.aa_running ? " on" : s.aa_failed ? " failed (see the log)" : " waiting", *keys ? "  (" : "",
+                        keys, *keys ? ")" : "");
         } else if (g_aa_used) {
             ImGui::Text("AA: game  (F9 on)");
+        }
+        if (const char* safe = BbSafeStart::Note()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "%s", safe);
+        }
+        {
+            // Neural rendering: whether it runs, its model and style (F11 off/on, Shift+F11 next style: vk_presenter.cpp).
+            static const bool requested = BbNeural::Snapshot().enabled;
+            if (requested) {
+                const auto config = BbNeural::Snapshot();
+                static const char* const model[BbNeural::PresetCount] = {"automatic", "original", "optimized"};
+                ImGui::Text("Neural rendering: %s, %s, style %d  (F11 off/on, Shift+F11 style)",
+                            config.enabled ? BbNeural::Status().c_str() : "off",
+                            model[config.preset >= 0 && config.preset < BbNeural::PresetCount ? config.preset : 0],
+                            config.passes[0].style + 1);
+            }
         }
     }
     static unsigned shown_w, shown_h, frames;
@@ -479,6 +781,7 @@ void FpsCounter() {
         ImGui::GetWindowDrawList()->AddText(ImVec2(x, fps_hint_y),
                                           ImGui::GetColorU32(ImGuiCol_TextDisabled), fps_hint);
     }
+    fps_panel_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
     ImGui::End();
 }
 
@@ -624,6 +927,13 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        // Alt + Enter switches between fullscreen and a window.
+        if (down && !event.key.repeat && event.key.key == SDLK_RETURN && (event.key.mod & SDL_KMOD_ALT)) {
+            if (SDL_Window* window = SDL_GetWindowFromID(event.key.windowID)) {
+                SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+            }
+            return true;
+        }
         if (!is_open) {
             return false;
         }
@@ -697,8 +1007,15 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (runtime_exit_captures() || menu_open || text_entry_active || note_active || BbSettings::Get().show_fps ||
-                           BbSettings::Get().show_pedals);
+    return initialized && (runtime_exit_captures() || menu_open || text_entry_active || note_active || trophy_active || BbSettings::Get().show_fps ||
+                           BbSettings::Get().show_pedals || picture_row >= 0);
+}
+
+void Trophy(int id, int grade, const std::string& title, const std::string& description) {
+    std::vector<ImU32> icon = LoadTrophyIcon(id);
+    std::scoped_lock lock{imgui_mutex};
+    trophy_queue.push_back({grade, title, description, std::move(icon)});
+    trophy_active = true;
 }
 
 void Note(const std::string& text) {
@@ -723,6 +1040,35 @@ void SetTextEntry(bool active, const std::string& prompt, const std::string& tex
     text_entry_text = text;
 }
 
+// Seconds the game has run, kept in <user dir>/playtime.txt (the launcher shows it); written every 30 seconds.
+void CountPlaytime(float ms) {
+    static double total = -1.0, unsaved = 0.0;
+    static std::string path;
+    if (total < 0.0) {
+        const char* dir = std::getenv("BB_GPU_USER_DIR");
+        path = dir && *dir ? std::string(dir) + "/playtime.txt" : std::string();
+        total = 0.0;
+        if (!path.empty()) {
+            std::ifstream in(path);
+            long long seconds = 0;
+            if (in >> seconds && seconds > 0) {
+                total = double(seconds);
+            }
+        }
+    }
+    if (path.empty()) {
+        return;
+    }
+    BbSafeStart::Frame(ms);
+    total += ms / 1000.0;
+    unsaved += ms / 1000.0;
+    if (unsaved >= 30.0) {
+        unsaved = 0.0;
+        std::ofstream out(path, std::ios::trunc);
+        out << static_cast<long long>(total);
+    }
+}
+
 void NotePresent() {
     // Called every present whether or not anything of ours is drawn, so this is the only place
     // the keys can be polled from: Render() is gated on Visible(), which is false once F12 has
@@ -734,6 +1080,7 @@ void NotePresent() {
     if (last_present.time_since_epoch().count() && SceneDebug::Enabled()) SceneDebug::NoteFrame(ms,now);
     last_present = now;
     if (ms > 0.0f && ms < 1000.0f) {
+        CountPlaytime(ms);
         frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
     }
 }
@@ -762,11 +1109,15 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
 
     ImGui_ImplVulkan_NewFrame();
     ImGui::NewFrame();
+    fps_panel_bottom = 0.0f;
     if (BbSettings::Get().show_fps && !menu_open) {
         FpsCounter();
     }
     if (BbSettings::Get().show_pedals && !menu_open) {
         PedalPanel();
+    }
+    if (picture_row >= 0 && !menu_open) {
+        PicturePanel();
     }
     if (text_entry_active) {
         TextEntryBox();
@@ -776,6 +1127,20 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
             NoteBox();
         } else {
             note_active = false;
+        }
+    }
+    if (trophy_showing || !trophy_queue.empty()) {
+        if (!trophy_showing) {
+            trophy_showing = true;
+            trophy_shown = now;
+        }
+        const float age = std::chrono::duration<float>(now - trophy_shown).count();
+        if (age < 5.0f) {
+            TrophyBanner(trophy_queue.front(), age);
+        } else {
+            trophy_queue.pop_front();
+            trophy_showing = false;
+            trophy_active = !trophy_queue.empty();
         }
     }
     ExitConfirmation(scale);

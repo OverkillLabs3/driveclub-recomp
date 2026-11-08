@@ -1,0 +1,10 @@
+{
+  "listen": { "address": "0.0.0.0", "port": 8080 },
+  "base_path": "",
+  "log": { "file": "server.log", "max_size_mb": 50, "trace": false, "trace_body_bytes": 2048 },
+  "database": { "file": "driveclub.db", "session_days": 30 },
+  "egs": { "server_identifier": "dc-community", "version": "1" },
+  "otg": { "base_url": "", "domain_id": "driveclub", "zone": "eu" },
+  "shadnet": { "url": "", "client_id": "2a347f19-d4c4-492d-aadc-bc07ae7b8c15", "allow_unverified": true },
+  "admin": { "address": "127.0.0.1", "port": 8081, "key": "change-me" }
+}

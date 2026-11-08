@@ -1,4 +1,3 @@
-#include "../gpu/shim/bbport_diagnostics.h"
 /* Guest file system: PS4 mount points mapped onto host directories.
  *   /app0, /hostapp  -> game package root (read-only by convention)
  *   /temp0, /download0, /data, and mounts added by SaveData -> user directory
@@ -6,6 +5,7 @@
  * Paths containing ".." components are rejected rather than normalized. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

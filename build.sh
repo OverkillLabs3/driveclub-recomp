@@ -16,7 +16,8 @@ case "${BB_DIAGNOSTICS:-OFF}" in
     *) echo 'BB_DIAGNOSTICS must be ON or OFF.' >&2; exit 1 ;;
 esac
 
-cmake -S gpu -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO=off \
+# BB_PGO=use with BB_LTO=ON builds with the recorded profile (pgo/default.profdata); the default build is the fast one.
+cmake -S gpu -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO="${BB_PGO:-off}" \
     -DBB_DIAGNOSTICS="$diagnostic" -DBB_LTO="${BB_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
     -DCMAKE_C_FLAGS="-ffile-prefix-map=$root=." -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$root=." >/dev/null
 if ! ninja -C "$build" DriveClubGame > "$build-build.log" 2>&1; then

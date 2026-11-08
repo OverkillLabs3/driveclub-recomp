@@ -13,6 +13,8 @@ layout (push_constant) uniform settings {
     bool hdr;
     bool srgb_input;
     float power;  // bbport: TV gamma (2.4 / 2.2) on the encoded values, else 1
+    float contrast;    // bbport: around mid grey on the encoded values, 1 as made
+    float brightness;  // bbport: added to the encoded values, 0 as made
 } pp;
 
 const float cutoff = 0.0031308, a = 1.055, b = 0.055, d = 12.92;
@@ -40,6 +42,7 @@ void main() {
         color = color_linear;
     } else {
         if (pp.srgb_input) color_linear.rgb = degamma(color_linear.rgb);
-        color = vec4(pow(max(gamma(color_linear.rgb), vec3(0.0)), vec3(pp.power)), color_linear.a);
+        const vec3 encoded = pow(max(gamma(color_linear.rgb), vec3(0.0)), vec3(pp.power));
+        color = vec4(max((encoded - 0.5) * pp.contrast + 0.5 + pp.brightness, vec3(0.0)), color_linear.a);
     }
 }

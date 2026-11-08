@@ -463,6 +463,9 @@ ffxVkFsr3_3_1_6FrameGenerationContextRecordPrepare(
         !valid_image(info->depth, VK_FORMAT_R32_SFLOAT, info->renderWidth, info->renderHeight, false) ||
         !valid_motion_image(info->motionVectors, info->renderWidth, info->renderHeight))
         return FFX_VK_FSR3_3_1_6_FRAMEGEN_ERROR_INVALID_ARGUMENT;
+    /* Constant buffers and descriptor sets the SDK stages for this frame are stamped with its id, so RetireFrame can free
+     * them: with no id they were never freed (a device allocation per staged buffer, every frame). */
+    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId);
     if (!context->initialized) {
         const OwnedSharedImage shared[] = {
             context->opticalFlowVector, context->opticalFlowScd, context->dilatedDepth,
@@ -568,6 +571,7 @@ ffxVkFsr3_3_1_6FrameGenerationContextRecordDispatch(
          info->interpolationWidth > info->displayWidth - info->interpolationX ||
          info->interpolationHeight > info->displayHeight - info->interpolationY))
         return FFX_VK_FSR3_3_1_6_FRAMEGEN_ERROR_INVALID_ARGUMENT;
+    ffxVkFsr3_3_1_5BridgeBeginFrame(context->bridge, info->frameId);
     if (info->color.image != ffxVkFsr3_3_1_5BridgeGetNativeImage(context->bridge, context->color.resource))
         return FFX_VK_FSR3_3_1_6_FRAMEGEN_ERROR_INVALID_ARGUMENT;
     /* FI reads the current scene, depth, and motion while it writes the
@@ -676,6 +680,7 @@ ffxVkFsr3_3_1_6FrameGenerationContextRetireFrame(
             ++retained;
         }
     }
+    ffxVkFsr3_3_1_5BridgeRetireFrame(context->bridge, completedFrameId);
     return FFX_VK_FSR3_3_1_6_FRAMEGEN_OK;
 }
 

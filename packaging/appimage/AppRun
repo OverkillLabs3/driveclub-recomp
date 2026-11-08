@@ -1,0 +1,398 @@
+#!/bin/bash
+# AppRun for the DriveClub Recomp Linux AppImage.
+#
+# Without arguments this starts the native Linux launcher. --play prepares the game (if
+# needed) and starts it without a window; the game's runtime restart uses that path.
+#
+# Everything the launcher and the game write lives in data/ beside the AppImage when that
+# folder is writable, or in a folder chosen with data-path / DRIVECLUB_DATA_DIR. Without one,
+# an existing ~/.local/share/driveclub-recomp from older builds is kept.
+#
+#   DriveClub.AppImage                       launcher window
+#   DriveClub.AppImage --play                prepare if needed and play
+#   DriveClub.AppImage --setup UPDATE BASE   save the folders and open the launcher
+#   DriveClub.AppImage --repair              prepare the game again and play
+#   DriveClub.AppImage --selftest            print paths and check the bundled libraries
+#   DriveClub.AppImage --version
+set -euo pipefail
+
+# Steam and other launchers preload host libraries into every game; none of them belong in a
+# bundled runtime.
+unset LD_PRELOAD LD_AUDIT GTK_PATH GTK_MODULES GIO_EXTRA_MODULES GDK_PIXBUF_MODULEDIR 2>/dev/null || true
+
+self=$(readlink -f "${APPIMAGE:-$0}")
+selfdir=$(dirname -- "$self")
+appdir=${APPDIR:-$(cd -- "$(dirname -- "$self")" && pwd)}
+bindir=$appdir/usr/bin
+gpu=$appdir/usr/lib/driveclub-recomp/gpu
+share=$appdir/usr/share/driveclub-recomp
+launcher=$bindir/driveclub-launcher
+export LD_LIBRARY_PATH="$appdir/usr/lib:$gpu"
+
+# The data folder (settings, prepared game files, saves, logs) is kept in data/ next to the
+# AppImage whenever that folder is writable, so the AppImage and its data can be moved together.
+# A `data-path` file next to the AppImage (or DRIVECLUB_DATA_DIR) selects a different folder.
+# Without either, an existing ~/.local/share/driveclub-recomp from older builds is used so no
+# saves are lost. DRIVECLUB_PORTABLE=1 and a `portable` marker choose the folder next to the
+# AppImage when no data-path selection exists.
+xdg_data=${XDG_DATA_HOME:-$HOME/.local/share}/driveclub-recomp
+xdg_config=${XDG_CONFIG_HOME:-$HOME/.config}/driveclub-recomp
+alongside=$selfdir/data
+pointer_read=
+pointer_write=
+if [ -n "${DRIVECLUB_DATA_POINTER:-}" ]; then
+    pointer_read=$DRIVECLUB_DATA_POINTER
+    pointer_write=$DRIVECLUB_DATA_POINTER
+else
+    if [ -f "$selfdir/data-path" ] && [ -f "$xdg_config/data-path" ]; then
+        if [ "$xdg_config/data-path" -nt "$selfdir/data-path" ]; then
+            pointer_read=$xdg_config/data-path
+        else
+            pointer_read=$selfdir/data-path
+        fi
+    elif [ -f "$selfdir/data-path" ]; then
+        pointer_read=$selfdir/data-path
+    elif [ -f "$xdg_config/data-path" ]; then
+        pointer_read=$xdg_config/data-path
+    fi
+    if [ -w "$selfdir" ]; then pointer_write=$selfdir/data-path; else pointer_write=$xdg_config/data-path; fi
+fi
+portable=0
+if [ -n "${DRIVECLUB_PORTABLE:-}" ]; then
+    case $DRIVECLUB_PORTABLE in
+        1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) portable=1 ;;
+        *) portable=0 ;;
+    esac
+else
+    for marker in portable portable.txt .portable; do
+        if [ -e "$selfdir/$marker" ]; then portable=1; break; fi
+    done
+fi
+
+saved_data=
+if [ -n "$pointer_read" ] && [ -f "$pointer_read" ]; then
+    IFS= read -r saved_data < "$pointer_read" || true
+    saved_data=${saved_data%$'\r'}
+    saved_data=${saved_data#"${saved_data%%[![:space:]]*}"}
+    saved_data=${saved_data%"${saved_data##*[![:space:]]}"}
+fi
+
+legacy_data=0
+for item in launcher.ini config prep/boot-linked.bin; do
+    if [ -e "$xdg_data/$item" ]; then legacy_data=1; break; fi
+done
+if [ "$legacy_data" = 0 ]; then
+    for item in user mods; do
+        if [ -d "$xdg_data/$item" ] && [ -n "$(find "$xdg_data/$item" -type f -print -quit 2>/dev/null)" ]; then
+            legacy_data=1
+            break
+        fi
+    done
+fi
+
+if [ -n "${DRIVECLUB_DATA_DIR:-}" ]; then
+    data=$DRIVECLUB_DATA_DIR
+elif [ -n "$saved_data" ]; then
+    case $saved_data in
+        /*) data=$saved_data ;;
+        *) data=$selfdir/$saved_data ;;
+    esac
+elif [ "$portable" = 1 ]; then
+    data=$alongside
+elif [ -w "$selfdir" ] && { [ -d "$alongside" ] || [ "$legacy_data" = 0 ]; }; then
+    if mkdir -p "$alongside" 2>/dev/null && [ -w "$alongside" ]; then
+        data=$alongside
+    else
+        data=$xdg_data
+    fi
+else
+    data=$xdg_data
+fi
+if [ "$data" = "$alongside" ]; then portable=1; fi
+default_data=
+if [ -w "$selfdir" ] && { [ ! -e "$alongside" ] || [ -w "$alongside" ]; }; then
+    default_data=$alongside
+fi
+export DRIVECLUB_APPDIR="$appdir"
+export DRIVECLUB_SHARE="$share"
+export DRIVECLUB_APPIMAGE="${APPIMAGE:-$self}"
+export DRIVECLUB_DATA_DIR="$data"
+export DRIVECLUB_PORTABLE="$portable"
+export DRIVECLUB_DATA_POINTER="$pointer_write"
+export DRIVECLUB_DEFAULT_DATA_DIR="$default_data"
+export DRIVECLUB_FONT="$share/fonts/001futura-webfont.ttf"
+config=$data/config
+if ! mkdir -p "$data/logs" "$data/prep" "$data/user" "$data/mods"; then
+    echo "DriveClub Recomp: cannot write to $data." >&2
+    echo "Put the AppImage in a writable folder, or set DRIVECLUB_DATA_DIR to one." >&2
+    exit 1
+fi
+
+read_config() {
+    local file key value
+    update_dir=
+    base_dir=
+    for file in "$config" "$data/launcher.ini"; do
+        [ -f "$file" ] || continue
+        while IFS='=' read -r key value; do
+            value=${value%$'\r'}
+            case $key in
+                update) [ -n "$value" ] && update_dir=$value ;;
+                base) [ -n "$value" ] && base_dir=$value ;;
+            esac
+        done < "$file"
+    done
+}
+
+write_config() {
+    mkdir -p "$data"
+    printf '# Written by the DriveClub AppImage. Remove this file to choose the folders again.\nupdate=%s\nbase=%s\n' \
+        "$1" "$2" > "$config"
+    # The launcher reads launcher.ini first; keep its two folder keys in step without losing
+    # any of the settings saved there.
+    if [ -f "$data/launcher.ini" ]; then
+        local tmp=$data/launcher.ini.tmp
+        awk -v u="$1" -v b="$2" '
+            BEGIN { seen_u = 0; seen_b = 0 }
+            /^update=/ { print "update=" u; seen_u = 1; next }
+            /^base=/ { print "base=" b; seen_b = 1; next }
+            { print }
+            END { if (!seen_u) print "update=" u; if (!seen_b) print "base=" b }
+        ' "$data/launcher.ini" > "$tmp"
+        mv "$tmp" "$data/launcher.ini"
+    fi
+}
+
+find_update() {
+    local dir
+    for dir in "$selfdir/update" "$selfdir/CUSA00093" "$selfdir/CUSA00003" \
+               "$data/game/update" "$data/game/CUSA00093" "$data/game/CUSA00003"; do
+        if [ -f "$dir/eboot.bin" ] && [ -f "$dir/sce_sys/param.sfo" ]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    return 1
+}
+
+find_base() {
+    local dir
+    for dir in "$selfdir/base" "$selfdir/game" "$data/game/base" "$data/game"; do
+        [ -f "$dir/game000.dat" ] && { printf '%s\n' "$dir"; return 0; }
+    done
+    return 1
+}
+
+pick_folder() { # pick_folder TITLE -> prints a folder, fails when no dialog is available
+    if command -v zenity >/dev/null 2>&1; then
+        zenity --file-selection --directory --title="$1" 2>/dev/null
+    elif command -v kdialog >/dev/null 2>&1; then
+        kdialog --getexistingdirectory "$HOME" --title "$1" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+DriveClub Recomp (native Linux)
+
+  DriveClub.AppImage                       Open the launcher.
+  DriveClub.AppImage --play                Prepare the game (if needed) and play.
+  DriveClub.AppImage --setup UPDATE BASE   Save the game folders and open the launcher.
+  DriveClub.AppImage --repair              Prepare the game files again and play.
+  DriveClub.AppImage --selftest            Print the paths and check the bundled libraries.
+  DriveClub.AppImage --version             Print the packaged version.
+
+Environment:
+  DRIVECLUB_UPDATE_DIR, DRIVECLUB_BASE_DIR  The two game folders, instead of the saved settings.
+  DRIVECLUB_DATA_DIR                        Where the prepared game and settings live. Default:
+                                            data/ next to the AppImage when writable, otherwise
+                                            ~/.local/share/driveclub-recomp.
+  DRIVECLUB_PORTABLE=1                      Use data/ next to the AppImage when no folder has
+                                            been selected (or create a `portable` file there).
+  BB_*                                      Runtime options (see the project README).
+
+Use DATA FOLDER > Change... in the launcher to pick or move the data folder. The choice is
+saved in `data-path` next to the AppImage (or ~/.config/driveclub-recomp/data-path).
+EOF
+}
+
+mode=launcher
+repair=0
+setup_saved=0
+game_args=()
+update_dir=
+base_dir=
+read_config
+case ${1:-} in
+    --help|-h)
+        usage
+        exit 0
+        ;;
+    --version)
+        if [ -f "$share/version.txt" ]; then cat "$share/version.txt"; else echo dev; fi
+        exit 0
+        ;;
+    --selftest)
+        echo "APPIMAGE=$self"
+        echo "APPDIR=$appdir"
+        echo "DATA=$data"
+        echo "DEFAULT_DATA=$default_data"
+        echo "DATA_POINTER=$pointer_write"
+        echo "PORTABLE=$portable"
+        echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+        echo '--- game folders ---'
+        echo "update=${update_dir:-<none>}"
+        echo "base=${base_dir:-<none>}"
+        echo '--- launcher ---'
+        if [ -x "$launcher" ]; then "$launcher" --version; else echo "missing: $launcher"; fi
+        echo '--- missing libraries ---'
+        if command -v ldd >/dev/null; then
+            for binary in "$bindir/driveclub-probe" "$bindir/driveclub-prepare" "$launcher"; do
+                [ -f "$binary" ] || continue
+                ldd "$binary" 2>&1 | grep 'not found' || true
+            done
+            echo none
+        fi
+        exit 0
+        ;;
+    --setup)
+        shift
+        if [ $# -ge 2 ]; then
+            update_dir=$(readlink -f -- "$1")
+            base_dir=$(readlink -f -- "$2")
+            if [ ! -f "$update_dir/eboot.bin" ]; then
+                echo "Not an update folder (no eboot.bin): $update_dir" >&2
+                exit 1
+            fi
+            if [ ! -f "$base_dir/game000.dat" ]; then
+                echo "Not the base game folder (no game000.dat): $base_dir" >&2
+                exit 1
+            fi
+            write_config "$update_dir" "$base_dir"
+            setup_saved=1
+            echo "Saved game folders in $config"
+        fi
+        mode=launcher
+        shift $#
+        ;;
+    --launcher)
+        mode=launcher
+        shift
+        ;;
+    --play|--run)
+        mode=play
+        shift
+        ;;
+    --repair)
+        mode=play
+        repair=1
+        shift
+        ;;
+    *)
+        mode=launcher
+        ;;
+esac
+
+if [ "$mode" = play ]; then
+    game_args=("$@")
+    if [ -f "$data/launch.env" ]; then
+        # shellcheck disable=SC1090
+        . "$data/launch.env"
+    fi
+fi
+update_dir=${DRIVECLUB_UPDATE_DIR:-${update_dir:-}}
+base_dir=${DRIVECLUB_BASE_DIR:-${base_dir:-}}
+
+# First start with update/ and base/ next to the AppImage: seed the launcher with them so the
+# player only has to press Play. An explicit setting or saved folder always wins.
+if [ "$mode" = launcher ] && [ -z "$update_dir" ] && [ -z "$base_dir" ]; then
+    detected_update=$(find_update || true)
+    detected_base=$(find_base || true)
+    if [ -n "$detected_update" ] || [ -n "$detected_base" ]; then
+        write_config "${detected_update:-}" "${detected_base:-}"
+        update_dir=$detected_update
+        base_dir=$detected_base
+    fi
+fi
+
+if [ "$mode" = launcher ]; then
+    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        if [ "$setup_saved" = 1 ]; then
+            echo "The folders are saved. Run with --play to start the game without a display."
+            exit 0
+        fi
+        echo "DriveClub Recomp: no graphical display was found. Use --play to start the game without the launcher." >&2
+        exit 1
+    fi
+    if [ ! -x "$launcher" ]; then
+        echo "DriveClub Recomp: the launcher executable is missing from the AppImage: $launcher" >&2
+        exit 1
+    fi
+    exec "$launcher" "$@"
+fi
+
+# --play and --repair: prepare if needed and start the game.
+if [ -z "$update_dir" ]; then update_dir=$(find_update || true); fi
+if [ -z "$base_dir" ]; then base_dir=$(find_base || true); fi
+# A merged dump (the update folder also holds the base game files) uses one folder for both.
+if [ -z "$base_dir" ] && [ -n "$update_dir" ] && [ -f "$update_dir/game000.dat" ]; then
+    base_dir=$update_dir
+fi
+if [ -z "$update_dir" ] && [ -n "$base_dir" ] && [ -f "$base_dir/eboot.bin" ]; then
+    update_dir=$base_dir
+fi
+
+if [ -z "$update_dir" ] || [ ! -f "$update_dir/eboot.bin" ]; then
+    cat >&2 <<EOF
+DriveClub Recomp: the 1.28 update folder with eboot.bin was not found.
+
+Put the folders next to the AppImage (update/ and base/), or run once:
+  "$self" --setup /path/to/update /path/to/base
+
+The update folder must be DriveClub 1.28 (CUSA00093 or CUSA00003) and the base folder must
+contain game000.dat. Your game files are never modified or copied.
+EOF
+    exit 1
+fi
+if [ -z "$base_dir" ] || [ ! -f "$base_dir/game000.dat" ]; then
+    echo "DriveClub Recomp: the base game folder with game000.dat was not found (see --help)." >&2
+    exit 1
+fi
+
+stamp="$update_dir|$base_dir|$(stat -c '%s:%Y' "$update_dir/eboot.bin" 2>/dev/null || echo 0)"
+prepared=$data/prep/boot-linked.bin
+if [ "$repair" = 1 ] || [ ! -f "$prepared" ] || [ ! -f "$data/prep/content.bin" ] || \
+   [ ! -f "$data/prep/patches.bin" ] || [ "$(cat "$data/prep/.source" 2>/dev/null || true)" != "$stamp" ]; then
+    echo "Preparing the game files (first start takes a moment) ..."
+    "$bindir/driveclub-prepare" --update "$update_dir" --base "$base_dir" --work "$data" \
+        --patches "$share/patches/DriveClub.xml"
+    printf '%s' "$stamp" > "$data/prep/.source"
+fi
+
+export BB_GPU_USER_DIR=${BB_GPU_USER_DIR:-$data/user}
+export BB_CRASH_DIR=${BB_CRASH_DIR:-$data/logs}
+export BB_CONFIG=${BB_CONFIG:-$data/user/driveclub.ini}
+export BB_TOGGLE_FILE=${BB_TOGGLE_FILE:-$data/user/toggles.txt}
+# An in-game restart (resolution change) starts the runtime again through this AppRun.
+export BB_RESTART_COMMAND=${BB_RESTART_COMMAND:-"\"$self\" --play"}
+
+log=$data/logs/last-run.log
+mkdir -p "$data/logs"
+# Keep a copy of the output for bug reports while still showing it.
+exec > >(tee "$log") 2>&1
+echo "DriveClub Recomp - $(date '+%Y-%m-%d %H:%M:%S')"
+echo "appimage $self"
+echo "update   $update_dir"
+echo "base     $base_dir"
+echo "data     $data"
+
+# trophies.tsv is read from the working directory.
+cd "$share"
+args=("$data/prep/boot-linked.bin" --content-profile "$data/prep/content.bin"
+      --patches "$data/prep/patches.bin" --app0 "$update_dir" --user "$data/user"
+      --mods "$data/mods" --stub-unresolved --timeout 0)
+if [ "$base_dir" != "$update_dir" ]; then args+=(--app0-base "$base_dir"); fi
+args+=("${game_args[@]}")
+exec "$bindir/driveclub-probe" "${args[@]}"

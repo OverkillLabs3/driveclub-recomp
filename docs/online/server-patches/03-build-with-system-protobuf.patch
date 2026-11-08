@@ -1,0 +1,38 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -23,30 +23,25 @@
+     add_compile_options(/utf-8)
+ endif()
+ 
+-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/protobuf/CMakeLists.txt")
+-    message(FATAL_ERROR "externals/protobuf is empty: run `git submodule update --init --recursive`")
+-endif()
+-add_subdirectory(externals)
++find_package(Protobuf CONFIG REQUIRED)
+ 
+ set(EGS_PROTO "${CMAKE_CURRENT_SOURCE_DIR}/proto/egs.proto")
+ set(EGS_PROTO_OUT "${CMAKE_CURRENT_BINARY_DIR}/proto_gen")
+ file(MAKE_DIRECTORY "${EGS_PROTO_OUT}")
+ add_custom_command(
+     OUTPUT "${EGS_PROTO_OUT}/egs.pb.cc" "${EGS_PROTO_OUT}/egs.pb.h"
+-    COMMAND $<TARGET_FILE:protoc>
++    COMMAND $<TARGET_FILE:protobuf::protoc>
+             "--proto_path=${CMAKE_CURRENT_SOURCE_DIR}/proto"
+             "--cpp_out=${EGS_PROTO_OUT}"
+             "${EGS_PROTO}"
+-    DEPENDS "${EGS_PROTO}" protoc
++    DEPENDS "${EGS_PROTO}"
+     COMMENT "Generating EGS protobuf sources"
+     VERBATIM)
+ 
+ # Generated code gets its own target so the strict warning flags below don't apply to it.
+ add_library(egs_proto STATIC "${EGS_PROTO_OUT}/egs.pb.cc" "${EGS_PROTO_OUT}/egs.pb.h")
+-target_include_directories(egs_proto PUBLIC
+-    "${EGS_PROTO_OUT}"
+-    "${CMAKE_CURRENT_SOURCE_DIR}/externals/protobuf/src")
+-target_link_libraries(egs_proto PUBLIC libprotobuf)
++target_include_directories(egs_proto PUBLIC "${EGS_PROTO_OUT}")
++target_link_libraries(egs_proto PUBLIC protobuf::libprotobuf)
+ 
+ add_executable(driveclubsrv
+     src/admin_service.cpp src/admin_service.h

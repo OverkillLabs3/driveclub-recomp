@@ -8,10 +8,32 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#if defined(__SSE2__) || defined(_M_X64)
 #include <emmintrin.h>
+#endif
 
 namespace Common {
 
+#if !(defined(__SSE2__) || defined(_M_X64))
+// bbport: hosts without SSE2 (AArch64): 8-byte lanes, the compiler vectorizes the loop.
+template <std::size_t Size>
+[[gnu::always_inline]] inline bool BytesEqual(const void* a, const void* b) noexcept {
+    const auto* pa = static_cast<const unsigned char*>(a);
+    const auto* pb = static_cast<const unsigned char*>(b);
+    std::uint64_t diff = 0;
+    std::size_t i = 0;
+    for (; i + 8 <= Size; i += 8) {
+        std::uint64_t x, y;
+        std::memcpy(&x, pa + i, 8);
+        std::memcpy(&y, pb + i, 8);
+        diff |= x ^ y;
+    }
+    for (; i < Size; ++i) {
+        diff |= pa[i] ^ pb[i];
+    }
+    return diff == 0;
+}
+#else
 template <std::size_t Size>
 [[gnu::always_inline]] inline bool BytesEqual(const void* a, const void* b) noexcept {
     const auto* pa = static_cast<const unsigned char*>(a);
@@ -43,5 +65,6 @@ template <std::size_t Size>
     }
     return _mm_movemask_epi8(_mm_cmpeq_epi8(diff, _mm_setzero_si128())) == 0xFFFF && tail == 0;
 }
+#endif
 
 } // namespace Common

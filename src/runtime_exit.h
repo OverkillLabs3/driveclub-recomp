@@ -13,6 +13,8 @@ typedef struct {
 void runtime_exit_tick(void);
 /* Loader, before entering guest code: install the validated shutdown retry fix. */
 void runtime_exit_initialize(void);
+/* The game's regional Confirm button, before host controller remapping. */
+uint32_t runtime_exit_confirm_button(void);
 int runtime_exit_pad(uint32_t buttons, int lx, int ly, int neutral, int available,
                      int pad_activity, int device, const char *confirm, const char *back);
 /* Window/present threads: queued actions, never call into the game here. */

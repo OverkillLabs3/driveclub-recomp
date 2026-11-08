@@ -2,6 +2,7 @@
 #include "bbport_settings.h"
 #include "bbport_neural_settings.h"
 
+#include <cmath>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -18,12 +19,15 @@ const char* Path() {
     return env && env[0] ? env : "bbport.ini";
 }
 
-// hdr.ini in the settings file's folder: the HDR brightness set while playing.
-std::string HdrIniPath() {
+// A file in the settings file's folder.
+std::string NextToConfig(const char* name) {
     const std::string config = Path();
     const size_t slash = config.find_last_of("/\\");
-    return (slash == std::string::npos ? std::string() : config.substr(0, slash + 1)) + "hdr.ini";
+    return (slash == std::string::npos ? std::string() : config.substr(0, slash + 1)) + name;
 }
+// hdr.ini: the HDR brightness set while playing; picture.ini: the SDR picture (launcher sliders, F4).
+std::string HdrIniPath() { return NextToConfig("hdr.ini"); }
+std::string PictureIniPath() { return NextToConfig("picture.ini"); }
 
 float Clamp(float v, float lo, float hi) {
     return std::clamp(v, lo, hi);
@@ -80,17 +84,40 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.hdr_paper = Clamp(f, 80.0f, 600.0f);
     } else if (key == "hdr_peak") {
         v.hdr_peak = Clamp(f, 400.0f, 10000.0f);
+    } else if (key == "brightness") {
+        v.picture_brightness = std::clamp(i, -50, 50);
+    } else if (key == "contrast") {
+        v.picture_contrast = std::clamp(i, 50, 150);
+    } else if (key == "gamma") {
+        // hundredths, or a plain 2.4
+        v.picture_gamma = std::clamp(f < 10.0f ? int(std::lround(f * 100.0f)) : i, 180, 280);
     } else if (key == "dlss_model") {
         // auto, or the preset's letter
         v.dlss_model = value == "k" || value == "K" ? 11 : value == "l" || value == "L" ? 12
                      : value == "m" || value == "M" ? 13 : 0;
     } else if (key == "frame_gen_multiplier") {
         v.frame_gen_multiplier = std::clamp(i, 2, 4);
+    } else if (key == "frame_gen_auto") {
+        v.frame_gen_auto = i != 0;
     } else if (key == "frame_gen_fit_display") {
         v.frame_gen_fit_display = i != 0;
+    } else if (key == "reflex") {
+        v.reflex = value == "off" ? ReflexOff : value == "boost" ? ReflexBoost
+                       : value == "on" ? ReflexOn
+                       : std::clamp(i, 0, ReflexCount - 1);
     } else if (key == "motion_blur_reference") {
         v.motion_blur_reference = value == "long" || value == "30" ? 30
                                 : value == "short" || value == "60" ? 60 : 0;
+    } else if (key == "button_prompts") {
+        v.button_prompts = value == "playstation" ? PromptsPlayStation
+                         : value == "keyboard"    ? PromptsKeyboard
+                         : value == "xbox"        ? PromptsXbox
+                         : value == "switch"      ? PromptsSwitch
+                                                  : PromptsAuto;
+    } else if (key == "xbox_buttons") {
+        v.xbox_buttons = value == "one" ? 1 : 0;
+    } else if (key == "playstation_buttons") {
+        v.playstation_buttons = value == "ps5" ? 1 : 0;
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
     } else if (key == "texture_repetition") {
@@ -132,6 +159,15 @@ void Load() {
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = Effects[e].default_on;
     }
+    if (const char* bp = std::getenv("BB_BUTTON_PROMPTS")) {
+        Set(v, "button_prompts", bp);
+    }
+    if (const char* xb = std::getenv("BB_XBOX_BUTTONS")) {
+        Set(v, "xbox_buttons", xb);
+    }
+    if (const char* ps = std::getenv("BB_PLAYSTATION_BUTTONS")) {
+        Set(v, "playstation_buttons", ps);
+    }
     if (FILE* file = std::fopen(Path(), "r")) {
         char line[256];
         while (std::fgets(line, sizeof(line), file)) {
@@ -147,6 +183,9 @@ void Load() {
         std::printf("Settings: %s\n", Path());
     }
     BbNeural::Load(Path());
+    if (const char* pacing = std::getenv("BB_FG_PACING"); pacing && std::strcmp(pacing, "gpu") == 0) {
+        v.fg_pacing_gpu = true;
+    }
     // The HDR brightness last set while playing (the launcher passes its slider, which shows it).
     if (FILE* file = std::fopen(HdrIniPath().c_str(), "r")) {
         char line[64];
@@ -156,6 +195,22 @@ void Load() {
             }
         }
         std::fclose(file);
+    }
+    if (FILE* file = std::fopen(PictureIniPath().c_str(), "r")) {
+        char line[64];
+        while (std::fgets(line, sizeof(line), file)) {
+            std::string text{line};
+            text.erase(text.find_last_not_of(" \t\r\n") + 1);
+            const auto eq = text.find('=');
+            if (eq != std::string::npos) {
+                Set(v, text.substr(0, eq), text.substr(eq + 1));
+            }
+        }
+        std::fclose(file);
+    }
+    // BB_TV_GAMMA=0 (before picture.ini): the picture as on a PC monitor.
+    if (const char* tv = std::getenv("BB_TV_GAMMA"); tv && tv[0] == '0') {
+        v.picture_gamma = 220;
     }
     // Environment overrides (scripts, A/B tests).
     if (const char* env = std::getenv("BB_UPSCALER")) {
@@ -170,10 +225,12 @@ void Load() {
         {"BB_REACTIVE_THRESHOLD", "reactive_threshold"}, {"BB_REACTIVE_MAX", "reactive_max"},
         {"BB_UPSCALE_PRESET", "preset"},            {"BB_OBJECT_MOTION", "object_motion"},
         {"BB_AA", "aa"},                            {"BB_AA_SCALE", "aa_scale"},                            {"BB_FRAME_GEN", "frame_gen"},              {"BB_FRAME_GEN_MULTIPLIER", "frame_gen_multiplier"},
-        {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_DLSS_MODEL", "dlss_model"},
+        {"BB_FRAME_GEN_FIT_DISPLAY", "frame_gen_fit_display"}, {"BB_FRAME_GEN_AUTO", "frame_gen_auto"}, {"BB_DLSS_MODEL", "dlss_model"},
         {"BB_MOTION_BLUR_REFERENCE", "motion_blur_reference"},
         {"BB_TEXTURE_REPETITION", "texture_repetition"},
         {"BB_HDR_PAPER", "hdr_paper"},                {"BB_HDR_PEAK", "hdr_peak"},
+        {"BB_BRIGHTNESS", "brightness"},              {"BB_CONTRAST", "contrast"},
+        {"BB_GAMMA", "gamma"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env)) {
@@ -214,7 +271,7 @@ void ConfigureDlssSupport(bool available, const char* problem) {
     v.dlss_problem = available || kept.empty() ? nullptr : kept.c_str();
     if (v.upscaler == UpscalerDlss && !available) {
         std::printf("Upscaler: DLSS unavailable (%s); falling back to FSR 3.1\n",
-                    kept.empty() ? "bbport_dlss.dll or nvngx_dlss.dll missing" : kept.c_str());
+                    kept.empty() ? "driveclub_dlss.dll or nvngx_dlss.dll missing" : kept.c_str());
         v.upscaler = UpscalerFsr3;
     }
 }
@@ -257,6 +314,10 @@ void Save() {
                  v.reactive_scale.load(), v.reactive_threshold.load(), v.reactive_max.load(),
                  v.debug_view.load(), int(v.show_fps.load()),
                  int(v.fsr4_auto_exposure.load()), int(v.fsr4_invert_jitter.load()));
+    static constexpr const char* prompts[PromptsCount] = {"auto", "playstation", "keyboard", "xbox", "switch"};
+    std::fprintf(file, "button_prompts=%s\n", prompts[std::clamp(v.button_prompts.load(), 0, PromptsCount - 1)]);
+    std::fprintf(file, "xbox_buttons=%s\nplaystation_buttons=%s\n", v.xbox_buttons ? "one" : "360",
+                 v.playstation_buttons ? "ps5" : "ps4");
     std::fprintf(file, "motion_blur_reference=%d\n", v.motion_blur_reference.load());
     std::fprintf(file, "show_pedals=%d\n", int(v.show_pedals.load()));
     std::fprintf(file, "texture_repetition=%d\n", int(v.texture_repetition.load()));
@@ -264,9 +325,9 @@ void Save() {
     std::fputc(10, file);
     std::fprintf(file, "aa=%s", AaName(v.aa_mode));
     std::fputc(10, file);
-    std::fprintf(file, "frame_gen=%s\nframe_gen_multiplier=%d\nframe_gen_fit_display=%d\n",
+    std::fprintf(file, "frame_gen=%s\nframe_gen_multiplier=%d\nframe_gen_fit_display=%d\nframe_gen_auto=%d\n",
                  FrameGenName(v.frame_gen), v.frame_gen_multiplier.load(),
-                 int(v.frame_gen_fit_display.load()));
+                 int(v.frame_gen_fit_display.load()), int(v.frame_gen_auto.load()));
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         std::fprintf(file, "%s=%d\n", Effects[e].key, int(v.effects[e].load()));
@@ -307,6 +368,15 @@ void SaveHdrBrightness(int nits) {
     }
 }
 
+void SavePicture() {
+    const auto& v = Get();
+    if (FILE* file = std::fopen(PictureIniPath().c_str(), "w")) {
+        std::fprintf(file, "brightness=%d\ncontrast=%d\ngamma=%d\n", v.picture_brightness.load(),
+                     v.picture_contrast.load(), v.picture_gamma.load());
+        std::fclose(file);
+    }
+}
+
 const char* AaScaleName(int scale) {
     static constexpr const char* names[AaScaleCount] = {"native", "quality", "balanced", "performance",
                                                         "ultra_performance"};
@@ -319,7 +389,7 @@ float AaScaleFactor(int scale) {
 }
 
 const char* UpscalerName(int upscaler) {
-    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss"};
+    static constexpr const char* names[UpscalerCount] = {"off", "fsr3", "fsr4", "fsr411", "taa", "dlss", "fsr_amd"};
     return names[std::clamp(upscaler, 0, UpscalerCount - 1)];
 }
 

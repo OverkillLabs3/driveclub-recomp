@@ -1,4 +1,3 @@
-#include "../gpu/shim/bbport_diagnostics.h"
 /* libScePad on SDL3 gamepads, with a keyboard fallback. SDL events are pumped
  * by the window thread (gpu/shim/window.cpp); here state is only sampled.
  *
@@ -9,6 +8,8 @@
  *   IJKL d-pad (I up, K down, J left, L right). */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "../gpu/shim/bbport_diagnostics.h"
+#include "guest_cpu.h"
 #include "runtime_exit.h"
 #include "gpu/bbgpu.h"
 #include <stdio.h>
@@ -97,6 +98,16 @@ static void touch_click(PadData *d, int right) {
  * with a clutch axis, 2 for a wheel without one, 1 for a gamepad's triggers (R2 throttle, L2 brake), 0 before the
  * game has read a pad. */
 static PadData pad_last_read;   /* the last read of any port, under lock */
+#ifdef _WIN32
+#include "runtime_haptics.inc"   /* DualSense haptics from the car data, over the controller's USB sound card */
+#include "runtime_telemetry.inc"   /* the player's car every frame: telemetry out and adaptive triggers (off unless asked for) */
+#else
+/* Both need Windows (WASAPI, Winsock, the game's car data patched in place): off on other systems. */
+static volatile int hap_active;
+static volatile uint8_t hap_rumble_large, hap_rumble_small;
+static bool tele_wanted(void) { return false; }
+static void tele_install(void) {}
+#endif
 static bool pad_was_read;
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
@@ -576,10 +587,13 @@ static bool exit_input(PadData *d) {
     static uint32_t previous_physical; static int previous_axis;
     bool activity=(physical & ~previous_physical) || (axis_direction && axis_direction!=previous_axis);
     previous_physical=physical; previous_axis=axis_direction;
-    int confirm=SDL_GAMEPAD_BUTTON_SOUTH,back=SDL_GAMEPAD_BUTTON_EAST;
+    const uint32_t logical_confirm=runtime_exit_confirm_button();
+    const uint32_t logical_back=logical_confirm ^ (BTN_CROSS|BTN_CIRCLE);
+    int confirm=logical_confirm==BTN_CIRCLE ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
+    int back=logical_back==BTN_CIRCLE ? SDL_GAMEPAD_BUTTON_EAST : SDL_GAMEPAD_BUTTON_SOUTH;
     for(int i=0;i<pad_remap_count;++i) {
-        if((uint32_t)pad_remap[i][0]==BTN_CROSS) confirm=pad_remap[i][1];
-        if((uint32_t)pad_remap[i][0]==BTN_CIRCLE) back=pad_remap[i][1];
+        if((uint32_t)pad_remap[i][0]==logical_confirm) confirm=pad_remap[i][1];
+        if((uint32_t)pad_remap[i][0]==logical_back) back=pad_remap[i][1];
     }
     bool neutral=!d->buttons && !d->touch_count && !SDL_GetMouseState(NULL,NULL) && d->l2<25 && d->r2<25 &&
         abs(d->left_x-128)<32 && abs(d->left_y-128)<32 &&
@@ -589,6 +603,7 @@ static bool exit_input(PadData *d) {
 }
 static void sample(PadData *d) {
     sample_host(d);
+    bbgpu_reflex_on_input_sampled();
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -639,6 +654,7 @@ static int32_t open_port(int32_t user, int32_t type, int32_t index, bool ext) {
     return free_slot+1;
 }
 static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const void *param) {
+    if (tele_wanted()) tele_install();
     (void)param;
     return open_port(user,type,index,false);
 }
@@ -693,22 +709,309 @@ static void watch_install(void *address) {
     CloseHandle(snap);
     printf("Watch: pad buffer %p armed on %d threads\n",address,n);
 }
+/* BB_CAR_WATCH=1 (diagnostic builds): hardware write watchpoints on four values of the player car's state, for finding
+ * the drivetrain: the rear right tyre's drive force (+0xa78) and slip ratio (+0xb38), the engine speed (+0x00c) and a
+ * rear axle value (+0x03c). Each guest instruction that writes one is logged once, with the guest code addresses on its
+ * stack (its callers' return addresses, and some stale ones). */
+static uintptr_t car_watch_at[4];
+static LONG WINAPI car_watch_handler(EXCEPTION_POINTERS *e) {
+    const DWORD64 hit=e->ContextRecord->Dr6&15;
+    if (e->ExceptionRecord->ExceptionCode!=EXCEPTION_SINGLE_STEP || !hit) return EXCEPTION_CONTINUE_SEARCH;
+    const uintptr_t rip=(uintptr_t)e->ContextRecord->Rip, code_end=runtime_image_base+0x1551ab8;
+    static struct { uintptr_t rip; int dr; } seen[160]; static volatile LONG count;
+    const int dr=hit&1 ? 0 : hit&2 ? 1 : hit&4 ? 2 : 3;
+    LONG n=count; bool found=false;
+    for (LONG i=0;i<n && i<160;++i) found=found || (seen[i].rip==rip && seen[i].dr==dr);
+    if (!found && n<160 && InterlockedCompareExchange(&count,n+1,n)==n) {
+        seen[n].rip=rip; seen[n].dr=dr;
+        static const char *const what[4]={"rear right drive force +0xa78","rear right slip ratio +0xb38","engine speed +0x00c","rear axle +0x03c"};
+        float now; memcpy(&now,(const void *)car_watch_at[dr],4);
+        char line[400]; int len=snprintf(line,sizeof line,"Watch: %s written (now %g) by guest +0x%llx (thread %lu); stack:",what[dr],(double)now,
+                                         (unsigned long long)(rip-runtime_image_base),GetCurrentThreadId());
+        const uintptr_t *sp=(const uintptr_t *)e->ContextRecord->Rsp;
+        for (int i=0,shown=0;i<96 && shown<10 && len<(int)sizeof line-24;++i)
+            if (sp[i]>runtime_image_base && sp[i]<code_end) { len+=snprintf(line+len,sizeof line-len," +0x%llx",(unsigned long long)(sp[i]-runtime_image_base)); ++shown; }
+        printf("%s\n",line);
+    }
+    e->ContextRecord->Dr6=0;
+    e->ContextRecord->EFlags|=0x10000;   /* resume flag */
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+/* Armed from its own thread: a thread cannot set its own debug registers, and the hook runs on the game's physics thread */
+static DWORD WINAPI car_watch_arm(void *unused) {
+    (void)unused;
+    AddVectoredExceptionHandler(1,car_watch_handler);
+    const DWORD self=GetCurrentThreadId(), pid=GetCurrentProcessId();
+    HANDLE snap=CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
+    THREADENTRY32 te={.dwSize=sizeof te};
+    int n=0;
+    for (BOOL ok=Thread32First(snap,&te); ok; ok=Thread32Next(snap,&te)) {
+        if (te.th32OwnerProcessID!=pid || te.th32ThreadID==self) continue;
+        HANDLE h=OpenThread(THREAD_ALL_ACCESS,FALSE,te.th32ThreadID);
+        if (!h) continue;
+        SuspendThread(h);
+        CONTEXT c={.ContextFlags=CONTEXT_DEBUG_REGISTERS};
+        if (GetThreadContext(h,&c)) {
+            c.Dr0=car_watch_at[0]; c.Dr1=car_watch_at[1]; c.Dr2=car_watch_at[2]; c.Dr3=car_watch_at[3];
+            c.Dr7=0x55;   /* L0..L3 on; each: write only (01), 4 bytes (11) */
+            for (int i=0;i<4;++i) c.Dr7|=(DWORD64)((1u<<(16+4*i))|(3u<<(18+4*i)));
+            if (SetThreadContext(h,&c)) ++n;
+        }
+        ResumeThread(h);
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    printf("Watch: car state values %p %p %p %p armed on %d threads\n",(void *)car_watch_at[0],(void *)car_watch_at[1],
+           (void *)car_watch_at[2],(void *)car_watch_at[3],n);
+    return 0;
+}
 /* The car's simulation for the physics force feedback model. Each physics step the game (guest +0xd93790) fills a
  * 0x30-byte block from the player's car and passes it to +0xe0f5d0, which copies it into its force feedback object
  * (+0xf4..+0x124; read by +0xe0ebb0, which makes the Logitech forces from it). That setter is replaced here: the same
  * copy, and the pointers the caller read the block from are kept (its frame: rbp-0x78 = the car's simulation
  * interface, whose +0x8 is the car's state and +0x20 its setup, whose +0x8 is the drivetrain and tyres). */
+/* BB_DIFF_LOCK=<power>,<coast>[,<preload>] (diagnostic builds): the lock of each differential that drives two wheels,
+ * set every physics step. The car's vehicle object (setup+8) holds up to three differentials at +0x2280, stride 0x88
+ * (vtable image+0x15f4620; updated by guest +0x7b9cb0): +0x0c the preload (N m), +0x10 and +0x14 the lock under power
+ * and when coasting, times the input torque (seen 0.4 / 0.25 BMW M4 rear, 0.25 / 0.375 M3 GTS rear, 0.75 / 0.5 Audi R8
+ * rear, 0.5 / 0 VW Golf GTI front; the preload 0 on all), +0x18 a viscous term, +0x20 / +0x24 a speed-sensing split
+ * (0 on these cars). Each step the update brings both outputs to their mean speed, with at most preload + lock x input
+ * torque. +0x34 the number of outputs (2), each output +0x38 and +0x58: a pointer, its kind (+0x40, +0x60: 2 a wheel,
+ * 1 another differential), its index (+0x44, +0x64) and its share (+0x48, +0x68). */
+static void diff_override(uintptr_t vehicle) {
+    static int have=-1; static float lock[2], preload=-1.0f;
+    if (have<0) {
+        const char *e=BB_DIAGNOSTIC_ENV("BB_DIFF_LOCK");
+        const int n=e ? sscanf(e,"%f,%f,%f",&lock[0],&lock[1],&preload) : 0;
+        have=n>=2;
+        if (n<3) preload=-1.0f;   /* the car's own */
+    }
+    if (!have || !vehicle) return;
+    for (int i=0;i<3;++i) {
+        uint8_t *d=(uint8_t *)vehicle+0x2280+i*0x88;
+        uintptr_t vt; int32_t n, k1, k2, w1, w2; float v[2];
+        memcpy(&vt,d,8); memcpy(&n,d+0x34,4); memcpy(&k1,d+0x40,4); memcpy(&k2,d+0x60,4);
+        if (vt!=runtime_image_base+0x15f4620 || n!=2 || k1!=2 || k2!=2) continue;   /* a differential between two wheels */
+        float pre;
+        memcpy(&w1,d+0x44,4); memcpy(&w2,d+0x64,4); memcpy(v,d+0x10,8); memcpy(&pre,d+0x0c,4);
+        if (v[0]==lock[0] && v[1]==lock[1] && (preload<0.0f || pre==preload)) continue;
+        static unsigned logged;
+        if (logged++<12) printf("Runtime: differential at vehicle+0x%x (wheels %d and %d): lock %g / %g, preload %g N m; now %g / %g, preload %g\n",
+                                0x2280+i*0x88,w1,w2,(double)v[0],(double)v[1],(double)pre,(double)lock[0],(double)lock[1],
+                                (double)(preload<0.0f ? pre : preload));
+        memcpy(d+0x10,lock,8);
+        if (preload>=0.0f) memcpy(d+0x0c,&preload,4);
+    }
+}
+/* Diagnostic builds: the tyre update (guest +0x7c5a40, each wheel each step). Its first force is the grip limit times
+ * the slip, scaled down past a slip of 1, times 1 + (slip - 10) x 0.2 from a slip of 10 (+0x12f6ac4 threshold,
+ * +0x12f6ac8 minus the threshold, +0x12f6acc the slope; read by +0x7c6843..+0x7c6855 only): more grip the more it
+ * slides. Then, while the byte at +0x155edbc is set (1 in the eboot; read by +0x7c6a46 only), a contact patch model.
+ * Logged when the byte or the hardcore handling byte (+0x274be46) changes. BB_TYRE_SLIDE=<threshold>,<slope> replaces
+ * the three constants. */
+static void tyre_watch(void) {
+    static int last=-1, on=-1;
+    if (on<0) on=BB_DIAGNOSTIC_ENV("BB_FFB_TRACE")!=NULL && runtime_image_size>0x274be46;
+    if (on) {
+        const int now=*(const uint8_t *)(runtime_image_base+0x155edbc) | *(const uint8_t *)(runtime_image_base+0x274be46)<<8;
+        if (now!=last) {
+            static unsigned n;
+            if (n++<20) printf("Runtime: tyre model switch %d, hardcore handling byte %d\n",now&0xff,now>>8);
+            last=now;
+        }
+    }
+    static bool patched;
+    if (patched) return;
+    patched=true;
+    const char *e=BB_DIAGNOSTIC_ENV("BB_TYRE_SLIDE");
+    float t, s;
+    if (!e || sscanf(e,"%f,%f",&t,&s)!=2) return;
+    float *k=(float *)(runtime_image_base+0x12f6ac4);
+    DWORD old;
+    if (!VirtualProtect(k,12,PAGE_EXECUTE_READWRITE,&old)) return;
+    printf("Runtime: tyre slide grip from a slip of %g, slope %g; now from %g, slope %g\n",(double)k[0],(double)k[2],(double)t,(double)s);
+    k[0]=t; k[1]=-t; k[2]=s;
+    VirtualProtect(k,12,old,&old);
+}
+/* BB_TYRE_GRIP_DROP=<percent>: the player car's tyres lose up to that much of their grip once they slide, as a real
+ * tyre does past its peak; the game's tyre keeps all of it however far it slides. The tyre update (guest +0x7c5a40, rbx
+ * the wheel) takes its contact patch model's most force at +0x7c6b6f: vmulss xmm8, xmm1, [rbx+0x68] (the load, the
+ * tyre's own factors and the surface's grip). That instruction jumps to the code below, which does it and then, for the
+ * four wheels of the player's car, multiplies by each one's grip factor; other cars (no entry) are left as they are.
+ * The flags it changes are set again by the game before they are read (+0x7c6c66). Each physics step the factor is
+ * 1 - drop x smoothstep(1, 2.5, s), s the wheel's slip (slip angle and slip ratio together) over 0.12, where the game's
+ * tyre stops gaining grip; no drop below walking pace. */
+static struct { uint8_t *code; uintptr_t *wheel; float *factor; float drop; } grip;
+static void tyre_grip_install(void) {
+    static bool done;
+    if (done || !runtime_image_base) return;
+    done=true;
+    const char *e=getenv("BB_TYRE_GRIP_DROP");   /* test runs: another share, or 0 for the game's tyre */
+    const float drop=e && *e ? (float)atof(e)/100.0f : 0.25f;
+    if (!(drop>0.0f)) { printf("Runtime: tyre grip drop off (BB_TYRE_GRIP_DROP)\n"); return; }
+    uint8_t *site=(uint8_t *)(runtime_image_base+0x7c6b6f);
+    static const uint8_t expect[]={0xc5,0x72,0x59,0x43,0x68};   /* vmulss xmm8, xmm1, [rbx+0x68] */
+    if (memcmp(site,expect,sizeof expect)) { printf("Runtime: tyre grip drop: the game's code differs, not applied\n"); return; }
+    /* executable memory within a rel32 jump of the site: from the end of the image up */
+    uint8_t *code=NULL;
+    for (uintptr_t at=(runtime_image_base+runtime_image_size+0xffff)&~(uintptr_t)0xffff; !code && at<runtime_image_base+0x70000000; at+=0x10000)
+        code=VirtualAlloc((void *)at,0x1000,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
+    if (!code) { printf("Runtime: tyre grip drop: no memory near the game's code, not applied\n"); return; }
+    uintptr_t *wheel=(uintptr_t *)(code+0x100);
+    float *factor=(float *)(code+0x120);
+    for (int i=0;i<4;++i) { wheel[i]=0; factor[i]=1.0f; }
+    int n=0;
+    #define EMIT(b) (code[n++]=(uint8_t)(b))
+    #define REL32(to) do { const int32_t r=(int32_t)((intptr_t)(to)-(intptr_t)(code+n+4)); memcpy(code+n,&r,4); n+=4; } while (0)
+    for (size_t i=0;i<sizeof expect;++i) EMIT(expect[i]);   /* the game's own instruction */
+    int je[4];
+    for (int i=0;i<4;++i) {
+        EMIT(0x48); EMIT(0x3b); EMIT(0x1d); REL32(&wheel[i]);   /* cmp rbx, [rip+wheel i] */
+        EMIT(0x74); je[i]=n; EMIT(0);                          /* je to its factor */
+    }
+    EMIT(0xe9); REL32(site+5);                                  /* not the player's car: back */
+    for (int i=0;i<4;++i) {
+        code[je[i]]=(uint8_t)(n-(je[i]+1));
+        EMIT(0xc5); EMIT(0x3a); EMIT(0x59); EMIT(0x05); REL32(&factor[i]);   /* vmulss xmm8, xmm8, [rip+factor i] */
+        EMIT(0xe9); REL32(site+5);
+    }
+    #undef EMIT
+    #undef REL32
+    FlushInstructionCache(GetCurrentProcess(),code,0x100);
+    DWORD old;
+    if (!VirtualProtect(site,5,PAGE_EXECUTE_READWRITE,&old)) return;
+    const int32_t r=(int32_t)((intptr_t)code-(intptr_t)(site+5));
+    site[0]=0xe9; memcpy(site+1,&r,4);   /* jmp code */
+    VirtualProtect(site,5,old,&old);
+    FlushInstructionCache(GetCurrentProcess(),site,5);
+    grip.code=code; grip.wheel=wheel; grip.factor=factor; grip.drop=drop;
+    ffb_grip_wheels=wheel;
+    printf("Runtime: tyre grip drop: up to %.0f%% of the grip once a tyre slides (player's car, with the physics force feedback; code at %p)\n",
+           (double)drop*100.0,(void *)code);
+}
+static void tyre_grip_release(void);
+/* Each physics step of the player's car (its thread, as the tyre update): its wheels and their grip factors, also for
+ * the physics force feedback (ffb_grip_factor). Only while the physics force feedback drives a wheel (its force is
+ * on the wheel): not with a pad, wheel_ffb = off or a wheel without force feedback, whose car drives as the game's. */
+static void tyre_grip_step(uintptr_t vehicle, const float *st, float speed) {
+    if (!grip.code) return;
+    if (!ffb_physics || __atomic_load_n(&pw.id,__ATOMIC_RELAXED)<0) { tyre_grip_release(); return; }
+    const float *ratio=st+0xb30/4, *slip=st+0xb50/4;
+    const float moving=fminf(1.0f,fmaxf(0.0f,(speed-1.5f)/2.0f));
+    for (int i=0;i<4;++i) {
+        const float a=fabsf(slip[i])/0.12f, r=fabsf(ratio[i])/0.12f, s=sqrtf(a*a+r*r);
+        const float t=fminf(1.0f,fmaxf(0.0f,(s-1.0f)/1.5f));
+        grip.factor[i]=ffb_grip_factor[i]=1.0f-grip.drop*t*t*(3.0f-2.0f*t)*moving;
+        grip.wheel[i]=vehicle+(uintptr_t)i*0x5d0;
+    }
+    ffb_grip_live=true;
+}
+static void tyre_grip_release(void) {
+    if (grip.code) for (int i=0;i<4;++i) { grip.wheel[i]=0; ffb_grip_factor[i]=1.0f; }
+    ffb_grip_live=false;
+}
+/* Diagnostic builds with BB_FFB_TRACE: the surfaces under the player car's wheels. The tyre update (+0x7c5a40) takes a
+ * wheel's grip from up to three surface objects, wheel+0x2e0 / +0x2e8 / +0x2f0, weighted by +0x2f8 / +0x2fc / +0x300
+ * (+0x28 and +0x30 their grips); the first one is taken here. Each surface met for the first time is logged with its
+ * first 0x60 bytes; its number (in that order) goes to the trace for each front wheel (ffb_surface). */
+static void surface_watch(uintptr_t vehicle) {
+    static int on=-1;
+    if (on<0) on=BB_DIAGNOSTIC_ENV("BB_FFB_TRACE")!=NULL;
+    if (!on || !vehicle) return;
+    static uintptr_t seen[64]; static int nseen;
+    for (int i=0;i<4;++i) {
+        const uint8_t *w=(const uint8_t *)vehicle+(size_t)i*0x5d0;
+        uintptr_t s; memcpy(&s,w+0x2e0,8);
+        int k=-1;
+        if (s && ((car_dump_image(s) && car_dump_image(s+0x60)) || runtime_memory_is_mapped(s,0x60))) {
+            for (int j=0;j<nseen && k<0;++j) if (seen[j]==s) k=j;
+            if (k<0 && nseen<64) {
+                k=nseen; seen[nseen++]=s;
+                float wt[3]; memcpy(wt,w+0x2f8,12);
+                char line[1400]; int len=snprintf(line,sizeof line,"Runtime: surface %d at %p, first under wheel %d (weights %.2f %.2f %.2f):",k,(void *)s,i,
+                                                  (double)wt[0],(double)wt[1],(double)wt[2]);
+                for (int o=0;o<0x60 && len<(int)sizeof line-40;o+=4) {
+                    uint32_t u; float x; memcpy(&u,(const uint8_t *)s+o,4); memcpy(&x,&u,4);
+                    len+=(u==0 || (fabsf(x)>1e-4f && fabsf(x)<1e6f)) ? snprintf(line+len,sizeof line-len," +%02x=%g",o,(double)x)
+                                                                    : snprintf(line+len,sizeof line-len," +%02x=%08x",o,u);
+                }
+                printf("%s\n",line);
+            }
+        }
+        if (i<2) ffb_surface[i]=k;
+    }
+}
+/* The road under the player car's front tyres for the physics force feedback (ffb_tex_amp / ffb_tex_len): each wheel's
+ * up to three surfaces (wheel+0x2e0 / +0x2e8 / +0x2f0, weights +0x2f8 / +0x2fc / +0x300) and their bumps: +0x4c the
+ * height (m), +0x50 the wavelength (m); the surface's name is a string at +0x08 (Asphalt_New, Grass_Medium,
+ * Gravel_Medium, Wood_Driveable...). Whether a surface's memory is there is checked once and kept until the car is let
+ * go (the next event's surfaces can come at the same addresses); its values are read each time. */
+/* +0x40 the surface's kind: 0 asphalt, 2 grass, 4 gravel, 6 rumble strip (kerbs), 7 wood */
+static struct { uintptr_t at; bool mapped; } surface_known[96];
+static int surface_nknown;
+static bool surface_bumps(uintptr_t s, float *amp, float *len, bool *kerb) {
+    *amp=*len=0.0f; *kerb=false;
+    if (!s) return false;
+    int k=-1;
+    for (int i=0;i<surface_nknown && k<0;++i) if (surface_known[i].at==s) k=i;
+    const bool mapped=k>=0 ? surface_known[k].mapped : ((car_dump_image(s) && car_dump_image(s+0x58)) || runtime_memory_is_mapped(s,0x58));
+    if (k<0 && surface_nknown<96) { surface_known[surface_nknown].at=s; surface_known[surface_nknown++].mapped=mapped; }
+    if (!mapped) return false;
+    float v[2]; int32_t kind;
+    memcpy(v,(const void *)(s+0x4c),8); memcpy(&kind,(const void *)(s+0x40),4);
+    if (!(v[0]>=0.0f && v[0]<=0.2f && v[1]>=0.05f && v[1]<=50.0f)) return false;
+    *amp=v[0]; *len=v[1]; *kerb=kind==6;
+    return true;
+}
+static void surface_feel(uintptr_t vehicle, const float *st) {
+    if (!ffb_physics || !vehicle) { ffb_tex_amp[0]=ffb_tex_amp[1]=0.0f; return; }
+    bool any=false;
+    for (int i=0;i<2;++i) {
+        const uint8_t *w=(const uint8_t *)vehicle+(size_t)i*0x5d0;
+        float amp=0.0f, len=0.0f, total=0.0f;
+        for (int k=0;k<3;++k) {
+            uintptr_t s; float wt, a, l; bool kerb;
+            memcpy(&s,w+0x2e0+8*k,8); memcpy(&wt,w+0x2f8+4*k,4);
+            if (!(wt>0.0f) || !surface_bumps(s,&a,&l,&kerb)) continue;
+            (void)kerb;   /* rumble strips as their data has them, as every surface: their full, real strength */
+            amp+=wt*a; len+=wt*l; total+=wt; any=true;
+        }
+        ffb_tex_amp[i]=total>0.0f && st[0xa50/4+i]>50.0f ? amp/total : 0.0f;   /* nothing in the air */
+        if (total>0.0f) ffb_tex_len[i]=len/total;
+    }
+    if (any && !ffb_tex_live) { ffb_tex_live=true; printf("Runtime: FFB road: each front tyre rolls over its surface's own bumps (in place of the game's kerb and surface waves)\n"); }
+}
 /* caller_rbp and ret: the caller's frame and the return address, passed in by the patched code */
 static ABI void ffb_inputs_hook(uint8_t *obj, const uint8_t *in, const uintptr_t *caller, uintptr_t ret) {
     memcpy(obj+0xf4,in,0x30);
     if (ret!=runtime_image_base+0xd93c3e) return;
-    if (!in[0]) { ffb_car.state=ffb_car.setup=ffb_car.sim=0; return; }   /* no car under the player's control */
+    if (!in[0]) {   /* no car under the player's control */
+        tyre_grip_release();
+        ffb_tex_amp[0]=ffb_tex_amp[1]=0.0f;
+        surface_nknown=0;
+        if (ffb_car.state) __atomic_store_n(&ffb_car.released,true,__ATOMIC_RELEASE);
+        ffb_car.state=ffb_car.setup=ffb_car.sim=0;
+        return;
+    }
     /* the caller has just read the block from these (+0xd9393d..+0xd93945), so they are valid */
     const uintptr_t iface=caller[-0x78/8];
     const uintptr_t state=*(const uintptr_t *)(iface+0x8), setup=*(const uintptr_t *)(iface+0x20), sim=*(const uintptr_t *)(setup+0x8);
     if (state!=ffb_car.state || setup!=ffb_car.setup) printf("Runtime: FFB physics: car state %p, setup %p, drivetrain %p\n",(void *)state,(void *)setup,(void *)sim);
     ffb_car.state=state; ffb_car.setup=setup; ffb_car.sim=sim;
     __atomic_store_n(&ffb_car.step_us,now_us(),__ATOMIC_RELEASE);
+    diff_override(sim);
+    tyre_watch();
+    surface_watch(sim);
+    surface_feel(sim,(const float *)state);
+    { float speed; memcpy(&speed,in+0x18,4); tyre_grip_step(sim,(const float *)state,speed); }
+    { static bool armed;
+      if (!armed && BB_DIAGNOSTIC_ENV("BB_CAR_WATCH")) {
+          armed=true;
+          static const uint16_t at[4]={0xa78,0xb38,0x00c,0x03c};
+          for (int i=0;i<4;++i) car_watch_at[i]=state+at[i];
+          HANDLE t=CreateThread(NULL,0,car_watch_arm,NULL,0,NULL);
+          if (t) CloseHandle(t);
+      } }
     if (ffb_physics) ffb_physics_step((const float *)state,in,setup);   /* the setup tells cars apart (the state's memory is reused) */
 }
 static void ffb_hook_install(void) {
@@ -728,7 +1031,11 @@ static void ffb_hook_install(void) {
     VirtualProtect(at,32,old,&old);
     FlushInstructionCache(GetCurrentProcess(),at,32);
     printf("Runtime: FFB physics: reading the car's simulation\n");
+    tyre_grip_install();   /* at boot, before any car's tyres run */
 }
+#else
+/* The physics force feedback model reads the car through a Windows-only hook for now. */
+static void ffb_hook_install(void) {}
 #endif
 
 /* Driving options from the launcher: BB_GEARBOX (automatic, manual), BB_BRAKE_ASSIST (0 off .. 3 high),
@@ -741,6 +1048,26 @@ static void ffb_hook_install(void) {
  * (a byte in the wheel settings of each of the two controller kinds, see +0x1a83b0). */
 typedef ABI void (*game_int_setter)(void *, int);
 typedef ABI void (*game_float_setter)(void *, float);
+/* The game's setters, on the game's thread (pad_read_state is called by the game): through the guest CPU
+ * where the game's code does not run on the host CPU. */
+static void game_set_int(uintptr_t setter, void *object, int value) {
+#ifdef GUEST_CPU_NATIVE
+    ((game_int_setter)setter)(object,value);
+#else
+    const uint64_t args[2]={(uint64_t)(uintptr_t)object,(uint64_t)(uint32_t)value};
+    guest_cpu_call(setter,2,args);
+#endif
+}
+static void game_set_float(uintptr_t setter, void *object, float value) {
+#ifdef GUEST_CPU_NATIVE
+    ((game_float_setter)setter)(object,value);
+#else
+    const uint64_t args[1]={(uint64_t)(uintptr_t)object};
+    uint32_t bits; memcpy(&bits,&value,4);
+    const uint64_t xmm[1]={bits};
+    guest_cpu_call_xmm(setter,1,args,1,xmm);
+#endif
+}
 static int env_choice(const char *name, const char *const *words, int count) {
     const char *e=getenv(name);
     if (!e || !*e) return -1;
@@ -772,16 +1099,16 @@ static void game_options_apply(void) {
     /* the gearbox setter tells the game through its event queue (*(G+0x970)+0x590), which comes a little later */
     const unsigned char *events=*(const unsigned char *const *)(p+0x590);
     if (gearbox>=0 && *(const int *)d!=gearbox && events && *(const void *const *)(events+8)) {
-        ((game_int_setter)(runtime_image_base+0x1a33c0))(d,gearbox);
+        game_set_int(runtime_image_base+0x1a33c0,d,gearbox);
         if (changes++<20) printf("Runtime: gearbox set to %s\n",gearbox ? "automatic" : "manual");
     }
     if (brake>=0 && fabsf(*(const float *)(d+4)-(float)brake/3.0f)>0.01f) {
-        ((game_float_setter)(runtime_image_base+0x1a3490))(d,(float)brake/3.0f);
+        game_set_float(runtime_image_base+0x1a3490,d,(float)brake/3.0f);
         if (changes++<20) printf("Runtime: brake assist set to %d of 3\n",brake);
     }
     const unsigned char *handling=(const unsigned char *)(runtime_image_base+0x274be46);
     if (hardcore>=0 && (d[0x14]!=hardcore || *handling!=hardcore)) {
-        ((game_int_setter)(runtime_image_base+0x1a3a00))(d,hardcore);
+        game_set_int(runtime_image_base+0x1a3a00,d,hardcore);
         if (changes++<20) printf("Runtime: hardcore handling %s\n",hardcore ? "on" : "off");
     }
     if (wheel_assist>=0 && (s[0x1f8]!=wheel_assist || s[0x258]!=wheel_assist)) {
@@ -795,11 +1122,24 @@ static void game_options_apply(void) {
  * (+0x731cb0): percent/100 x 0.5 goes there. At 100% (or with no file) the value is left as the game and patches
  * have it. */
 #ifdef _WIN32
+static float camera_fov_base_factor(void) {
+    if (!runtime_image_base) return 0.5f;
+    uint32_t out_w = 0, out_h = 0;
+    memcpy(&out_w, (const void *)(runtime_image_base + 0x754c1b), 4);
+    memcpy(&out_h, (const void *)(runtime_image_base + 0x754c21), 4);
+    if (out_w >= 640 && out_w <= 16384 && out_h >= 360 && out_h <= 8640) {
+        float aspect = (float)out_w / (float)out_h;
+        if (aspect < 1.777f && aspect > 0.5f) {
+            return 0.5f * (16.0f / 9.0f) / aspect;
+        }
+    }
+    return 0.5f;
+}
 static void camera_fov_set(int percent) {
     float *k=(float *)(runtime_image_base+0x12efac4);
     DWORD old;
     if (!VirtualProtect(k,4,PAGE_READWRITE,&old)) return;
-    *k=0.5f*(float)percent/100.0f;
+    *k=camera_fov_base_factor()*(float)percent/100.0f;
     VirtualProtect(k,4,old,&old);
 }
 static void camera_fov_path(char *path, size_t size) {
@@ -829,7 +1169,7 @@ static void camera_fov_apply(void) {
     if (!step) return;
     DWORD pid=0; GetWindowThreadProcessId(GetForegroundWindow(),&pid);
     if (pid!=GetCurrentProcessId()) return;
-    if (percent<0) percent=(int)lroundf(*(const float *)(runtime_image_base+0x12efac4)/0.5f*100.0f);   /* from the game's (or the patch's) */
+    if (percent<0) percent=(int)lroundf(*(const float *)(runtime_image_base+0x12efac4)/camera_fov_base_factor()*100.0f);   /* from the game's (or the patch's) */
     percent=percent+step<50 ? 50 : percent+step>150 ? 150 : percent+step;   /* the launcher slider's range */
     camera_fov_set(percent);
     char path[600]; camera_fov_path(path,sizeof path);
@@ -845,6 +1185,7 @@ static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
     runtime_exit_tick();
+    bbgpu_reflex_pre_input_sample();
     pthread_mutex_lock(&lock);
     sample(data); ++reads;
     if (is_wheel_port(handle)) { wheel_sample(data,bbgpu_overlay_captures_input()); wheel_last_read=*data; }
@@ -890,9 +1231,11 @@ static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
     if (!handle_ok(handle)) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
     { static unsigned n; if (n++<12 || ((param[0] || param[1]) && n<200)) printf("Runtime: scePadSetVibration large %u small %u\n",param[0],param[1]); }
+    hap_rumble_large=param[0]; hap_rumble_small=param[1];
     pthread_mutex_lock(&lock);
     SDL_Gamepad *g=current_gamepad();
-    if (g && !SDL_RumbleGamepad(g,(uint16_t)(param[1]*257u),(uint16_t)(param[0]*257u),0xFFFFFFFFu)) {
+    const bool hap=hap_active && g==gamepad;   /* the haptics stream plays the rumble: the motors stay off, or SDL mutes the haptics */
+    if (g && !SDL_RumbleGamepad(g,hap ? 0 : (uint16_t)(param[1]*257u),hap ? 0 : (uint16_t)(param[0]*257u),0xFFFFFFFFu)) {
         static int warned; if (!warned++) printf("Runtime: rumble not available on this pad: %s\n",SDL_GetError());
     }
     pthread_mutex_unlock(&lock);

@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "common/assert.h"
+#include "bbport_intro_pacing.h"
 #include "core/libraries/avplayer/avplayer.h"
 #include "core/libraries/avplayer/avplayer_common.h"
 #include "core/libraries/avplayer/avplayer_data_streamer.h"
@@ -198,6 +199,8 @@ private:
     Frame PrepareVideoFrame(GuestBuffer buffer, const AVFrame& frame);
 
     AvPlayerStateCallback& m_state;
+    bool m_is_intro{};
+    BbIntroPacing::Playback m_intro_pacing;
 
     struct Stream {
         size_t ffmpeg_index = 0;

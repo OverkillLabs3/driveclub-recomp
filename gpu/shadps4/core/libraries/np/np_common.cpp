@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cctype>
+#include "bbport_guest_call.h"
 #include <cstddef>
 #include <cstring>
 #include "common/logging/log.h"
@@ -67,7 +68,7 @@ void* PS4_SYSV_ABI NpCalloutThreadMain(void* arg) {
                 ctx->head = entry->next;
                 sceNpMutexUnlock(mutex);
                 if (entry->handler != nullptr) {
-                    entry->handler(entry->arg);
+                    GuestCall(entry->handler, entry->arg);
                 }
                 sceNpMutexLock(mutex);
                 continue;

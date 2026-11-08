@@ -1,0 +1,123 @@
+name: Build Linux AppImage
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/appimage.yml'
+      - 'build-linux.sh'
+      - 'gpu/**'
+      - 'launcher/prepare.cpp'
+      - 'launcher/prepare.h'
+      - 'launcher/assets/**'
+      - 'packaging/appimage/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'tools/launcher_linux.cpp'
+      - 'tools/prepare_cli.cpp'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appimage-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The release uses LTO and a PGO profile; the CI AppImage is built without either for a
+  # faster, reproducible run (BB_LTO=ON works, it only takes much longer).
+  BB_LTO: 'OFF'
+  BB_PGO: 'off'
+  CC: clang
+  CXX: clang++
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config curl ca-certificates \
+            clang lld \
+            libvulkan-dev vulkan-tools \
+            libfmt-dev libboost-dev libxxhash-dev libzydis-dev \
+            libprotobuf-dev protobuf-compiler nlohmann-json3-dev \
+            libssl-dev zlib1g-dev libpng-dev libminiupnpc-dev \
+            glslang-tools libx11-dev libxext-dev libxrandr-dev libxi-dev \
+            libxcursor-dev libxfixes-dev libxinerama-dev libxss-dev libxtst-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            libxkbcommon-dev libudev-dev libdrm-dev \
+            nasm squashfs-tools
+
+      - name: Show toolchain
+        run: |
+          clang --version | head -1
+          clang++ --version | head -1
+          cmake --version | head -1
+          for module in vulkan zydis; do
+            echo "$module $(pkg-config --modversion "$module" 2>/dev/null || echo missing)"
+          done
+
+      # SDL3 (Ubuntu 24.04 has no libsdl3-dev), a minimal FFmpeg and newer Vulkan headers.
+      # Cached because the two source builds take several minutes.
+      - name: Cache AppImage dependencies
+        uses: actions/cache@v4
+        with:
+          path: out/deps
+          key: appimage-deps-${{ runner.os }}-${{ hashFiles('packaging/appimage/fetch-deps.sh') }}
+
+      - name: Fetch build dependencies
+        run: bash packaging/appimage/fetch-deps.sh
+
+      - name: Build the native Linux runtime
+        run: bash build-linux.sh
+
+      - name: Build the AppImage
+        id: package
+        env:
+          APPIMAGE_ZSTD_LEVEL: '15'
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          SKIP_BUILD=1 APPIMAGE_VERSION="$version" bash packaging/appimage/build-appimage.sh "$version"
+
+      - name: Smoke-test the AppImage
+        run: |
+          appimage=$(ls release/driveclub-recomp-*-x86_64.AppImage)
+          chmod +x "$appimage"
+          # Extract instead of mounting: GitHub runners have no FUSE.
+          "$appimage" --appimage-extract >/dev/null
+          (cd squashfs-root && ./AppRun --version && ./AppRun --help >/dev/null)
+          (cd squashfs-root && ./AppRun --selftest | tee ../selftest.txt)
+          if grep -q 'not found' selftest.txt; then
+            echo 'The AppImage has unresolved shared libraries.' >&2
+            exit 1
+          fi
+          rm -rf squashfs-root selftest.txt
+
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: driveclub-recomp-${{ steps.package.outputs.version }}-x86_64.AppImage
+          path: |
+            release/driveclub-recomp-*-x86_64.AppImage
+            release/driveclub-recomp-*-x86_64.AppImage.sha256
+          if-no-files-found: error
+
+      - name: Build log on failure
+        if: failure()
+        run: |
+          for log in out/gpu-build.log; do
+            [ -f "$log" ] && { echo "--- $log ---"; tail -100 "$log"; }
+          done

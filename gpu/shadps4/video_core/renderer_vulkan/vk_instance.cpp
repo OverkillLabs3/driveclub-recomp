@@ -13,8 +13,10 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/buffer_cache/buffer.h"
+#include "video_core/renderer_vulkan/vk_reflex.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 
@@ -225,6 +227,7 @@ Instance::~Instance() {
     // NGX owns device-dependent state. Its process-exit callback must become
     // an idempotent no-op before the unique Vulkan device below is destroyed.
     if (Dlss* dlss = Dlss::Get()) dlss->Shutdown();
+    Reflex::Shutdown();
     ImGui::Core::Shutdown(GetDevice());
     vmaDestroyAllocator(allocator);
 }
@@ -427,6 +430,44 @@ bool Instance::CreateDevice() {
         feature_chain.get<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>()
             .shaderMixedFloatDotProductFloat16AccFloat32 &&
         add_extension(VK_VALVE_SHADER_MIXED_FLOAT_DOT_PRODUCT_EXTENSION_NAME);
+    {
+        // Ray tracing (ray queries on an acceleration structure): only reported for now, nothing is enabled.
+        const auto has = [&](const char* name) {
+            return std::any_of(available_extensions.begin(), available_extensions.end(),
+                               [&](const std::string& e) {
+                                   return e == name;
+                               });
+        };
+        const bool extensions = has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+                                has(VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+                                has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        bool as_feature = false, rq_feature = false;
+        if (extensions) {
+            vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                               vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+                               vk::PhysicalDeviceRayQueryFeaturesKHR>
+                probe;
+            physical_device.getFeatures2(&probe.get<vk::PhysicalDeviceFeatures2>());
+            as_feature = probe.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure;
+            rq_feature = probe.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery;
+        }
+        std::printf("GPU: ray tracing: %s (extensions %s, acceleration structure %s, ray query %s)\n",
+                    as_feature && rq_feature ? "available" : "not available", extensions ? "yes" : "no",
+                    as_feature ? "yes" : "no", rq_feature ? "yes" : "no");
+    }
+    {
+        // AMD Anti-Lag 2: Radeon cards that offer the extension; BB_ANTI_LAG=0 leaves it off.
+        const char* anti_lag_env = std::getenv("BB_ANTI_LAG");
+        bool feature = false;
+        if (!(anti_lag_env && anti_lag_env[0] == '0') && physical_device.getProperties().vendorID == 0x1002 &&
+            std::any_of(available_extensions.begin(), available_extensions.end(),
+                        [](const std::string& e) { return e == VK_AMD_ANTI_LAG_EXTENSION_NAME; })) {
+            vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceAntiLagFeaturesAMD> probe;
+            physical_device.getFeatures2(&probe.get<vk::PhysicalDeviceFeatures2>());
+            feature = probe.get<vk::PhysicalDeviceAntiLagFeaturesAMD>().antiLag;
+        }
+        anti_lag = feature && add_extension(VK_AMD_ANTI_LAG_EXTENSION_NAME);
+    }
     if (compute_shader_derivatives) {
         compute_shader_derivatives_features =
             feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
@@ -476,6 +517,22 @@ bool Instance::CreateDevice() {
                 IsSubgroupSize64Supported() ? ", compute pinned to 64 (graphics where the driver allows)"
                 : IsComputeSubgroupSize32Required() ? ", compute pinned to 32"
                                                     : "");
+    // bbport: NVIDIA Reflex (VK_NV_low_latency2 rev3 + VK_KHR_present_id). The module checks the
+    // driver, the revision and the timeline semaphores, and adds only what it needs.
+    std::vector<const char*> reflex_extensions;
+    vk::PhysicalDevicePresentIdFeaturesKHR reflex_present_id{};
+    reflex_supported = Reflex::ConfigureDevice(physical_device, reflex_extensions, vk12_features,
+                                               reflex_present_id);
+    if (reflex_supported) {
+        for (const char* name : reflex_extensions) {
+            if (std::none_of(enabled_extensions.begin(), enabled_extensions.end(),
+                             [&](const char* e) { return std::string_view{e} == name; }) &&
+                enabled_extensions.size() < enabled_extensions.capacity()) {
+                enabled_extensions.push_back(name);
+            }
+        }
+    }
+    std::printf("GPU: NVIDIA Reflex %s\n", reflex_supported ? "on" : "off");
     // bbport: DLSS (optional bridge DLL) needs its own device extensions on NVIDIA GPUs.
     // Optional neural rendering (off by default) asks for its own device extensions.
     std::vector<const char*> neural_extensions;
@@ -666,6 +723,12 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE{
             .shaderMixedFloatDotProductFloat16AccFloat32 = true,
         },
+        vk::PhysicalDevicePresentIdFeaturesKHR{
+            .presentId = reflex_supported,
+        },
+        vk::PhysicalDeviceAntiLagFeaturesAMD{
+            .antiLag = true,
+        },
     };
 
     if (!custom_border_color) {
@@ -726,6 +789,12 @@ bool Instance::CreateDevice() {
     if (!mixed_float_dot_product) {
         device_chain.unlink<vk::PhysicalDeviceShaderMixedFloatDotProductFeaturesVALVE>();
     }
+    if (!reflex_supported) {
+        device_chain.unlink<vk::PhysicalDevicePresentIdFeaturesKHR>();
+    }
+    if (!anti_lag) {
+        device_chain.unlink<vk::PhysicalDeviceAntiLagFeaturesAMD>();
+    }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
     if (device_result != vk::Result::eSuccess) {
@@ -739,9 +808,12 @@ bool Instance::CreateDevice() {
     if (Dlss* dlss = Dlss::Get()) {
         dlss->Initialize(*instance, physical_device, *device);
     }
+    Reflex::Initialize(*instance, physical_device, *device, reflex_supported);
+    AntiLag::Initialize(*device, anti_lag);
 
     graphics_queue = device->getQueue(queue_family_index, 0);
     present_queue = device->getQueue(queue_family_index, 0);
+    Reflex::OnGraphicsQueueCreated(graphics_queue, false);
 
     if (calibrated_timestamps) {
         const auto [time_domains_result, time_domains] =

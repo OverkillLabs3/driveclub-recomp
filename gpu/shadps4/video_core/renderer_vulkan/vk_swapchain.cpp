@@ -3,6 +3,7 @@
 
 #include "bbport_settings.h"
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -11,6 +12,7 @@
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_swapchain.h"
+#include "video_core/renderer_vulkan/vk_reflex.h"
 
 namespace Vulkan {
 
@@ -24,21 +26,29 @@ Swapchain::Swapchain(const Instance& instance_, const Frontend::WindowSDL& windo
     FindPresentFormat();
     FindPresentMode();
 
-    Create(window.GetWidth(), window.GetHeight());
+    CreateInternal(window.GetWidth(), window.GetHeight());
     ImGui::Core::Initialize(instance, window, image_count, surface_format.format);
 }
 
 Swapchain::~Swapchain() {
-    Destroy();
+    std::lock_guard<std::mutex> sleep_lock{Reflex::SleepMutex()};
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
+    DestroyInternal();
     instance.GetInstance().destroySurfaceKHR(surface);
 }
 
 void Swapchain::Create(u32 width_, u32 height_) {
+    std::lock_guard<std::mutex> sleep_lock{Reflex::SleepMutex()};
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
+    CreateInternal(width_, height_);
+}
+
+void Swapchain::CreateInternal(u32 width_, u32 height_) {
     width = width_;
     height = height_;
     needs_recreation = false;
 
-    Destroy();
+    DestroyInternal();
 
     SetSurfaceProperties();
 
@@ -52,7 +62,7 @@ void Swapchain::Create(u32 width_, u32 height_) {
     const vk::SharingMode sharing_mode =
         exclusive ? vk::SharingMode::eExclusive : vk::SharingMode::eConcurrent;
     const auto format = needs_hdr ? SURFACE_FORMAT_HDR : surface_format;
-    const vk::SwapchainCreateInfoKHR swapchain_info = {
+    vk::SwapchainCreateInfoKHR swapchain_info = {
         .surface = surface,
         .minImageCount = image_count,
         .imageFormat = format.format,
@@ -71,10 +81,16 @@ void Swapchain::Create(u32 width_, u32 height_) {
         .oldSwapchain = nullptr,
     };
 
+    VkSwapchainLatencyCreateInfoNV latency_info{};
+    if (instance.IsReflexSupported()) {
+        Reflex::PrepareSwapchainCreateInfo(swapchain_info, latency_info);
+    }
+
     auto [swapchain_result, chain] = instance.GetDevice().createSwapchainKHR(swapchain_info);
     ASSERT_MSG(swapchain_result == vk::Result::eSuccess, "Failed to create swapchain: {}",
                vk::to_string(swapchain_result));
     swapchain = chain;
+    Reflex::OnSwapchainCreated(swapchain);
     {
         static int reported = 0;
         if (reported++ < 4) {
@@ -88,9 +104,11 @@ void Swapchain::Create(u32 width_, u32 height_) {
 }
 
 void Swapchain::Recreate(u32 width_, u32 height_) {
+    std::lock_guard<std::mutex> sleep_lock{Reflex::SleepMutex()};
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
     LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
               needs_hdr);
-    Create(width_, height_);
+    CreateInternal(width_, height_);
 }
 
 void Swapchain::SetHDR(bool hdr) {
@@ -111,6 +129,7 @@ void Swapchain::SetHDR(bool hdr) {
 }
 
 bool Swapchain::AcquireNextImage() {
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
     vk::Device device = instance.GetDevice();
     vk::Result result =
         device.acquireNextImageKHR(swapchain, std::numeric_limits<u64>::max(),
@@ -136,6 +155,7 @@ bool Swapchain::AcquireNextImage() {
 }
 
 bool Swapchain::Present() {
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
     const vk::PresentInfoKHR present_info = {
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &present_ready[image_index],
@@ -244,8 +264,11 @@ void Swapchain::SetSurfaceProperties() {
 
     // Select number of images in swap chain, we prefer one buffer in the background to work on
     // (bbport: two with frame generation, which presents several images per game frame).
-    image_count = capabilities.minImageCount +
-                  (BbSettings::Get().frame_gen != BbSettings::FrameGenOff ? 2 : 1);
+    // Measured: with V-Sync, 2 images (the minimum) halve the delay of 2x frame generation, but 3x and 4x present several
+    // images per game frame and need a third, or the generated frames are dropped.
+    u32 spare = BbSettings::Get().frame_gen == BbSettings::FrameGenOff ? 1
+                : BbSettings::Get().frame_gen_multiplier.load() >= 3 || BbSettings::Get().frame_gen_auto ? 1 : 0;
+    image_count = capabilities.minImageCount + spare;
     if (capabilities.maxImageCount > 0) {
         image_count = std::min(image_count, capabilities.maxImageCount);
     }
@@ -264,6 +287,12 @@ void Swapchain::SetSurfaceProperties() {
 }
 
 void Swapchain::Destroy() {
+    std::lock_guard<std::mutex> sleep_lock{Reflex::SleepMutex()};
+    std::lock_guard<std::mutex> wsi_lock{Reflex::WsiMutex()};
+    DestroyInternal();
+}
+
+void Swapchain::DestroyInternal() {
     vk::Device device = instance.GetDevice();
     const auto wait_result = device.waitIdle();
     if (wait_result != vk::Result::eSuccess) {
@@ -277,7 +306,9 @@ void Swapchain::Destroy() {
     images_view.clear();
 
     if (swapchain) {
+        Reflex::OnSwapchainDestroying(swapchain);
         device.destroySwapchainKHR(swapchain);
+        swapchain = nullptr;
     }
 
     for (const auto& sem : image_acquired) {

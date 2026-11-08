@@ -246,6 +246,9 @@ inline void ReserveCoreForCurrentThread(CoreOwner owner) {
         if (process != system) {
             return skip("the process may only run on some CPUs");
         }
+        if (free_cores.size() <= 2) {
+            return skip("two or fewer fast cores");
+        }
         usable = true;
         std::thread([] {
             const DWORD pid = GetCurrentProcessId();

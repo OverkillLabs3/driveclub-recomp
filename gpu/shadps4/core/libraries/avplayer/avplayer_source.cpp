@@ -22,6 +22,7 @@ extern "C" {
 }
 
 #include "common/support/avdec.h"
+#include <cstdlib>
 
 extern "C" int runtime_file_translate(const char* guest, char* out, size_t size);
 
@@ -94,6 +95,9 @@ bool AvPlayerSource::Init(const AvPlayerInitData& init_data, std::string_view pa
         }
     }
     m_avformat_context = AVFormatContextPtr(context, &ReleaseAVFormatContext);
+
+    const char* pacing = std::getenv("BB_INTRO_PACING");
+    m_is_intro = BbIntroPacing::IsIntro(path) && (!pacing || pacing[0] != '0');
 
     return true;
 }
@@ -298,10 +302,12 @@ bool AvPlayerSource::Start() {
     m_video_decoder_thread.Run([this](std::stop_token stop) { this->VideoDecoderThread(stop); });
     m_audio_decoder_thread.Run([this](std::stop_token stop) { this->AudioDecoderThread(stop); });
     m_start_time = std::chrono::high_resolution_clock::now();
+    m_intro_pacing.SetActive(m_is_intro && m_video_stream_index.has_value());
     return true;
 }
 
 bool AvPlayerSource::Stop() {
+    m_intro_pacing.SetActive(false);
     std::unique_lock lock(m_state_mutex);
 
     if (!HasRunningThreads()) {
@@ -340,6 +346,7 @@ bool AvPlayerSource::Stop() {
 }
 
 void AvPlayerSource::Pause() {
+    m_intro_pacing.SetActive(false);
     m_pause_time = std::chrono::high_resolution_clock::now();
     m_is_paused = true;
 }
@@ -347,6 +354,7 @@ void AvPlayerSource::Pause() {
 void AvPlayerSource::Resume() {
     m_pause_duration += std::chrono::high_resolution_clock::now() - m_pause_time;
     m_is_paused = false;
+    m_intro_pacing.SetActive(m_is_intro && m_video_stream_index.has_value() && m_start_time.has_value());
 }
 
 bool AvPlayerSource::GetVideoData(AvPlayerFrameInfo& video_info) {
@@ -493,8 +501,10 @@ u64 AvPlayerSource::CurrentTime() {
 }
 
 bool AvPlayerSource::IsActive() {
-    return !m_is_eof || m_audio_packets.Size() != 0 || m_video_packets.Size() != 0 ||
+    const bool active = !m_is_eof || m_audio_packets.Size() != 0 || m_video_packets.Size() != 0 ||
            m_video_frames.Size() != 0 || m_audio_frames.Size() != 0;
+    if (!active) m_intro_pacing.SetActive(false);
+    return active;
 }
 
 void AvPlayerSource::ReleaseAVPacket(AVPacket* packet) {
