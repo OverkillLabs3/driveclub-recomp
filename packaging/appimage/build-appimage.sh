@@ -52,6 +52,11 @@ install -m755 "$probe" "$appdir/usr/bin/driveclub-probe"
 install -m755 "$prepare" "$appdir/usr/bin/driveclub-prepare"
 install -m755 "$launcher" "$appdir/usr/bin/driveclub-launcher"
 install -m755 "$gpu" "$appdir/usr/lib/driveclub-recomp/gpu/libbbgpu.so"
+if [ -f "$here/out/gpu/libdriveclub_dlss.so" ]; then
+    install -m755 "$here/out/gpu/libdriveclub_dlss.so" "$here"/out/gpu/libnvidia-ngx-dlss.so.* \
+        "$here"/out/gpu/libnvidia-ngx-dlssg.so.* "$appdir/usr/lib/driveclub-recomp/gpu/"
+    install -m644 packaging/dlss/NVIDIA-DLSS-LICENSE.txt packaging/dlss/dlss_bridge-LICENSE.txt "$docs/"
+fi
 install -m644 launcher/assets/fonts/001futura-webfont.ttf "$port/fonts/001futura-webfont.ttf"
 # RelWithDebInfo builds carry debug info; the players do not need it. Only debug sections are removed:
 # the runtime_*/guest_cpu_* exports libbbgpu resolves stay in the dynamic symbol table.

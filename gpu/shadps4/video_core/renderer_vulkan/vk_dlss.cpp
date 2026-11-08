@@ -17,7 +17,12 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#include <dlfcn.h>
+#endif
+#if defined(_WIN32) || defined(__linux__)
 #include "../../../dlss_bridge/bbport_dlss_bridge.h"
+#define BBPORT_DLSS_BRIDGE 1
 #endif
 
 namespace Vulkan {
@@ -27,18 +32,65 @@ int Dlss::QualityForScale(float scale) {
     return scale >= 2.9f ? 4 : scale >= 1.95f ? 3 : scale >= 1.65f ? 2 : scale > 1.01f ? 1 : 0;
 }
 
-#ifdef _WIN32
+#ifdef BBPORT_DLSS_BRIDGE
 
 namespace {
+#ifdef _WIN32
 constexpr wchar_t BridgeName[] = L"driveclub_dlss.dll";
 constexpr wchar_t NgxName[] = L"nvngx_dlss.dll";
+using ModuleHandle = HMODULE;
 
-std::filesystem::path ExecutableDirectory() {
+std::filesystem::path BridgeDirectory() {
     std::wstring path(MAX_PATH, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, path.data(), DWORD(path.size()));
     path.resize(length);
     return std::filesystem::path{path}.parent_path();
 }
+
+bool HasNgxLibrary(const std::filesystem::path& directory) {
+    return std::filesystem::is_regular_file(directory / NgxName);
+}
+
+ModuleHandle OpenModule(const std::filesystem::path& path) {
+    return LoadLibraryW(path.c_str());
+}
+
+void* FindSymbol(ModuleHandle module, const char* name) {
+    return reinterpret_cast<void*>(GetProcAddress(module, name));
+}
+#else
+constexpr char BridgeName[] = "libdriveclub_dlss.so";
+constexpr std::string_view NgxPrefix = "libnvidia-ngx-dlss.so.";
+using ModuleHandle = void*;
+
+std::filesystem::path BridgeDirectory() {
+    Dl_info info{};
+    if (!dladdr(reinterpret_cast<void*>(&BridgeDirectory), &info) || !info.dli_fname) {
+        return {};
+    }
+    std::error_code error;
+    const auto module = std::filesystem::canonical(info.dli_fname, error);
+    return error ? std::filesystem::path{info.dli_fname}.parent_path() : module.parent_path();
+}
+
+bool HasNgxLibrary(const std::filesystem::path& directory) {
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        if (entry.path().filename().string().starts_with(NgxPrefix) && entry.is_regular_file(error)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ModuleHandle OpenModule(const std::filesystem::path& path) {
+    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+}
+
+void* FindSymbol(ModuleHandle module, const char* name) {
+    return dlsym(module, name);
+}
+#endif
 
 void BridgeLog(int warning, const char* message) {
     std::printf("DLSS: %s%s\n", warning ? "warning: " : "", message);
@@ -70,7 +122,7 @@ bool CollectExtensions(const VkExtensionProperties* required, u32 count,
 } // namespace
 
 struct Dlss::Impl {
-    HMODULE module{};
+    ModuleHandle module{};
     const BbDlssApi* api{};
     std::vector<std::string> instance_extensions, device_extensions;
     std::optional<FeatureDesc> feature;
@@ -92,9 +144,9 @@ Dlss* Dlss::Get() {
         if (setting && setting[0] == '0') {
             return nullptr;
         }
-        const auto directory = ExecutableDirectory();
+        const auto directory = BridgeDirectory();
         if (!std::filesystem::is_regular_file(directory / BridgeName) ||
-            !std::filesystem::is_regular_file(directory / NgxName)) {
+            !HasNgxLibrary(directory)) {
             return nullptr;
         }
         auto* created = new Dlss;
@@ -110,10 +162,10 @@ Dlss* Dlss::Get() {
 }
 
 Dlss::Dlss() : impl{std::make_unique<Impl>()} {
-    const auto directory = ExecutableDirectory();
-    impl->module = LoadLibraryW((directory / BridgeName).c_str());
+    const auto directory = BridgeDirectory();
+    impl->module = OpenModule(directory / BridgeName);
     const auto get_api =
-        impl->module ? reinterpret_cast<BbDlssGetApiFn>(GetProcAddress(impl->module, "BbDlssGetApi"))
+        impl->module ? reinterpret_cast<BbDlssGetApiFn>(FindSymbol(impl->module, "BbDlssGetApi"))
                      : nullptr;
     impl->api = get_api ? get_api() : nullptr;
     // ABI 1 bridges (DLSS only) still work; Frame Generation needs ABI 2.
@@ -128,7 +180,7 @@ Dlss::Dlss() : impl{std::make_unique<Impl>()} {
     }
     std::error_code error;
     std::filesystem::create_directories(data, error);
-    if (!impl->api->Configure(directory.c_str(), data.c_str(), BridgeLog)) {
+    if (!impl->api->Configure(directory.wstring().c_str(), data.wstring().c_str(), BridgeLog)) {
         impl->Disable("bridge configuration failed");
     }
 }
