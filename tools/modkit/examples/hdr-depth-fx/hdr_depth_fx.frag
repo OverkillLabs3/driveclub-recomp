@@ -43,7 +43,7 @@ void main() {
     bool sky = z > SKY;
 
     float fog_density = p.values[0].x, fog_strength = p.values[0].y, fog_sky = p.values[0].z, debug_mode = p.values[0].w;
-    vec3 fog_color = p.values[1].rgb;
+    vec3 fog_color = p.values[1].bgr;   // blue is .r at the HDR stage
     float fog_bright = p.values[1].w;
     float ao_strength = p.values[2].x, ao_radius = p.values[2].y, dof_strength = p.values[2].z, focus_scale = p.values[2].w;
     float focus_dist = p.values[3].x;

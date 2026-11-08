@@ -20,7 +20,7 @@ void main() {
     if (p.has_depth < 0.5 || p.values[0].z < 0.5) { color = vec4(c, 1.0); return; }
     vec2 sun = p.values[0].xy;
     float strength = p.values[0].w;                  // shafts, scaled by how bright the sun is
-    vec3 tint = p.values[1].rgb;
+    vec3 tint = p.values[1].bgr;
     float decay = p.values[1].w;                     // 0.9 to 0.99: how far the shafts reach
     float length_scale = p.values[2].x;              // 0..1 of the way to the sun that is sampled
     float ghosts = p.values[2].y;                    // lens ghost strength
@@ -49,7 +49,7 @@ void main() {
         float d = length((uv - centre) * vec2(aspect, 1.0));
         float r = 0.035 + 0.02 * float(i);
         float disc = smoothstep(r, r * 0.55, d) * (1.0 - smoothstep(0.0, 0.5, length(sun - vec2(0.5)) * 0.8));
-        g += disc * mix(vec3(1.0, 0.55, 0.3), vec3(0.3, 0.6, 1.0), float(i) / 4.0) * (0.35 / float(i));
+        g += disc * mix(vec3(0.3, 0.55, 1.0), vec3(1.0, 0.6, 0.3), float(i) / 4.0) * (0.35 / float(i));
     }
     g *= ghosts * strength;
     color = vec4(c + rays + g, 1.0);

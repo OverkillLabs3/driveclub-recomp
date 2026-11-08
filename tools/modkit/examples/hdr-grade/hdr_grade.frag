@@ -24,11 +24,11 @@ void main() {
     c *= exp2(exposure);
     // contrast around middle grey, in linear light
     c = 0.18 * pow(max(c / 0.18, vec3(1e-4)), vec3(contrast));
-    float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    float luma = dot(c, vec3(0.0722, 0.7152, 0.2126));
     c = mix(vec3(luma), c, saturation);
     // split toning: shadows toward teal, highlights toward orange
     float w = smoothstep(0.02, 1.5, luma);
-    vec3 teal = vec3(0.80, 1.00, 1.10), orange = vec3(1.12, 1.00, 0.82);
+    vec3 teal = vec3(1.10, 1.00, 0.80), orange = vec3(0.82, 1.00, 1.12);   // blue is .r in this stage
     c *= mix(vec3(1.0), mix(teal, orange, w), split);
     // vignette
     vec2 d = uv - 0.5;

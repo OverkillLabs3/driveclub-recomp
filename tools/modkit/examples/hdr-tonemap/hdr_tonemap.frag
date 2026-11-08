@@ -19,7 +19,7 @@ layout(push_constant) uniform P {
 
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
 vec3 hable_(vec3 x) { const float A = 0.15, B = 0.50, C = 0.10, D = 0.20, E = 0.02, F = 0.30; return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F; }
-float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float luma(vec3 c) { return dot(c, vec3(0.0722, 0.7152, 0.2126)); }
 
 void main() {
     vec3 c = max(texture(picture, uv).rgb, vec3(0.0));

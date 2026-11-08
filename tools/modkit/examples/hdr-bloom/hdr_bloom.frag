@@ -15,7 +15,7 @@ layout(push_constant) uniform P {
     vec4 values[4];
 } p;
 
-float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+float luma(vec3 c) { return dot(c, vec3(0.0722, 0.7152, 0.2126)); }
 
 void main() {
     int mode = int(p.values[0].x + 0.5);
@@ -75,7 +75,7 @@ void main() {
             gsum += w;
         }
         glare /= gsum;
-        vec3 tint = vec3(0.75, 0.85, 1.25);   // the cool tint of a lens streak
+        vec3 tint = vec3(1.25, 0.85, 0.75);   // the cool tint of a lens streak
         color = vec4(s + bloom * strength + glare * streak * tint, 1.0);
     }
 }
