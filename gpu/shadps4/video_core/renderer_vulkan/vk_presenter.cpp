@@ -1163,7 +1163,15 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // spaced sequence on the panel.
     // The source must be complete on the GPU before its images are spaced out.
     const auto source_began = std::chrono::steady_clock::now();
-    if (frame->source_scheduler) {
+    // bbport: VR: with no generated images to space out, the CPU does not wait for the frame here. The headset copy
+    // waits for it on the GPU (ready_semaphore); waiting on the CPU first put xrWaitFrame (BbVr::RecordFrame) after
+    // the whole render, so a frame done just past the runtime's slot lost a whole slot: with OFXR at 40 of 80 Hz
+    // p99 went 28 -> 49 ms. BB_VR_SOURCE_WAIT=1 brings the wait back.
+    static const bool vr_no_source_wait = [] {
+        const char* env = std::getenv("BB_VR_SOURCE_WAIT");
+        return !(env && env[0] == '1');
+    }();
+    if (frame->source_scheduler && !(vr_no_source_wait && BbVr::Active() && generated == 0)) {
         frame->source_scheduler->Wait(frame->ready_tick);
     }
     const auto paced = std::chrono::steady_clock::now();
