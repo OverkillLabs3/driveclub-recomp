@@ -145,7 +145,7 @@ struct Settings {
   int ffb_gain = 100;      // game and software models, percent (0..2000)
   // Reworked Physics: gain, detail, damper, max force and countersteer assist (the Windows launcher's rows); detail,
   // damper and countersteer assist suit the wheel type where default.ini has no line (FfbKindDefaults)
-  int ffb_physics_gain = 80, ffb_physics_detail = 75, ffb_physics_damper = 0, ffb_physics_max_force = 100;
+  int ffb_physics_gain = 70, ffb_physics_detail = 100, ffb_physics_damper = 0, ffb_physics_max_force = 100;
   bool ffb_countersteer = false;
   int ffb_soft_lock = 0;   // Game, Off, 540, 720, 900, 1080
   int ffb_wave = 0;        // Square, Sine
@@ -860,7 +860,7 @@ int FindChoice(const Choice* choices, int count, const std::set<std::string>& se
 // src/runtime_wheel.inc): direct drive, belt, gear. The kind: wheel_ffb_wheel_type, or the game's find from the wheel's
 // name (input_config/wheel_detected.txt), else belt.
 struct FfbKind { int detail, damper; bool countersteer; };
-constexpr FfbKind kFfbKind[3] = {{75, 0, false}, {100, 0, true}, {60, 0, true}};
+constexpr FfbKind kFfbKind[3] = {{100, 0, false}, {100, 0, true}, {60, 0, true}};
 void FfbKindDefaults(const std::map<std::string, std::string>& kv) {
   auto kind_of = [](const std::string& v) { return v.rfind("direct", 0) == 0 ? 0 : v == "belt" ? 1 : v == "gear" ? 2 : -1; };
   int kind = -1;
@@ -876,7 +876,7 @@ void FfbKindDefaults(const std::map<std::string, std::string>& kv) {
 }
 // The Reworked Physics rows as default.ini had them when read or last written: only the rows changed since are
 // written, so the settings that suit the wheel type stay unwritten until the player changes them.
-struct { int gain, detail, damper, max_force; bool countersteer; } g_ffb_loaded{80, 75, 0, 100, false};
+struct { int gain, detail, damper, max_force; bool countersteer; } g_ffb_loaded{70, 100, 0, 100, false};
 void RememberFfbLoaded() {
   g_ffb_loaded = {g.ffb_physics_gain, g.ffb_physics_detail, g.ffb_physics_damper, g.ffb_physics_max_force, g.ffb_countersteer};
 }
@@ -2865,20 +2865,20 @@ void WheelPage() {
 
   if (BeginCard("FORCE FEEDBACK")) {
     if (g.ffb_model == 2) {
-      if (ToggleRow("Countersteer assist", "The game turns the road wheels further than your wheel when you "
-                                           "countersteer a slide. Off on direct drive; on helps belt and gear wheels.",
+      if (ToggleRow("Countersteer assist", "When the back slides and you countersteer, the game turns the car's wheels "
+                                           "further than yours. On: easier slides. Off on direct drive, on for belt and gear.",
                     &g.ffb_countersteer)) g.dirty = true;
-      if (SliderRow("Gain", "How strong the steering force is overall, for every car. 80 to start; the FFB gain "
-                            "buttons change only the car you're driving.",
+      if (SliderRow("Gain", "How strong the steering force is, for every car. Higher: more weight; too high goes flat "
+                            "in strong corners. Start at 70; the FFB gain buttons change only the car you're driving.",
                     &g.ffb_physics_gain, 0, 300, "%d%%")) g.dirty = true;
-      if (SliderRow("Detail", "How much of the quick changes you feel: kerbs, bumps, the tyres biting. Lower it "
-                              "if the wheel is busy or rattles.",
+      if (SliderRow("Detail", "How much of the quick changes you feel: bumps, kerbs, the tyres gripping. Higher: "
+                              "livelier; lower: smoother. Lower it if the wheel feels grainy or rattles.",
                     &g.ffb_physics_detail, 0, 200, "%d%%")) g.dirty = true;
-      if (SliderRow("Damper", "Heavier to turn the faster you turn. Raise it if the centre feels light or the "
-                              "wheel wobbles; 0 if your wheelbase has a damper of its own.",
+      if (SliderRow("Damper", "Weight that grows the faster you turn. Higher: calmer, settles on the centre; too "
+                              "high feels heavy. 0 if your wheel has a damper of its own.",
                     &g.ffb_physics_damper, 0, 100, "%d%%")) g.dirty = true;
-      if (SliderRow("Max force", "The most of the wheel's force the steering asks for. 70 to 85 if slides or "
-                                 "hits kick back too hard.",
+      if (SliderRow("Max force", "Caps the strongest forces; weaker ones stay as they are. Try 70 to 85 if slides "
+                                 "or crashes kick too hard.",
                     &g.ffb_physics_max_force, 30, 100, "%d%%")) g.dirty = true;
     } else {
       if (SliderRow("Gain", "Percent of the game's forces. The game's forces are light on most wheels, so "

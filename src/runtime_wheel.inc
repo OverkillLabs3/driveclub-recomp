@@ -66,13 +66,13 @@ static int ffb_center, ffb_slide;
  * wheel's maximum), filter, minimum force and a steady damper; the road and kerbs always at their real strength, kickback
  * with the detail. On by default: wheel_ffb_model = original is the game's own force, the PS4 game's light spring. */
 static bool ffb_physics=true;
-static int ffb_ph_gain=80, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=0, ffb_ph_effects=0, ffb_ph_max_force=100;
+static int ffb_ph_gain=70, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=0, ffb_ph_effects=0, ffb_ph_max_force=100;
 /* wheel_ffb_physics_power_steering = off: the tyres' force as it is, with no power assist (direct drive wheels: they
  * have the torque for a whole corner); on: the assist lightens the big forces of a heavy car, so a gear or belt wheel's
  * motor keeps detail in fast corners instead of running out. wheel_ffb_physics_friction: the steering's friction, percent
  * of the wheel at gain 100 (the wheelbase's friction effect). */
 static bool ffb_ph_power_steering;
-static int ffb_ph_friction=6;
+static int ffb_ph_friction=2;
 /* wheel_ffb_wheel_type = direct, belt or gear: the kind of wheelbase, for the settings above that suit each kind
  * (FFB_WHEEL_DEFAULTS) where default.ini has no line of its own; auto (no line): from the wheel's name. */
 enum { FFB_WHEEL_DIRECT, FFB_WHEEL_BELT, FFB_WHEEL_GEAR };
@@ -98,8 +98,8 @@ static bool ffb_ph_combined=true;
 /* Self-centring from the steering axis' inclination (the front wheels' load, the steering angle); wheel_ffb_physics_centre
  * = off leaves it out. */
 static bool ffb_ph_centre=true;
-/* Each front tyre's moment follows over its relaxation length (runtime_logiwheel.inc); wheel_ffb_physics_relax = off:
- * the game's forces as they come, step by step. */
+/* Each front tyre's moment, slip and load follow over its relaxation length (runtime_logiwheel.inc);
+ * wheel_ffb_physics_relax = off: the game's forces as they come, step by step. */
 static bool ffb_ph_relax=true;
 /* wheel_button = <n>, ffb_gain_up / ffb_gain_down: wheel buttons that make the physics model's force for the car being
  * driven 5% stronger or weaker, kept for each car (runtime_logiwheel.inc, ffb_cars.ini); -1: not bound. ffb_gain_dev:
@@ -384,7 +384,7 @@ static const char wheel_default_config[]=
     "# wheel_ffb_model = physics: the force comes from the car's front tyres in the game's simulation, as in a sim: the\n"
     "# game's own tyre formula at the wheel's position now. wheel_ffb_wheel_type: direct, belt or gear (no line: from\n"
     "# the wheel's name); the settings marked * below suit each kind when they have no line of their own. Settings, percent:\n"
-    "# wheel_ffb_physics_gain (0..300, 80; 100: a 1 g corner at about 60% of the wheel's maximum with power steering),\n"
+    "# wheel_ffb_physics_gain (0..300, 70; 100: a 1 g corner at about 60% of the wheel's maximum with power steering),\n"
     "# wheel_ffb_physics_power_steering* (on: the big forces of heavy cars lightened, for gear and belt wheels; off: the\n"
     "# tyres' force as it is, for direct drive), wheel_ffb_physics_friction* (0..30: the steering's friction),\n"
     "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force* (0..30, for gear wheels),\n"
@@ -397,7 +397,7 @@ static const char wheel_default_config[]=
     "# wheel_ffb_physics_damper* (0..100), wheel_ffb_physics_effects (0..100, 0; a buzz from a tyre past its grip, a front\n"
     "# sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
     "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs, and their kickback) is always at its full strength.\n"
-    "# Direct drive: detail 75, damper 0, friction 6, countersteer off, power steering off. Belt: detail 100, damper 0,\n"
+    "# Direct drive: detail 100, damper 0, friction 2, countersteer off, power steering off. Belt: detail 100, damper 0,\n"
     "# friction 2, countersteer on, power steering on. Gear: detail 60, damper 0, minimum force 5, friction 0,\n"
     "# countersteer on, power steering on.\n"
     "# Bikes keep the 0.4.1 force (the tyre formula needs four wheels); wheel_ffb_physics_tyre = classic,\n"
@@ -412,7 +412,9 @@ static const char wheel_default_config[]=
     "wheel_ffb_model = physics\n"
     "wheel_ffb_gain = 100\n"
     "wheel_ffb_vibration = 100\n"
-    "wheel_ffb_invert = false\n";
+    "wheel_ffb_invert = false\n"
+    "# The force feedback settings' version: older ones are reset once, as they were made for an earlier force.\n"
+    "wheel_ffb_version = 2\n";
 
 /* A default.ini from before wheel support keeps the player's lines and gets the wheel section added at its end. */
 static void wheel_config_append(const char *path) {
@@ -428,6 +430,90 @@ static void wheel_config_append(const char *path) {
     fwrite(wheel_default_config,1,sizeof(wheel_default_config)-1,f);
     fclose(f);
     printf("Runtime: steering wheel settings added to %s\n",path);
+}
+
+/* Force feedback settings made for the force before the rework (PR #341) no longer fit it: on the first start of this
+ * version (a default.ini without wheel_ffb_version = 2) its force feedback lines go, so each setting is what suits the
+ * wheel: the physics model's settings, the wheel type and a review build's switches, and each car's own
+ * percentage with them (ffb_cars.ini). The wheel's setup (the device, buttons, pedals, shifter), its direction, the soft
+ * lock, the model (Original stays Original: its force is as it was) and the Original model's own settings stay. The files as they were are kept as default.ini.before-ffb-rework and
+ * ffb_cars.ini.before-ffb-rework; ffb_reset.txt beside default.ini lists what was reset, and the launcher shows it once
+ * (it does the same reset when it starts first: MigrateFfbSettings). A new default.ini has the line already. */
+#define FFB_SETTINGS_VERSION 2
+static void wheel_ffb_rework_reset(const char *path) {
+    FILE *f=fopen(path,"rb");
+    if (!f) return;
+    const size_t cap=131072;
+    char *text=calloc(1,cap), *out=calloc(1,cap+512), *notice=calloc(1,16384);
+    const size_t n=text ? fread(text,1,cap-1,f) : 0;
+    fclose(f);
+    if (!text || !out || !notice || n>=cap-1) { free(text); free(out); free(notice); return; }   /* too big: left as it is */
+    const char *nl=strstr(text,"\r\n") ? "\r\n" : "\n";
+    size_t o=0, w=0; int reset=0; bool current=false;
+    for (const char *l=text; *l;) {
+        const char *end=strchr(l,'\n'); const size_t len=end ? (size_t)(end-l)+1 : strlen(l);
+        const char *s=l, *eq;
+        while (*s==' ' || *s=='\t') ++s;
+        for (eq=s; eq<l+len && *eq!='=' && *eq!='#' && *eq!='\n'; ++eq) {}
+        char key[96]="";
+        if (eq<l+len && *eq=='=' && eq>s) {
+            size_t k=(size_t)(eq-s); if (k>sizeof key-1) k=sizeof key-1;
+            memcpy(key,s,k); key[k]=0;
+            while (k && (key[k-1]==' ' || key[k-1]=='\t')) key[--k]=0;
+            lower(key);
+        }
+        const bool marker=!strcmp(key,"wheel_ffb_version");
+        if (marker && atoi(eq+1)>=FFB_SETTINGS_VERSION) current=true;
+        const bool drop=!strcmp(key,"wheel_ffb_wheel_type") ||
+                        !strncmp(key,"wheel_ffb_physics_",18) || !strncmp(key,"wheel_ffb_review_",17);
+        if (drop) {
+            size_t k=(size_t)(l+len-s);
+            while (k && (s[k-1]=='\n' || s[k-1]=='\r')) --k;
+            if (w+k+2<16384) { memcpy(notice+w,s,k); w+=k; notice[w++]='\n'; }
+            ++reset;
+        } else if (!marker) { memcpy(out+o,l,len); o+=len; }
+        l+=len;
+    }
+    if (current) { free(text); free(out); free(notice); return; }
+    if (o && out[o-1]!='\n') o+=(size_t)snprintf(out+o,cap+512-o,"%s",nl);
+    o+=(size_t)snprintf(out+o,cap+512-o,"# The force feedback settings' version: older ones are reset once, as they were made for an earlier force.%s"
+                                        "wheel_ffb_version = %d%s",nl,FFB_SETTINGS_VERSION,nl);
+    char dir[600], other[640], cars[620];
+    snprintf(dir,sizeof dir,"%s",path);
+    char *slash=strrchr(dir,'/'); if (!slash) slash=strrchr(dir,'\\');
+    if (slash) *slash=0; else snprintf(dir,sizeof dir,".");
+    /* each car's own percentage */
+    int car_count=0;
+    { const char *user=runtime_file_user_dir();
+      snprintf(cars,sizeof cars,"%s/ffb_cars.ini",user && *user ? user : ".");
+      FILE *c=fopen(cars,"rb"); char line[128];
+      while (c && fgets(line,sizeof line,c)) { unsigned long long k; int p; if (sscanf(line," car_%llx = %d",&k,&p)==2) ++car_count; }
+      if (c) { fclose(c); snprintf(other,sizeof other,"%s.before-ffb-rework",cars); remove(other); rename(cars,other); } }
+    if (reset || car_count) {
+        snprintf(other,sizeof other,"%s.before-ffb-rework",path);
+        FILE *b=fopen(other,"rb");
+        if (b) fclose(b);   /* the first copy is kept */
+        else if ((b=fopen(other,"wb"))) { fwrite(text,1,n,b); fclose(b); }
+    }
+    snprintf(other,sizeof other,"%s.new",path);
+    FILE *g=fopen(other,"wb");
+    if (g) {
+        const bool ok=fwrite(out,1,o,g)==o;
+        fclose(g);
+        if (ok) { remove(path); rename(other,path); } else remove(other);
+    }
+    if (reset || car_count) {
+        snprintf(other,sizeof other,"%s/ffb_reset.txt",dir);
+        if ((g=fopen(other,"wb"))) {
+            fprintf(g,"# The force feedback settings reset for the reworked force (the launcher shows them once, then removes this file)\n");
+            fwrite(notice,1,w,g);
+            fprintf(g,"cars = %d\n",car_count);
+            fclose(g);
+        }
+        printf("Runtime: force feedback reworked: %d settings and %d cars' own gains reset to the new defaults (the old ones in "
+               "default.ini.before-ffb-rework)\n",reset,car_count);
+    }
+    free(text); free(out); free(notice);
 }
 
 /* The kind of wheelbase from its name (wheel_ffb_wheel_type = auto). Direct drive: the motor on the steering shaft
@@ -455,7 +541,7 @@ static const char *const ffb_wheel_names[3]={"direct","belt","gear"};
  * assist, so their weaker motors keep detail in fast corners, and leave out the friction their belts and gears have of
  * their own; gear wheels rattle with much detail and need a little force to move through their gears' play. */
 static const struct { int detail, damper, min_force, friction; bool countersteer, power; } FFB_WHEEL_DEFAULTS[3]={
-    {75,0,0,6,false,false},    /* direct drive */
+    {100,0,0,2,false,false},   /* direct drive */
     {100,0,0,2,true,true},     /* belt */
     {60,0,5,0,true,true}};     /* gear */
 static void ffb_wheel_defaults(void) {

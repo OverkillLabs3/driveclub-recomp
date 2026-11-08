@@ -263,15 +263,18 @@ static float smoothstep(float lo, float hi, float x) { const float t=fminf(1.0f,
  * out at the wheel's position now, as the game's next step will have it, instead of waiting for the last step's forces;
  * the steering force then does not depend on the frame rate, and has no learnt grip and no multipliers on it:
  * - each front tyre's lateral force by the game's formula, times its trail (col_trail_brush): the brush tyre's own
- *   pneumatic trail up to its peak with the caster's mechanical trail beside it, then the fall past the peak fitted to
- *   Assetto Corsa's M4 on the same wheel. The trail goes by the slip angle alone, so braking into a corner, which loads
- *   the front, makes the steering heavier instead of the braking slip shortening the trail.
+ *   pneumatic trail up to its peak with the caster's mechanical trail beside it, longer under load, then the fall past
+ *   the peak fitted to Assetto Corsa's M4 on the same wheel, spread over half to 1.5 times the peak and kept over the
+ *   caster's trail. The trail goes by the slip angle alone, so braking into a corner, which loads the front, makes the
+ *   steering heavier instead of the braking slip shortening the trail.
  * - braking and drive through the scrub radius, a third of the lateral lever as the game's own force, and with them the
  *   push a bump or a kerb's edge gives each front wheel (the normal force's part along the wheel, from the game's own
  *   forces): kickback, a jolt toward the side struck; both struck alike cancel. The steering axis' inclination, as the
  *   0.4.1 force.
  * - each front tyre's slip builds over its relaxation length (0.4 m), so a sideslip that flips in one physics step (a
- *   snap, a spin) reaches the wheel over 15-30 ms instead of in one pass.
+ *   snap, a spin) reaches the wheel over 15-30 ms instead of in one pass; its load too: the load wobbles from step to
+ *   step, which taken raw was most of the grain at high Detail (a player's drive: 30-40% less, crests the same, the
+ *   biggest jolt of a landing 1.74 to 1.01 of the wheel).
  * - power assist (wheel_ffb_physics_power_steering, on for belt and gear wheels): a light car has none; on the others
  *   the share of the moment the driver feels falls as it grows, to a half (Balachandran and Gerdes 2014: 1 at no force,
  *   falling to a floor). By the car's mass, as the game's data does not say which cars have it. On the steady force only
@@ -286,16 +289,23 @@ static float col_trail_at(float u) {
 }
 static float col_f25(float u) { if (u>=1.0f) return 1.0f; const float r=1.0f-u; return 1.0f-r*r*sqrtf(r); }
 /* The trail over its value at no slip, u the slip angle over the peak's: the brush tyre's pneumatic trail (parabolic
- * pressure, Pacejka: (1-u)^3 / (1-u+u^2/3), nothing once the whole patch slides) times the square root of the tyre's load
- * over its static load (load_factor: the contact patch's length), and the caster's mechanical trail beside it, 80% of a
- * gripping tyre's whole trail (a road car's firm centre); from half the peak on it blends into col_trail's fall past the
- * peak. Scaled to col_trail at half the peak, where most cornering is, so the gains mean what they did. */
+ * pressure, Pacejka: (1-u)^3 / (1-u+u^2/3), nothing once the whole patch slides) and the caster's mechanical trail beside
+ * it, 80% of a gripping tyre's whole trail (a road car's firm centre), all of it times the square root of the tyre's load
+ * over its static load (load_factor: a loaded tyre's longer contact patch). At equal lateral g Assetto Corsa's M235i
+ * follows the front's load to the power 0.68; this 0.69-0.74 (the load on the pneumatic part alone: 0.46-0.53), so
+ * braking into a corner is 28-40% heavier (AC +36%). From half the peak on it blends into col_trail's fall past the peak,
+ * by 1.5 times the peak (blended by the peak, most of the fall came within a degree of slip, like a switch), and never
+ * under the caster's trail, 20% of the centre's, however far the tyres slide: the steering geometry keeps turning the
+ * front wheels toward where they travel. The force at 0.8-1.5 times the peak: .99 .93 .86 .80 .72 .58 .48 .44 (Assetto
+ * Corsa's M235i .94 .87 .79 .73 .70 .60 .63 .67; blended by the peak .83 .66 .61 .62 .62 .55 .50 .47). Scaled to
+ * col_trail at half the peak, where most cornering is, so the gains mean what they did. */
 #define COL_MECH 0.8f
+#define COL_CASTER 0.2f
 static float col_brush(float u) { if (u>=1.0f) return 0.0f; const float r=1.0f-u; return r*r*r/(1.0f-u+u*u/3.0f); }
 static float col_trail_brush(float u, float load_factor) {
     const float scale=col_trail_at(0.5f)/(COL_MECH+(1.0f-COL_MECH)*col_brush(0.5f));
-    const float brush=scale*(COL_MECH+(1.0f-COL_MECH)*col_brush(u)*load_factor);
-    return brush+(col_trail_at(u)-brush)*smoothstep(0.5f,1.0f,u);
+    const float brush=scale*(COL_MECH+(1.0f-COL_MECH)*col_brush(u));
+    return fmaxf(COL_CASTER*scale,brush+(col_trail_at(u)-brush)*smoothstep(0.5f,1.5f,u))*load_factor;
 }
 /* The steering moment as a share of the wheel at gain 100. dalpha: how far the wheel has turned the road wheels since the
  * step these values are from; angle: the road wheels now; weight: half the car's weight (N). */
@@ -340,7 +350,8 @@ static struct {
     float relaxed[2]; bool relaxed_set;   /* each front tyre's moment after its relaxation length */
     struct ph_tyre col[2];        /* ffb_column_force's values of this step */
     float col_target, col_lock; bool col_ok;   /* the driver's angle the step used, the full steering angle; col_ok: four wheels */
-    float col_slip[2]; bool col_slip_set;   /* each front tyre's slip after its relaxation length */
+    float col_slip[2], col_load[2]; bool col_slip_set;   /* each front tyre's slip and load after its relaxation length */
+    float col_load_raw[2];        /* and its load as the step gave it (the trace's) */
     float long_axle;              /* both fronts' load over the last 20 s: about the car's static load (the trail's reference) */
     uint64_t hit_us;              /* the last hit from outside the tyres: a wall or another car */
 } ph={.m=PTHREAD_MUTEX_INITIALIZER};
@@ -666,11 +677,15 @@ static void ffb_physics_step(const float *st, const uint8_t *in, uintptr_t car) 
               memcpy(f,w+0x110,sizeof f); memcpy(a,w+0x190,sizeof a);
               memcpy(&ph.col[i].load,w+0x70,4); memcpy(&ph.col[i].f0,w+0xf0,4); memcpy(&ph.col[i].f4,w+0xf4,4);
               ph.col[i].slip=slip[i]; ph.col[i].ratio=ratio[i]; ph.col[i].peak=st[0xb80/4+i]; ph.col[i].spd=st[0xb70/4+i];
-              if (ffb_ph_relax) {   /* the slip builds over the tyre's relaxation length, 0.4 m */
-                  if (!ph.col_slip_set || !isfinite(ph.col_slip[i])) ph.col_slip[i]=slip[i];
-                  const float tau=fminf(0.05f,fmaxf(0.003f,0.4f/fmaxf(speed,1.0f)));
-                  ph.col_slip[i]+=(slip[i]-ph.col_slip[i])*(1.0f-expf(-dt/tau));
-                  ph.col[i].slip=ph.col_slip[i];
+              ph.col_load_raw[i]=ph.col[i].load;
+              if (ffb_ph_relax) {   /* the slip and the load build over the tyre's relaxation length, 0.4 m */
+                  if (!ph.col_slip_set || !isfinite(ph.col_slip[i]) || !isfinite(ph.col_load[i])) {
+                      ph.col_slip[i]=slip[i]; ph.col_load[i]=ph.col[i].load;
+                  }
+                  const float tau=fminf(0.05f,fmaxf(0.003f,0.4f/fmaxf(speed,1.0f))), k=1.0f-expf(-dt/tau);
+                  ph.col_slip[i]+=(slip[i]-ph.col_slip[i])*k;
+                  ph.col_load[i]+=(ph.col[i].load-ph.col_load[i])*k;
+                  ph.col[i].slip=ph.col_slip[i]; ph.col[i].load=ph.col_load[i];
               }
               ph.col[i].lon=f[0]*a[0]+f[1]*a[1]+f[2]*a[2];
               ph.col[i].push=lon[i]-ph.col[i].lon;   /* the normal force's part along the wheel: a bump's push */
@@ -722,7 +737,7 @@ static void ffb_physics_step(const float *st, const uint8_t *in, uintptr_t car) 
                 ph.k,ph.mu,ph.weight,ratio[2],ratio[3],wheel_last_throttle/65535.0f,wheel_last_brake/65535.0f,
                 wheel_last_clutch/65535.0f,b[0],b[1],b[2],b[3],b[4],b[5],b[6],b[7],b[8],b[9],b[10],b[11],
                 ffb_grip_factor[0],ffb_grip_factor[1],ffb_grip_factor[2],ffb_grip_factor[3],ffb_surface[0],ffb_surface[1],
-                ph.col[0].peak,ph.col[1].peak,ph.col[0].load,ph.col[1].load,ph.col[0].lon,ph.col[1].lon,(double)*(const float *)(car+0x3dc),road_wheel,
+                ph.col[0].peak,ph.col[1].peak,ph.col_load_raw[0],ph.col_load_raw[1],ph.col[0].lon,ph.col[1].lon,(double)*(const float *)(car+0x3dc),road_wheel,
                 ph.col[0].f0,ph.col[1].f0,ph.col[0].f4,ph.col[1].f4,ph.col[0].spd,ph.col[1].spd,ph.col[0].push,ph.col[1].push,ph.col[0].ref);
         pthread_mutex_unlock(&ffb_trace_m);
     }
@@ -1071,10 +1086,11 @@ static void ffb_physics_pass(SDL_Haptic *haptic, int32_t pos) {
       } }
     /* The steering's own feel, run by the wheelbase's firmware (its friction condition, far faster and steadier than
      * working it out from the wheel's position here): the rack, column and seals' friction, wheel_ffb_physics_friction
-     * percent of the wheel's force (6 on direct drive: a road car's 1 Nm or so on an 8 Nm base; belts and gears have
-     * their own), as the steering force at gain 100 and with the gain and the car's own percentage, so it keeps its share
-     * of it. Very small forces then come through as a connected wheel instead of a weightless one. No inertia effect: a
-     * wheelbase's rim and motor are already about as heavy to swing as a real steering column. */
+     * percent of the wheel's force (2 on direct drive; belts and gears have their own), as the steering force at gain
+     * 100 and with the gain and the car's own percentage, so it keeps its share of it. Very small forces then come
+     * through as a connected wheel instead of a weightless one; much more holds back the road's small forces (6 was 3.4%
+     * of a player's wheel, more than most bumps' quick force). No inertia effect: a wheelbase's rim and motor are already
+     * about as heavy to swing as a real steering column. */
     /* The tyres' scrub at a standstill: their contact patches have to twist on the road, so the steering is heavy to
      * turn until the car rolls: the friction up to 20% at a standstill, gone once the tyres roll (about 5 km/h). No
      * friction at all while the wheel returns to the centre as an event starts: its 10% could not move against it. */

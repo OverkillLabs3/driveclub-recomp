@@ -139,6 +139,14 @@ public partial class MainWindow : Window
             {
                 Adopt(await backend.Call("state"));
                 OperationStatus(state.FoldersOk ? "" : "Choose the game folders on Play.");
+                // this version's reset of a wheel player's force feedback settings, said once (not when the window only
+                // starts the game or a benchmark: the next time it opens)
+                var args = Environment.GetCommandLineArgs();
+                if (!preview && state.FfbResetNotice.Length > 0 && !args.Contains("--play") && !args.Contains("--benchmark"))
+                {
+                    MessageBox.Show(this, state.FfbResetNotice, "Force feedback has been rebuilt", MessageBoxButton.OK, MessageBoxImage.Information);
+                    try { File.Delete(Path.Combine(Path.GetDirectoryName(WheelIni)!, "ffb_reset.txt")); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
                 if (Environment.GetCommandLineArgs().Contains("--mod-manager")) ShowPage(ModsPage, false);
                 if (!preview && Environment.GetCommandLineArgs().Contains("--benchmark")) { ShowPage(6, false); await Launch(true); }
                 else if (!preview && (Environment.GetCommandLineArgs().Contains("--play") || (File.Exists(Path.Combine(root, "launcher.ini")) && File.ReadLines(Path.Combine(root, "launcher.ini")).Any(x => x.Trim() == "auto_play=1")))) await Launch(false);

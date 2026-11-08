@@ -54,6 +54,7 @@ bool UiReleaseVersion(std::wstring value) {
   return digits && parts >= 1 && parts <= 3;
 }
 std::wstring g_ui_update_version, g_ui_update_note;
+std::wstring g_ffb_reset_notice;   // FfbResetNotice, for the state the window opens with
 bool g_ui_capture_cancelled = false, g_ui_restart_required = false;
 // A hint's first line says what the option does; the bullets, tips and notes after it are the details the (i) opens.
 std::pair<std::wstring,std::wstring> SplitHint(const std::wstring& hint,const wchar_t* more){
@@ -93,7 +94,7 @@ Json UiState(const std::wstring& error=L"") {
     {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},
     {"InstalledVersion",Narrow(UiInstalledVersion())},{"PlayTime",Narrow(PlayTimeText())},{"UpdateVersion",Narrow(g_ui_update_version)},
     {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required},
-    {"WheelDetected",Narrow(g_wheel_detected_name)},{"WheelDetectedType",g_wheel_detected}};
+    {"WheelDetected",Narrow(g_wheel_detected_name)},{"WheelDetectedType",g_wheel_detected},{"FfbResetNotice",Narrow(g_ffb_reset_notice)}};
 }
 void ImportUiState(const Json& input) {
   g_folder[0].path=Widen(input.value("UpdatePath",Narrow(g_folder[0].path)));
@@ -129,6 +130,8 @@ int RunWpfBridge(int argc,wchar_t** argv) {
   try{
     if(command==L"--ui-state"){
       if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
+      // this version's reset of the force feedback settings: the window shows it on opening, then removes ffb_reset.txt
+      g_ffb_reset_notice=FfbResetNotice();
     }else if(argc>=4){
       std::ifstream in(argv[2],std::ios::binary);const Json request=Json::parse(in);ImportUiState(request);
       // The force feedback rows as default.ini has them: Live FFB Tuner may have changed it while the window showed older
@@ -163,7 +166,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       }
       else if(command==L"--ui-validate"){
         const int changed=request.value("ChangedId",-1);
-        // a wheel type (Tune my wheel): every force feedback setting as suits it
+        // a wheel type (FFB Engineer): every force feedback setting as suits it
         if(wheel_file && changed==g_ffb_type)SaveWheelRows(ApplyWheelType(ffb_window[changed]));
         else if(wheel_file && changed>=0 && changed<int(g_c.size()) && IsFfbKeyRow(g_c[changed])){g_c[changed].sel=ffb_window[changed];SaveWheelRows({changed});}
         if(changed==g_fps)ApplyFrameModeCameraDefault();
@@ -190,6 +193,12 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-benchhistory"){
         OpenBenchHistory();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
+      }
+      else if(command==L"--ui-ffbreset"){
+        // FFB Engineer's Reset to defaults: every force feedback setting as suits the wheel type, each car back to 100%
+        if(wheel_file)SaveWheelRows(ApplyWheelType(ffb_window[g_ffb_type]));
+        const int cars=ResetFfbCars(L".launcher-backup");
+        g_status=cars?L"Force feedback reset to the defaults, and "+std::to_wstring(cars)+(cars==1?L" car":L" cars")+L" back to 100%.":L"Force feedback reset to the defaults.";
       }
       else if(command==L"--ui-ffbtuner"){
         OpenFfbTuner();

@@ -35,6 +35,7 @@
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -571,7 +572,7 @@ int g_ffb_hit = -1;      // Hit protection: on or off in default.ini, as Live FF
 int g_ffb_countersteer = -1;  // Countersteer assist: on or off, likewise
 int g_ffb_power = -1, g_ffb_friction = -1;  // power steering (on or off) and the steering's friction: set by the wheel type
 int g_ffb_tuner = -1;    // the Open Live FFB Tuner button
-int g_ffb_guide = -1;    // the Tune my wheel button
+int g_ffb_guide = -1;    // the FFB Engineer button
 int g_bugreport = -1;    // the "Save a bug report" button
 int g_drag = -1;  // the slider being dragged
 FILETIME g_wheel_ini_time{};  // default.ini as last read or written here
@@ -580,10 +581,10 @@ FILETIME g_wheel_ini_time{};  // default.ini as last read or written here
 // where default.ini has no line, so these rows show them there too. The road (its surfaces, bumps, kerbs and their
 // kickback) is always at its full, real strength in the physics model, and it has no vibration effects.
 struct WheelKindDefaults { int detail, damper, min_force, friction; bool countersteer, power; };
-const WheelKindDefaults kWheelKind[3] = {{75, 0, 0, 6, false, false}, {100, 0, 0, 2, true, true}, {60, 0, 5, 0, true, true}};
+const WheelKindDefaults kWheelKind[3] = {{100, 0, 0, 2, false, false}, {100, 0, 0, 2, true, true}, {60, 0, 5, 0, true, true}};
 const char* const kWheelType[4] = {"auto", "direct", "belt", "gear"};
 const wchar_t* const kWheelKindName[3] = {L"direct drive", L"belt", L"gear"};
-constexpr int kFfbGainDefault = 80;
+constexpr int kFfbGainDefault = 70;
 int g_wheel_detected = -1;          // the kind the game found from the wheel's name (input_config\wheel_detected.txt), or -1
 std::wstring g_wheel_detected_name;  // and that name
 const char* const kSoftLock[6] = {"game", "off", "540", "720", "900", "1080"};
@@ -689,7 +690,7 @@ void SetWheelKindDefaults(int kind) {
   g_c[g_ffb_countersteer].def = d.countersteer;
   g_c[g_ffb_power].def = d.power;
 }
-// A wheel type chosen (Tune my wheel): every force feedback setting back to what suits that kind, the gain to 80 and
+// A wheel type chosen (FFB Engineer): every force feedback setting back to what suits that kind, the gain to 70 and
 // Reworked Physics; the rows to write.
 std::vector<int> ApplyWheelType(int type_sel) {
   g_c[g_ffb_type].sel = (std::clamp)(type_sel, 0, 3);
@@ -839,7 +840,149 @@ bool IsPendingWheelSetting(const std::string& line) {
   for(const auto& c:g_c) if(IsFfbKeyRow(c) && c.patches[0].substr(5)==key) return true;
   return false;
 }
+// The force feedback settings reset once for the reworked force, as the runtime's wheel_ffb_rework_reset does when the
+// game starts first: a default.ini without wheel_ffb_version = 2 loses its force feedback lines (wheel_ffb_physics_*,
+// the wheel type, a review build's wheel_ffb_review_*) and each car's own percentage (ffb_cars.ini). The wheel's setup,
+// its direction, the soft lock, the model (Original's force is as it was) and Original's own settings stay. The
+// files as they were: *.before-ffb-rework; ffb_reset.txt lists what was reset, for FfbResetNotice.
+constexpr int kFfbSettingsVersion = 2;
+std::wstring FfbCarsPath() { return g_data + L"\\user\\ffb_cars.ini"; }
+std::wstring FfbResetPath() { return g_data + L"\\user\\input_config\\ffb_reset.txt"; }
+std::string IniKeyOf(const std::string& l) {
+  const size_t s = l.find_first_not_of(" \t"), eq = l.find('=');
+  if (s == std::string::npos || eq == std::string::npos || eq < s || l[s] == '#') return std::string();
+  std::string k = l.substr(s, eq - s);
+  while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+  for (char& ch : k) ch = char(tolower((unsigned char)ch));
+  return k;
+}
+// The cars with a percentage of their own in ffb_cars.ini
+int FfbCarCount() {
+  int n = 0;
+  for (const auto& l : ReadLines(FfbCarsPath())) {
+    const size_t s = l.find_first_not_of(" \t");
+    if (s != std::string::npos && l.compare(s, 4, "car_") == 0 && l.find('=') != std::string::npos) ++n;
+  }
+  return n;
+}
+// Each car back to 100% (no line): ffb_cars.ini moved to <name>.<suffix>. The cars it had.
+int ResetFfbCars(const wchar_t* suffix) {
+  const int n = FfbCarCount();
+  if (Exists(FfbCarsPath())) MoveFileExW(FfbCarsPath().c_str(), (FfbCarsPath() + suffix).c_str(), MOVEFILE_REPLACE_EXISTING);
+  return n;
+}
+void MigrateFfbSettings() {
+  std::ifstream in(WheelIniPath().c_str(), std::ios::binary);
+  if (!in) return;
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+  if (text.size() > (1u << 20)) return;
+  const std::string nl = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  std::string out, notice;
+  int reset = 0;
+  for (size_t p = 0; p < text.size();) {
+    size_t e = text.find('\n', p);
+    const size_t next = e == std::string::npos ? text.size() : e + 1;
+    std::string l = text.substr(p, (e == std::string::npos ? text.size() : e) - p);
+    if (!l.empty() && l.back() == '\r') l.pop_back();
+    p = next;
+    const std::string key = IniKeyOf(l);
+    if (key == "wheel_ffb_version") {
+      if (atoi(l.c_str() + l.find('=') + 1) >= kFfbSettingsVersion) return;   // reset already
+      continue;
+    }
+    if (key == "wheel_ffb_wheel_type" || key.rfind("wheel_ffb_physics_", 0) == 0 || key.rfind("wheel_ffb_review_", 0) == 0) {
+      notice += l.substr(l.find_first_not_of(" \t")) + "\n";
+      ++reset;
+      continue;
+    }
+    out += l + nl;
+  }
+  out += "# The force feedback settings' version: older ones are reset once, as they were made for an earlier force." + nl +
+         "wheel_ffb_version = " + std::to_string(kFfbSettingsVersion) + nl;
+  const int cars = ResetFfbCars(L".before-ffb-rework");
+  if (reset || cars) CopyFileW(WheelIniPath().c_str(), (WheelIniPath() + L".before-ffb-rework").c_str(), TRUE);   // the first copy is kept
+  {
+    std::ofstream o(WheelIniPath().c_str(), std::ios::binary | std::ios::trunc);
+    o << out;
+  }
+  if (reset || cars) {
+    std::ofstream o(FfbResetPath().c_str(), std::ios::binary | std::ios::trunc);
+    o << "# The force feedback settings reset for the reworked force (the launcher shows them once, then removes this file)\n"
+      << notice << "cars = " << cars << "\n";
+  }
+}
+// The message about that reset, from ffb_reset.txt (empty when there is none): the old values of the settings the Wheel
+// page shows, then the others there were, and the cars. Only for a wheel's player, so a controller's isn't puzzled by
+// it: the game has found a force feedback wheel (wheel_detected.txt), a wheel was chosen by name (wheel_device), or the
+// player had force feedback settings, a wheel type or cars of their own; for anyone else the file just goes.
+std::wstring FfbResetNotice() {
+  const std::vector<std::string> lines = ReadLines(FfbResetPath());
+  if (lines.empty()) return L"";
+  auto value_of = [](const std::string& l) {
+    std::string v = l.substr(l.find('=') + 1);
+    v.erase(0, v.find_first_not_of(" \t"));
+    while (!v.empty() && (v.back() == ' ' || v.back() == '\t' || v.back() == '\r')) v.pop_back();
+    return v;
+  };
+  std::map<std::string, std::string> old;
+  for (const auto& l : lines) {
+    const std::string key = IniKeyOf(l);
+    if (!key.empty()) old[key] = value_of(l);
+  }
+  bool wheel = Exists(g_data + L"\\user\\input_config\\wheel_detected.txt") || (old.count("cars") && atoi(old["cars"].c_str()) > 0);
+  for (const auto& [key, v] : old)
+    if (key.rfind("wheel_ffb_physics_", 0) == 0 || key.rfind("wheel_ffb_review_", 0) == 0 || key == "wheel_ffb_wheel_type") wheel = true;
+  for (const auto& l : ReadLines(WheelIniPath())) {
+    if (IniKeyOf(l) != "wheel_device") continue;
+    std::string v = value_of(l);
+    for (char& ch : v) ch = char(tolower((unsigned char)ch));
+    if (!v.empty() && v != "auto" && v != "off" && v != "none") wheel = true;
+  }
+  if (!wheel) {
+    DeleteFileW(FfbResetPath().c_str());
+    return L"";
+  }
+  // only_changed: not those already at the value they have now (the new default)
+  auto list = [&](std::initializer_list<std::pair<const char*, const wchar_t*>> keys, bool only_changed) {
+    std::wstring s;
+    for (const auto& [key, label] : keys) {
+      const auto it = old.find(key);
+      if (it == old.end() || it->second.empty()) continue;
+      if (only_changed) {
+        bool same = false;
+        for (size_t i = 0; i < g_c.size(); ++i)
+          if (IsFfbKeyRow(g_c[i]) && g_c[i].patches[0].substr(5) == key && _stricmp(WheelValue(int(i)).c_str(), it->second.c_str()) == 0) same = true;
+        if (same) continue;
+      }
+      if (!s.empty()) s += L" \x00b7 ";
+      s += std::wstring(label) + L" " + Widen(it->second);
+    }
+    return s;
+  };
+  const std::wstring shown = list({{"wheel_ffb_physics_gain", L"Gain"}, {"wheel_ffb_physics_detail", L"Detail"}, {"wheel_ffb_physics_damper", L"Damper"},
+                                   {"wheel_ffb_physics_max_force", L"Max force"}, {"wheel_ffb_physics_countersteer", L"Countersteer assist"}}, false);
+  const std::wstring others = list({{"wheel_ffb_physics_friction", L"Friction"},
+                                    {"wheel_ffb_physics_power_steering", L"Power steering"}, {"wheel_ffb_physics_min_force", L"Minimum force"},
+                                    {"wheel_ffb_physics_filter", L"Filter"}, {"wheel_ffb_physics_effects", L"Tyre effects"},
+                                    {"wheel_ffb_physics_hit_protection", L"Hit protection"}}, true);
+  const int cars = old.count("cars") ? atoi(old["cars"].c_str()) : 0;
+  std::wstring s = L"Force feedback was rebuilt in this update, so settings made for the old version no longer fit. "
+                   L"Your force feedback settings have been reset to the new defaults for your wheel.\n\n";
+  if (!shown.empty() || !others.empty() || cars) {
+    s += L"Your old settings:\n";
+    if (!shown.empty()) s += shown + L"\n";
+    if (!others.empty()) s += others + L"\n";
+    if (cars) s += std::to_wstring(cars) + (cars == 1 ? L" car had its own FFB gain; it's back to 100%.\n" : L" cars had their own FFB gain; all are back to 100%.\n");
+    s += L"\n";
+  }
+  s += L"Drive a few laps like this first, then adjust with FFB Engineer on the Wheel page.\n\n"
+       L"Your wheel setup (device, buttons, pedals, shifter) hasn't changed. Your old file is kept as default.ini.before-ffb-rework "
+       L"in data\\user\\input_config.";
+  return s;
+}
 void LoadWheel() {
+  if (WheelIniReady()) MigrateFfbSettings();
   const std::vector<std::string> lines = WheelIniReady() ? ReadLines(WheelIniPath()) : std::vector<std::string>();
   ReadDetectedWheel();
   SetWheelKindDefaults(WheelKind(WheelTypeOfLines(lines)));
@@ -920,7 +1063,7 @@ void OpenFfbTuner() {
   g_status = L"Live FFB Tuner.ps1 was not found next to DriveClub.exe.";
   g_status_color = kBad;
 }
-// Tune my wheel, in this window (the WPF launcher has its own, FfbGuideDialog.cs): the wheel type, then what to move
+// FFB Engineer, in this window (the WPF launcher has its own, FfbGuideDialog.cs): the wheel type, then what to move
 // for how it feels. Message boxes: this window has no Common Controls 6 for a task dialog.
 void OpenFfbGuide() {
   const std::wstring found = g_wheel_detected >= 0
@@ -928,32 +1071,41 @@ void OpenFfbGuide() {
             L": " + kWheelKindName[g_wheel_detected] + L".\n\n"
       : L"";
   int type = -1;
-  const int dd = MessageBoxW(g_hwnd, (found + L"Is your wheel a direct drive base? The motor turns the steering shaft itself: Fanatec DD and CSL DD, "
-                                              L"Moza, Simagic, Simucube, Logitech G PRO, Thrustmaster T818...\n\n"
-                                              L"Yes: direct drive. No: a belt or gear wheel. Cancel: keep my settings.").c_str(),
-                             L"Tune my wheel: 1 of 2", MB_YESNOCANCEL | MB_ICONQUESTION);
+  const int dd = MessageBoxW(g_hwnd, (found + L"Is your wheel direct drive? On a direct drive wheel the motor turns the steering shaft directly: "
+                                              L"Fanatec DD and CSL DD, Moza, Simagic, Simucube, Logitech G PRO, Thrustmaster T818...\n\n"
+                                              L"Yes: direct drive.\nNo: belt or gear.\nCancel: keep my settings.\n\n"
+                                              L"Picking a wheel resets all force feedback settings to suit it (Gain 70). Each car's own FFB gain stays.").c_str(),
+                             L"FFB Engineer: step 1 of 2", MB_YESNOCANCEL | MB_ICONQUESTION);
   if (dd == IDYES) type = 1;
   else if (dd == IDNO) {
     const int belt = MessageBoxW(g_hwnd, L"Is it a belt wheel? Thrustmaster T300, TX, T-GT or TS-PC, Fanatec CSL Elite or ClubSport V2...\n\n"
-                                         L"Yes: belt. No: a gear wheel (Logitech G29, G920 or G923, Thrustmaster T150, TMX or T248...).",
-                                 L"Tune my wheel: 1 of 2", MB_YESNO | MB_ICONQUESTION);
+                                         L"Yes: belt.\nNo: gear (Logitech G29, G920 or G923, Thrustmaster T150, TMX or T248...).",
+                                 L"FFB Engineer: step 1 of 2", MB_YESNO | MB_ICONQUESTION);
     type = belt == IDYES ? 2 : 3;
   }
   if (type > 0) {
     SaveWheelRows(ApplyWheelType(type));
     g_changed = true;
+    if (const int cars = FfbCarCount(); cars > 0 &&
+        MessageBoxW(g_hwnd, (std::to_wstring(cars) + (cars == 1 ? L" car has its own FFB gain" : L" cars have their own FFB gain") +
+                             L", from the FFB gain + and \x2212 buttons. Set them all back to 100% too?\n\n"
+                             L"Yes: every car back to 100%. No: each car keeps its own.").c_str(),
+                    L"FFB Engineer: step 1 of 2", MB_YESNO | MB_ICONQUESTION) == IDYES)
+      ResetFfbCars(L".launcher-backup");
   }
-  MessageBoxW(g_hwnd, L"Drive a few laps, then move one slider at a time:\n\n"
-                      L"\x2022 Light or vague around the centre, or it wobbles: raise Damper by 5.\n"
-                      L"\x2022 Heavy and slow to turn: lower Damper by 5.\n"
-                      L"\x2022 Too strong, or flat in fast corners: lower Gain by 10.\n"
-                      L"\x2022 Too weak: raise Gain by 10.\n"
-                      L"\x2022 Busy, grainy or rattly: lower Detail by 15.\n"
-                      L"\x2022 Dull, no feel of the road or the grip: raise Detail by 15.\n"
-                      L"\x2022 Kicks too hard after a slide or a hit: lower Max force by 10.\n"
-                      L"\x2022 Hard to catch slides: turn Countersteer assist on.\n\n"
-                      L"Each car: the FFB gain + and \x2212 buttons make the car you're driving 5% stronger or weaker.",
-              L"Tune my wheel: 2 of 2", MB_OK | MB_ICONINFORMATION);
+  MessageBoxW(g_hwnd, L"Drive a few laps, then change one setting at a time on the Wheel page:\n\n"
+                      L"\x2022 Light or vague around the centre: Damper +5\n"
+                      L"\x2022 Wobbles or swings past the centre when you let go: Damper +5\n"
+                      L"\x2022 Heavy and slow to turn: Damper \x2212" L"5\n"
+                      L"\x2022 Too strong, or goes flat in fast corners: Gain \x2212" L"10\n"
+                      L"\x2022 Too weak overall: Gain +10\n"
+                      L"\x2022 Grainy, buzzy or rattly: Detail \x2212" L"15\n"
+                      L"\x2022 Dull, you can't feel the road or the grip: Detail +15\n"
+                      L"\x2022 Kicks too hard in slides or crashes: Max force \x2212" L"10\n"
+                      L"\x2022 Hard to catch slides: Countersteer assist on\n\n"
+                      L"Gone too far? Open FFB Engineer again and pick the same wheel: every setting goes back to its default.\n\n"
+                      L"One car stronger or weaker than the rest? The FFB gain + and \x2212 buttons change only the car you're driving, 5% per press.",
+              L"FFB Engineer: step 2 of 2", MB_OK | MB_ICONINFORMATION);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1866,16 +2018,17 @@ void BuildModel() {
                     L"\x2022 Original: the PS4 game's spring for 2014 Logitech wheels, without the tyres' grip.\n"
                     L"Tip: use Reworked Physics with every wheel.",
                     {L"Reworked Physics", L"Original (not recommended)"}, {"@ffb:wheel_ffb_model", ""}, 0);
-  // Wheel type: set by Tune my wheel (not a row of the card); Auto: the kind the game found from the wheel's name.
+  // Wheel type: set by FFB Engineer (not a row of the card); Auto: the kind the game found from the wheel's name.
   g_ffb_type = seg(L"Wheel type", L"The kind of wheelbase, for the settings that suit it.\n"
                                   L"\x2022 Auto: from the wheel's name, as the game finds it.",
                    {L"Auto", L"Direct drive", L"Belt", L"Gear"}, {"@ffb:wheel_ffb_wheel_type", "", "", ""}, 0);
   g_c[g_ffb_type].physics_only = true;
   g_ffb_guide = int(g_c.size());
-  g_c.push_back(Ctl{L"Tune my wheel", L"A short guide: pick your kind of wheel for settings that suit it, then fix what you feel.\n"
-                                      L"\x2022 Direct drive, belt or gear: each gets its own starting point.\n"
-                                      L"\x2022 Then: light in the centre, too heavy, too busy... each with the one change that helps.",
-                    Kind::Button, {L"Tune my wheel..."}, {"@ffbguide"}, 0, 0});
+  g_c.push_back(Ctl{L"FFB Engineer", L"A quick guide to setting up your force feedback.\n"
+                                      L"\x2022 Step 1: pick your kind of wheel (direct drive, belt or gear). You get settings that suit it.\n"
+                                      L"\x2022 Step 2: pick what you feel, like \"too heavy\" or \"light in the centre\". Each pick shows the one change it makes, like Damper +5.\n"
+                                      L"\x2022 Reset to defaults puts every setting back to what suits your wheel.",
+                    Kind::Button, {L"Open FFB Engineer..."}, {"@ffbguide"}, 0, 0});
   g_c[g_ffb_guide].physics_only = true;
   g_ffb_tuner = int(g_c.size());
   g_c.push_back(Ctl{L"Live FFB Tuner", L"Change the force feedback while you drive, and feel each change on the next corner.\n"
@@ -1892,10 +2045,10 @@ void BuildModel() {
     g_c.push_back(std::move(c));
     return int(g_c.size()) - 1;
   };
-  g_ffb_slider[0] = slider(L"Gain", L"How strong the steering force is overall, for every car.\n"
-                                    L"\x2022 Too weak: the car feels vague.\n"
-                                    L"\x2022 Too strong: the wheel hits its limit in fast corners, where it feels flat and loses detail.\n"
-                                    L"Tip: 80 to start. One car stronger or weaker than the rest: the FFB gain + and \x2212 buttons below change only the car you're driving.",
+  g_ffb_slider[0] = slider(L"Gain", L"How strong the steering force is, for every car.\n"
+                                    L"\x2022 Higher: more weight and detail in your hands. Too high and strong corners hit your wheel's limit, where the force goes flat.\n"
+                                    L"\x2022 Lower: lighter and easier on the arms, but small details get harder to feel and the car can feel vague.\n"
+                                    L"Tip: start at 70. One car stronger or weaker than the rest? The FFB gain + and \x2212 buttons below change only the car you're driving.",
                            "wheel_ffb_physics_gain", 0, 300, kFfbGainDefault);
   g_ffb_slider[1] = slider(L"Filter", L"Smooths the force. Higher feels softer; lower feels more detailed.\n"
                                       L"Tip: leave it at 0. If the wheel feels grainy or rattles, try 10 to 20.",
@@ -1906,17 +2059,20 @@ void BuildModel() {
                            "wheel_ffb_physics_min_force", 0, 30, 0);
   // Detail, damper, minimum force, friction, countersteer assist and power steering: their defaults suit the wheel
   // type (SetWheelKindDefaults); the numbers here are direct drive's.
-  g_ffb_slider[4] = slider(L"Detail", L"How much of the quick changes in the force you feel, on top of the steady force: kerbs, bumps, the tyres biting and letting go.\n"
-                                      L"\x2022 Higher: a busier, more alive wheel. Lower: calmer.\n"
-                                      L"Tip: 75 on direct drive, 100 on belt and 60 on gear wheels. Raise it if the wheel feels dull; lower it if it feels busy or rattles.",
-                           "wheel_ffb_physics_detail", 0, 200, 75);
-  g_ffb_slider[5] = slider(L"Max force", L"The most of the wheel's force the steering asks for. Stronger forces bend smoothly toward it, so a snap-back in a slide or a hit doesn't tower over the rest of the driving.\n"
-                                         L"\x2022 Smaller forces stay as they are.\n"
-                                         L"Tip: 100 for no extra limit. Try 70 to 85 if slides or hits kick back too hard.",
+  g_ffb_slider[4] = slider(L"Detail", L"How much of the quick changes you feel on top of the steady force: bumps, kerbs, and the tyres gripping and letting go.\n"
+                                      L"\x2022 Higher: a livelier wheel that tells you more about the road. Too high and it can feel grainy or rattle.\n"
+                                      L"\x2022 Lower: a smoother, calmer wheel, with less of the road.\n"
+                                      L"Tip: 100 on direct drive and belt wheels, 60 on gear wheels. Lower it if the wheel feels grainy or rattles.",
+                           "wheel_ffb_physics_detail", 0, 200, 100);
+  g_ffb_slider[5] = slider(L"Max force", L"Caps the strongest forces, so a snap in a slide or a crash doesn't overpower everything else. Forces below the cap stay as they are; stronger ones bend smoothly toward it.\n"
+                                         L"\x2022 Lower: gentler kicks in slides and crashes, but the hardest corners lose some weight.\n"
+                                         L"\x2022 100: no cap, every force at full strength.\n"
+                                         L"Tip: keep it at 100. Try 70 to 85 if slides or crashes kick too hard.",
                            "wheel_ffb_physics_max_force", 30, 100, 100);
-  g_ffb_slider[3] = slider(L"Damper", L"Makes the wheel heavier to turn the faster you turn it, so it stays calm and doesn't wobble or swing past the centre.\n"
-                                      L"\x2022 A real steering column has some: raise it if the centre feels light or vague.\n"
-                                      L"Tip: 0 if your wheelbase has a damper setting of its own (Fanatec NDP, Moza and Simagic damping); otherwise 5 to 15 on direct drive. Belt and gear wheels have their own and usually want 0.",
+  g_ffb_slider[3] = slider(L"Damper", L"Adds weight that grows the faster you turn the wheel, like the resistance of a real steering column.\n"
+                                      L"\x2022 Higher: a calmer wheel that settles on the centre and doesn't swing past it. Too high feels heavy and slow, and makes slides harder to catch.\n"
+                                      L"\x2022 Lower: a quicker, lighter wheel. Too low and it can wobble, or swing past the centre when you let go.\n"
+                                      L"Tip: 0 if your wheel has a damper setting of its own (Fanatec NDP, Moza and Simagic damping). Otherwise try 5 to 15 on direct drive. Belt and gear wheels have their own and usually want 0.",
                            "wheel_ffb_physics_damper", 0, 100, 0);
   g_ffb_effects = slider(L"Tyre effects", L"A light buzz in the wheel when a tyre slides past its grip: the front sliding wide or locking under braking, the rear spinning or sliding. It only comes when a tyre really slides, and it buzzes faster the faster it slides.\n"
                                           L"\x2022 0: off. Only the steering force, as a real car's wheel.\n"
@@ -1926,10 +2082,10 @@ void BuildModel() {
                                         L"\x2022 Off: every hit at full force. Keep your thumbs outside the rim.",
                      "@ffb:wheel_ffb_physics_hit_protection", false);
   g_c[g_ffb_hit].physics_only = true;
-  g_ffb_countersteer = toggle(L"Countersteer assist", L"The game turns the road wheels further than your wheel when you countersteer a slide (up to a third more), and passes less of the steering past a limit.\n"
-                                                     L"\x2022 Off: the road wheels follow only your wheel, so you catch the slides yourself, as in a real car.\n"
-                                                     L"Tip: off on direct drive; on helps on belt and gear wheels, which turn back slower.\n"
-                                                     L"Note: this changes how the car handles, not only the force feedback.",
+  g_ffb_countersteer = toggle(L"Countersteer assist", L"When the back of the car slides and you countersteer, the game turns the car's wheels further than yours (up to a third more).\n"
+                                                     L"\x2022 On: slides are easier to catch, especially on belt and gear wheels, which turn back more slowly.\n"
+                                                     L"\x2022 Off: the car's wheels follow only your wheel, as in a real car. You catch slides yourself.\n"
+                                                     L"Tip: off on direct drive, on for belt and gear wheels. This changes how the car handles, not just the force feedback.",
                               "@ffb:wheel_ffb_physics_countersteer", false);
   g_c[g_ffb_countersteer].physics_only = true;
   g_ffb_power = toggle(L"Power steering", L"Lightens the big forces of heavy cars, as a road car's power steering does, so a weaker wheel keeps its detail in fast corners.\n"
@@ -1937,8 +2093,8 @@ void BuildModel() {
                        "@ffb:wheel_ffb_physics_power_steering", false);
   g_c[g_ffb_power].physics_only = true;
   g_ffb_friction = slider(L"Steering friction", L"The steering's own friction, as a real rack and column have.\n"
-                                                L"Tip: 6 on direct drive; belt and gear wheels have their own.",
-                          "wheel_ffb_physics_friction", 0, 30, 6);
+                                                L"Tip: 2 on direct drive; belt and gear wheels have their own.",
+                          "wheel_ffb_physics_friction", 0, 30, 2);
   g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you can't turn it further than the car can.\n"
                                      L"\x2022 Game: the right angle for each car.\n"
                                      L"Tip: set your wheel's own software to 900 degrees as well.",
@@ -2025,7 +2181,7 @@ void BuildModel() {
                      L"Wheel Setup shows every controller plugged in.\n"
                      L"Click Map next to a control (steering, pedals, handbrake, buttons, gears), then move it."});
   g_cards.back().sub = kSubWheel;
-  // Only what is there to tune to one's liking; the rest suits the wheel type (Tune my wheel) and stays in default.ini.
+  // Only what is there to tune to one's liking; the rest suits the wheel type (FFB Engineer) and stays in default.ini.
   // The model and the vibration wave show only to a player on the Original model.
   g_cards.push_back({L"FORCE FEEDBACK", {g_ffb_model, g_ffb_wave, g_ffb_guide, g_ffb_countersteer, g_ffb_slider[0], g_ffb_slider[4], g_ffb_slider[3],
                                          g_ffb_slider[5], g_ffb_gain_row[0], g_ffb_gain_row[1], g_ffb_tuner}, 0, kTabDriving,
@@ -5188,6 +5344,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
   }
   ShowWindow(g_hwnd, show);
+  // this version's reset of the force feedback settings (MigrateFfbSettings), said once
+  if (const std::wstring notice = FfbResetNotice(); !notice.empty()) {
+    MessageBoxW(g_hwnd, notice.c_str(), L"Force feedback has been rebuilt", MB_OK | MB_ICONINFORMATION);
+    DeleteFileW(FfbResetPath().c_str());
+  }
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0)) {
     TranslateMessage(&msg);

@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $ini)) {
 # The settings that suit each kind of wheelbase, as the game uses them where default.ini has no line (the runtime's
 # FFB_WHEEL_DEFAULTS, src/runtime_wheel.inc; the launcher's kWheelKind). Choosing a wheel type sets all of them.
 $kinds = @{
-    direct = @{ wheel_ffb_physics_detail=75;  wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=6
+    direct = @{ wheel_ffb_physics_detail=100; wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=2
                 wheel_ffb_physics_countersteer='off'; wheel_ffb_physics_power_steering='off' }
     belt   = @{ wheel_ffb_physics_detail=100; wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=2
                 wheel_ffb_physics_countersteer='on';  wheel_ffb_physics_power_steering='on' }
@@ -23,23 +23,23 @@ $kinds = @{
                 wheel_ffb_physics_countersteer='on';  wheel_ffb_physics_power_steering='on' }
 }
 # What a wheel type sets besides those: the same for every kind.
-$common = [ordered]@{ wheel_ffb_model='physics'; wheel_ffb_physics_gain=80; wheel_ffb_physics_max_force=100; wheel_ffb_physics_filter=0
+$common = [ordered]@{ wheel_ffb_model='physics'; wheel_ffb_physics_gain=70; wheel_ffb_physics_max_force=100; wheel_ffb_physics_filter=0
                       wheel_ffb_physics_effects=0; wheel_ffb_physics_hit_protection='off' }
 
 # Key, label, kind, range or choices, default (a kind's own where it has one), help (a tooltip, and under the sliders).
 $settings = @(
     @{ Key='wheel_ffb_wheel_type'; Label='Wheel type'; Kind='choice'; Choices=@('auto','direct','belt','gear'); Default='auto'
-       Help='Choosing one sets every setting to what suits that kind of wheelbase: direct drive (the motor turns the shaft: Fanatec DD, Moza, Simagic, Simucube...), belt (Thrustmaster T300, Fanatec CSL Elite...), gear (Logitech G29/G920/G923, Thrustmaster T150...). auto: as the game found it from the wheel''s name.' }
+       Help='Picking one resets every setting to suit that kind of wheel: direct drive (the motor turns the steering shaft directly: Fanatec DD, Moza, Simagic, Simucube...), belt (Thrustmaster T300, Fanatec CSL Elite...) or gear (Logitech G29/G920/G923, Thrustmaster T150...). auto: as the game found it from the wheel''s name.' }
     @{ Key='wheel_ffb_physics_countersteer'; Label='Countersteer assist'; Kind='choice'; Choices=@('on','off'); Default='off'
-       Help='on: the game turns the road wheels further than your wheel when you countersteer a slide (up to a third more). off: the road wheels follow only your wheel, so you catch the slides yourself, as in a real car. Off on direct drive; on helps belt and gear wheels. This changes how the car handles, not only the force feedback.' }
-    @{ Key='wheel_ffb_physics_gain';   Label='Gain %';      Kind='slider'; Min=0;  Max=300; Default=80
-       Help='The whole steering force, for every car. Too strong: the wheel hits its limit in fast corners and feels flat. One car stronger or weaker than the rest: the FFB gain + and - buttons change only the car you are driving.' }
-    @{ Key='wheel_ffb_physics_detail'; Label='Detail %';    Kind='slider'; Min=0;  Max=200; Default=75
-       Help='How much of the quick changes in the force you feel: kerbs, bumps, the tyres biting and letting go. Raise it if the wheel feels dull; lower it if it feels busy or rattles.' }
+       Help='When the back of the car slides and you countersteer, the game turns the car''s wheels further than yours (up to a third more). on: slides are easier to catch, especially on belt and gear wheels. off: the car''s wheels follow only yours, as in a real car. Off on direct drive. This changes how the car handles, not just the force feedback.' }
+    @{ Key='wheel_ffb_physics_gain';   Label='Gain %';      Kind='slider'; Min=0;  Max=300; Default=70
+       Help='How strong the steering force is, for every car. Higher: more weight and detail, but too high and strong corners hit your wheel''s limit and go flat. Lower: lighter, but small details get harder to feel. Start at 70. One car stronger or weaker than the rest? The FFB gain + and - buttons change only that car.' }
+    @{ Key='wheel_ffb_physics_detail'; Label='Detail %';    Kind='slider'; Min=0;  Max=200; Default=100
+       Help='How much of the quick changes you feel: bumps, kerbs, and the tyres gripping and letting go. Higher: a livelier wheel that tells you more about the road; too high can feel grainy. Lower: smoother and calmer, with less of the road. 100 on direct drive and belt, 60 on gear wheels.' }
     @{ Key='wheel_ffb_physics_damper'; Label='Damper %';    Kind='slider'; Min=0;  Max=100; Default=0
-       Help='Heavier to turn the faster you turn, so the wheel stays calm and does not swing past the centre. Raise it if the centre feels light or vague. 0 if your wheelbase has a damper of its own (Fanatec NDP, Moza and Simagic damping).' }
+       Help='Adds weight that grows the faster you turn, like a real steering column. Higher: calmer, settles on the centre; too high feels heavy and makes slides harder to catch. Lower: quicker and lighter; too low can wobble or swing past the centre. 0 if your wheel has its own damper (Fanatec NDP, Moza, Simagic).' }
     @{ Key='wheel_ffb_physics_max_force'; Label='Max force %'; Kind='slider'; Min=30; Max=100; Default=100
-       Help='The most of the wheel''s force the steering asks for; stronger forces bend smoothly toward it. Try 70 to 85 if slides or hits kick back too hard. 100: no extra limit.' }
+       Help='Caps the strongest forces, so a snap in a slide or a crash does not overpower everything else; weaker forces stay as they are. Lower: gentler kicks, but the hardest corners lose some weight. 100: no cap. Try 70 to 85 if slides or crashes kick too hard.' }
 )
 
 function Read-Values($path) {
@@ -190,7 +190,7 @@ function Apply-Type($type) {
     }
     $script:typeSet = $kindName
     $shown = @{ direct = 'direct drive'; belt = 'belt'; gear = 'gear' }[$kindName]
-    $help.Text = "Set for a $shown wheel: gain 80, and the detail, damper and steering help that suit it. Drive a few corners, then fine-tune."
+    $help.Text = "Set for a $shown wheel: gain 70, and the detail, damper and steering help that suit it. Drive a few corners, then fine-tune."
 }
 
 # The point of this window: tune while driving. Said up front, where it cannot be missed.
