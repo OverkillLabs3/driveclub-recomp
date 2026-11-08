@@ -22,17 +22,28 @@ vec2 ray_at(vec2 q) {
     return vec2((a.x * q.x + a.z) * b.z + b.x, (a.y * q.y + a.w) * b.w + b.y);
 }
 
+float hash21(vec2 p) { p = fract(p * vec2(0.1031, 0.1030)); p += dot(p, p.yx + 33.33); return fract((p.x + p.y) * p.x); }
+float vnoise(vec2 x) {
+    vec2 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i), hash21(i + vec2(1, 0)), f.x), mix(hash21(i + vec2(0, 1)), hash21(i + vec2(1, 1)), f.x), f.y);
+}
+float fbm(vec2 x) {
+    float v = 0.0, a = 0.5;
+    for (int k = 0; k < 5; ++k) { v += a * vnoise(x); x = x * 2.03 + 17.3; a *= 0.5; }
+    return v;
+}
+
 void main() {
     vec3 c = texture(picture, uv).rgb;
     if (p.has_depth < 0.5 || texture(linear_depth, uv).r < 1.0e5) { color = vec4(c, 1.0); return; }
     vec3 sun = normalize(p.values[0].xyz);           // towards the sun, view space (x right, y up, -z forward)
-    float keep = p.values[0].w;                      // how much of the game's own sky stays
+    float coverage = p.values[0].w;                  // 0 clear sky .. 1 overcast
     vec3 up = normalize(p.values[1].xyz);            // the world's up in view space
-    float disc = p.values[1].w;                      // size of the sun disc (0.0005 is small, 0.003 large)
     vec3 sun_colour = p.values[2].rgb;               // the sun's colour (normalised), black at night
-    float glow = p.values[2].w;                      // strength of the glow round the sun
-    float haze = p.values[3].x;                      // 0 clear, 1 hazy (a wider pale band at the horizon)
-    float brightness = p.values[3].y;                // the sky's brightness in the scene's units (0.5 is about white)
+    // the camera's right, forward and up seen from above (x and z of each), to turn a view ray into a world direction
+    vec2 right_xz = vec2(p.values[1].w, p.values[2].w), fwd_xz = vec2(p.values[3].x, p.values[3].y), up_xz = vec2(p.values[3].z, p.values[3].w);
+    const float disc = 0.0016, glow = 1.0, haze = 0.4, brightness = 0.45, keep = 0.08;
 
     vec3 d = normalize(vec3(ray_at(uv), -1.0));      // the view ray
     float height = dot(d, up);
@@ -44,6 +55,24 @@ void main() {
     vec3 sky = mix(zenith, horizon, band) * brightness * 2.0;
     float cosg = max(dot(d, sun), 0.0);
     sky += sun_colour * brightness * (pow(cosg, 6.0) * glow * 0.25 + pow(cosg, 48.0) * glow * 0.6);
+
+    // clouds: a layer overhead, seen in perspective, drifting with the wind, lit from the side the sun is on
+    if (height > 0.01 && coverage > 0.01) {
+        vec2 world_xz = d.x * right_xz + d.y * up_xz + (-d.z) * fwd_xz;      // the ray's direction over the ground
+        vec2 plane = world_xz / (height + 0.2) * 0.7 + vec2(p.time * 0.012, p.time * 0.004);
+        float dens = fbm(plane);
+        float edge = 1.0 - coverage;
+        float cloud = smoothstep(edge - 0.05, edge + 0.22, dens);
+        // light: the cloud is brighter where the density falls off towards the sun
+        vec2 sun_xz = normalize(sun.x * right_xz + sun.y * up_xz + (-sun.z) * fwd_xz + 1e-4);
+        float toward = fbm(plane + sun_xz * 0.06);
+        float lit = clamp(0.65 + (dens - toward) * 5.0, 0.15, 1.35);
+        vec3 lightc = mix(vec3(0.75, 0.82, 1.0), mix(vec3(1.0, 0.62, 0.38), vec3(1.0), smoothstep(0.0, 0.5, elev)), day);
+        vec3 cloud_col = lightc * lit * mix(0.03, 1.0, day) * brightness * 2.2;
+        cloud_col = mix(cloud_col, cloud_col * 0.55, smoothstep(0.6, 1.0, dens) * 0.5);   // dense cores are greyer
+        float fade = smoothstep(0.01, 0.18, height);      // thin out into the haze at the horizon
+        sky = mix(sky, cloud_col, cloud * fade);
+    }
     sky += sun_colour * brightness * 12.0 * smoothstep(1.0 - disc, 1.0 - disc * 0.4, cosg) * step(0.0, height + 0.02);
     color = vec4(mix(sky.bgr, c, keep), 1.0);   // blue is .r at the HDR stage
 }

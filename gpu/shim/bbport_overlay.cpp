@@ -1097,6 +1097,17 @@ static ImTextureData* ModImage(const std::string& name) {
     return texture;
 }
 
+// The pixels of a PNG file (8 bit RGB or RGBA, at most 2048 by 2048) for the render side: the texture a post-processing
+// filter ships next to its shader (user_filter_pass.cpp). False when the file is missing or not such a PNG.
+bool bbgpu_load_png_file(const std::string& path, int& width, int& height, std::vector<unsigned char>& rgba) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    const std::vector<unsigned char> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return DecodePng(png, width, height, rgba);
+}
+
 // Present thread, inside Render (the ImGui frame is open): draws what mod scripts asked for and drops what has run out.
 static void DrawModItems(ImVec2 display) {
     std::vector<ModItemData> items;
