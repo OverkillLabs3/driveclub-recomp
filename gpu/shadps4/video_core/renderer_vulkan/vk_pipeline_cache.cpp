@@ -543,15 +543,16 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     const bool skip_cb_binding =
         regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Disable;
 
-    // Only potentially animated G-buffer draws may use the extra motion attachment. The
-    // ordinary stage variant is needed first to inspect the vertex shader's resources.
+    // DriveClub's vehicle G-buffer has three color targets. Keep the depth, sample,
+    // clip and stage checks so motion output is not added to incompatible passes.
+    // Inspect the ordinary stage variant before selecting motion resources.
     bool motion_possible = false;
     {
         u32 bound = 0;
         for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
             bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
         }
-        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 5 &&
+        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 3 &&
                           !regs.color_buffers[Shader::MotionVectors::Output] &&
                           regs.depth_buffer.DepthValid() &&
                           regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
@@ -626,10 +627,11 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                             sel.motion ? "ON " : "off", sizes.c_str());
             }
         }
-        // Keep the old broad path available for visual A/B tests.
+        // Include rigid car parts without a skeleton by default. Setting
+        // BB_OBJECT_MOTION_ALL=0 restores selective motion for visual A/B tests.
         static const bool all_motion = [] {
             const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
+            return !value || value[0] != '0';
         }();
         if (all_motion) {
             sel.motion = true;
