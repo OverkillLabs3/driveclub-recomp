@@ -119,8 +119,9 @@ done
 leaks="$(find "$OUT" -type f \( -iname 'eboot.bin' -o -iname '*.sprx' -o -iname '*.prx' -o -iname '*.pkg' -o -iname '*.sfo' \
   -o -iname '*.psarc' -o -iname 'game*.dat' -o -iname 'game.ndx' -o -iname '*.log' -o -iname '*.dmp' \
   -o -iname 'launcher.ini' -o -path '*/data/*' -o -path '*/logs/*' -o -path '*/sce_sys/*' \) -print)"
-# SPIR-V is the one allowed kind of shader file: only the FSR 4 model files in runtime/fsr4_shaders (not the game's own shaders).
-more="$(find "$OUT" -type f -iname '*.spv' ! -path "*/runtime/fsr4_shaders/*" -print)"; [ -n "$more" ] && leaks="$leaks$more" || true
+# SPIR-V is the one allowed kind of shader file: the FSR 4 model files in runtime/fsr4_shaders and the example post-processing
+# filters of the mod kit (modkit/examples/*/files/postfx, compiled from the .frag source next to them), never the game's own shaders.
+more="$(find "$OUT" -type f -iname '*.spv' ! -path "*/runtime/fsr4_shaders/*" ! -path "*/modkit/examples/*/files/postfx/*" -print)"; [ -n "$more" ] && leaks="$leaks$more" || true
 if [ -n "$leaks" ]; then
   echo "Package leak check failed, these files must not ship:" >&2
   echo "$leaks" >&2
