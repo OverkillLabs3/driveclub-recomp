@@ -23,6 +23,7 @@
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vr/vr_foveation.h"
 #include "video_core/renderer_vulkan/vk_reflex.h"
 #include "bbport_threads.h"
 
@@ -143,13 +144,21 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         }
     }
 
+    // VR foveated rendering: one rate per texel of the map
+    const vk::RenderingFragmentShadingRateAttachmentInfoKHR shading_rate = {
+        .imageView = render_state.shading_rate_view,
+        .imageLayout = vk::ImageLayout::eFragmentShadingRateAttachmentOptimalKHR,
+        .shadingRateAttachmentTexelSize = Vr::Foveation::TexelSize(),
+    };
     const vk::RenderingInfo rendering_info = {
+        .pNext = render_state.shading_rate_view ? &shading_rate : nullptr,
         .renderArea =
             {
                 .offset = {0, 0},
                 .extent = {render_state.width, render_state.height},
             },
         .layerCount = render_state.num_layers,
+        .viewMask = render_state.view_mask, // VR multiview
         .colorAttachmentCount = render_state.num_color_attachments,
         .pColorAttachments = color_attachments.data(),
         .pDepthAttachment = db.has_depth ? &depth_attachment : nullptr,
@@ -161,8 +170,11 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         return;
     }
     // The attachment infos live on this stack frame: the recorded closure keeps copies.
-    Record([info = rendering_info, color_attachments, depth_attachment,
-            stencil_attachment](vk::CommandBuffer cmdbuf) mutable {
+    Record([info = rendering_info, color_attachments, depth_attachment, stencil_attachment,
+            shading_rate](vk::CommandBuffer cmdbuf) mutable {
+        if (info.pNext) {
+            info.pNext = &shading_rate;
+        }
         info.pColorAttachments = color_attachments.data();
         if (info.pDepthAttachment) {
             info.pDepthAttachment = &depth_attachment;

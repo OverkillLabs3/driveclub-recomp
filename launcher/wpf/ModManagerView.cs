@@ -13,7 +13,7 @@ public partial class MainWindow
 {
     private static string SettingText(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ValueKind == JsonValueKind.True ? "true" : value.ValueKind == JsonValueKind.False ? "false" : value.GetRawText();
 
-    private const int ModsPage = 7;
+    private int ModsPage => Array.IndexOf(names, "Mods");  // by name: the VR tab moved it from 7 to 8
     private ModLibrary? modLibrary;
     private ModLibraryState modState = new();
     private string? selectedMod;

@@ -26,7 +26,8 @@ public:
 
     void ReinterpretColorAsMsDepth(u32 width, u32 height, u32 num_samples,
                                    vk::Format src_pixel_format, vk::Format dst_pixel_format,
-                                   vk::Image source, vk::Image dest);
+                                   vk::Image source, vk::Image dest, u32 src_layer = 0,
+                                   u32 dst_layer = 0); // VR multiview: the layers (eyes)
 
     // Copies a multi-sample depth image into the single-sample color image the game reads it through, sample i
     // into channel i (screen-space lighting, SSAO and soft particles read it that way).
@@ -39,7 +40,8 @@ public:
     /// bbport: the depth plane of `source` (in eDepthStencilReadOnlyOptimal) into the single-sample colour image
     /// `dest` (in eColorAttachmentOptimal) with a full-screen draw: texel for texel, a float depth into R32F.
     void CopyDepthToColor(u32 width, u32 height, vk::Format depth_format, vk::Format color_format,
-                          vk::Image source, vk::Image dest);
+                          vk::Image source, vk::Image dest, u32 src_layer = 0,
+                          u32 dst_layer = 0); // VR multiview: the layers (eyes)
 
 private:
     void CreateShaders();

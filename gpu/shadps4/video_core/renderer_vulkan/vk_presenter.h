@@ -164,6 +164,7 @@ private:
 
 private:
     float expected_ratio{1920.0 / 1080.0f};
+    float vr_window_ratio{0.0f}; ///< bbport: VR: the last window picture's width / height (0: none)
     u32 expected_frame_width{1920};
     u32 expected_frame_height{1080};
 

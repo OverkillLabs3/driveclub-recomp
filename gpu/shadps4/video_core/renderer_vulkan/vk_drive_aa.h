@@ -64,6 +64,9 @@ public:
 
     /// The display pass: the next frame's jitter.
     void NextFrame();
+    // VR: DLSS per eye (each its own feature and history) last frame, and a history to start again per slot.
+    bool last_per_eye = false;
+    bool slot_reset[2]{true, true};
 
     /// After the game's anti-aliasing dispatch: `color` is the lit HDR picture it read, `depth` the
     /// scene depth and `output` the image it wrote.
@@ -107,12 +110,13 @@ private:
         u64 uid = 0;
         vk::Format format{};
         vk::ImageAspectFlags aspect{};
+        u32 layer = 0;
         vk::ImageView view;
         u64 last_use = 0;
     };
     vk::ImageView View(const VideoCore::Image& image, vk::Format format,
-                       vk::ImageAspectFlags aspect);
-    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss);
+                       vk::ImageAspectFlags aspect, u32 layer = 0);
+    bool EnsureResources(u32 width, u32 height, u32 out_width, u32 out_height, bool dlss, u32 image_layers);
     /// FSR or DLSS on `color` (jittered by `frame_jitter`): at the render size into `output`,
     /// or upscaled to the output size and sampled in place of `color` (Redirect).
     void Reconstruct(VideoCore::ImageId color, VideoCore::ImageId depth, VideoCore::ImageId output,
@@ -133,7 +137,7 @@ private:
     bool amd_failed = false;
     bool fsr4_failed = false;
 
-    std::array<CachedView, 8> views{};
+    std::array<CachedView, 16> views{};
     u64 view_uses = 0;
 
     u32 width = 0, height = 0, out_width = 0, out_height = 0;
@@ -152,6 +156,7 @@ private:
     int applied_mode = -1;
     u32 frame_id = 0;
     u32 jitter_index = 0;
+    u32 vr_frames = 0; ///< VR with alternate frames: counts the frames, two in a row share a jitter
     bool jitter_due = false;
     std::array<float, 2> jitter{};
     std::chrono::steady_clock::time_point last_frame{};
@@ -162,6 +167,10 @@ private:
     /// DLSS writes here when the result is sharpened into result_image afterwards.
     VideoCore::UniqueImage raw_image;
     vk::UniqueImageView raw_view;
+    /// VR multiview: the images above have a layer per eye and their views are the left eye's; these are the right's,
+    /// and the result as the game's shaders read it (a 2D array, also with one layer).
+    u32 layers = 1;
+    vk::UniqueImageView right_motion_view, right_result_view, right_raw_view, result_array;
     vk::UniqueDescriptorSetLayout sharpen_desc_layout;
     vk::UniquePipelineLayout sharpen_pipeline_layout;
     vk::UniquePipeline sharpen_pipeline;
@@ -175,7 +184,7 @@ private:
     vk::UniqueImageView linear_depth_view, params_view;
     bool mod_buffers_valid = false; ///< written by this frame's motion pass
     VideoCore::UniqueImage depth_copy_image;
-    vk::UniqueImageView depth_copy_view;
+    vk::UniqueImageView depth_copy_view, right_depth_copy_view; // VR true stereo: a layer per eye
     /// The HDR filters of a mod (slots 3 to 8, docs/modding/postfx.md): run on the upscaled picture before the
     /// game's own bloom and tone mapping.
     HostPasses::UserFilterPass hdr_filter[6];

@@ -7,6 +7,7 @@
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/texture_cache/image.h"
 #include "video_core/texture_cache/image_view.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 
 #include <magic_enum/magic_enum.hpp>
 
@@ -68,6 +69,7 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::Image& image, const Shader::ImageReso
     range.extent.levels = image.NumViewLevels(desc.is_array);
     range.extent.layers = image.NumViewLayers(desc.is_array);
     type = desc.native_cube ? AmdGpu::ImageType::Cube : image.GetViewType(desc.is_array);
+    vr_array = Vulkan::Vr::Multiview::ArrayView(type); // VR multiview
     min_lod = static_cast<u32>(image.min_lod);
 
     if (!is_storage) {
@@ -79,6 +81,7 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::ColorBuffer& col_buffer) noexcept {
     range.base.layer = col_buffer.BaseSlice();
     range.extent.layers = col_buffer.NumSlices() - range.base.layer;
     type = range.extent.layers > 1 ? AmdGpu::ImageType::Color2DArray : AmdGpu::ImageType::Color2D;
+    vr_array = Vulkan::Vr::Multiview::ArrayView(type); // VR multiview
     format =
         Vulkan::LiverpoolToVK::SurfaceFormat(col_buffer.GetDataFmt(), col_buffer.GetNumberFmt());
 }
@@ -91,6 +94,7 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::DepthBuffer& depth_buffer, AmdGpu::De
     range.base.layer = view.slice_start;
     range.extent.layers = view.NumSlices() - range.base.layer;
     type = range.extent.layers > 1 ? AmdGpu::ImageType::Color2DArray : AmdGpu::ImageType::Color2D;
+    vr_array = Vulkan::Vr::Multiview::ArrayView(type); // VR multiview
 }
 
 ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info_,
@@ -146,12 +150,15 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
         }
     }
 
+    auto view_type = ConvertImageViewType(info.type) == vk::ImageViewType::e1D && image.info.props.is_block
+                         ? vk::ImageViewType::e2D // the image is 2D, see Image::Image
+                         : ConvertImageViewType(info.type);
+    u32 layer_count = info.range.extent.layers;
+    Vulkan::Vr::Multiview::AdjustView(image, info, view_type, layer_count); // VR multiview: both eyes
     const vk::ImageViewCreateInfo image_view_ci = {
         .pNext = &usage_ci,
         .image = image.GetImage(),
-        .viewType = ConvertImageViewType(info.type) == vk::ImageViewType::e1D && image.info.props.is_block
-                        ? vk::ImageViewType::e2D // the image is 2D, see Image::Image
-                        : ConvertImageViewType(info.type),
+        .viewType = view_type,
         .format = instance.GetSupportedFormat(format, image.format_features),
         .components = info.mapping,
         .subresourceRange{
@@ -159,7 +166,7 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
             .baseMipLevel = info.range.base.level,
             .levelCount = info.range.extent.levels,
             .baseArrayLayer = info.range.base.layer,
-            .layerCount = info.range.extent.layers,
+            .layerCount = layer_count,
         },
     };
     if (!IsViewTypeCompatible(info.type, image.info.type)) {

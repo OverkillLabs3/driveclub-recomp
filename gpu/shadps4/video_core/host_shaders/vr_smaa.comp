@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR, true stereo: SMAA 1x on each eye's scene before it goes to the headset (the game's HUD is apart, so its text is
+// left alone). Jimenez et al.'s SMAA (gpu/third_party/smaa, MIT) at its High preset, one pass per SMAA_PASS:
+//   0 the edges, from the luma of the gamma-encoded colour (as SMAALumaEdgeDetectionPS)
+//   1 the blending weights (SMAABlendingWeightCalculationPS, with the area and search textures)
+//   2 the blending (SMAANeighborhoodBlendingPS), stored in the colour's own encoding
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform Constants {
+    vec4 rt_metrics; // 1 / width, 1 / height, width, height
+    float encode;    // 1: the colour view decodes sRGB (linear values): luma from sRGB, the result stored as sRGB
+};
+
+layout(binding = 0) uniform sampler2D color_tex;
+layout(binding = 1) uniform sampler2D edges_tex;
+layout(binding = 2) uniform sampler2D area_tex;
+layout(binding = 3) uniform sampler2D search_tex;
+layout(binding = 4) uniform sampler2D blend_tex;
+layout(binding = 5, rgba8) uniform writeonly image2D out_img;
+
+// SMAA's GLSL port, but every sample at level 0 (a compute shader has no implicit level); all through a linear
+// clamped sampler, as SMAA's own (point samples land on texel centres).
+#define SMAA_CUSTOM_SL
+#define SMAATexture2D(tex) sampler2D tex
+#define SMAATexturePass2D(tex) tex
+#define SMAASampleLevelZero(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroPoint(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) textureLodOffset(tex, coord, 0.0, offset)
+#define SMAASample(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASamplePoint(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleOffset(tex, coord, offset) textureLodOffset(tex, coord, 0.0, offset)
+#define SMAA_FLATTEN
+#define SMAA_BRANCH
+#define lerp(a, b, t) mix(a, b, t)
+#define saturate(a) clamp(a, 0.0, 1.0)
+#define mad(a, b, c) fma(a, b, c)
+#define float2 vec2
+#define float3 vec3
+#define float4 vec4
+#define int2 ivec2
+#define int3 ivec3
+#define int4 ivec4
+#define bool2 bvec2
+#define bool3 bvec3
+#define bool4 bvec4
+#define SMAA_RT_METRICS rt_metrics
+#define SMAA_PRESET_HIGH
+#include "../../../third_party/smaa/SMAA.hlsl"
+
+vec3 Encode(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(12.92 * c, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
+
+// The colour as the luma edge detection wants it: gamma-encoded.
+float Luma(vec2 coord) {
+    vec3 c = textureLod(color_tex, coord, 0.0).rgb;
+    if (encode > 0.5) {
+        c = Encode(c);
+    }
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// SMAALumaEdgeDetectionPS, without its discard: no edge stores 0.
+vec2 Edges(vec2 texcoord, vec4 offset[3]) {
+    const vec2 threshold = vec2(SMAA_THRESHOLD);
+    const float L = Luma(texcoord);
+    const float Lleft = Luma(offset[0].xy);
+    const float Ltop = Luma(offset[0].zw);
+    vec4 delta;
+    delta.xy = abs(L - vec2(Lleft, Ltop));
+    vec2 edges = step(threshold, delta.xy);
+    if (dot(edges, vec2(1.0)) == 0.0) {
+        return vec2(0.0);
+    }
+    const float Lright = Luma(offset[1].xy);
+    const float Lbottom = Luma(offset[1].zw);
+    delta.zw = abs(L - vec2(Lright, Lbottom));
+    vec2 max_delta = max(delta.xy, delta.zw);
+    const float Lleftleft = Luma(offset[2].xy);
+    const float Ltoptop = Luma(offset[2].zw);
+    delta.zw = abs(vec2(Lleft, Ltop) - vec2(Lleftleft, Ltoptop));
+    max_delta = max(max_delta.xy, delta.zw);
+    const float final_delta = max(max_delta.x, max_delta.y);
+    edges.xy *= step(final_delta, SMAA_LOCAL_CONTRAST_ADAPTATION_FACTOR * delta.xy);
+    return edges;
+}
+
+void main() {
+    const ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel.x >= int(rt_metrics.z) || pixel.y >= int(rt_metrics.w)) {
+        return;
+    }
+    const vec2 texcoord = (vec2(pixel) + 0.5) * rt_metrics.xy;
+#if SMAA_PASS == 0
+    vec4 offset[3];
+    SMAAEdgeDetectionVS(texcoord, offset);
+    imageStore(out_img, pixel, vec4(Edges(texcoord, offset), 0.0, 0.0));
+#elif SMAA_PASS == 1
+    vec2 pixcoord;
+    vec4 offset[3];
+    SMAABlendingWeightCalculationVS(texcoord, pixcoord, offset);
+    imageStore(out_img, pixel,
+               SMAABlendingWeightCalculationPS(texcoord, pixcoord, offset, edges_tex, area_tex, search_tex, vec4(0.0)));
+#else
+    vec4 offset;
+    SMAANeighborhoodBlendingVS(texcoord, offset);
+    vec4 color = SMAANeighborhoodBlendingPS(texcoord, offset, color_tex, blend_tex);
+    if (encode > 0.5) {
+        color.rgb = Encode(color.rgb);
+    }
+    imageStore(out_img, pixel, color);
+#endif
+}

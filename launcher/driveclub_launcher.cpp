@@ -147,15 +147,16 @@ int g_hover_tab = -1;
 int g_hover_info = -1, g_info_open = -1;
 
 // The cards are split over tabs so a page holds what belongs together and needs no scrolling.
-enum { kTabGraphics, kTabDetail, kTabGameplay, kTabDriving, kTabBench, kTabPatches, kTabCount };
-const wchar_t* const kTabName[kTabCount] = {L"Display", L"Graphics", L"General", L"Driving", L"Benchmark", L"Patches"};
+enum { kTabGraphics, kTabDetail, kTabGameplay, kTabDriving, kTabBench, kTabPatches, kTabVr, kTabCount };
+const wchar_t* const kTabName[kTabCount] = {L"Display", L"Graphics", L"General", L"Driving", L"Benchmark", L"Patches", L"VR"};
 const wchar_t* const kTabHint[kTabCount] = {
     L"Frame rate, the sizes the game draws and shows, anti-aliasing and texture filtering.",
     L"Model, scenery, reflection and shadow detail, and the game's own camera effects.",
     L"Player identity, add-on content, startup and overlays.",
     L"Driving: the field of view and the game's driving assists, and the steering wheel (its setup and force feedback).",
     L"Drive one circuit on its own and get back the frame rate and the 1% and 0.1% lows.",
-    L"Compatibility workarounds, community patches and advanced runtime options."};
+    L"Compatibility workarounds, community patches and advanced runtime options.",
+    L"The VR headset (experimental): stereo mode, the picture per eye and what helps the frame rate."};
 int g_tab = kTabGraphics;
 RectF g_tab_rect[kTabCount];
 // The Discord button in the header: where it was drawn (layout pixels, before scaling), and whether the pointer is on it.
@@ -186,6 +187,23 @@ int g_camera_shake = -1;   // the Camera shake slider (BB_CAMERA_SHAKE, percent)
 int camera_shake_saved = -1;
 bool g_skip_gpu_check = false;  // "Skip the graphics card check" in the launcher (skip_gpu_check= in launcher.ini)
 bool g_allow_overlays = false;  // "Let overlay programs into the game" (overlays= in launcher.ini)
+bool g_vr = false;  // "VR headset (experimental)" (vr= in launcher.ini): BB_VR for the game
+bool g_vr_stereo = false;  // "Stereo mode" (vr_stereo= in launcher.ini): with VR, BB_VR_STEREO=mv for the game
+bool g_vr_taa = true;      // launcher.ini vr_taa= (before vr_aa): the game's TAA in VR
+bool g_vr_smaa = false;    // launcher.ini vr_smaa= (before vr_aa)
+// "Anti-aliasing in VR": the game's TAA, none, SMAA (true stereo) or DLSS, in place of the Display tab's rows while VR is
+// on (those keep the flat choice). Off and SMAA take the game's TAA pass out with the blur patch.
+constexpr int kVrAaTaa = 0, kVrAaOff = 1, kVrAaSmaa = 2, kVrAaDlss = 3;
+int g_vr_aa_row = -1;
+int g_vr_aa = -1;          // launcher.ini vr_aa= (-1: not saved yet, from vr_taa / vr_smaa / aa)
+int g_vr_up_row = -1;      // "DLSS quality in VR"
+int g_vr_up = 1;           // launcher.ini vr_up= (as Upscaling: 0 DLAA .. 4 Ultra Performance)
+int g_vr_ffr = 0;           // "Foveated rendering" (vr_ffr= in launcher.ini): 0 off, 1 light, 2 medium, 3 strong (BB_VR_FFR)
+int g_vr_edge = 0;          // "Edge margin" (vr_edge= in launcher.ini): 0 off, 1 3, 2 5, 3 8 degrees (BB_VR_EDGE_MARGIN)
+int g_vr_exposure = 2;      // "Exposure in VR" (vr_exposure= in launcher.ini): -1, -0.5, 0, +0.5, +1 EV (BB_VR_EXPOSURE_BIAS)
+int g_vr_smooth = 1;        // "Head smoothing in VR" (vr_smooth=): 0 off, 1 light, 2 strong (BB_VR_SMOOTHING)
+int g_vr_smooth_row = -1;
+int g_vr_ffr_row = -1, g_vr_edge_row = -1, g_vr_stereo_row = -1, g_vr_exposure_row = -1;
 bool g_two_thread = true;       // "Two-thread rendering" (draw_threads= in launcher.ini; off by default on AMD)
 bool g_check_updates = true;  // "Check for new versions" (check_updates= in launcher.ini)
 std::atomic<bool> g_update_ready{false};  // a newer release was found (g_update)
@@ -381,6 +399,14 @@ int fgen_saved = 0;   // "Frame generation" choice, from launcher.ini
 int mirror_saved = 0;  // "Mirror and reflection updates" choice, from launcher.ini
 int aniso_saved = 0;   // "Anisotropic filtering" choice, from launcher.ini
 std::wstring g_name = L"Player";  // in-game player name, from "name=" in launcher.ini
+int g_vrsize = -1;  // "Headset picture": the eye-shaped sizes, apart from the widescreen ones
+constexpr int kVrSizeAuto = 1;  // its Auto: the game draws what the headset's runtime needs (BB_VR_AUTO_SIZE)
+bool g_vr_auto = false;         // Auto chosen (vr_auto= in launcher.ini: it has no patch of its own)
+bool g_vr_auto_saved = false;   // launcher.ini has vr_auto= (else Auto, the default)
+int g_vr_scale_row = -1;        // "Headset picture scale" with Auto: percent per side (BB_VR_SCALE)
+int g_vr_scale = 100;           // launcher.ini vr_scale=
+int g_vr_glow_row = -1;         // "Glow in VR": percent of the game's glow (BB_VR_GLOW)
+int g_vr_glow = 100;            // launcher.ini vr_glow=
 int g_texture_repetition = -1;
 std::wstring g_online_host;       // address of the host to join, from "online_host=" in launcher.ini
 std::wstring UiInstalledVersion();  // version.txt next to the launcher (launcher_wpf_bridge.inc)
@@ -552,8 +578,7 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
   for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER", L"BB_FRAME_GEN_AUTO",
-                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
-
+                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST", L"BB_VR_STEREO"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
 }
@@ -584,9 +609,10 @@ constexpr char kLayoutMarker[] = "# DriveClub racing layout";  // the game repla
 
 bool PhysicsChosen() { return g_ffb_model >= 0 && g_c[g_ffb_model].sel == 0; }
 bool UpscaleActive();
+int EffAa();
 // FSR and DLSS work from the game's own anti-aliasing, which shares its shader with the blur: any way of turning
 // the blur off turns them off too. While one is chosen the blur rows cannot be changed and are ignored.
-bool BlurLocked() { return g_aa >= 0 && g_c[g_aa].sel > 0; }
+bool BlurLocked() { return EffAa() > 0; }
 // The two blur-off rows stay in view but cannot be changed while one is chosen.
 // Neural rendering needs NVIDIA's own nvngx_dlssnr.dll, which this release does not ship. Without it the row stays in
 // the list, locked, and says why, instead of vanishing.
@@ -603,13 +629,81 @@ bool BlurRowLocked(const Ctl& c) {
 }
 // Rows that do nothing with the other choices: the physics settings with Original Physics; Upscaling and
 // Sharpness without FSR or DLSS; Render resolution while Upscaling sets the render size.
+int g_vr_row = -1, g_vr_fps = -1;  // the VR switch; the Frame rate row shown with it on, in place of the usual rows
+// The VR switch as the page shows it now (g_vr is set when saving).
+bool VrChosen() { return g_vr_row >= 0 && g_c[g_vr_row].sel != 0; }
+// The VR anti-aliasing as the page shows it now (kVrAa*).
+int VrAa() { return g_vr_aa_row >= 0 ? g_c[g_vr_aa_row].sel : g_vr_aa >= 0 ? g_vr_aa : kVrAaTaa; }
+// VR with the game's TAA: its pass stays (the blur patch is left out).
+bool VrTaaChosen() { return VrAa() == kVrAaTaa; }
+// The anti-aliasing that goes to the game (0 Game, 1 FSR, 2 DLSS) and its Upscaling choice: VR's own rows with VR on.
+int EffAa() {
+  if (VrChosen()) return VrAa() == kVrAaDlss ? 2 : 0;
+  return g_aa >= 0 ? g_c[g_aa].sel : 0;
+}
+int EffUp() {
+  if (VrChosen()) return VrAa() == kVrAaDlss && g_vr_up_row >= 0 ? g_c[g_vr_up_row].sel : 0;
+  return g_up >= 0 ? g_c[g_up].sel : 0;
+}
+
+// With VR on these rows do nothing, so they are hidden and VR decides. The patch list has only what goes to the game,
+// so launcher.ini keeps what the rows hold for flat play (flat_*).
+int g_wide_fix = -1;  // the "Widescreen field-of-view fix" row
+int g_lock_horizon_row = -1;
+constexpr int kFlatRows = 5;
+int* const kFlatRow[kFlatRows] = {&g_outres, &g_inres, &g_aspect, &g_wide_fix, &g_blur_patch};
+const char* const kFlatKey[kFlatRows] = {"flat_output=", "flat_render=", "flat_aspect=", "flat_wide_fix=", "flat_blur="};
+int flat_saved[kFlatRows] = {-1, -1, -1, -1, -1};
+int flat_fov_saved = -1;
+bool flat_fsr = false;  // FSR is the flat choice: Game stands in for it with VR on
+bool VrPatchRow(const Ctl& c) {
+  for (int* row : kFlatRow)
+    if (*row >= 0 && &c == &g_c[*row]) return true;
+  return false;
+}
+bool VrHidesRow(const Ctl& c) {
+  if (!VrChosen()) return false;
+  if (VrPatchRow(c)) return true;
+  for (int row : {g_fov, g_camera_patch_row, g_camera_shake, g_lock_horizon_row, g_gfx[kGfxDynres], g_gfx[kGfxBlur], g_gfx[kGfxDust]})
+    if (row >= 0 && &c == &g_c[row]) return true;
+  return false;
+}
+// FSR does not work in VR: picked or left from flat play, Game takes its place until VR is off again.
+void ApplyVrAntiAliasing() {
+  if (g_aa < 0) return;
+  int& aa = g_c[g_aa].sel;
+  // VR has its own row (VrAa); older launchers put Game here in VR and kept FSR aside (flat_fsr)
+  if (flat_fsr) {
+    flat_fsr = false;
+    if (aa == 0) aa = 1;
+  }
+}
+
 bool RowHidden(const Ctl& c) {
+  if (g_vr_fps >= 0 && &c == &g_c[g_vr_fps]) return !VrChosen();
+  if (g_vr_aa_row >= 0 && &c == &g_c[g_vr_aa_row]) return !VrChosen();
+  if (g_vr_up_row >= 0 && &c == &g_c[g_vr_up_row]) return !VrChosen() || VrAa() != kVrAaDlss;
+  // VR on: the Display tab's anti-aliasing rows keep the flat choice, VR's own rows decide
+  if (VrChosen() && ((g_aa >= 0 && &c == &g_c[g_aa]) || (g_up >= 0 && &c == &g_c[g_up]) ||
+                     (g_fsrver >= 0 && &c == &g_c[g_fsrver])))
+    return true;
+  if (g_vr_exposure_row >= 0 && &c == &g_c[g_vr_exposure_row]) return !VrChosen();
+  if (g_vr_glow_row >= 0 && &c == &g_c[g_vr_glow_row])
+    return !VrChosen();
+  if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) return true; // always Auto (see LoadSettings)
+  if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) return !VrChosen();
+  if (g_vr_smooth_row >= 0 && &c == &g_c[g_vr_smooth_row]) return !VrChosen();
+  if ((g_vr_ffr_row >= 0 && &c == &g_c[g_vr_ffr_row]) || (g_vr_edge_row >= 0 && &c == &g_c[g_vr_edge_row]))
+    return !VrChosen();
+  if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) return true;
+  if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap] && VrChosen()) return true;
+  if (VrHidesRow(c)) return true;
   if (c.physics_only && !PhysicsChosen()) return true;
   for (int s : g_nr_sub)
     if (s >= 0 && &c == &g_c[s]) return g_neural < 0 || g_c[g_neural].sel != 1 || !Exists(g_runtime + L"\\nvngx_dlssnr.dll");
   if (g_fsrver >= 0 && &c == &g_c[g_fsrver]) return g_aa >= 0 && g_c[g_aa].sel != 1;   // only with FSR as the anti-aliasing
   if (g_ffb_wave >= 0 && &c == &g_c[g_ffb_wave]) return PhysicsChosen();   // the physics model has no vibrations
-  if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return g_aa >= 0 && g_c[g_aa].sel == 0;
+  if ((g_up >= 0 && &c == &g_c[g_up]) || (g_sharp >= 0 && &c == &g_c[g_sharp])) return EffAa() == 0;
   if (g_inres >= 0 && &c == &g_c[g_inres]) return UpscaleActive();
   if (g_fps_cap >= 0 && &c == &g_c[g_fps_cap]) return g_fps >= 0 && g_c[g_fps].sel != 3;
   if (g_online_host_row >= 0 && &c == &g_c[g_online_host_row]) return g_online_row >= 0 && g_c[g_online_row].sel != 2;
@@ -1255,6 +1349,12 @@ void BuildModel() {
     g_fps_cap = int(g_c.size());
     g_c.push_back(std::move(c));
   }
+  // VR: the headset sets the pace, so this row stands in for Frame rate and Frame cap (they keep their choices).
+  g_vr_fps = seg(L"Frame rate",
+                 L"With the VR headset on the game follows the headset's refresh rate by itself. Pick the rate in Virtual "
+                 L"Desktop, Link or SteamVR, a little below the FPS your PC holds: repeated frames show as double images "
+                 L"in turns.",
+                 {L"Follows the headset"}, {"@vrfps"}, 0);
   const int outres = (g_outres = int(g_c.size()), seg(L"Output resolution", L"The size of the game's finished picture, menus and HUD included.\n"
                                                                             L"\x2022 It is scaled to fill your screen, so the window and the signal to your display always stay at your screen's own size.",
                          {L"Default", L"720p", L"1440p", L"1800p", L"4K", L"5K", L"8K"},
@@ -1321,7 +1421,7 @@ void BuildModel() {
                          "1080p 4:3 [1440x1080] Internal + Output resolution [DEPTH BUG]"},
                         0));
   g_wide = -1;
-  const int fov = toggle(L"Widescreen field-of-view fix", L"Corrects the field of view for wide screens.\n"
+  const int fov = g_wide_fix = toggle(L"Widescreen field-of-view fix", L"Corrects the field of view for wide screens.\n"
                                                           L"Note: only for wide and ultrawide resolutions.",
                          "FOV fix for wide resolutions", false);
   const int camera_patch = g_camera_patch_row = toggle(L"High-FPS camera fix",
@@ -1481,6 +1581,101 @@ void BuildModel() {
                               L"\x2022 Off by default: some of the crashes players report come from these overlays.\n"
                               L"Tip: turn it on only if you want an overlay while playing.\n"
                               L"Note: players report random collision penalties and crashes with it on.", "@overlays", false);
+  const int vr = toggle(L"VR headset (experimental)",
+                        L"Plays in an OpenXR headset (SteamVR, Virtual Desktop, Oculus): the cockpit and the cameras on "
+                        L"the car follow your head, in stereo. Needs openxr_loader.dll next to the game; see VR README.md.",
+                        "@vr", false);
+  g_vr_row = vr;
+  const int vr_stereo = g_vr_stereo_row = seg(L"Stereo mode",
+                            L"How the VR headset gets its two eyes.\n"
+                            L"\x2022 AFR: one eye per frame, in turn. The higher FPS, but each eye gets half of it.\n"
+                            L"\x2022 True stereo (experimental): both eyes in every frame. Sharper and steadier, at a lower "
+                            L"FPS.\nAnti-aliasing: Game or DLSS, not FSR 3.1.",
+                            {L"AFR", L"True stereo"}, {"@vrstereo", ""}, 0);
+  g_vrsize = seg(L"Headset picture",
+                 L"The size the game draws each eye at, in the shape of a headset eye; the menus and the HUD keep "
+                 L"their 16:9 shape.\n"
+                 L"\x2022 Auto: what your headset's app asks for (Virtual Desktop's quality, SteamVR's resolution), "
+                 L"drawn so that it gets every pixel as is, for any headset. The first start with a new headset "
+                 L"learns its eyes, the next ones draw the exact size. Headset picture scale makes it bigger or "
+                 L"smaller.\n"
+                 L"\x2022 Off: the flat game's render size, not in the headset's shape.\n"
+                 L"It sets the render and output size itself: leave those and Aspect ratio on Default and Off.",
+                 {L"Off", L"Auto"}, {"", ""}, kVrSizeAuto);
+  {
+    Ctl c{L"Headset picture scale",
+          L"How big the game draws each eye, per side. It starts from the size your headset's app asks for "
+          L"(Virtual Desktop's quality, SteamVR's resolution), in the shape of the headset's eye; the menus and the "
+          L"HUD keep their 16:9 shape. The first start with a new headset learns its eyes.\n"
+          L"\x2022 100%: what the headset gets, pixel for pixel.\n"
+          L"\x2022 Above 100%: supersampled, then brought down to the headset's size: cleaner edges and distant "
+          L"detail. 110% costs about a fifth more, 125% about half more, 150% over twice as much.\n"
+          L"\x2022 Below 100%: more FPS, a softer picture.\n"
+          L"With DLSS it scales the size DLSS makes; DLSS draws its own share of it.",
+          Kind::Slider, {}, {"@vrscale"}, 100, 100};
+    c.min = 50;
+    c.max = 200;
+    g_vr_scale_row = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+  g_vr_aa_row = seg(L"Anti-aliasing in VR",
+                    L"How the headset's picture is smoothed (the Display tab's choice stays for flat play).\n"
+                    L"\x2022 TAA: the game's own. Fewer jagged edges, a softer picture.\n"
+                    L"\x2022 Off: the sharpest picture, with jagged edges; a few more FPS.\n"
+                    L"\x2022 SMAA: smooths the edges in every frame with hardly any blur, for 2 to 5 FPS. Thin "
+                    L"detail far away still shimmers: a bigger Headset picture scale helps.\n"
+                    L"\x2022 DLSS (RTX): NVIDIA's, the steadiest picture far away. Its quality is the next row.",
+                    {L"TAA", L"Off", L"SMAA", L"DLSS (RTX)"}, {"@vraa", "", "", ""}, 0);
+  g_vr_up_row = seg(L"DLSS quality in VR",
+                    L"How big DLSS draws each eye before it rebuilds the headset's picture.\n"
+                    L"\x2022 DLAA: every pixel. The best picture, the lowest FPS.\n"
+                    L"\x2022 Quality: the best balance.\n"
+                    L"\x2022 Balanced, Performance, Ultra Perf.: more FPS each.\n"
+                    L"Tip: a big Headset picture scale with Balanced or Performance is the sharpest.",
+                    {L"DLAA", L"Quality", L"Balanced", L"Performance", L"Ultra Perf."}, {"@vrup", "", "", "", ""}, 1);
+  {
+    Ctl c{L"Glow in VR",
+          L"How much of the game's glow the headset gets. The game lays a blurred copy of the "
+          L"picture over it (its bloom): on a screen it looks like haze and light, in the headset like a soft film "
+          L"over every edge.\n"
+          L"\x2022 100%: as the game draws it.\n"
+          L"\x2022 Lower: clearer edges and deeper shadows; at 0% no glow at all (bright skies lose their halo).\n"
+          L"No cost in FPS.",
+          Kind::Slider, {}, {"@vrglow"}, 100, 100};
+    c.min = 0;
+    c.max = 100;
+    g_vr_glow_row = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+  g_vr_exposure_row = seg(L"Exposure in VR",
+                          L"How bright the game's auto-exposure makes the picture in the headset.\n"
+                          L"\x2022 In VR it adapts over about a second and holds while you look down at the dash "
+                          L"or up at the sky, so they do not flash the picture.\n"
+                          L"\x2022 Lower if the sky and the road are too bright, higher if it is too dark.\n"
+                          L"In game: [ and ] change it by a quarter stop.",
+                          {L"-1 EV", L"-0.5", L"0", L"+0.5", L"+1 EV"}, {"@vrexposure", "", "", "", ""}, 2);
+  g_vr_smooth_row = seg(L"Head smoothing in VR",
+                        L"Steadies the game's camera against the tracking's small shakes while the head holds still.\n"
+                        L"\x2022 Off: the camera follows the headset exactly. For steady tracking.\n"
+                        L"\x2022 Light: still heads stay steady, moving ones follow at once.\n"
+                        L"\x2022 Strong: the steadiest, but leaning and moving the head lag a little behind.",
+                        {L"Off", L"Light", L"Strong"}, {"@vrsmooth", "", ""}, 1);
+  g_vr_ffr_row = seg(L"Foveated rendering",
+                     L"The edges of each eye, which the lenses blur anyway, are drawn with less detail.\n"
+                     L"\x2022 Light: only the far edges and corners.\n"
+                     L"\x2022 Medium: full detail within about 35 degrees of the middle (the windscreen and the dials).\n"
+                     L"\x2022 Strong: a smaller sharp middle, the most FPS.\n"
+                     L"Note: it helps when the graphics card is the limit (a few FPS); the edges of the scene only.",
+                     {L"Off", L"Light", L"Medium", L"Strong"}, {"@vrffr", "", "", ""}, 0);
+  g_vr_edge_row = seg(L"Edge margin (frame generation)",
+                      L"Black edges when you turn your head come from generated frames: an older picture turned to "
+                      L"your new head position has nothing at the side you turn to.\n"
+                      L"\x2022 Each eye is drawn this many degrees wider, so frame generation on the PC (OFXR) has "
+                      L"the scene there.\n"
+                      L"\x2022 The same pixels cover more: about 11% less sharp across at 3 degrees, 19% at 5.\n"
+                      L"Note: frames generated in the headset (Virtual Desktop's SSW, Meta's ASW) do not get it. "
+                      L"Without frame generation leave it Off.",
+                      {L"Off", L"3\x00B0", L"5\x00B0", L"8\x00B0"}, {"@vredge", "", "", ""}, 0);
   const int twothread = toggle(L"Two-thread rendering",
                                L"Prepares each frame's drawing on a second thread, so the game waits less.\n"
                                L"\x2022 Faster on most PCs.\n"
@@ -1703,7 +1898,7 @@ void BuildModel() {
   g_ps_buttons = seg(L"PlayStation",
       L"The look of PlayStation prompts: the game's original PS4 symbols, or modern PS5 DualSense style prompts.",
       {L"PS4", L"PS5"}, {"@playstation_buttons", ""}, 0);
-  const int lock_horizon = seg(L"Lock to horizon",
+  const int lock_horizon = g_lock_horizon_row = seg(L"Lock to horizon",
                                L"Steadies the view as a driver's head does: it takes out the car leaning in corners and dipping under braking, and follows hills and banking slowly, as in Assetto Corsa.\n"
                                L"\x2022 Off: the view moves with the car's body, as on PS4.\n"
                                L"\x2022 Cockpit: the driver's view only.\n"
@@ -1797,7 +1992,7 @@ void BuildModel() {
   }
   NameFfbGainRows();
   // The cards flow into as many columns as the window width allows (see LayoutPass), on the page of their tab.
-  g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap}, 0, kTabGraphics});
+  g_cards.push_back({L"FRAME RATE", {g_preset, fps, g_fps_cap, g_vr_fps}, 0, kTabGraphics});
   if (g_fgen >= 0) g_cards.back().ctls.push_back(g_fgen);
   if (g_reflex >= 0) g_cards.back().ctls.push_back(g_reflex);
   if (g_fgpace >= 0) g_cards.back().ctls.push_back(g_fgpace);
@@ -1806,6 +2001,14 @@ void BuildModel() {
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"PICTURE", {g_picture[0], g_picture[1], g_picture[2]}, 0, kTabGraphics,
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
+  g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, vr_stereo, g_vrsize, g_vr_scale_row, g_vr_smooth_row}, 0, kTabVr,
+                     L"Setup and the headset apps: VR README.md next to the game."});
+  g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_aa_row, g_vr_up_row, g_vr_glow_row, g_vr_exposure_row, g_vr_ffr_row, g_vr_edge_row}, 0, kTabVr,
+                     L"FXAA and the other camera effects are on the Detail tab; DLSS's sharpness on the Display tab."});
+  g_cards.push_back({L"VR KEYS IN GAME", {}, 0, kTabVr,
+                     L"0 recentres the view. 2 / 1 seat up / down, 5 / 6 left / right, 4 / 3 forward / back (Ctrl: "
+                     L"bigger steps; the keypad works too). [ / ] the picture darker / brighter. F12 the FPS on the "
+                     L"monitor."});
   g_cards.push_back({L"SCENE DETAIL", {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery],
                                       g_gfx[kGfxShadows], g_gfx[kGfxParticles], g_texture_repetition}, 0, kTabDetail});
   g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
@@ -1924,6 +2127,7 @@ void DerivePreset() {
   g_c[g_preset].sel = 0;
   if (IsPs4Profile()) { g_c[g_preset].sel=kPs4Preset; return; }
   if (g_aspect >= 0 && g_c[g_aspect].sel != 0) return;
+  if (VrChosen() && g_vrsize >= 0 && g_c[g_vrsize].sel != 0) return;
   for (int p = 1; p <= 5; ++p) {
     if (g_c[g_outres].sel == kPresetOut[p] && g_c[g_inres].sel == kPresetIn[p]) g_c[g_preset].sel = p;
   }
@@ -1953,6 +2157,10 @@ void LoadSettings() {
     if (line.rfind("up=", 0) == 0) up_saved = atoi(line.substr(3).c_str());
     if (line.rfind("sharpness=", 0) == 0) sharp_saved = atoi(line.substr(10).c_str());
     if (line.rfind("fps_cap=", 0) == 0) fps_cap_saved = atoi(line.substr(8).c_str());
+    for (int k = 0; k < kFlatRows; ++k)
+      if (line.rfind(kFlatKey[k], 0) == 0) flat_saved[k] = atoi(line.substr(strlen(kFlatKey[k])).c_str());
+    if (line.rfind("flat_fov=", 0) == 0) flat_fov_saved = atoi(line.substr(9).c_str());
+    if (line.rfind("flat_fsr=", 0) == 0) flat_fsr = line.substr(9) == "1";
     if (line.rfind("aa=", 0) == 0) aa_saved = atoi(line.substr(3).c_str());
     if (line.rfind("fgen=", 0) == 0) fgen_saved = atoi(line.substr(5).c_str());
     if (line.rfind("reflex=", 0) == 0) reflex_saved = atoi(line.substr(7).c_str());
@@ -1982,6 +2190,19 @@ void LoadSettings() {
     if (line.rfind("camera_shake=", 0) == 0) camera_shake_saved = atoi(line.substr(13).c_str());
     if (line.rfind("skip_gpu_check=", 0) == 0) g_skip_gpu_check = line.substr(15) == "1";
     if (line.rfind("overlays=", 0) == 0) g_allow_overlays = line.substr(9) == "1";
+    if (line.rfind("vr=", 0) == 0) g_vr = line.substr(3) == "1";
+    if (line.rfind("vr_stereo=", 0) == 0) g_vr_stereo = line.substr(10) == "1";
+    if (line.rfind("vr_taa=", 0) == 0) g_vr_taa = line.substr(7) != "0";
+    if (line.rfind("vr_smaa=", 0) == 0) g_vr_smaa = line.substr(8) == "1";
+    if (line.rfind("vr_aa=", 0) == 0) g_vr_aa = (std::clamp)(atoi(line.substr(6).c_str()), 0, 3);
+    if (line.rfind("vr_up=", 0) == 0) g_vr_up = (std::clamp)(atoi(line.substr(6).c_str()), 0, 4);
+    if (line.rfind("vr_smooth=", 0) == 0) g_vr_smooth = (std::clamp)(atoi(line.substr(10).c_str()), 0, 2);
+    if (line.rfind("vr_ffr=", 0) == 0) g_vr_ffr = (std::clamp)(atoi(line.substr(7).c_str()), 0, 3);
+    if (line.rfind("vr_edge=", 0) == 0) g_vr_edge = (std::clamp)(atoi(line.substr(8).c_str()), 0, 3);
+    if (line.rfind("vr_auto=", 0) == 0) g_vr_auto = line.substr(8) == "1", g_vr_auto_saved = true;
+    if (line.rfind("vr_scale=", 0) == 0) g_vr_scale = (std::clamp)(atoi(line.substr(9).c_str()), 50, 200);
+    if (line.rfind("vr_glow=", 0) == 0) g_vr_glow = (std::clamp)(atoi(line.substr(8).c_str()), 0, 100);
+    if (line.rfind("vr_exposure=", 0) == 0) g_vr_exposure = (std::clamp)(atoi(line.substr(12).c_str()), 0, 4);
     if (line.rfind("draw_threads=", 0) == 0) g_two_thread = line.substr(13) == "1";
     if (line.rfind("hdr=", 0) == 0) hdr_saved = atoi(line.substr(4).c_str());
     if (line.rfind("hdr_paper=", 0) == 0) hdr_paper_saved = atoi(line.substr(10).c_str());
@@ -2046,6 +2267,20 @@ void LoadSettings() {
   const auto lines = ReadLines(SelectionPath());
   const bool has_selection = !lines.empty() || Exists(SelectionPath());
   for (auto& c : g_c) {
+    if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) {
+      // always Auto now (its row is hidden): Off only drew the flat 16:9 size for the headset to stretch, and the
+      // fixed sizes of earlier versions ("VR eye ..." patches) are gone; Headset picture scale sizes it
+      c.sel = kVrSizeAuto;
+      continue;
+    }
+    if (c.kind == Kind::Slider && c.patches[0] == "@vrglow") {
+      c.sel = g_vr_glow;
+      continue;  // not a patch: the patch list below would set it to 0
+    }
+    if (c.kind == Kind::Slider && c.patches[0] == "@vrscale") {
+      c.sel = g_vr_scale;
+      continue;
+    }
     if (c.kind == Kind::Toggle && c.patches[0] == "@fps") {
       c.sel = fps_counter ? 1 : 0;
       continue;
@@ -2060,6 +2295,34 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@fast") {
       c.sel = fast_render ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@vr") {
+      c.sel = g_vr ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrstereo") {
+      c.sel = g_vr_stereo ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrup") {
+      c.sel = g_vr_up;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrsmooth") {
+      c.sel = g_vr_smooth;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrffr") {
+      c.sel = g_vr_ffr;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vredge") {
+      c.sel = g_vr_edge;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrexposure") {
+      c.sel = g_vr_exposure;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") {
@@ -2143,6 +2406,12 @@ void LoadSettings() {
   // The sliders' saved values, else their defaults (the patch list sets nothing for them).
   if (g_sharp >= 0) g_c[g_sharp].sel = sharp_saved >= 0 ? (std::clamp)(sharp_saved, 0, 100) : g_c[g_sharp].def;
   if (g_fps_cap >= 0) g_c[g_fps_cap].sel = fps_cap_saved > 0 ? (std::clamp)(fps_cap_saved, g_c[g_fps_cap].min, g_c[g_fps_cap].max) : g_c[g_fps_cap].def;
+  // With VR on these rows are not in the patch list: their flat choices come back from launcher.ini.
+  for (int k = 0; g_vr && k < kFlatRows; ++k) {
+    if (*kFlatRow[k] < 0 || flat_saved[k] < 0) continue;
+    Ctl& c = g_c[*kFlatRow[k]];
+    c.sel = (std::min)(flat_saved[k], (c.kind == Kind::Toggle ? 2 : int(c.items.size())) - 1);
+  }
   if (g_hdr >= 0 && hdr_saved >= 0) g_c[g_hdr].sel = hdr_saved ? 1 : 0;
   {
     std::ifstream hdr_ini(HdrIniPath().c_str());
@@ -2170,6 +2439,16 @@ void LoadSettings() {
     for (int p : g_picture) if (p >= 0) g_c[p].loaded = g_c[p].sel;
   }
   if (g_aa >= 0 && aa_saved >= 1 && aa_saved <= 2) g_c[g_aa].sel = aa_saved;
+  // VR's anti-aliasing: saved, or what the older rows chose (DLSS on the Display tab, SMAA, the game's TAA)
+  if (g_vr_aa_row >= 0) {
+    if (g_vr_aa < 0) {
+      const bool dlss = aa_saved == 2;
+      g_vr_aa = dlss ? kVrAaDlss : g_vr_smaa ? kVrAaSmaa : g_vr_taa ? kVrAaTaa : kVrAaOff;
+      if (dlss && g_up >= 0) g_vr_up = g_c[g_up].sel;
+      if (g_vr_up_row >= 0) g_c[g_vr_up_row].sel = g_vr_up;
+    }
+    g_c[g_vr_aa_row].sel = g_vr_aa;
+  }
   if (g_fgen >= 0 && fgen_saved >= 1 && fgen_saved <= 5) g_c[g_fgen].sel = fgen_saved;
   if (g_reflex >= 0 && reflex_saved >= 0 && reflex_saved <= 2) g_c[g_reflex].sel = reflex_saved;
   if (g_fgpace >= 0) g_c[g_fgpace].sel = fgpace_saved == 1 ? 1 : 0;
@@ -2198,6 +2477,9 @@ void LoadSettings() {
     for (const auto& line : ReadLines(CameraIniPath())) {
       if (line.rfind("fov=", 0) == 0) g_c[g_fov].sel = (std::clamp)(atoi(line.substr(4).c_str()), g_c[g_fov].min, g_c[g_fov].max);
     }
+    if (g_vr && flat_fov_saved > 0) {
+      g_c[g_fov].sel = (std::clamp)(flat_fov_saved, g_c[g_fov].min, g_c[g_fov].max);
+    }
   }
   // Legacy profiles without the key inherit their performance preset default.
   // Explicit saved choices, including Custom opt-ins, always win.
@@ -2220,7 +2502,7 @@ bool full_screen_now() {
 
 // Upscaling: with FSR 3.1 or DLSS chosen, the runtime sets the render size from the output size (src/probe.c).
 bool UpscaleActive() {
-  return g_up >= 0 && g_aa >= 0 && g_c[g_up].sel > 0 && g_c[g_aa].sel > 0;
+  return EffUp() > 0 && EffAa() > 0;
 }
 
 // Upscaling's first choice draws every pixel: DLAA with DLSS, "Native" with FSR (or the game's own).
@@ -2231,16 +2513,16 @@ void NameNativeUpscale() {
 // The output size counts too: 4K output with the Default render size crashed at boot on the default
 // memory budget, since the presented images are output-sized.
 int OutputMemoryTier() {
-  if (g_outres < 0) return 0;
+  if (g_outres < 0 || VrChosen()) return 0;
   const int o = g_c[g_outres].sel;  // output: Default 720p 1440p 1800p 4K 5K 8K
   return o >= 5 ? 3 : o >= 3 ? 2 : o == 2 ? 1 : 0;
 }
 
 int RenderMemoryTier() {
   if (g_inres < 0) return 0;
-  const int r = g_c[g_inres].sel;
+  const int r = VrChosen() ? 0 : g_c[g_inres].sel;  // VR sets the render size itself
   int tier = r >= 5 ? 3 : r >= 3 ? 2 : r == 2 ? 1 : 0;
-  if (g_aspect >= 0 && g_c[g_aspect].sel > 0 && size_t(g_c[g_aspect].sel) < g_c[g_aspect].items.size()) {
+  if (!VrChosen() && g_aspect >= 0 && g_c[g_aspect].sel > 0 && size_t(g_c[g_aspect].sel) < g_c[g_aspect].items.size()) {
     const int a = g_c[g_aspect].sel;
     unsigned int w = 0, h = 0;
     int a_tier = 1;  // Any custom aspect ratio needs at least Tier 1 (8056 MB)
@@ -2256,6 +2538,8 @@ int RenderMemoryTier() {
     }
     tier = (std::max)(tier, a_tier);
   }
+  // the headset sizes: 3.7-7.7 megapixels, and 11 and 13.8 for the big ones
+  if (VrChosen() && g_vrsize >= 0 && g_c[g_vrsize].sel > 0) tier = (std::max)(tier, 3);
   return tier;
 }
 
@@ -2317,6 +2601,7 @@ bool SaveSettings() {
     g_settings_error=L"The existing optimization mask is invalid; settings were not changed.";return false;
   }
   const auto old_ini=ReadLines(IniPath());
+  ApplyVrAntiAliasing();
   const auto old_patches=ReadLines(SelectionPath());
   {
     std::ostringstream ini;
@@ -2330,6 +2615,21 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlock") unlock_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@unlockall") unlock_all_on = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@overlays") g_allow_overlays = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@vr") g_vr = c.sel != 0;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrstereo") g_vr_stereo = c.sel != 0;
+      if (g_vr_aa_row >= 0 && &c == &g_c[g_vr_aa_row]) {
+        g_vr_aa = c.sel;
+        g_vr_taa = c.sel == kVrAaTaa;
+        g_vr_smaa = c.sel == kVrAaSmaa;
+      }
+      if (g_vr_up_row >= 0 && &c == &g_c[g_vr_up_row]) g_vr_up = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrffr") g_vr_ffr = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrsmooth") g_vr_smooth = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vredge") g_vr_edge = c.sel;
+      if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) g_vr_auto = c.sel == kVrSizeAuto;
+      if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) g_vr_scale = c.sel;
+      if (g_vr_glow_row >= 0 && &c == &g_c[g_vr_glow_row]) g_vr_glow = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrexposure") g_vr_exposure = c.sel;
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
@@ -2338,10 +2638,14 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
+    for (int k = 0; k < kFlatRows; ++k)
+      if (*kFlatRow[k] >= 0) ini << kFlatKey[k] << g_c[*kFlatRow[k]].sel << "\r\n";
+    if (g_fov >= 0) ini << "flat_fov=" << g_c[g_fov].sel << "\r\n";
+    ini << "flat_fsr=" << (flat_fsr ? 1 : 0) << "\r\n";
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
     ini << "texture_repetition=" << (g_c[g_texture_repetition].sel ? 1 : 0) << "\r\n";
     ini << "button_prompts=" << (g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto") << "\r\n";
@@ -2384,8 +2688,9 @@ bool SaveSettings() {
           g_c[g_picture[k]].loaded = g_c[g_picture[k]].sel;
         }
     }
-    if (g_fov >= 0 && (g_c[g_fov].sel != 100 || Exists(CameraIniPath()))) {
-      if(!SaveIniValue(CameraIniPath(),"fov",std::to_string(g_c[g_fov].sel))) return false;
+    const int game_fov = g_fov >= 0 && !VrChosen() ? g_c[g_fov].sel : 100;  // VR sets the view itself
+    if (g_fov >= 0 && (game_fov != 100 || Exists(CameraIniPath()))) {
+      if(!SaveIniValue(CameraIniPath(),"fov",std::to_string(game_fov))) return false;
     }
     ini << SaveWheel();  // into default.ini; before the game has made it, kept here
     if(!g_settings_error.empty()) return false;
@@ -2405,8 +2710,17 @@ bool SaveSettings() {
   for (const auto& c : g_c) {
     if (IsWheelRow(c) || c.kind == Kind::Slider || c.kind == Kind::Button) continue;  // no patches
     if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && BlurLocked()) continue;
+    // VR: motion blur, depth of field and the game's TAA share the blur patch's pass; the game zeroes the motion blur in
+    // VR itself (DriveMotionBlur::Zero). The pass stays for the TAA (the only anti-aliasing of Game) and for FSR and
+    // DLSS; with Game and its TAA off, the patch takes the whole pass out (a few FPS).
+    if (VrPatchRow(c) && VrChosen()) {
+      if (g_blur_patch >= 0 && &c == &g_c[g_blur_patch] && !VrTaaChosen()) out << c.patches[0] << "\n";
+      continue;
+    }
     if (c.kind == Kind::Toggle) {
       if (c.sel && c.patches[0][0] != '@') out << c.patches[0] << "\n";
+    } else if (g_fps >= 0 && &c == &g_c[g_fps] && VrChosen()) {
+      out << "60 FPS with deltatime\n";  // VR: the frame rate follows the headset, whatever the row holds for flat play
     } else if (c.sel > 0 && c.patches[c.sel] == "@unlocked") {
       out << "60 FPS with deltatime\n";  // the same timing patch; only the frame cap differs
     } else if (c.sel > 0 && !c.patches[c.sel].empty() && c.patches[c.sel][0] != '@') {
@@ -3580,6 +3894,7 @@ void SetLockHorizonEnvironment() {
     if (c.patches[0] == "@lock_horizon") level = c.sel;
     if (c.patches[0] == "@camera_shake") shake = c.sel;
   }
+  if (VrChosen()) level = 0;  // VR: the head holds the view (the cockpit part would take the head hook's place)
   SetEnvironmentVariableW(L"BB_LOCK_HORIZON", std::to_wstring(level).c_str());
   SetEnvironmentVariableW(L"BB_CAMERA_SHAKE", std::to_wstring(shake).c_str());
 }
@@ -3632,11 +3947,11 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.reflections = sel(kGfxSsr, 0);
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
-    gc.motion_blur = BlurLocked() ? 1 : sel(kGfxBlur, 1);
-    gc.lens_dust = sel(kGfxDust, 1);
+    gc.motion_blur = BlurLocked() ? 1 : VrChosen() ? (VrTaaChosen() ? 1 : 0) : sel(kGfxBlur, 1);  // VR: see the blur patch
+    gc.lens_dust = VrChosen() ? 0 : sel(kGfxDust, 1);  // VR: a camera's lens, not an eye
     gc.heat_haze = sel(kGfxHaze, 1);
     gc.fxaa = sel(kGfxFxaa, 1);
-    gc.dynamic_res = sel(kGfxDynres, 1);
+    gc.dynamic_res = VrChosen() ? 0 : sel(kGfxDynres, 1);
     const std::wstring graphics_dir = g_data + L"\\graphics";
     bool active = false;
     const std::wstring problem = BuildGraphics(g_folder[0].path, g_folder[1].path, graphics_dir, gc, active);
@@ -3681,7 +3996,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE",g_c[g_timelapse_row].sel?L"1":L"0");
   const std::wstring timelapse_rate = std::to_wstring(g_c[g_timelapse_rate_row].sel);
   SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE_RATE",timelapse_rate.c_str());
-  SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel ? L"1" : L"0");
+  SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel && !VrChosen() ? L"1" : L"0");
   SetLockHorizonEnvironment();
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
   SetTextureRepetitionEnvironment();
@@ -3709,10 +4024,14 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     // each frame; Mailbox showed them on a fixed refresh, some for one refresh and some for two (stutter).
     // Unlimited: unlocked with no cap (1000; 0 would tie frames to the 60 Hz vblank) and Immediate presents, for
     // fixed refresh displays; past about 120 FPS the game's timing breaks (the Frame rate hint says so).
-    const bool unlocked = g_fps >= 0 && g_c[g_fps].sel == 3, free = g_fps >= 0 && g_c[g_fps].sel == 4;
+    // VR: always free, the game takes its limit from the headset (BbVr::HeadsetHz).
+    const bool unlocked = !VrChosen() && g_fps >= 0 && g_c[g_fps].sel == 3;
+    const bool free = VrChosen() || (g_fps >= 0 && g_c[g_fps].sel == 4);
     const std::wstring cap = free ? L"1000" : g_fps_cap >= 0 ? std::to_wstring(g_c[g_fps_cap].sel) : DisplayHz() ? std::to_wstring(DisplayHz() - 3) : L"1000";
     if (!UserEnv(L"BB_FPS_LIMIT")) SetEnvironmentVariableW(L"BB_FPS_LIMIT", unlocked || free ? cap.c_str() : delta ? L"60" : nullptr);
-    if (!UserEnv(L"BB_PRESENT_MODE")) SetEnvironmentVariableW(L"BB_PRESENT_MODE", unlocked ? L"Fifo" : free ? L"Immediate" : nullptr);
+    // VR: the headset is the display. Mailbox keeps the monitor from holding frames back and shows only whole frames
+    // in the window (with Immediate it flickered and jumped between frames).
+    if (!UserEnv(L"BB_PRESENT_MODE")) SetEnvironmentVariableW(L"BB_PRESENT_MODE", unlocked ? L"Fifo" : free ? (g_vr ? L"Mailbox" : L"Immediate") : nullptr);
   }
   // A value set before the launcher started is the player's override and is kept. Checking the environment
   // itself is not enough: the launcher sets these for every start, so a second start (Play, or Run benchmark
@@ -3721,7 +4040,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     SetEnvironmentVariableW(L"BB_LANGUAGE", std::to_wstring(g_lang_id).c_str());
   }
   if (g_up >= 0 && !UserEnv(L"BB_AA_SCALE")) {
-    const int u = UpscaleActive() ? g_c[g_up].sel : 0;
+    const int u = UpscaleActive() ? EffUp() : 0;
     SetEnvironmentVariableW(L"BB_AA_SCALE", u == 0 ? L"native" : u == 1 ? L"quality" : u == 2 ? L"balanced"
                                             : u == 3 ? L"performance" : L"ultra_performance");
   }
@@ -3759,7 +4078,7 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     SetEnvironmentVariableW(L"BB_FSR4_DIR", (g_runtime + L"\\fsr4_shaders").c_str());
   }
   if (g_aa >= 0 && !UserEnv(L"BB_AA")) {
-    const int a = g_c[g_aa].sel;
+    const int a = EffAa();
     SetEnvironmentVariableW(L"BB_AA", a == 0 ? L"off" : a == 1 ? L"fsr3" : L"dlss");
   }
   if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
@@ -3843,6 +4162,34 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   }
   SetEnvironmentVariableW(L"BB_USER_NAME", g_name.c_str());
   SetEnvironmentVariableW(L"BB_FULLSCREEN", full_screen_now() ? L"1" : L"0");
+  if (!UserEnv(L"BB_VR")) SetEnvironmentVariableW(L"BB_VR", g_vr ? L"1" : L"0");
+  if (!UserEnv(L"BB_VR_STEREO")) SetEnvironmentVariableW(L"BB_VR_STEREO", g_vr && g_vr_stereo ? L"mv" : nullptr);
+  // VR tab: foveated rendering and the edge margin (they come after vr.ini)
+  static const int kEdgeDegrees[4] = {0, 3, 5, 8};
+  if (!UserEnv(L"BB_VR_SMAA")) {
+    const bool smaa = g_vr && VrAa() == kVrAaSmaa;
+    SetEnvironmentVariableW(L"BB_VR_SMAA", g_vr ? (smaa ? L"1" : L"0") : nullptr);
+  }
+  if (!UserEnv(L"BB_VR_SMOOTHING"))
+    SetEnvironmentVariableW(L"BB_VR_SMOOTHING", g_vr ? std::to_wstring(g_vr_smooth).c_str() : nullptr);
+  if (!UserEnv(L"BB_VR_FFR"))
+    SetEnvironmentVariableW(L"BB_VR_FFR", g_vr ? std::to_wstring(g_vr_ffr).c_str() : nullptr);
+  if (!UserEnv(L"BB_VR_AUTO_SIZE"))
+    SetEnvironmentVariableW(L"BB_VR_AUTO_SIZE",
+                            g_vr && g_vrsize >= 0 && g_c[g_vrsize].sel == kVrSizeAuto ? L"1" : nullptr);
+  if (!UserEnv(L"BB_VR_GLOW")) {
+    const bool glow = g_vr && g_vr_glow_row >= 0;
+    SetEnvironmentVariableW(L"BB_VR_GLOW", glow ? std::to_wstring(g_c[g_vr_glow_row].sel).c_str() : nullptr);
+  }
+  if (!UserEnv(L"BB_VR_SCALE")) {
+    const bool scaled = g_vr && g_vrsize >= 0 && g_c[g_vrsize].sel == kVrSizeAuto && g_vr_scale_row >= 0;
+    SetEnvironmentVariableW(L"BB_VR_SCALE", scaled ? std::to_wstring(g_c[g_vr_scale_row].sel).c_str() : nullptr);
+  }
+  if (!UserEnv(L"BB_VR_EDGE_MARGIN"))
+    SetEnvironmentVariableW(L"BB_VR_EDGE_MARGIN", g_vr ? std::to_wstring(kEdgeDegrees[g_vr_edge]).c_str() : nullptr);
+  static const wchar_t* const kExposureBias[5] = {L"-1", L"-0.5", L"0", L"0.5", L"1"};
+  if (!UserEnv(L"BB_VR_EXPOSURE_BIAS"))
+    SetEnvironmentVariableW(L"BB_VR_EXPOSURE_BIAS", g_vr ? kExposureBias[g_vr_exposure] : nullptr);
   SetEnvironmentVariableW(L"BB_TOGGLE_FILE", (user + L"\\toggles.txt").c_str());
   const int tier = MemoryTier();
   SetEnvironmentVariableW(L"BB_DMEM_MB", tier == 3 ? L"17056" : tier == 2 ? L"10056" : tier == 1 ? L"8056" : L"5056");
@@ -4750,25 +5097,33 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             else if (GpuBlocked()) { g_status = g_gpu_problem; g_status_color = kBad; }
           }
           g_changed = true;
-          if (c == g_hdr) Relayout(h);  // its sliders show or hide
+          if (c == g_hdr || c == g_vr_row) Relayout(h);  // the rows they show or hide
         } else if (seg >= 0) {
           // choices that show or hide other rows (RowHidden)
-          const bool model_changed = (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps) && ctl.sel != seg;
+          const bool model_changed =
+              (c == g_ffb_model || c == g_aa || c == g_up || c == g_fps || c == g_vrsize || c == g_vr_aa_row) &&
+              ctl.sel != seg;
           ctl.sel = seg;
           if (c == g_fps && model_changed) ApplyFrameModeCameraDefault();
           if (c == g_preset) ApplyPreset(seg);
-          else if (c == g_outres || c == g_inres || c == g_aspect) {
+          else if (c == g_outres || c == g_inres || c == g_aspect || c == g_vrsize) {
             // An aspect ratio or widescreen size sets the render and output size itself: other sizes there crop the picture.
-            if (c == g_aspect && seg > 0) {
+            // A headset size does the same (one of the two).
+            // (The headset's Auto counts only with VR on: flat, it waits there for VR.)
+            if ((c == g_aspect || c == g_vrsize) && seg > 0) {
+              const int other = c == g_aspect ? (VrChosen() ? g_vrsize : -1) : g_aspect;
+              if (other >= 0) g_c[other].sel = 0;
               if (g_outres >= 0 && g_inres >= 0 && (g_c[g_outres].sel != 0 || g_c[g_inres].sel != 0)) {
                 g_c[g_outres].sel = g_c[g_inres].sel = 0;
-                g_status = L"Output and render resolution are back on Default: the aspect ratio and widescreen size sets both, and other sizes there crop the picture.";
+                g_status = L"Output and render resolution are back on Default: the aspect ratio or headset size sets both, and other sizes there crop the picture.";
                 g_status_color = kWarn;
                 g_status_sticky = true;
               }
             } else if ((c == g_outres || c == g_inres) && seg > 0) {
-              if (g_aspect >= 0 && g_c[g_aspect].sel > 0) {
-                g_c[g_aspect].sel = 0;
+              const bool vr_sized = VrChosen() && g_vrsize >= 0 && g_c[g_vrsize].sel > 0;
+              if ((g_aspect >= 0 && g_c[g_aspect].sel > 0) || vr_sized) {
+                if (g_aspect >= 0) g_c[g_aspect].sel = 0;
+                if (vr_sized) g_c[g_vrsize].sel = 0;
                 g_status = L"With custom sizes, leave other resolution options on Default.";
                 g_status_color = kWarn;
                 g_status_sticky = true;

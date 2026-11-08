@@ -29,7 +29,7 @@ public:
     CameraMotion(const Instance& instance, Scheduler& scheduler,
                  VideoCore::TextureCache& texture_cache, Runtime& runtime);
     ~CameraMotion();
-    void InvalidateHistory() { current.valid = previous.valid = false; }
+    void InvalidateHistory() { current.valid = previous.valid = eye_camera[0].valid = eye_camera[1].valid = false; }
     /// Advance object history after the current frame's motion image has been consumed.
     void AdvanceObjectMotionFrame();
     void SetObjectMotion(ObjectMotion* motion) noexcept {
@@ -41,6 +41,25 @@ public:
     vk::ImageView PrepareObjectMotion(vk::CommandBuffer cmdbuf, u32 width, u32 height,
                                       bool& valid);
 
+    /// VR with alternate frames: the eye this frame is drawn for (-1: none). Its motion then goes back to the same
+    /// eye's last frame, two frames ago, not to the other eye's.
+    void SetEye(int value) noexcept {
+        eye = value;
+    }
+    /// The eye's last camera is known (RecordMotion used it).
+    /// The current camera's world position, read two ways from the scene constants (the view-to-world matrix's
+    /// translation, and back through the world-to-view one): the frame's eye is found from it.
+    void CameraPositions(float (&a)[3], float (&b)[3]) const noexcept {
+        const auto& m = current.inv_view;
+        a[0] = m[3], a[1] = m[7], a[2] = m[11];
+        const auto& v = current.view; // rows: v = R w + t, so w = -R^T t
+        for (int i = 0; i < 3; ++i) {
+            b[i] = -(v[i] * v[3] + v[4 + i] * v[7] + v[8 + i] * v[11]);
+        }
+    }
+    [[nodiscard]] bool EyeHistoryValid() const noexcept {
+        return eye >= 0 && eye < 2 && eye_camera[eye].valid;
+    }
     void SetJitter(std::array<float, 2> value) noexcept {
         previous_jitter = jitter;
         jitter = value;
@@ -105,6 +124,10 @@ private:
 
     ObjectMotion* object_motion = nullptr;
     Camera current, previous;
+    /// VR with alternate frames (SetEye): each eye's last camera and jitter, the previous camera of its next frame.
+    int eye = -1;
+    Camera eye_camera[2];
+    std::array<float, 2> eye_jitter[2]{};
     bool frame_has_camera = false;
     std::array<float, 2> jitter{}, previous_jitter{};
     std::array<u32, 2> render_size{};

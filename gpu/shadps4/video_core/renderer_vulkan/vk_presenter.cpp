@@ -25,6 +25,7 @@
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "bbport_overlay.h"
 #include "bbport_neural_settings.h"
+#include "bbport_vr.h"
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -678,7 +679,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const u32 src_w = upscaled ? display.width : attribute.attrib.width;
     const u32 src_h = upscaled ? display.height : attribute.attrib.height;
     if (src_w > 0 && src_h > 0) {
-        const float new_ratio = static_cast<float>(src_w) / static_cast<float>(src_h);
+        // bbport: VR: the window shows BbVr::NoteFrame's picture (one eye at 16:9), not the display buffer's shape;
+        // its ratio is known after the frame is taken, so the last frame's is used (else every frame was made at the
+        // eye's nearly square shape and the 16:9 picture squeezed into it)
+        const float new_ratio = BbVr::Active() && vr_window_ratio > 0.0f
+                                    ? vr_window_ratio
+                                    : static_cast<float>(src_w) / static_cast<float>(src_h);
         if (new_ratio != expected_ratio) {
             expected_ratio = new_ratio;
             const vk::Extent2D extent = swapchain.GetExtent();
@@ -724,6 +730,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     view_info.mapping.a = vk::ComponentSwizzle::eOne;
 
     vk::ImageView image_view{};
+    vk::ImageView alpha_view{}; // bbport: VR: the display buffer with its alpha (the HUD's coverage)
     vk::Extent2D image_size{};
     if (upscaled) {
         const auto device = instance.GetDevice();
@@ -759,14 +766,29 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                     image.info.size.height, "display", frame_dump_index);
         }
         image_view = *image.FindView(view_info).image_view;
+        if (BbVr::Active()) {
+            VideoCore::ImageViewInfo alpha_info = view_info;
+            alpha_info.mapping.a = vk::ComponentSwizzle::eIdentity;
+            alpha_view = *image.FindView(alpha_info).image_view;
+        }
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
         runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::PipelineStageFlagBits2::eFragmentShader,
                         vk::AccessFlagBits2::eShaderRead);
         runtime.FlushBarriers();
     }
+    // bbport: VR: the headset takes the display buffer at its own size (the output resolution).
+    // With the HUD drawn apart the window shows the scene and the HUD put together again.
+    vk::Extent2D window_size = image_size; // VR: the window's picture may be another size (one eye at 16:9)
+    if (const VkImageView whole = BbVr::NoteFrame(cmdbuf, frame->image, frame->is_hdr ? vk::ImageView{} : image_view,
+                                                  alpha_view, VkFormat(view_info.format), image_size.width,
+                                                  image_size.height, &window_size.width, &window_size.height)) {
+        image_view = vk::ImageView(whole);
+    }
     BbFrame::NoteOutput(image_size.width, image_size.height);
+    image_size = window_size;
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
+    vr_window_ratio = BbVr::Active() ? expected_ratio : 0.0f;
 
     image_view = fsr_pass.Render(cmdbuf, image_view, image_size, {frame->width, frame->height},
                                  fsr_settings, frame->is_hdr);
@@ -1150,7 +1172,15 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // spaced sequence on the panel.
     // The source must be complete on the GPU before its images are spaced out.
     const auto source_began = std::chrono::steady_clock::now();
-    if (frame->source_scheduler) {
+    // bbport: VR: with no generated images to space out, the CPU does not wait for the frame here. The headset copy
+    // waits for it on the GPU (ready_semaphore); waiting on the CPU first put xrWaitFrame (BbVr::RecordFrame) after
+    // the whole render, so a frame done just past the runtime's slot lost a whole slot: with OFXR at 40 of 80 Hz
+    // p99 went 28 -> 49 ms. BB_VR_SOURCE_WAIT=1 brings the wait back.
+    static const bool vr_no_source_wait = [] {
+        const char* env = std::getenv("BB_VR_SOURCE_WAIT");
+        return !(env && env[0] == '1');
+    }();
+    if (frame->source_scheduler && !(vr_no_source_wait && BbVr::Active() && generated == 0)) {
         frame->source_scheduler->Wait(frame->ready_tick);
     }
     const auto paced = std::chrono::steady_clock::now();
@@ -1609,6 +1639,11 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
         }
         cmdbuf.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+        // bbport: VR: the headset gets this frame too.
+        if (last) {
+            BbVr::g_queue_mutex = &Scheduler::submit_mutex;
+            BbVr::RecordFrame(cmdbuf, image, frame->width, frame->height);
+        }
         // bbport: the settings menu / FPS counter over the frame, at display resolution.
         BbOverlay::NotePresent();
         const bool overlay = BbOverlay::Visible() && !hdr_output;
@@ -1680,6 +1715,9 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
     // Present to swapchain.
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        if (last) {
+            BbVr::AfterSubmit();
+        }
         const bool presented = swapchain.Present();
         if (presented && notify_launcher) {
             BbLauncherReady::GameFramePresented(true, false);
