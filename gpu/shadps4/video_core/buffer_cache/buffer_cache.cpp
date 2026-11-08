@@ -1628,16 +1628,23 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
     boost::container::small_vector<vk::BufferCopy, 4> copies;
     size_t total_size_bytes{};
     const Buffer* src_buffer{};
+    boost::container::small_vector<std::pair<VAddr, u64>, 4> cpu_uploads;
     memory_tracker->ForEachUploadRange(
         device_addr, size, is_written,
         [&](u64 addr, u64 size) {
             copies.emplace_back(total_size_bytes, addr, size);
+            cpu_uploads.emplace_back(addr, size);
             total_size_bytes += size;
         },
         [&] { src_buffer = UploadCopies(arena, copies, total_size_bytes); });
 
     if (src_buffer) {
         runtime.CopyBuffer(src_buffer, arena, copies);
+    }
+    // Upload callbacks and RegionManager locks are finished. Revoke only CMask
+    // bases contained in actual absolute CPU-upload spans; no TC lock is acquired.
+    for (const auto& [upload_address, upload_size] : cpu_uploads) {
+        texture_cache.RevokeCmaskForCpuUpload(upload_address, upload_size);
     }
     if (is_texel_buffer && !is_written) {
         return SynchronizeMemoryFromImage(arena, device_addr, size);
