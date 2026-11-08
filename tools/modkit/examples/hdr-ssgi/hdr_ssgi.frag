@@ -33,7 +33,8 @@ vec2 project(vec3 v) {
     vec2 r = v.xy / max(-v.z, 1e-4);
     return vec2(((r.x - b.x) / b.z - a.z) / a.x, ((r.y - b.y) / b.w - a.w) / a.y);
 }
-float hash(vec2 x) { return fract(sin(dot(x, vec2(12.9898, 78.233))) * 43758.5453); }
+// interleaved gradient noise: no repeating pattern, and neighbours differ evenly (a sin hash showed a checker on flat surfaces)
+float hash(vec2 x) { return fract(52.9829189 * fract(dot(x, vec2(0.06711056, 0.00583715)))); }
 
 void main() {
     vec3 c = texture(picture, uv).rgb;
@@ -53,12 +54,12 @@ void main() {
     vec3 N = normalize(cross(X, Y));
     if (dot(N, P0) > 0.0) N = -N;
 
-    float seed = hash(uv * p.resolution + fract(p.time * 0.37) * 17.0);
+    float seed = hash(uv * p.resolution + floor(fract(p.time * 0.37) * 8.0) * vec2(5.3, 3.1));
     vec3 T = normalize(abs(N.y) < 0.99 ? cross(N, vec3(0, 1, 0)) : cross(N, vec3(1, 0, 0)));
     vec3 B = cross(N, T);
     float occ = 0.0, wsum = 0.0;
     vec3 gather = vec3(0.0);
-    const int DIRS = 6, STEPS = 4;
+    const int DIRS = 8, STEPS = 5;
     for (int i = 0; i < DIRS; ++i) {
         float a = 6.2831853 * (float(i) + seed) / float(DIRS);
         float elev = mix(0.25, 1.0, fract(seed * 7.13 + float(i) * 0.618));
@@ -79,7 +80,7 @@ void main() {
         }
         wsum += 1.0;
     }
-    float ao_now = 1.0 - clamp(occ / wsum, 0.0, 1.0);
+    float ao_now = pow(1.0 - clamp(occ / wsum * 1.5, 0.0, 1.0), 1.6);   // a curve that darkens the corners harder
     vec3 bleed_now = gather / max(occ, 1e-3);
 
     float ao = ao_now;
@@ -88,11 +89,13 @@ void main() {
         if (prev_uv.x > 0.0 && prev_uv.y > 0.0 && prev_uv.x < 1.0 && prev_uv.y < 1.0) {
             float pa = texture(history, prev_uv).a;
             // the old value may not stray far from what this frame sees, or a thing that moved leaves a ghost behind
-            if (pa < 0.99) ao = mix(clamp(pa, ao_now - 0.2, ao_now + 0.2), ao_now, clamp(blend, 0.02, 1.0));
+            if (pa < 0.99) ao = mix(clamp(pa, ao_now - 0.1, ao_now + 0.1), ao_now, clamp(blend, 0.02, 1.0));
         }
     }
-    float shade = mix(1.0, ao, ao_strength);
+    // far away the depth is too coarse for reliable normals and a few metres of radius is a pixel: fade the effect out
+    float near = 1.0 - smoothstep(55.0, 140.0, z);
+    float shade = mix(1.0, ao, ao_strength * near);
     vec3 lit = c * shade;
-    lit += bleed_now * (1.0 - ao_now) * bounce * c;      // light that bounced off the neighbours, tinted by this surface
+    lit += bleed_now * (1.0 - ao_now) * bounce * c * near;      // light that bounced off the neighbours, tinted by this surface
     color = vec4(max(lit, vec3(0.0)), min(ao, 0.98));
 }
