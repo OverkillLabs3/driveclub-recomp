@@ -3,6 +3,7 @@
 #include <tuple>
 #include <vector>
 #include "../../../shim/bbport_diagnostics.h"
+#include "cmask_metadata.h"
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -31,6 +32,10 @@
 #include "video_core/texture_cache/tile_manager.h"
 
 namespace VideoCore {
+namespace {
+// Leaf-only, independent of TextureCache::mutex.
+std::mutex metadata_mutex;
+}
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
@@ -433,15 +438,9 @@ void TextureCache::SwapDepthForm(ImageId image_id, const ImageInfo& new_info) {
 
     // The metadata of the form that goes away is dropped, as when its image was freed.
     const auto& meta_info = image.info.meta_info;
-    if (meta_info.cmask_addr) {
-        surface_metas.erase(meta_info.cmask_addr);
-    }
-    if (meta_info.fmask_addr) {
-        surface_metas.erase(meta_info.fmask_addr);
-    }
-    if (meta_info.htile_addr) {
-        surface_metas.erase(meta_info.htile_addr);
-    }
+    BbCmaskMetadata::Erase(metadata_mutex, surface_metas,
+                           std::array<VAddr, 3>{meta_info.cmask_addr, meta_info.fmask_addr,
+                                                meta_info.htile_addr});
 
     // Everything that belongs to the Vulkan image changes hands; the registration, page tracking,
     // usage, LRU entry and the CPU/GPU state of the memory stay with the registered image.
@@ -963,14 +962,16 @@ ImageView& TextureCache::FindRenderTarget(ImageId image_id, const ImageDesc& des
 
     // Register meta data for this color buffer
     if (desc.info.meta_info.cmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.cmask_addr,
-                              MetaDataInfo{.type = MetaType::CMask});
+        BbCmaskMetadata::Register(metadata_mutex, surface_metas, desc.info.meta_info.cmask_addr,
+                                 MetaDataInfo{.type = MetaType::CMask}, MetaType::CMask,
+                                 MetaType::CpuRevokedCMask);
         image.info.meta_info.cmask_addr = desc.info.meta_info.cmask_addr;
     }
 
     if (desc.info.meta_info.fmask_addr) {
-        surface_metas.emplace(desc.info.meta_info.fmask_addr,
-                              MetaDataInfo{.type = MetaType::FMask});
+        BbCmaskMetadata::Register(metadata_mutex, surface_metas, desc.info.meta_info.fmask_addr,
+                                 MetaDataInfo{.type = MetaType::FMask}, MetaType::CMask,
+                                 MetaType::CpuRevokedCMask);
         image.info.meta_info.fmask_addr = desc.info.meta_info.fmask_addr;
     }
 
@@ -985,9 +986,10 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
 
     // Register meta data for this depth buffer
     if (desc.info.meta_info.htile_addr) {
-        surface_metas.emplace(desc.info.meta_info.htile_addr,
-                              MetaDataInfo{.type = MetaType::HTile,
-                                           .clear_mask = image.info.meta_info.htile_clear_mask});
+        BbCmaskMetadata::Register(metadata_mutex, surface_metas, desc.info.meta_info.htile_addr,
+                                 MetaDataInfo{.type = MetaType::HTile,
+                                              .clear_mask = image.info.meta_info.htile_clear_mask},
+                                 MetaType::CMask, MetaType::CpuRevokedCMask);
         image.info.meta_info.htile_addr = desc.info.meta_info.htile_addr;
     }
 
@@ -1545,15 +1547,9 @@ void TextureCache::DeleteImage(ImageId image_id) {
 
     // Remove any registered meta areas.
     const auto& meta_info = image.info.meta_info;
-    if (meta_info.cmask_addr) {
-        surface_metas.erase(meta_info.cmask_addr);
-    }
-    if (meta_info.fmask_addr) {
-        surface_metas.erase(meta_info.fmask_addr);
-    }
-    if (meta_info.htile_addr) {
-        surface_metas.erase(meta_info.htile_addr);
-    }
+    BbCmaskMetadata::Erase(metadata_mutex, surface_metas,
+                           std::array<VAddr, 3>{meta_info.cmask_addr, meta_info.fmask_addr,
+                                                meta_info.htile_addr});
 
     {
         std::unique_lock lk{download_images_mutex};
@@ -1572,6 +1568,31 @@ void TextureCache::DeleteImage(ImageId image_id) {
         }
         slot_images.erase(image_id);
     });
+}
+
+std::optional<TextureCache::MetaType> TextureCache::IsMeta(VAddr address) const {
+    return BbCmaskMetadata::Query(metadata_mutex, surface_metas, address, MetaType::CpuRevokedCMask);
+}
+
+bool TextureCache::IsMetaCleared(VAddr address, u32 slice) const {
+    return BbCmaskMetadata::Cleared(metadata_mutex, surface_metas, address, slice,
+                                   MetaType::CpuRevokedCMask);
+}
+
+bool TextureCache::ClearMeta(VAddr address) {
+    return BbCmaskMetadata::Clear(metadata_mutex, surface_metas, address, MetaType::CpuRevokedCMask);
+}
+
+bool TextureCache::TouchMeta(VAddr address, u32 slice, bool is_clear) {
+    return BbCmaskMetadata::Touch(metadata_mutex, surface_metas, address, slice, is_clear,
+                                 MetaType::CpuRevokedCMask);
+}
+
+void TextureCache::RevokeCmaskForCpuUpload(VAddr address, u64 size) {
+    static_assert(sizeof(MetaType) == 4 && alignof(MetaType) == 4);
+    static_assert(sizeof(MetaDataInfo) == 8 && alignof(MetaDataInfo) == 4);
+    BbCmaskMetadata::Revoke(metadata_mutex, surface_metas, address, size, MetaType::CMask,
+                            MetaType::CpuRevokedCMask, registry_generation);
 }
 
 } // namespace VideoCore
