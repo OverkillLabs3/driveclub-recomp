@@ -23,7 +23,8 @@ void HdrPass::Create(vk::Device device, VmaAllocator allocator, vk::Format outpu
     {
         constexpr auto fragment = vk::ShaderStageFlagBits::eFragment;
         const std::array bindings{Binding(0, sampled, fragment), Binding(1, sampled, fragment),
-                                  Binding(2, sampled, fragment), Binding(3, storage, fragment)};
+                                  Binding(2, sampled, fragment), Binding(3, storage, fragment),
+                                  Binding(4, sampled, fragment)};
         desc_set_layout = Check<"create hdr descriptor set layout">(device.createDescriptorSetLayoutUnique({
             .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
             .bindingCount = static_cast<u32>(bindings.size()),
@@ -148,7 +149,8 @@ void HdrPass::Create(vk::Device device, VmaAllocator allocator, vk::Format outpu
 }
 
 void HdrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView frame, vk::ImageView hudless,
-                     vk::ImageView scene, vk::ImageView output, vk::Extent2D size, Params params) {
+                     vk::ImageView scene, vk::ImageView output, vk::Extent2D size, Params params,
+                     vk::ImageView ui_reference) {
     const vk::ImageSubresourceRange color_range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     if (!state_cleared) {
         state_cleared = true;
@@ -207,6 +209,7 @@ void HdrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView frame, vk::ImageVie
     const auto frame_info = sampled_info(frame);
     const auto hudless_info = sampled_info(hudless ? hudless : frame);
     const auto scene_info = sampled_info(scene ? scene : frame);
+    const auto ui_info = sampled_info(ui_reference ? ui_reference : frame);
     const std::array set_writes{
         vk::WriteDescriptorSet{.dstBinding = 0, .descriptorCount = 1,
                                .descriptorType = vk::DescriptorType::eCombinedImageSampler,
@@ -220,6 +223,9 @@ void HdrPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView frame, vk::ImageVie
         vk::WriteDescriptorSet{.dstBinding = 3, .descriptorCount = 1,
                                .descriptorType = vk::DescriptorType::eStorageImage,
                                .pImageInfo = &state_info},
+        vk::WriteDescriptorSet{.dstBinding = 4, .descriptorCount = 1,
+                               .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                               .pImageInfo = &ui_info},
     };
     const vk::RenderingAttachmentInfo attachment{
         .imageView = output,

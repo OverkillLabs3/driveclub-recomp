@@ -15,6 +15,7 @@ layout(binding = 0) uniform sampler2D frame_tex;    // the frame, sRGB encoded v
 layout(binding = 1) uniform sampler2D hudless_tex;  // the picture before the UI, the same way
 layout(binding = 2) uniform sampler2D scene_tex;    // unused
 layout(binding = 3, r32f) uniform readonly image2D state;  // unused
+layout(binding = 4) uniform sampler2D ui_tex;
 
 layout(push_constant) uniform Params {
     float paper_nits;   // SDR white (UI, menus)
@@ -52,7 +53,8 @@ void main() {
     // detection, avoiding luminance noise and tearing around the sunlight.
     float ui = 0.0;
     if (has_hudless > 0.5) {
-        const vec3 d = abs(sdr - clamp(texture(hudless_tex, uv).rgb, vec3(0.0), vec3(1.0)));
+        const vec3 ui_src = clamp(texture(ui_tex, uv).rgb, vec3(0.0), vec3(1.0));
+        const vec3 d = abs(ui_src - clamp(texture(hudless_tex, uv).rgb, vec3(0.0), vec3(1.0)));
         ui = smoothstep(0.12, 0.22, max(d.r, max(d.g, d.b)));
     } else {
         ui = 1.0; // Menus and loading screens stay at paper white

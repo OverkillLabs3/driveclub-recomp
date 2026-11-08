@@ -252,6 +252,12 @@ void Presenter::DestroyGenerated(Frame* frame, u32 from) {
         if (generated.image) {
             vmaDestroyImage(instance.GetAllocator(), generated.image, generated.allocation);
         }
+        if (generated.hdr_view) {
+            device.destroyImageView(generated.hdr_view);
+        }
+        if (generated.hdr_image) {
+            vmaDestroyImage(instance.GetAllocator(), generated.hdr_image, generated.hdr_allocation);
+        }
         generated = {};
     }
     frame->generated_count = std::min(frame->generated_count, from);
@@ -277,7 +283,8 @@ u32 Presenter::EnsureGenerated(Frame* frame, u32 count) {
             .arrayLayers = 1,
             .samples = vk::SampleCountFlagBits::e1,
             .usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
-                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
+                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
+                     (hdr_output ? vk::ImageUsageFlagBits::eColorAttachment : vk::ImageUsageFlags{}),
         });
         const VmaAllocationCreateInfo alloc_info = {
             .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
@@ -297,8 +304,90 @@ u32 Presenter::EnsureGenerated(Frame* frame, u32 count) {
             .format = FrameGenerator::ColorFormat,
             .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
         }));
+        if (!hdr_output) {
+            continue;
+        }
+        const VkImageCreateInfo hdr_info = static_cast<VkImageCreateInfo>(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = vk::Format::eA2B10G10R10UnormPack32,
+            .extent = {frame->width, frame->height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
+        });
+        VkImage hdr_image{};
+        if (vmaCreateImage(instance.GetAllocator(), &hdr_info, &alloc_info, &hdr_image,
+                           &generated.hdr_allocation, nullptr) != VK_SUCCESS) {
+            LOG_ERROR(Render_Vulkan, "Frame generation: no memory for the generated HDR frames");
+            DestroyGenerated(frame, i);
+            return i;
+        }
+        generated.hdr_image = vk::Image{hdr_image};
+        SetObjectName(device, generated.hdr_image, "Generated HDR frame #{}.{}", frame->id, i);
+        generated.hdr_view = Check<"create generated hdr frame view">(device.createImageView({
+            .image = generated.hdr_image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eA2B10G10R10UnormPack32,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
     }
     return count;
+}
+
+void Presenter::ConvertGeneratedToHdr(vk::CommandBuffer cmdbuf, Frame* frame, u64 cpu_address) {
+    const auto barrier = [&](vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
+                             vk::PipelineStageFlags2 src, vk::AccessFlags2 src_access,
+                             vk::PipelineStageFlags2 dst, vk::AccessFlags2 dst_access) {
+        const vk::ImageMemoryBarrier2 b{
+            .srcStageMask = src,
+            .srcAccessMask = src_access,
+            .dstStageMask = dst,
+            .dstAccessMask = dst_access,
+            .oldLayout = from,
+            .newLayout = to,
+            .image = image,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+    };
+    const auto all = vk::PipelineStageFlagBits2::eAllCommands;
+    const auto memory = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+    const auto fragment = vk::PipelineStageFlagBits2::eFragmentShader;
+    const auto sampled = vk::AccessFlagBits2::eShaderRead;
+    const auto attachment = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+    const auto write = vk::AccessFlagBits2::eColorAttachmentWrite;
+    const vk::ImageView hudless = rasterizer->HdrHudless(cpu_address);
+    const auto& s = BbSettings::Get();
+    const HostPasses::HdrPass::Params params{
+        .paper_nits = s.hdr_paper.load(),
+        .peak_nits = s.hdr_peak.load(),
+        .has_hudless = hudless ? 1.0f : 0.0f,
+    };
+    barrier(frame->image, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal, all,
+            memory, fragment, sampled);
+    u32 converted = 0;
+    for (; converted < frame->generated_count; ++converted) {
+        auto& generated = frame->generated[converted];
+        if (!generated.hdr_image) {
+            break;
+        }
+        barrier(generated.image, vk::ImageLayout::eGeneral, vk::ImageLayout::eShaderReadOnlyOptimal,
+                all, memory, fragment, sampled);
+        barrier(generated.hdr_image, vk::ImageLayout::eUndefined,
+                vk::ImageLayout::eColorAttachmentOptimal, all, vk::AccessFlagBits2::eNone, attachment,
+                write);
+        hdr_pass.Render(cmdbuf, generated.view, hudless, {}, generated.hdr_view,
+                        {frame->width, frame->height}, params, frame->image_view);
+        barrier(generated.hdr_image, vk::ImageLayout::eColorAttachmentOptimal,
+                vk::ImageLayout::eGeneral, attachment, write, all, vk::AccessFlagBits2::eMemoryRead);
+        barrier(generated.image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eGeneral,
+                fragment, sampled, all, memory);
+        generated.hdr_ready = true;
+    }
+    barrier(frame->image, vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eGeneral,
+            fragment, sampled, all, memory);
+    frame->generated_count = converted;
 }
 
 void Presenter::ReleaseFrameGen(Frame* frame) {
@@ -862,6 +951,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
 
     // bbport: frame generation: the frames between the previous frame and this one.
     frame->generated_count = 0;
+    for (auto& generated : frame->generated) {
+        generated.hdr_ready = false;
+    }
     frame_generator->SetOutputSize(frame->width, frame->height);
     constexpr auto fg_color_usage =
         vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst |
@@ -870,7 +962,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // bbport: also for the upscaled display (outputs other than 1080p): composed the same way.
     if (frame_generator->Wanted() && frame_generator->Paused()) {
         frame_generator->Skip(); // paused with F8: everything stays set up
-    } else if (!frame_generator->Wanted() || frame->is_hdr || hdr_output) {
+    } else if (!frame_generator->Wanted() || frame->is_hdr || (hdr_output && !frame->hdr_ready)) {
         ReleaseFrameGen(frame);
         frame_generator->Skip(); // HDR: this frame's inputs are not used
     } else {
@@ -922,6 +1014,9 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
             cmdbuf, frame->image, frame->image_view, fg_color_usage, hudless, hudless_view,
             frame->width, frame->height,
             std::span<const FrameGenerator::Output>{fg_outputs.data(), count}, cpu_address);
+        if (hdr_output && frame->generated_count) {
+            ConvertGeneratedToHdr(cmdbuf, frame, cpu_address);
+        }
     }
     if (frame_dump) {
         // The presented image as the swapchain blit reads it (General after the pass), and
@@ -1528,8 +1623,17 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
 
     // bbport: the frame is blitted (letterboxed) straight into the swapchain image; with HDR
     // output its HDR10 picture, which already has the overlay.
-    const bool hdr_frame = hdr_output && frame->hdr_ready && image == frame->image;
-    if (hdr_frame) {
+    bool hdr_frame = hdr_output && frame->hdr_ready && image == frame->image;
+    if (hdr_output && !hdr_frame) {
+        for (const auto& generated : frame->generated) {
+            if (generated.hdr_ready && image == generated.image) {
+                image = generated.hdr_image;
+                hdr_frame = true;
+                break;
+            }
+        }
+    }
+    if (hdr_frame && image == frame->image) {
         image = frame->hdr_image;
     }
     const vk::Image swapchain_image = swapchain.Image();
