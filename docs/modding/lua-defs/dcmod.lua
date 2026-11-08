@@ -125,6 +125,12 @@ function dcmod.sun() end
 ---@param g number
 ---@param b number
 function dcmod.set_sun_colour(r, g, b) end
+---Changes one number of the 1936 byte lighting block to value * mul + add (experiments; slot 1 to 16). Without dword it removes the change.
+---@param slot integer
+---@param dword integer|nil
+---@param mul number|nil
+---@param add number|nil
+function dcmod.light_poke(slot, dword, mul, add) end
 ---The hour of the day of the scene (0 to 24) and the speed of the clock, or nil when no race is loaded.
 ---@return number|nil hour
 ---@return number|nil compression

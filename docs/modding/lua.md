@@ -154,6 +154,8 @@ dcmod.on_ready(function()
 end)
 ```
 
+For experiments, `dcmod.light_poke(slot, dword, mul, add)` changes one number of the 1936 byte lighting block to `value * mul + add` (slots 1 to 16, `dcmod.light_poke(slot)` removes a change). Known so far: numbers 20 to 22 are the direction of the sun (towards it), 28 to 30 the colour the scene is lit with (setting them to 0 puts the sun out: checked in the game). Zeroing 32 to 34, 156 to 171, 0, 4, 8, 12 and 128 to 139 changed nothing visible by day.
+
 ### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
 
 `dcmod.time()` returns the hour of the day of the scene (0 to 24, for example 18.5 is 18:30) and the speed of the clock (`hour, compression`), or `nil` when no race is loaded. `dcmod.set_time(hour)` moves the clock to that hour; the sky, the lights and the shadows follow, and the clock keeps running from there. Values are kept to a thousandth of an hour.

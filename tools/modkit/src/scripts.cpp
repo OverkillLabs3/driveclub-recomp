@@ -128,6 +128,16 @@ function dcmod.set_sun_colour(r, g, b)
   local function milli(v) return math.max(0, math.min(100000, math.floor((v or 1) * 1000 + 0.5))) end
   loadfile(string.format("dcmod/light/sun/%d/%d/%d", milli(r), milli(g), milli(b)))
 end
+-- dcmod.light_poke(slot, dword, mul, add): changes one number of the game's lighting constants to value * mul + add, for
+-- experiments (slot 1 to 16 holds one change; dcmod.light_poke(slot) removes it). dword counts the 4 byte numbers of the
+-- 1936 byte lighting block (20 to 22 the sun's direction, 28 to 30 the colour the scene is lit with).
+function dcmod.light_poke(slot, dword, mul, add)
+  if dword == nil then
+    loadfile(string.format("dcmod/light/poke/%d/off", slot - 1))
+    return
+  end
+  loadfile(string.format("dcmod/light/poke/%d/%d/%d/%d", slot - 1, dword, math.floor((mul or 1) * 1000 + 0.5), math.floor((add or 0) * 1000 + 0.5)))
+end
 function dcmod.set_time(hour)
   loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
 end

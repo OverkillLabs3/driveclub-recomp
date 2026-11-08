@@ -44,6 +44,7 @@ void bbgpu_postfx_param(int slot, int index, float value);
 void bbgpu_postfx_scale(int slot, float value);
 int bbgpu_camera(float *out);
 void bbgpu_sun_scale(float r, float g, float b);
+void bbgpu_light_poke(int slot, int dword, float mul, float add);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -353,7 +354,11 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
     }
     if (!strncasecmp(call, "light/", 6)) {   /* light/sun/<r>/<g>/<b>: multipliers of the sun's colour in thousandths (1000 = the game's own) */
         long r, g, b;
+        int slot, dword;
+        long mul, add;   /* light/poke/<slot>/<dword>/<mul>/<add>: number <dword> of the lighting becomes value * mul + add (thousandths) */
         if (sscanf(call + 6, "sun/%ld/%ld/%ld", &r, &g, &b) == 3) bbgpu_sun_scale(r / 1000.0f, g / 1000.0f, b / 1000.0f);
+        else if (sscanf(call + 6, "poke/%d/%d/%ld/%ld", &slot, &dword, &mul, &add) == 4) bbgpu_light_poke(slot, dword, mul / 1000.0f, add / 1000.0f);
+        else if (sscanf(call + 6, "poke/%d/off", &slot) == 1) bbgpu_light_poke(slot, -1, 1.0f, 0.0f);
         return 1;
     }
     if (!strncasecmp(call, "log/", 4)) {

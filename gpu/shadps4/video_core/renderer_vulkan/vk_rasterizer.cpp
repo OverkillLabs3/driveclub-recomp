@@ -60,11 +60,22 @@ std::atomic<long long> g_camera_wanted{0};   ///< when a script last asked for t
 std::mutex g_camera_mutex;
 long long g_camera_stamp = 0;
 std::atomic<float> g_sun_scale[3] = {1.0f, 1.0f, 1.0f};   ///< a mod's multiplier of the sun's colour (1: the game's own)
+struct LightPoke { std::atomic<int> dword{-1}; std::atomic<float> mul{1.0f}; std::atomic<float> add{0.0f}; };
+LightPoke g_light_poke[16];   ///< a mod's changes of single numbers of the lighting constants: value * mul + add
 bool SunScaleActive() {
-    return g_sun_scale[0] != 1.0f || g_sun_scale[1] != 1.0f || g_sun_scale[2] != 1.0f;
+    if (g_sun_scale[0] != 1.0f || g_sun_scale[1] != 1.0f || g_sun_scale[2] != 1.0f) {
+        return true;
+    }
+    for (const auto& poke : g_light_poke) {
+        if (poke.dword >= 0) {
+            return true;
+        }
+    }
+    return false;
 }
 // The lighting constants (1936 bytes, recognised like in NoteTaaBuffer): the sun's radiance at dwords 24..26 and its
-// plain colour at 28..30 are multiplied by what a mod asked for. Works on this draw's own copy only.
+// plain colour at 28..30 are multiplied by what a mod asked for, and the single numbers it poked are changed. Works on
+// this draw's own copy only.
 void ApplySunScale(void* data, u64 size) {
     if (size != 1936 || !SunScaleActive()) {
         return;
@@ -78,6 +89,12 @@ void ApplySunScale(void* data, u64 size) {
         const float k = g_sun_scale[i];
         c[24 + i] *= k;
         c[28 + i] *= k;
+    }
+    for (const auto& poke : g_light_poke) {
+        const int d = poke.dword;
+        if (d >= 0 && d < 484) {
+            c[d] = c[d] * poke.mul + poke.add;
+        }
     }
 }
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
@@ -154,6 +171,14 @@ bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
 }
 } // namespace
 
+extern "C" void bbgpu_light_poke(int slot, int dword, float mul, float add) {   // dword < 0 clears the slot
+    if (slot < 0 || slot >= 16) {
+        return;
+    }
+    g_light_poke[slot].mul = mul;
+    g_light_poke[slot].add = add;
+    g_light_poke[slot].dword = dword;
+}
 extern "C" void bbgpu_sun_scale(float r, float g, float b) {
     g_sun_scale[0] = r;
     g_sun_scale[1] = g;
