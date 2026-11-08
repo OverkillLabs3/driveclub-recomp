@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.hdr-height-fog",
+  "name": "Height fog with sun scattering (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: fog that is thicker near the ground, lit by the sun (glow round the sun, warm tint towards it), from the depth, the camera height and the real sun.",
+  "scripts": [ "scripts/mods/hdr-height-fog/main.lua" ]
+}
