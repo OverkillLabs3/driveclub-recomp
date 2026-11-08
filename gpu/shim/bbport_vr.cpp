@@ -2470,6 +2470,27 @@ void AppendDeviceExtensions(VkInstance instance, VkPhysicalDevice physical_devic
     xr.GetVulkanDeviceExtensionsKHR(st.instance, st.system, size, &size, device_extension_storage.data());
     device_extension_storage.resize(std::strlen(device_extension_storage.c_str()));
     AddNames(device_extension_storage, out);
+    // Also the Win32 interop a layer between us and the runtime may need without saying so: OFXR's Vulkan->D3D12
+    // bridge on SteamVR loads vkImportSemaphoreWin32HandleKHR from our device and refuses every swapchain without it
+    // (its failure stage 5), though SteamVR's list (as OFXR passes it on) never names it.
+    uint32_t count = 0;
+    VKF.vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, nullptr);
+    std::vector<VkExtensionProperties> have(count);
+    VKF.vkEnumerateDeviceExtensionProperties(physical_device, nullptr, &count, have.data());
+    std::string added;
+    for (const char* name : {"VK_KHR_external_memory", "VK_KHR_external_memory_win32", "VK_KHR_external_semaphore",
+                             "VK_KHR_external_semaphore_win32", "VK_KHR_timeline_semaphore"}) {
+        bool supported = false, listed = false;
+        for (const VkExtensionProperties& e : have) supported = supported || std::strcmp(e.extensionName, name) == 0;
+        for (const char* e : out) listed = listed || (e && std::strcmp(e, name) == 0);
+        if (supported && !listed) {
+            out.push_back(name);
+            added += added.empty() ? name : std::string(" ") + name;
+        }
+    }
+    std::printf("VR: Vulkan device extensions the runtime asks for: %s%s%s\n",
+                device_extension_storage.empty() ? "(none)" : device_extension_storage.c_str(),
+                added.empty() ? "" : "; added for layers: ", added.c_str());
 }
 
 void OnDevice(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, uint32_t queue_family,

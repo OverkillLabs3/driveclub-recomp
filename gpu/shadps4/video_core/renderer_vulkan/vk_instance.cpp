@@ -592,9 +592,12 @@ bool Instance::CreateDevice() {
     BbVr::AppendDeviceExtensions(*instance, physical_device, vr_extensions);
     for (const char* name : vr_extensions) {
         if (std::none_of(enabled_extensions.begin(), enabled_extensions.end(),
-                         [&](const char* e) { return std::string_view{e} == name; }) &&
-            enabled_extensions.size() < enabled_extensions.capacity()) {
-            enabled_extensions.push_back(name);
+                         [&](const char* e) { return std::string_view{e} == name; })) {
+            if (enabled_extensions.size() < enabled_extensions.capacity()) {
+                enabled_extensions.push_back(name);
+            } else {
+                std::printf("VR: device extension %s left out: the list is full\n", name);
+            }
         }
     }
     // bbport: BB_SPARSE_ALIASED=0 leaves aliased sparse binding off.
