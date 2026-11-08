@@ -27,10 +27,14 @@ not inspect mesh shape: an eligible family is a conservative proxy for extended
 surfaces with visible tiling, not proof that every surface is flat. Unknown or
 mixed ownership is excluded. There is no per-texture-ID whitelist.
 
-The world cohort admits road, ground, concrete, pavement, brick, roof, tile,
-tarmac and wall families. Vegetation, trees, bark, foliage blends, animated or
-deformed object families, glass, effects and authored markings are excluded
-before applying the positive surface rules.
+The world cohort admits road, ground, roadside verge, concrete, pavement, brick,
+roof, tile, tarmac and wall families, plus native terrain, landscape and scree
+families. Static cliff/mountain, snow/ice, salt-flat, path and field substrates
+also qualify. These terrain families cover more than road-adjacent surfaces.
+Vegetation, trees, bark, foliage blends, animated or deformed object families,
+glass, effects and authored markings are excluded before the positive rules.
+Ambiguous basic/rock/stone object families, mixed riverbed/water families and
+intentional rumblestrip markings remain outside this cohort.
 
 The separate interior cohort covers `leather`, `leather_glow`, `leather_stitched`,
 `fuzzy_felt` and `fuzzy_felt_stitched` families. Only qualifying grain normal/detail
@@ -93,20 +97,24 @@ python tools/test_world_repeat_registry.py
 python tools/test_interior_repeat_registry.py
 ```
 
-The tested 1.28 packages yield 336 world and 44 interior pixel-program hashes,
+The tested 1.28 packages yield 617 world and 44 interior pixel-program hashes,
 with no overlap. These are candidates; the layer checks can reject them at
 compilation. The registries contain no texture IDs, image data or shader
 instructions. Generators print package SHA256 hashes and derive ownership again.
 
 ## Validation and limits
 
-- Nine world and five interior generator tests cover family exclusions, every-owner
+- Thirteen world and five interior generator tests cover family exclusions, every-owner
   and every-source closure, renamed display names and deterministic output.
 - Thirty-three production C++ selector cases cover qualifying layers, stitch/mask
   exclusions, decoded fabric normals, raw albedo rejection, UVs and sampler guards.
 - Five reconstructed native interior graphs select the expected grain layers and
   exclude stitches; an unsupported felt permutation selects nothing. These use
   audited formats with representative descriptors, not current live GPU bindings.
+- Reconstructed Canadian and Japanese terrain graphs select matching diffuse/normal
+  layers while leaving global, packed and scalar control layers original. These
+  also use representative descriptors; no broader UV or single-target shader
+  fallback is introduced.
 - Launcher and fresh-process runtime tests cover presets, legacy migration,
   opt-out, save/reload, environment precedence and the startup/restart boundary.
 - Four real-Sirit SPIR-V harness variants pass `spirv-val`; control-flow checks

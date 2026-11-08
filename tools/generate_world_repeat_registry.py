@@ -83,7 +83,12 @@ EFFECT_FAMILY = re.compile(
 AUTHORED_GRAPHIC_FAMILY = re.compile(
     r"decal|marking|paintmark|^roadline|^roadmark|(?:^|_)(?:sign|mural|logo|graphic|design)(?:_|$)")
 SURFACE_FAMILY = re.compile(
-    r"^(?:road|ground|concrete|pavement|pavment|brick|roof|tiles|tarmac)|wall(?:_|$)")
+    r"^(?:road|ground|verge|concrete|pavement|pavment|brick|roof|tiles|tarmac)|wall(?:_|$)")
+# Landscape/substrate authoring groups, including their regional/blended forms.
+# Generic rock/stone/basic props, mixed riverbed/water and authored rumble strips
+# are not positive terrain provenance. Runtime layer/UV/resource gates still apply.
+TERRAIN_FAMILY = re.compile(
+    r"^(?:terrain|landscape|scree)|^(?:cliff|mountainrange|snow|ice_snow|salt_plane|path|fields)$")
 
 
 def is_world_surface_source(source):
@@ -101,7 +106,8 @@ def is_world_surface_source(source):
     return bool(family and not VEGETATION_FAMILY.search(family) and
                 not COMPLEX_OBJECT_FAMILY.search(family) and
                 not EFFECT_FAMILY.search(family) and
-                not AUTHORED_GRAPHIC_FAMILY.search(family) and SURFACE_FAMILY.search(family))
+                not AUTHORED_GRAPHIC_FAMILY.search(family) and
+                (SURFACE_FAMILY.search(family) or TERRAIN_FAMILY.search(family)))
 
 
 def pixel_program_owners(entries):

@@ -1546,7 +1546,7 @@ void BuildModel() {
                             L"\x2022 Built from your own game files; your game folders are not changed.",
                             "@unlock", false);
   g_texture_repetition = toggle(L"Reduce texture repetition",
-      L"Breaks up repeated detail on compatible ground, roads, walls and opaque cabin materials, including eligible textured plastic, leather and fabric. Vegetation, glass and stitch patterns are excluded. "
+      L"Breaks up repeated detail on compatible terrain, roads, walls and opaque cabin materials, including eligible textured plastic, leather and fabric. Vegetation, glass and stitch patterns are excluded. "
       L"Uses extra texture samples. Enabled by default for PC presets; PS4 keeps the original sampling. Takes effect on the next game start.",
       "@texture_repetition", true);
   const int unlock_all = toggle(L"Unlock every car and bike",
