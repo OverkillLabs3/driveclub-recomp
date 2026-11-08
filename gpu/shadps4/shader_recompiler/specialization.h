@@ -46,6 +46,10 @@ struct BufferSpecialization {
 
 struct ImageSpecialization {
     AmdGpu::ImageType type = AmdGpu::ImageType::Color2D;
+    // Repeat-sampling selection distinguishes compressed formats and signed,
+    // unsigned and sRGB inputs even when their sampling conversions match.
+    AmdGpu::DataFormat data_format = AmdGpu::DataFormat::FormatInvalid;
+    AmdGpu::NumberFormat number_format = AmdGpu::NumberFormat::Unorm;
     bool is_integer = false;
     bool is_storage = false;
     bool is_cube = false;
@@ -141,6 +145,8 @@ struct StageSpecialization {
         ForEachSharp(binding, images, info->images,
                      [&](auto& spec, const auto& desc, AmdGpu::Image sharp) {
                          spec.type = sharp.GetViewType(desc.is_array);
+                         spec.data_format = sharp.GetDataFmt();
+                         spec.number_format = sharp.GetNumberFmt();
                          spec.is_integer = AmdGpu::IsInteger(sharp.GetNumberFmt());
                          spec.is_storage = desc.is_written;
                          spec.is_cube = sharp.IsCube();

@@ -137,6 +137,14 @@ static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coo
         dx = ctx.OpVectorTimesScalar(V, dx, scale);
         dy = ctx.OpVectorTimesScalar(V, dy, scale);
     }
+    // Keep the original sample and derivatives in the caller's block. Only the
+    // explicit-gradient/LOD reads below may execute under this per-fragment branch.
+    const Id before = ctx.last_label;
+    const Id repeat_label = ctx.OpLabel(), merge = ctx.OpLabel();
+    const Id apply_repeat = ctx.OpFOrdGreaterThan(ctx.U1[1], amount, f(0));
+    ctx.OpSelectionMerge(merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(apply_repeat, repeat_label, merge);
+    ctx.AddLabel(repeat_label);
     const Id cell = ctx.OpFloor(V, uv), frac = ctx.OpFSub(V, uv, cell);
     const auto component = [&](Id x, u32 i) { return ctx.OpCompositeExtract(F, x, i); };
     const auto smooth = [&](Id x) {
@@ -209,7 +217,9 @@ static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coo
     Id result = ctx.OpFMix(C, original, altered, splat(amount));
     // Never alter opacity/cutout semantics through the generic colour hook.
     result = ctx.OpCompositeInsert(C, ctx.OpCompositeExtract(F, original, 3), result, 3);
-    return result;
+    ctx.OpBranch(merge);
+    ctx.AddLabel(merge);
+    return ctx.OpPhi(C, result, repeat_label, original, before);
 }
 
 Id EmitImageSampleImplicitLod(EmitContext &ctx, IR::Inst *inst, u32 handle,

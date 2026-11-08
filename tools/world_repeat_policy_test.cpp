@@ -57,6 +57,21 @@ struct Fixture {
         sharp.data_format = unsigned(f);
         std::memcpy(info.images[image].sharp_fetch.immediates.data(), &sharp, sizeof(sharp));
     }
+    void number_format(unsigned image, AmdGpu::NumberFormat format) {
+        AmdGpu::Image sharp{};
+        std::memcpy(&sharp, info.images[image].sharp_fetch.immediates.data(), sizeof(sharp));
+        sharp.num_format = unsigned(format);
+        std::memcpy(info.images[image].sharp_fetch.immediates.data(), &sharp, sizeof(sharp));
+    }
+    void expect(const char* name, std::initializer_list<const Inst*> expected) {
+        WorldRepeat::Prepare(program);
+        const std::unordered_set<const Inst*> wanted(expected);
+        const bool okay = WorldRepeat::selected == wanted;
+        std::printf("%s %s (%zu samples)\n", okay ? "PASS" : "FAIL", name,
+                    WorldRepeat::selected.size());
+        if (!okay)
+            std::exit(1);
+    }
     void check(const char* name, bool accepted) {
         WorldRepeat::Prepare(program);
         bool okay = accepted ? WorldRepeat::selected.contains(colour) &&
@@ -69,7 +84,142 @@ struct Fixture {
             std::exit(1);
     }
 };
+// The interior fixture uses the real all-owner leather cohort hash. Its
+// independent albedo/mask controls must stay original as the grain is selected.
+struct InteriorFixture : Fixture {
+    InteriorFixture() {
+        info.pgm_hash = 0xc6c425e2;
+        auto* y = add(Opcode::CompositeExtractF32x4, {Value(normal), Value(1u)});
+        add(Opcode::SetAttribute, {Value(Attribute::RenderTarget1), Value(y), Value(1u)});
+    }
+    void scalar_ao() {
+        format(0, AmdGpu::DataFormat::FormatBc4);
+        number_format(0, AmdGpu::NumberFormat::Unorm);
+    }
+    void fabric(AmdGpu::DataFormat format_value) {
+        info.pgm_hash = 0x97a6899c;
+        format(1, format_value);
+        number_format(1, AmdGpu::NumberFormat::Srgb);
+        for (auto& inst : block.Instructions()) {
+            if (inst.GetOpcode() != Opcode::SetAttribute ||
+                inst.Arg(0).Attribute() != Attribute::RenderTarget1)
+                continue;
+            const Value raw = inst.Arg(1);
+            auto* twice = add(Opcode::FPMul32, {Value(2.f), raw});
+            auto* decoded = add(Opcode::FPAdd32, {Value(twice), Value(-1.f)});
+            inst.SetArg(1, Value(decoded));
+        }
+    }
+};
+void interior_checks() {
+    {
+        InteriorFixture f;
+        f.expect("interior grain only; albedo and alpha mask unchanged", {f.normal});
+    }
+    {
+        InteriorFixture f;
+        f.scalar_ao();
+        f.expect("interior grain and same-UV BC4 scalar AO", {f.colour, f.normal});
+    }
+    {
+        InteriorFixture f;
+        f.scalar_ao();
+        auto* a = f.add(Opcode::GetAttribute, {Value(Attribute::Param1), Value(0u), Value(0u)});
+        auto* other = f.add(Opcode::FPMul32, {Value(a), Value(f.scale)});
+        f.colour->SetArg(1, Value(f.add(Opcode::CompositeConstructF32x2,
+                                     {Value(other), Value(other)})));
+        f.expect("AO on different UV remains original", {f.normal});
+    }
+    {
+        InteriorFixture f;
+        auto* alpha = f.add(Opcode::CompositeExtractF32x4, {Value(f.normal), Value(3u)});
+        f.add(Opcode::SetAttribute, {Value(Attribute::RenderTarget1), Value(alpha), Value(2u)});
+        f.expect("alpha-dependent normal rejected", {});
+    }
+    {
+        InteriorFixture f;
+        auto* attr = f.add(Opcode::GetAttribute, {Value(Attribute::Param0), Value(0u), Value(0u)});
+        f.normal->SetArg(1, Value(f.add(Opcode::CompositeConstructF32x2,
+                                      {Value(attr), Value(attr)})));
+        f.expect("unscaled stitch/unique UV normal rejected", {});
+    }
+    {
+        InteriorFixture f;
+        auto* square = f.add(Opcode::FPMul32, {f.uv->Arg(0), f.uv->Arg(0)});
+        f.normal->SetArg(1, Value(f.add(Opcode::CompositeConstructF32x2,
+                                      {Value(square), Value(square)})));
+        f.expect("nonlinear varying product rejected in interior UV", {});
+    }
+    for (const auto format : {AmdGpu::DataFormat::FormatBc1, AmdGpu::DataFormat::FormatBc7}) {
+        InteriorFixture f;
+        f.fabric(format);
+        f.expect("fabric signed-RG decode; albedo/alpha retained", {f.normal});
+    }
+    {
+        InteriorFixture f;
+        f.info.pgm_hash = 0x97a6899c;
+        f.format(1, AmdGpu::DataFormat::FormatBc7);
+        f.number_format(1, AmdGpu::NumberFormat::Srgb);
+        f.expect("BC7 without signed-RG normal decode rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.fabric(AmdGpu::DataFormat::FormatBc7);
+        auto* raw = f.add(Opcode::CompositeExtractF32x4, {Value(f.normal), Value(0u)});
+        f.add(Opcode::SetAttribute, {Value(Attribute::RenderTarget1), Value(raw), Value(2u)});
+        f.expect("fabric decoded plus parallel raw normal path rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.fabric(AmdGpu::DataFormat::FormatBc7);
+        auto* alpha = f.add(Opcode::CompositeExtractF32x4, {Value(f.normal), Value(3u)});
+        f.add(Opcode::SetAttribute, {Value(Attribute::RenderTarget1), Value(alpha), Value(2u)});
+        f.expect("fabric alpha normal decode rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.fabric(AmdGpu::DataFormat::FormatBc7);
+        auto* raw_colour = f.add(Opcode::CompositeExtractF32x4, {Value(f.normal), Value(0u)});
+        f.add(Opcode::SetAttribute, {Value(Attribute::RenderTarget0), Value(raw_colour), Value(2u)});
+        f.expect("fabric mixed direct albedo path rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.fabric(AmdGpu::DataFormat::FormatBc7);
+        auto* control = f.add(Opcode::CompositeExtractF32x4, {Value(f.normal), Value(3u)});
+        f.add(Opcode::SetAttribute, {Value(Attribute::RenderTarget2), Value(control), Value(3u)});
+        f.expect("fabric separate original-alpha control accepted", {f.normal});
+    }
+    {
+        InteriorFixture f;
+        f.scalar_ao();
+        f.add(Opcode::DiscardCond, {Value(true)});
+        f.expect("interior cutout rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.info.pgm_hash = 0x945a7de5; // Interior paint is outside the cohort.
+        f.expect("interior paint family rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.info.pgm_hash = 0x8d9dd0a2; // Shared with glass/paint/world/other families.
+        f.expect("mixed material owners rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.info.samplers[1].is_depth = true;
+        f.expect("interior comparison sampler rejected", {});
+    }
+    {
+        InteriorFixture f;
+        f.info.samplers[1].sharp_fetch.immediates[0] =
+            unsigned(AmdGpu::ClampMode::ClampLastTexel);
+        f.expect("interior clamped atlas rejected", {});
+    }
+}
 int main() {
+    interior_checks();
     {
         Fixture f;
         f.check("paired scaled world colour/normal; alpha mask retained", true);
@@ -148,5 +298,6 @@ int main() {
         std::memcpy(f.info.images[0].sharp_fetch.immediates.data(), &sh, sizeof(sh));
         f.check("no mip chain", false);
     }
-    std::puts("15 production-policy regression checks passed.");
+    std::puts("World and interior production-policy regression checks passed.");
+    return 0;
 }
