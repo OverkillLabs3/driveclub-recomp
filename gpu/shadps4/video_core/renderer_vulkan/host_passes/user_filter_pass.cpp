@@ -2,6 +2,8 @@
 
 #include "video_core/renderer_vulkan/host_passes/user_filter_pass.h"
 
+#include <vk_mem_alloc.h>
+
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -19,6 +21,9 @@
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 extern "C" const char* runtime_file_mods_dir(int i);
+namespace BbOverlay {
+bool bbgpu_load_png_file(const std::string& path, int& width, int& height, std::vector<unsigned char>& rgba);
+}
 
 namespace Vulkan::HostPasses {
 
@@ -68,6 +73,13 @@ void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::For
         .addressModeU = vk::SamplerAddressMode::eClampToEdge,
         .addressModeV = vk::SamplerAddressMode::eClampToEdge,
     }));
+    repeat = Check<"create user filter repeat sampler">(device.createSamplerUnique({
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eRepeat,
+        .addressModeV = vk::SamplerAddressMode::eRepeat,
+    }));
     nearest = Check<"create user filter nearest sampler">(device.createSamplerUnique({
         .magFilter = vk::Filter::eNearest,
         .minFilter = vk::Filter::eNearest,
@@ -75,7 +87,7 @@ void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::For
         .addressModeU = vk::SamplerAddressMode::eClampToEdge,
         .addressModeV = vk::SamplerAddressMode::eClampToEdge,
     }));
-    std::array<vk::DescriptorSetLayoutBinding, 7> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 8> bindings{};
     for (u32 i = 0; i < bindings.size(); ++i) {
         bindings[i] = vk::DescriptorSetLayoutBinding{
             .binding = i,
@@ -192,8 +204,81 @@ bool UserFilterPass::LoadShader(const std::string& name) {
     }
     pipeline = std::move(created.value);
     failed = false;
+    LoadTexture(loaded_path);
     LOG_WARNING(Render_Vulkan, "Post filter '{}' loaded from {}", name, loaded_path);
     return true;
+}
+
+void UserFilterPass::FreeTexture() {
+    texture_view.reset();
+    texture = VideoCore::UniqueImage{};
+    if (texture_staging) {
+        vmaDestroyBuffer(allocator, texture_staging, texture_allocation);
+        texture_staging = VK_NULL_HANDLE;
+        texture_allocation = nullptr;
+    }
+    texture_pending = false;
+    texture_width = texture_height = 0;
+}
+
+// The picture of a filter: postfx/<name>.png beside the shader (8 bit RGB or RGBA, at most 2048 by 2048).
+void UserFilterPass::LoadTexture(const std::string& shader_path) {
+    device.waitIdle();
+    FreeTexture();
+    auto png_path = std::filesystem::path(shader_path);
+    png_path.replace_extension(".png");
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(png_path, error)) {
+        return;
+    }
+    int width = 0, height = 0;
+    std::vector<unsigned char> rgba;
+    if (!BbOverlay::bbgpu_load_png_file(png_path.string(), width, height, rgba) || width <= 0 || height <= 0) {
+        LOG_WARNING(Render_Vulkan, "Post filter picture {} is not an 8 bit RGB or RGBA PNG of at most 2048 by 2048",
+                    png_path.string());
+        return;
+    }
+    const VkBufferCreateInfo buffer_ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                       .size = rgba.size(),
+                                       .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(allocator, &buffer_ci, &alloc_ci, &texture_staging, &texture_allocation, &info) !=
+        VK_SUCCESS) {
+        texture_staging = VK_NULL_HANDLE;
+        return;
+    }
+    std::memcpy(info.pMappedData, rgba.data(), rgba.size());
+    vmaFlushAllocation(allocator, texture_allocation, 0, VK_WHOLE_SIZE);
+    texture = VideoCore::UniqueImage(device, allocator);
+    texture.Create(vk::ImageCreateInfo{
+        .imageType = vk::ImageType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .extent = {u32(width), u32(height), 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    });
+    auto view = device.createImageViewUnique({
+        .image = vk::Image(texture),
+        .viewType = vk::ImageViewType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    });
+    if (view.result != vk::Result::eSuccess) {
+        FreeTexture();
+        return;
+    }
+    texture_view = std::move(view.value);
+    texture_width = u32(width);
+    texture_height = u32(height);
+    texture_pending = true;
+    LOG_WARNING(Render_Vulkan, "Post filter picture {} loaded ({}x{})", png_path.string(), width, height);
 }
 
 bool UserFilterPass::EnsureImage(vk::Extent2D size) {
@@ -258,6 +343,31 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         return input;
     }
 
+    if (texture_pending && texture_view) {   // the filter's picture goes up on the first frame it is drawn
+        const auto texture_barrier = [&](vk::ImageLayout from, vk::ImageLayout to, vk::PipelineStageFlags2 src,
+                                        vk::AccessFlags2 src_access, vk::PipelineStageFlags2 dst,
+                                        vk::AccessFlags2 dst_access) {
+            const vk::ImageMemoryBarrier2 b{.srcStageMask = src,
+                                            .srcAccessMask = src_access,
+                                            .dstStageMask = dst,
+                                            .dstAccessMask = dst_access,
+                                            .oldLayout = from,
+                                            .newLayout = to,
+                                            .image = vk::Image(texture),
+                                            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+            cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+        };
+        texture_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eAllCommands, {}, vk::PipelineStageFlagBits2::eTransfer,
+                        vk::AccessFlagBits2::eTransferWrite);
+        cmdbuf.copyBufferToImage(vk::Buffer(texture_staging), vk::Image(texture), vk::ImageLayout::eTransferDstOptimal,
+                                 vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                                                     .imageExtent = {texture_width, texture_height, 1}});
+        texture_barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+                        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+        texture_pending = false;
+    }
     const int cur = history_valid ? 1 - last : last;
     const int prev = 1 - cur;
     const bool has_history = history_valid;
@@ -295,8 +405,11 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
     }
     constants.pad = extras.valid ? 1.0f : 0.0f;
     constants.has_history = has_history ? 1.0f : 0.0f;
+    constants.has_texture = texture_view ? 1.0f : 0.0f;
+    constants.texture_size[0] = static_cast<float>(texture_width);
+    constants.texture_size[1] = static_cast<float>(texture_height);
     // 0 picture; 1 view-space distance; 2 motion; 3 g-buffer; 4 view ray parameters (the picture stands in without them)
-    const std::array<vk::DescriptorImageInfo, 7> image_infos = {{
+    const std::array<vk::DescriptorImageInfo, 8> image_infos = {{
         {*sampler, input, input_layout},
         {*nearest, extras.valid ? extras.depth : input,
          extras.valid ? vk::ImageLayout::eGeneral : input_layout},
@@ -308,8 +421,11 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         // 6: this slot's picture of the frame before (the picture stands in on the first frame)
         {*sampler, has_history ? *image_views[prev] : input,
          has_history ? vk::ImageLayout::eShaderReadOnlyOptimal : input_layout},
+        // 7: the filter's own PNG (the picture stands in without one)
+        {*repeat, texture_view ? *texture_view : input,
+         texture_view ? vk::ImageLayout::eShaderReadOnlyOptimal : input_layout},
     }};
-    std::array<vk::WriteDescriptorSet, 7> set_writes{};
+    std::array<vk::WriteDescriptorSet, 8> set_writes{};
     for (u32 i = 0; i < set_writes.size(); ++i) {
         set_writes[i] = vk::WriteDescriptorSet{
             .dstBinding = i,

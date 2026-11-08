@@ -6,6 +6,7 @@
 //   layout(binding = 0) uniform sampler2D picture;
 //   layout(push_constant) uniform P { vec2 resolution; float time; float pad; vec4 values[4]; } p;
 // `values` are the 16 numbers a mod sets with dcmod.postfx.param.
+// A PNG with the name of the shader (postfx/<name>.png) is bound at binding 7 for lookup tables, noise and lens dirt.
 
 #pragma once
 
@@ -25,7 +26,8 @@ public:
         float pad;
         float values[16];
         float has_history;   // 1 when binding 6 holds this slot's picture of the frame before
-        float pad2[3];
+        float has_texture;   // 1 when binding 7 holds the filter's own PNG (postfx/<name>.png next to the shader)
+        float texture_size[2];
     };
 
     /// What the HDR stage can also read (all in General layout): the view-space distance of every pixel, the motion
@@ -56,6 +58,8 @@ public:
 private:
     bool LoadShader(const std::string& name);
     bool EnsureImage(vk::Extent2D size);
+    void LoadTexture(const std::string& shader_path);
+    void FreeTexture();
 
     int slot = 0;
     vk::Device device{};
@@ -79,6 +83,15 @@ private:
     vk::Extent2D image_size{};
     int last = 0;
     bool history_valid = false;
+
+    // the filter's own picture (binding 7): a PNG next to the shader, uploaded on the first frame it is drawn
+    vk::UniqueSampler repeat{};
+    VideoCore::UniqueImage texture;
+    vk::UniqueImageView texture_view;
+    VkBuffer texture_staging{};
+    VmaAllocation texture_allocation{};
+    u32 texture_width = 0, texture_height = 0;
+    bool texture_pending = false;
 };
 
 } // namespace Vulkan::HostPasses

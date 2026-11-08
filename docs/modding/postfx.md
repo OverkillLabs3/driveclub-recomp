@@ -73,8 +73,11 @@ layout(binding = 3) uniform sampler2D gbuffer;       // RGBA8 g-buffer, the alph
 layout(binding = 4) uniform sampler2D params;        // 4 by 1 texels (RGBA32F), see below
 layout(binding = 5) uniform sampler2D scene;         // the HDR picture as it was before the first HDR slot
 layout(binding = 6) uniform sampler2D history;       // what this slot drew the frame before
-layout(push_constant) uniform P { vec2 resolution; float time; float has_depth; vec4 values[4]; float has_history; } p;
+layout(binding = 7) uniform sampler2D lut;           // the filter's own picture: postfx/<name>.png beside the shader
+layout(push_constant) uniform P { vec2 resolution; float time; float has_depth; vec4 values[4]; float has_history; float has_texture; vec2 texture_size; } p;
 ```
+
+`lut` (binding 7) is the PNG that has the name of the shader (`postfx/<name>.png` next to `postfx/<name>.spv`, 8 bit RGB or RGBA, at most 2048 by 2048), sampled linearly and repeating; `has_texture` is 1 when there is one and `texture_size` its size in pixels. Use it for a colour lookup table, noise, a lens dirt picture or a gradient. It is loaded when the shader is, so restart the filter (switch it off and on) after changing the PNG. The example `tools/modkit/examples/lut-grade` grades the finished picture with a 32x32x32 table laid out as 32 squares side by side (1024 x 32); `make_lut.py` in it writes one, and a table exported from a photo editor in that layout works too. Checked in the game: the grade turns blues to a cooler teal in the shadows and warms the highlights, with no banding; with the amount at 0 the picture is unchanged.
 
 `history` (binding 6) is this slot's own output of the frame before, in the same size and format (RGBA16F in the HDR stage), and `has_history` is 1 when it holds one (0 on the first frame, after a resize and after the shader changed; the picture stands in then). It allows effects over time: smoothing, trails, accumulation, and state kept between frames. The alpha channel of the HDR picture is free for such state (the game ignores it), for example `hdr-tonemap` keeps its current exposure in the alpha of every pixel and reads it back from `texelFetch(history, ivec2(0, 0), 0).a`, so its automatic exposure adapts over several frames (parameter 7 is the speed). Checked in the game: on a night start the picture brightens step by step over about a dozen seconds instead of jumping.
 
