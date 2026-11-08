@@ -139,6 +139,8 @@ struct Settings {
   int ps_buttons = 0;      // PS4, PS5
   int online = 0;          // Off, Join a session
   char online_host[64] = "127.0.0.1:8080";
+  char launch_prefix[512] = "";
+  char launch_env[1024] = "";
   int drive_preset = 0;    // Custom, Sim, Assisted, Game defaults
   bool ffb_on = true;      // wheel_ffb in the runtime's input_config/default.ini
   int ffb_model = 0;       // Game, Software, Reworked Physics
@@ -498,6 +500,88 @@ std::string ShellQuote(const std::string& value) {
     else out += c;
   }
   out += "'";
+  return out;
+}
+
+bool SplitShellWords(const std::string& text, std::vector<std::string>& words) {
+  words.clear();
+  std::string word;
+  bool in_word = false;
+  char quote = 0;
+  for (size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (quote == '\'') {
+      if (c == '\'') quote = 0;
+      else word += c;
+    } else if (quote == '"') {
+      if (c == '"') quote = 0;
+      else if (c == '\\' && i + 1 < text.size() && std::strchr("\"\\$`", text[i + 1])) word += text[++i];
+      else word += c;
+    } else if (c == '\'' || c == '"') {
+      quote = c;
+      in_word = true;
+    } else if (c == '\\' && i + 1 < text.size()) {
+      word += text[++i];
+      in_word = true;
+    } else if (std::isspace(static_cast<unsigned char>(c))) {
+      if (in_word) words.push_back(word);
+      word.clear();
+      in_word = false;
+    } else {
+      word += c;
+      in_word = true;
+    }
+  }
+  if (quote) return false;
+  if (in_word) words.push_back(word);
+  return true;
+}
+
+bool IsEnvName(const std::string& name) {
+  if (name.empty() || std::isdigit(static_cast<unsigned char>(name[0]))) return false;
+  return std::all_of(name.begin(), name.end(),
+                     [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+}
+
+std::string FindInPath(const std::string& program) {
+  if (program.find('/') != std::string::npos) return access(program.c_str(), X_OK) == 0 ? program : std::string();
+  const char* path = std::getenv("PATH");
+  std::stringstream dirs(path ? path : "");
+  for (std::string dir; std::getline(dirs, dir, ':');) {
+    const std::string candidate = (dir.empty() ? std::string(".") : dir) + "/" + program;
+    if (access(candidate.c_str(), X_OK) == 0) return candidate;
+  }
+  return {};
+}
+
+struct LaunchOptions {
+  std::vector<std::string> prefix;
+  std::vector<std::pair<std::string, std::string>> env;
+  std::string problem;
+};
+
+LaunchOptions ParseLaunchOptions(const std::string& prefix_text, const std::string& env_text) {
+  LaunchOptions out;
+  if (!SplitShellWords(prefix_text, out.prefix)) {
+    out.prefix.clear();
+    out.problem = "The command prefix has an unclosed quote.";
+  } else if (!out.prefix.empty() && FindInPath(out.prefix.front()).empty()) {
+    out.problem = "\"" + out.prefix.front() + "\" is not in PATH.";
+  }
+  std::vector<std::string> words;
+  if (!SplitShellWords(env_text, words)) {
+    if (out.problem.empty()) out.problem = "The environment variables have an unclosed quote.";
+    return out;
+  }
+  for (const std::string& word : words) {
+    const size_t eq = word.find('=');
+    const std::string name = eq == std::string::npos ? word : word.substr(0, eq);
+    if (eq == std::string::npos || !IsEnvName(name)) {
+      if (out.problem.empty()) out.problem = "\"" + word + "\" is not NAME=value.";
+      continue;
+    }
+    out.env.emplace_back(name, word.substr(eq + 1));
+  }
   return out;
 }
 
@@ -953,6 +1037,10 @@ void LoadSettings() {
   ParseInt(kv, "online", g.online);
   if (kv.count("online_host"))
     std::snprintf(g.online_host, sizeof g.online_host, "%s", kv.at("online_host").c_str());
+  if (kv.count("launch_prefix"))
+    std::snprintf(g.launch_prefix, sizeof g.launch_prefix, "%s", kv.at("launch_prefix").c_str());
+  if (kv.count("launch_env"))
+    std::snprintf(g.launch_env, sizeof g.launch_env, "%s", kv.at("launch_env").c_str());
   ParseInt(kv, "drive_preset", g.drive_preset);
   ParseBool(kv, "ffb_on", g.ffb_on);
   ParseInt(kv, "ffb_model", g.ffb_model);
@@ -1187,6 +1275,9 @@ std::map<std::string, std::string> EnvironmentForLaunch() {
                         "; wide=" + std::to_string(g.wide) + "; aa=" + kAaName[g.aa] +
                         "; upscale=" + kUpscaleName[g.upscale] + "; hdr=" + (g.hdr ? "on" : "off") + ";";
   set("BB_SETTINGS_SUMMARY", summary);
+
+  if (g.launch_prefix[0] != '\0') set("DRIVECLUB_LAUNCH_PREFIX", g.launch_prefix);
+  for (const auto& [key, value] : ParseLaunchOptions(g.launch_prefix, g.launch_env).env) env[key] = value;
   return env;
 }
 
@@ -1200,7 +1291,13 @@ void ApplyEnvironment(const std::map<std::string, std::string>& env) {
       "BB_WHEEL_ASSIST", "BB_RESTART_COMMAND", "BB_SETTINGS_SUMMARY", "BB_UPSCALER", "BB_REFLEX",
       "BB_MOTION_BLUR_REFERENCE", "BB_BUTTON_PROMPTS", "BB_XBOX_BUTTONS", "BB_PLAYSTATION_BUTTONS",
       "BB_ONLINE", "BB_COOP_SERVER", "BB_NP_LOCAL", "BB_PRESENT_THREAD", "BB_NEURAL",
-      "BB_NR_CONFIG"};
+      "BB_NR_CONFIG", "DRIVECLUB_LAUNCH_PREFIX"};
+  static std::set<std::string> applied;
+  for (const std::string& name : applied) {
+    if (!env.count(name)) unsetenv(name.c_str());
+  }
+  applied.clear();
+  for (const auto& entry : env) applied.insert(entry.first);
   for (const char* name : names) {
     if (!env.count(name)) unsetenv(name);
   }
@@ -1350,6 +1447,8 @@ bool SaveSettings() {
       << "unlock_all=" << (g.unlock_all ? 1 : 0) << "\n"
       << "online=" << g.online << "\n"
       << "online_host=" << g.online_host << "\n"
+      << "launch_prefix=" << g.launch_prefix << "\n"
+      << "launch_env=" << g.launch_env << "\n"
       << "autoplay=" << (g.autoplay ? 1 : 0) << "\n"
       << "bench_track=" << g.btrack << "\n"
       << "bench_car=" << g.bcar << "\n"
@@ -1473,7 +1572,7 @@ bool SpawnGame(const std::vector<std::string>& args, const fs::path& cwd, const 
       (void)write(pipefd[1], &code, sizeof code);
       _exit(127);
     }
-    execv(argv[0], argv.data());
+    execvp(argv[0], argv.data());
     const int code = errno;
     (void)write(pipefd[1], &code, sizeof code);
     _exit(127);
@@ -1498,7 +1597,7 @@ pid_t g_bench_pid = -1;
 std::string g_bench_result, g_bench_error;
 
 bool LaunchGame(bool benchmark) {
-  std::vector<std::string> args;
+  std::vector<std::string> args = ParseLaunchOptions(g.launch_prefix, "").prefix;
   args.push_back(g_paths.probe.string());
   args.push_back((g_paths.data / "prep/boot-linked.bin").string());
   args.push_back("--content-profile");
@@ -2589,6 +2688,27 @@ void GamePage() {
     if (ToggleRow("Start the game when this window opens",
                   "Skip this launcher on the next start when both folders are already chosen.",
                   &g.autoplay)) g.dirty = true;
+  }
+  EndCard();
+
+  if (BeginCard("LAUNCH")) {
+    RowLabel("Command prefix",
+             "Programs the game starts through, in order, like the part before %command% in Steam launch "
+             "options, for example gamemoderun prime-run. Quotes work as in a shell.");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    if (ImGui::InputTextWithHint("##launch_prefix", "gamemoderun prime-run", g.launch_prefix,
+                                 sizeof g.launch_prefix)) g.dirty = true;
+    ImGui::Spacing();
+    RowLabel("Environment variables",
+             "NAME=value pairs separated by spaces, added to the game's environment. Quote a value that has "
+             "spaces: NAME=\"a b\".");
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    if (ImGui::InputTextWithHint("##launch_env", "__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1", g.launch_env,
+                                 sizeof g.launch_env)) g.dirty = true;
+    const LaunchOptions launch = ParseLaunchOptions(g.launch_prefix, g.launch_env);
+    ImGui::Spacing();
+    if (!launch.problem.empty()) ImGui::TextColored(kBad, "%s", launch.problem.c_str());
+    else ImGui::TextDisabled("Both apply to Play, Benchmark and the AppImage's --play.");
   }
   EndCard();
 
