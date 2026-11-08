@@ -25,6 +25,7 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/motion_history.h"
+#include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
@@ -547,8 +548,9 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     // clip and stage checks so motion output is not added to incompatible passes.
     // Inspect the ordinary stage variant before selecting motion resources.
     bool motion_possible = false;
+    u32 motion_bound_targets = 0;
     {
-        u32 bound = 0;
+        u32& bound = motion_bound_targets;
         for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
             bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
         }
@@ -589,6 +591,15 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     if (!RefreshGraphicsStages(sel)) {
         return false;
     }
+    // Native fragment ownership is available after the ordinary first pass.
+    // Three-target vehicle parts keep broad producers; other materials retain
+    // the pre-integration five-target/selective path.
+    const auto* motion_ps = sel.infos[static_cast<u32>(Shader::SwStage::Fragment)];
+    const bool vehicle_motion = motion_ps && VehicleMotionScope::VehicleProgram(motion_ps->pgm_hash);
+    static const bool force_all_motion =
+        VehicleMotionScope::ExplicitAll(std::getenv("BB_OBJECT_MOTION_ALL"));
+    motion_possible = VehicleMotionScope::Admission(motion_bound_targets, vehicle_motion,
+                                                  force_all_motion, motion_possible);
     if (motion_possible) {
         const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
         if (vs) {
@@ -627,13 +638,8 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                             sel.motion ? "ON " : "off", sizes.c_str());
             }
         }
-        // Include rigid car parts without a skeleton by default. Setting
-        // BB_OBJECT_MOTION_ALL=0 restores selective motion for visual A/B tests.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return !value || value[0] != '0';
-        }();
-        if (all_motion) {
+        // Positive vehicle ownership admits rigid parts without a bone palette.
+        if (VehicleMotionScope::Broad(vehicle_motion, force_all_motion)) {
             sel.motion = true;
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {

@@ -37,6 +37,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/texture_cache/sampler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
@@ -1424,14 +1425,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
         const VAddr index_address = is_indexed
             ? regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size : 0;
-        // Track rigid car parts as well as skinned draws by default. With
-        // BB_OBJECT_MOTION_ALL=0, gate other draws on changes to their palette or
-        // DriveClub's 416-byte model state before scanning long index lists.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return !value || value[0] != '0';
-        }();
-        bool gated = !all_motion;
+        // Vehicle parts keep broad history. Other draws retain the original
+        // palette-only gate before scanning long index lists.
+        const auto* motion_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const bool vehicle_motion = motion_ps && VehicleMotionScope::VehicleProgram(motion_ps->pgm_hash);
+        static const bool force_all_motion =
+            VehicleMotionScope::ExplicitAll(std::getenv("BB_OBJECT_MOTION_ALL"));
+        bool gated = !VehicleMotionScope::Broad(vehicle_motion, force_all_motion);
         u64 motion_state = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;
@@ -1444,7 +1444,8 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 break;
             }
             const VAddr address = buffer.base_address;
-            if ((role == Motion::BufferRole::SmallSkeleton || size == 416) &&
+            if ((role == Motion::BufferRole::SmallSkeleton ||
+                 VehicleMotionScope::HashModelState(vehicle_motion, size)) &&
                 memory->IsValidGpuMapping(address, 0) &&
                 memory->ClampRangeSize(address, size) == size) {
                 motion_state = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
