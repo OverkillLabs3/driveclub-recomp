@@ -85,11 +85,13 @@ void main() {
 
     float ao = ao_now;
     if (p.has_history > 0.5) {                   // the running value, taken from where this pixel was a frame ago
-        vec2 prev_uv = uv + texture(motion, uv).rg / p.resolution;
+        vec2 mv = texture(motion, uv).rg;
+        vec2 prev_uv = uv + mv / p.resolution;
+        float stable = 1.0 - smoothstep(6.0, 24.0, length(mv));   // fast motion: the old value is not to be trusted
         if (prev_uv.x > 0.0 && prev_uv.y > 0.0 && prev_uv.x < 1.0 && prev_uv.y < 1.0) {
             float pa = texture(history, prev_uv).a;
             // the old value may not stray far from what this frame sees, or a thing that moved leaves a ghost behind
-            if (pa < 0.99) ao = mix(clamp(pa, ao_now - 0.1, ao_now + 0.1), ao_now, clamp(blend, 0.02, 1.0));
+            if (pa < 0.99 && stable > 0.01) ao = mix(clamp(pa, ao_now - 0.1, ao_now + 0.1), ao_now, clamp(mix(1.0, blend, stable), 0.02, 1.0));
         }
     }
     // far away the depth is too coarse for reliable normals and a few metres of radius is a pixel: fade the effect out
