@@ -12,12 +12,13 @@ The choice takes effect on the next game start.
 
 | Performance preset | Default |
 | --- | --- |
-| Custom, Handheld, Low, Medium, High, Ultra | On |
-| PS4 | Off: original sampling |
+| High, Ultra | On |
+| Custom/new profile, Handheld, Low, Medium, PS4 | Off: original sampling |
 
 The saved manual choice is retained until another preset or Reset is selected.
-Existing PS4 profiles without the setting keep it off. Other legacy profiles
-inherit the PC default. `texture_repetition=0/1` is stored in launcher and runtime
+Legacy profiles without the setting inherit the matching performance preset's
+default; unrecognized/custom profiles keep it off. An explicitly saved choice,
+including Custom ON, is preserved. `texture_repetition=0/1` is stored in launcher and runtime
 configuration; `BB_TEXTURE_REPETITION=0/1` overrides it at startup.
 
 ## Material scope
@@ -71,15 +72,24 @@ material provenance cannot identify every authored detail inside an image.
 ## Sampling and cost
 
 The shader retains its original sample. Where the footprint blend is positive,
-it samples four deterministic translated UV phases using the original gradients,
-plus the coarsest mip for approximate variance correction. Matching layers share
+it samples four deterministic translated UV phases using the original gradients
+and normalized positive weights. Paired layers with matching sampler modes share
 phase offsets and weights. No UV rotation or density scaling is introduced.
+The convex blend preserves constant inputs and avoids a brightness correction
+based on a different mip level. Fine-grain contrast can soften at blend transitions.
 
 The blend starts at about 512 screen pixels per repeat and reaches full strength
 at about 32. Close detail retains the original result. When the blend is zero,
-a shader branch skips all five extra reads. Gradients are calculated before that
+a shader branch skips all four extra reads. Gradients are calculated before that
 branch. Positive-blend regions still cost extra texture reads; the narrower
-material scope and zero-blend path have not been timed for a measured FPS gain.
+material scope avoids processing excluded materials.
+
+A local Fraser Valley AI comparison measured 129.98 FPS with the effect off and
+122.11 FPS with it on (about 6% lower). Both used 45 measured seconds after
+15 seconds of warmup, 4K output with DLSS Performance and a 237 FPS cap. These
+were single runs with separate cold caches; release logging cannot establish
+that shader compilation had completely stopped. This is one system's observed
+cost, not a fully warmed or cross-GPU performance guarantee.
 
 The setting is frozen at startup and participates in shader-cache identity after
 configuration loading. Relevant image formats, number formats, mip-chain and
@@ -88,7 +98,7 @@ requested setting does not mutate compiled pipelines; restart is required.
 
 ## Reproducing the registries
 
-Supply the original packages from a legally owned game extraction:
+Supply the original extracted packages:
 
 ```sh
 python tools/generate_world_repeat_registry.py global.rpk vehicleglobal.rpk
@@ -117,11 +127,17 @@ instructions. Generators print package SHA256 hashes and derive ownership again.
   fallback is introduced.
 - Launcher and fresh-process runtime tests cover presets, legacy migration,
   opt-out, save/reload, environment precedence and the startup/restart boundary.
-- Four real-Sirit SPIR-V harness variants pass `spirv-val`; control-flow checks
-  verify that the zero-blend path bypasses the extra reads and preserves alpha.
+- Thirty-two actual-helper Sirit SPIR-V variants pass `spirv-val`, covering two
+  SPIR-V versions, 2D/array inputs, both gradient paths, Repeat/Mirror axes and
+  sequential helper expansions. Checks verify the four conditional gradient
+  reads, normalized weights, original alpha and derivative placement; five
+  deliberately broken variants are rejected. See [the portable test instructions](../tools/repeat_sampling_test.md).
 - Changed C++ integration units compile against existing local dependencies.
+- The user confirmed acceptable sharpness and disappearance of the added regular
+  grid on the tested gravel in a matched local candidate. This does not establish
+  that every eligible material is free of visible blending transitions.
 
-These checks do not establish final visual quality, cross-GPU performance or a
-clean release build. The narrowed scope and interior extension still need live
-visual regression testing, including motion and streaming. No frame-rate gain
-is claimed.
+These checks do not establish universal visual quality, cross-GPU performance or
+a clean release build. Broader motion, streaming and interior-material coverage
+remain unqualified. Mixed Repeat/Mirror pairs retain sampler-dependent phase
+periods and have not been visually qualified. No frame-rate gain is claimed.

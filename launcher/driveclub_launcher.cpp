@@ -1547,8 +1547,8 @@ void BuildModel() {
                             "@unlock", false);
   g_texture_repetition = toggle(L"Reduce texture repetition",
       L"Breaks up repeated detail on compatible terrain, roads, walls and opaque cabin materials, including eligible textured plastic, leather and fabric. Vegetation, glass and stitch patterns are excluded. "
-      L"Uses extra texture samples. Enabled by default for PC presets; PS4 keeps the original sampling. Takes effect on the next game start.",
-      "@texture_repetition", true);
+      L"Uses extra texture samples. Enabled by default for High and Ultra; other presets keep the original sampling. Takes effect on the next game start.",
+      "@texture_repetition", false);
   const int unlock_all = toggle(L"Unlock every car and bike",
                                 L"Every car and bike is free from the start, with no driver or club level needed. It includes the add-on content, so Unlock DLC content is not needed with it. Cars you earn by winning an event stay as the game has them. Off by default.",
                                 "@unlockall", false);
@@ -2051,7 +2051,7 @@ void LoadSettings() {
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@texture_repetition") {
-      c.sel = texture_repetition_saved < 0 ? 1 : texture_repetition_saved;
+      c.sel = texture_repetition_saved < 0 ? 0 : texture_repetition_saved;
       continue;
     }
     if (c.kind == Kind::Toggle && c.patches[0] == "@pedals") {
@@ -2199,11 +2199,12 @@ void LoadSettings() {
       if (line.rfind("fov=", 0) == 0) g_c[g_fov].sel = (std::clamp)(atoi(line.substr(4).c_str()), g_c[g_fov].min, g_c[g_fov].max);
     }
   }
-  // Older PS4 profiles have no setting key. Preserve their original sampling;
-  // other legacy profiles inherit the PC default. Explicit saved opt-outs win.
+  // Legacy profiles without the key inherit their performance preset default.
+  // Explicit saved choices, including Custom opt-ins, always win.
   if (texture_repetition_saved < 0 && g_texture_repetition >= 0) {
     g_c[g_texture_repetition].sel = 0;
-    g_c[g_texture_repetition].sel = IsPs4Profile() ? 0 : 1;
+    DerivePreset();
+    g_c[g_texture_repetition].sel = g_c[g_preset].sel == 4 || g_c[g_preset].sel == 5;
   }
   DerivePreset();
 }
@@ -2267,7 +2268,7 @@ void ApplyPreset(int preset) {
     NameNativeUpscale(); return;
   }
   if (preset < 0 || preset > 5) return;
-  if (g_texture_repetition >= 0) g_c[g_texture_repetition].sel = 1;
+  if (g_texture_repetition >= 0) g_c[g_texture_repetition].sel = preset == 4 || preset == 5;
   if (preset == 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];

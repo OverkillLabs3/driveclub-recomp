@@ -24,8 +24,8 @@ static u32 ShaderBinaryVersion() {
         const char* lds = std::getenv("BB_LDS_BOUNDS");
         const char* wide = std::getenv("BB_WIDE_LOADS");
         const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
-        // 79: restricted repeat-sampling policy and its specialization fields.
-        return (79u << 16) +
+        // 82: four-phase convex repeat sampling without the coarsest-mip mean/gain.
+        return (82u << 16) +
                (BbSettings::Get().startup_texture_repetition ? 1024u : 0u) +
                (nan && std::atoi(nan) != 0 ? 1u : 0u) +
                (undef && std::atoi(undef) != 0 ? 2u : 0u) +

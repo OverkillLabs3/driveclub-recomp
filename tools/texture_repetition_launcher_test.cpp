@@ -11,17 +11,17 @@ int main() {
   g_runtime = g_home + L"\\runtime";
   MakeDirs(g_data + L"\\user");
   BuildModel();
-  assert(g_texture_repetition >= 0 && g_c[g_texture_repetition].def == 1);
+  assert(g_texture_repetition >= 0 && g_c[g_texture_repetition].def == 0);
   LoadSettings();
-  assert(g_c[g_texture_repetition].sel == 1);
+  assert(g_c[g_texture_repetition].sel == 0);
   for (int preset = 0; preset <= 6; ++preset) {
-    g_c[g_texture_repetition].sel = preset == 6 ? 1 : 0;
+    g_c[g_texture_repetition].sel = preset == 4 || preset == 5 ? 0 : 1;
     ApplyPreset(preset);
-    assert(g_c[g_texture_repetition].sel == (preset == 6 ? 0 : 1));
+    assert(g_c[g_texture_repetition].sel == (preset == 4 || preset == 5 ? 1 : 0));
   }
   // An explicit opt-out survives saving in a PC profile, independently of the
   // PS4 default, and goes into both the launcher and the runtime settings files.
-  ApplyPreset(4);
+  ApplyPreset(0);
   for (int enabled : {0, 1, 0}) {
     g_c[g_texture_repetition].sel = enabled;
     if (!SaveSettings()) { const auto error=GetLastError(); std::fprintf(stderr, "SaveSettings: %s (Win32 %lu)\n", Narrow(g_settings_error).c_str(),error); return 2; }
@@ -49,10 +49,10 @@ int main() {
   g_user_env.clear();
   SetEnvironmentVariableW(L"BB_TEXTURE_REPETITION", nullptr);
 
-  // Existing PS4 profiles predate the key. Migrate them without enabling an
-  // enhancement; legacy PC profiles receive the new default.
-  for (int preset : {6, 4}) {
-    ApplyPreset(preset);
+  // Missing keys use only High/Ultra defaults across all legacy presets.
+  for (int preset : {1, 2, 3, 4, 5, 6, 0}) {
+    if (preset == 0) { ResetDefaults(); g_c[g_outres].sel = 3; }
+    else ApplyPreset(preset);
     if (!SaveSettings()) { const auto error=GetLastError(); std::fprintf(stderr, "SaveSettings: %s (Win32 %lu)\n", Narrow(g_settings_error).c_str(),error); return 2; }
     std::string legacy;
     for (const auto& line : ReadLines(IniPath()))
@@ -60,14 +60,14 @@ int main() {
     assert(SaveTextAtomically(IniPath(), legacy));
     g_c[g_texture_repetition].sel = 1;
     LoadSettings();
-    assert(g_c[g_texture_repetition].sel == (preset == 6 ? 0 : 1));
+    assert(g_c[g_texture_repetition].sel == (preset == 4 || preset == 5 ? 1 : 0));
   }
   ApplyPreset(6);
   assert(IsPs4Profile());
   g_c[g_texture_repetition].sel = 1;
   assert(!IsPs4Profile());
   ResetDefaults();
-  assert(g_c[g_texture_repetition].sel == 1);
+  assert(g_c[g_texture_repetition].sel == 0);
   for (const auto& line : ReadLines(SelectionPath()))
     assert(line.find("@texture_repetition") == std::string::npos);
   puts("PASS: PC/PS4 presets, legacy migration, explicit opt-out, save/reload, runtime config, environment precedence, reset; no XML pseudo-patch.");

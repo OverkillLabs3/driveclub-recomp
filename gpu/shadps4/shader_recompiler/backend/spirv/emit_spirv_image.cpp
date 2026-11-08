@@ -163,7 +163,7 @@ static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coo
     const Id image = ctx.OpLoad(tex.image_type, tex.id);
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
     const Id combined = ctx.OpSampledImage(tex.sampled_type, image, sampler);
-    Id blended = ctx.ConstantNull(C), square_sum = f(0);
+    Id blended = ctx.ConstantNull(C);
     for (u32 i = 0; i < 4; ++i) {
         const Id cx = rx ? ctx.OpFAdd(F, component(cell, 0), f(float(i & 1))) : f(0);
         const Id cy = ry ? ctx.OpFAdd(F, component(cell, 1), f(float(i >> 1))) : f(0);
@@ -200,21 +200,8 @@ static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coo
                                                        spv::ImageOperandsMask::Grad, dx, dy);
         const Id weight = ctx.OpFDiv(F, weights[i], sum);
         blended = ctx.OpFAdd(C, blended, ctx.OpVectorTimesScalar(C, sample, weight));
-        square_sum = ctx.OpFAdd(F, square_sum, ctx.OpFMul(F, weight, weight));
     }
-    ctx.AddCapability(spv::Capability::ImageQuery);
-    const Id levels = ctx.OpImageQueryLevels(U, image);
-    const Id lod = ctx.OpConvertUToF(F, ctx.OpISub(U, levels, ctx.ConstU32(1u)));
-    const Id centre = tex.view_type == AmdGpu::ImageType::Color2DArray
-                          ? ctx.OpCompositeConstruct(ctx.F32[3], f(.5f), f(.5f),
-                                                     ctx.OpCompositeExtract(F, coords, 2))
-                          : v(f(.5f), f(.5f));
-    const Id mean =
-        ctx.OpImageSampleExplicitLod(C, combined, centre, spv::ImageOperandsMask::Lod, lod);
-    const Id altered = ctx.OpFAdd(
-        C, mean,
-        ctx.OpVectorTimesScalar(C, ctx.OpFSub(C, blended, mean), ctx.OpInverseSqrt(F, square_sum)));
-    Id result = ctx.OpFMix(C, original, altered, splat(amount));
+    Id result = ctx.OpFMix(C, original, blended, splat(amount));
     // Never alter opacity/cutout semantics through the generic colour hook.
     result = ctx.OpCompositeInsert(C, ctx.OpCompositeExtract(F, original, 3), result, 3);
     ctx.OpBranch(merge);

@@ -188,8 +188,8 @@ struct Values {
     int startup_output_res = OutputDefault;
     int startup_live_resolution = 0;
     /// World-layer sampling is compiled at startup; changes take effect after restart.
-    std::atomic<bool> texture_repetition{true};
-    bool startup_texture_repetition = true;
+    std::atomic<bool> texture_repetition{false};
+    bool startup_texture_repetition = false;
 };
 
 Values& Get();
