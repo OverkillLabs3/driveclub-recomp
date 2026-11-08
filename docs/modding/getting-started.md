@@ -1,8 +1,10 @@
 # Getting started
 
-## Build the kit
+## Get the kit
 
-The kit is one C++17 program with no dependencies. On Windows use the MSYS2 CLANG64 shell described in [BUILDING.md](../../BUILDING.md); on Linux any C++17 compiler works.
+In the download, `dcmod.exe` is next to `DriveClub.exe` and the `modkit` folder holds these pages, the examples (`modkit/examples`), the mod schema and the Blender add-on. Open a terminal in the game folder and run `dcmod` without arguments for the list of commands.
+
+To build it yourself (for example from a checkout, or on Linux) the kit is one C++17 program with no dependencies. On Windows use the MSYS2 CLANG64 shell described in [BUILDING.md](../../BUILDING.md); on Linux any C++17 compiler works.
 
 ```bash
 bash tools/modkit/build.sh        # writes out/dcmod.exe (out/dcmod on Linux)
