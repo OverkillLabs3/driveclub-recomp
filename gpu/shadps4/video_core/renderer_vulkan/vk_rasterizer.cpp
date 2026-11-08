@@ -59,6 +59,27 @@ float g_camera[45];
 std::atomic<long long> g_camera_wanted{0};   ///< when a script last asked for the camera
 std::mutex g_camera_mutex;
 long long g_camera_stamp = 0;
+std::atomic<float> g_sun_scale[3] = {1.0f, 1.0f, 1.0f};   ///< a mod's multiplier of the sun's colour (1: the game's own)
+bool SunScaleActive() {
+    return g_sun_scale[0] != 1.0f || g_sun_scale[1] != 1.0f || g_sun_scale[2] != 1.0f;
+}
+// The lighting constants (1936 bytes, recognised like in NoteTaaBuffer): the sun's radiance at dwords 24..26 and its
+// plain colour at 28..30 are multiplied by what a mod asked for. Works on this draw's own copy only.
+void ApplySunScale(void* data, u64 size) {
+    if (size != 1936 || !SunScaleActive()) {
+        return;
+    }
+    auto* c = static_cast<float*>(data);
+    const float len = std::sqrt(c[20] * c[20] + c[21] * c[21] + c[22] * c[22]);
+    if (c[60] != 9999.5f || std::fabs(len - 1.0f) > 0.02f) {
+        return;
+    }
+    for (int i = 0; i < 3; ++i) {
+        const float k = g_sun_scale[i];
+        c[24 + i] *= k;
+        c[28 + i] *= k;
+    }
+}
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
 // vectors from them.
 void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
@@ -132,6 +153,12 @@ bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
     return true;
 }
 } // namespace
+
+extern "C" void bbgpu_sun_scale(float r, float g, float b) {
+    g_sun_scale[0] = r;
+    g_sun_scale[1] = g;
+    g_sun_scale[2] = b;
+}
 
 // The camera of the last frame (view block rows, the transposed block rows, position, then the sun: 16 floats from the direction, then the projection scales): 45 floats. 0 when none for a second.
 extern "C" int bbgpu_camera(float* out) {
@@ -687,7 +714,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         // frame on the draw recording thread with DLAA/DLSS/FSR or frame generation on (the camera check runs then).
         const bool host_read =
             constant_ring->HasHostCopy() &&
-            (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+            (motion_blur || (size == 1936 && SunScaleActive()) || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
              (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
         u8* write = host_read ? constant_ring->HostCopy(*offset) : dst;
         if (source) {
@@ -697,6 +724,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         }
         // Patch only this draw's shadow, before publishing it to the recording thread.
         if (motion_blur) CorrectMotionBlur(stage, write, size);
+        ApplySunScale(write, size);
         if (host_read) {
             std::memcpy(dst, write, size);
         }

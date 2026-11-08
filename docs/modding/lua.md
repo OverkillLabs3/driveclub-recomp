@@ -144,6 +144,16 @@ dcmod.every(0.05, function()
 end)
 ```
 
+### Lighting: `dcmod.set_sun_colour(r, g, b)`
+
+Multiplies the colour of the sun that the game lights the scene with: `1, 1, 1` is the game's own, `0, 0, 0` puts the sun out, `2, 2, 2` doubles it. It acts on the lighting itself (the lit surfaces, the specular highlights and the shadows' contrast), not on the finished picture, so it can turn noon into a blue moonlit scene or a red sunset. The value stays until a script changes it. Needs the runtime of this release or later.
+
+```lua
+dcmod.on_ready(function()
+  dcmod.after(3, function() dcmod.set_sun_colour(0.15, 0.35, 1.6) end)   -- moonlight at noon
+end)
+```
+
 ### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
 
 `dcmod.time()` returns the hour of the day of the scene (0 to 24, for example 18.5 is 18:30) and the speed of the clock (`hour, compression`), or `nil` when no race is loaded. `dcmod.set_time(hour)` moves the clock to that hour; the sky, the lights and the shadows follow, and the clock keeps running from there. Values are kept to a thousandth of an hour.

@@ -122,6 +122,12 @@ function dcmod.sun()
   end
   return sun
 end
+-- dcmod.set_sun_colour(r, g, b): multiplies the sun's colour the game lights the scene with (1, 1, 1 is the game's own; 0 puts the
+-- sun out, 2 doubles it). Needs a frame with the sun's lighting drawn; call it again with 1, 1, 1 to undo.
+function dcmod.set_sun_colour(r, g, b)
+  local function milli(v) return math.max(0, math.min(100000, math.floor((v or 1) * 1000 + 0.5))) end
+  loadfile(string.format("dcmod/light/sun/%d/%d/%d", milli(r), milli(g), milli(b)))
+end
 function dcmod.set_time(hour)
   loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
 end

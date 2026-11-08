@@ -120,6 +120,11 @@ function dcmod.camera() end
 ---The sun of the last frame, or nil.
 ---@return dcmod.Sun|nil
 function dcmod.sun() end
+---Multiplies the colour of the sun the game lights the scene with (1, 1, 1 is the game's own).
+---@param r number
+---@param g number
+---@param b number
+function dcmod.set_sun_colour(r, g, b) end
 ---The hour of the day of the scene (0 to 24) and the speed of the clock, or nil when no race is loaded.
 ---@return number|nil hour
 ---@return number|nil compression

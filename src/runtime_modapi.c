@@ -43,6 +43,7 @@ void bbgpu_postfx_use(int slot, const char *name);
 void bbgpu_postfx_param(int slot, int index, float value);
 void bbgpu_postfx_scale(int slot, float value);
 int bbgpu_camera(float *out);
+void bbgpu_sun_scale(float r, float g, float b);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -348,6 +349,11 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
         } else if (sscanf(rest, "param/%d/n%ld", &index, &thousandths) == 2) {
             bbgpu_postfx_param(slot, index, -(float)thousandths / 1000.0f);
         }
+        return 1;
+    }
+    if (!strncasecmp(call, "light/", 6)) {   /* light/sun/<r>/<g>/<b>: multipliers of the sun's colour in thousandths (1000 = the game's own) */
+        long r, g, b;
+        if (sscanf(call + 6, "sun/%ld/%ld/%ld", &r, &g, &b) == 3) bbgpu_sun_scale(r / 1000.0f, g / 1000.0f, b / 1000.0f);
         return 1;
     }
     if (!strncasecmp(call, "log/", 4)) {
