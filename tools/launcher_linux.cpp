@@ -154,6 +154,8 @@ struct Settings {
   bool dlc_unlock = false; // serve the add-on lists without DLC ownership
   bool unlock_all = false; // ... and every car and bike free of driver and club level
   bool autoplay = false;
+  bool triggers = false;
+  bool telemetry = false;
   int btrack = 0, bcar = 5, bmode = 0, btod = 1, bweather = 0, brain = 0, blen = 1;
   std::map<std::string, bool> extras;  // patches not managed by the rows above
   bool dirty = false;
@@ -971,6 +973,8 @@ void LoadSettings() {
   ParseBool(kv, "dlc_unlock", g.dlc_unlock);
   ParseBool(kv, "unlock_all", g.unlock_all);
   ParseBool(kv, "autoplay", g.autoplay);
+  ParseBool(kv, "triggers", g.triggers);
+  ParseBool(kv, "telemetry", g.telemetry);
   ParseInt(kv, "bench_track", g.btrack);
   ParseInt(kv, "bench_car", g.bcar);
   ParseInt(kv, "bench_mode", g.bmode);
@@ -1163,6 +1167,11 @@ std::map<std::string, std::string> EnvironmentForLaunch() {
   if (g.aa == 1)
     set("BB_UPSCALER", g.fsr_ver == 0 ? "fsr3" : g.fsr_ver == 1 ? "fsr4" : "fsr_amd");
   if (g.reflex > 0) set("BB_REFLEX", g.reflex == 1 ? "on" : "boost");
+  if (g.triggers) {
+    set("BB_ADAPTIVE_TRIGGERS", "1");
+    set("BB_IMPULSE_TRIGGERS", "1");
+  }
+  if (g.telemetry) set("BB_TELEMETRY", "1");
   if (g.blur_ref == 1) set("BB_MOTION_BLUR_REFERENCE", "30");
   if (g.prompts > 0)
     set("BB_BUTTON_PROMPTS", g.prompts == 1 ? "playstation" : g.prompts == 2 ? "xbox" : "keyboard");
@@ -1200,7 +1209,7 @@ void ApplyEnvironment(const std::map<std::string, std::string>& env) {
       "BB_WHEEL_ASSIST", "BB_RESTART_COMMAND", "BB_SETTINGS_SUMMARY", "BB_UPSCALER", "BB_REFLEX",
       "BB_MOTION_BLUR_REFERENCE", "BB_BUTTON_PROMPTS", "BB_XBOX_BUTTONS", "BB_PLAYSTATION_BUTTONS",
       "BB_ONLINE", "BB_COOP_SERVER", "BB_NP_LOCAL", "BB_PRESENT_THREAD", "BB_NEURAL",
-      "BB_NR_CONFIG"};
+      "BB_NR_CONFIG", "BB_ADAPTIVE_TRIGGERS", "BB_IMPULSE_TRIGGERS", "BB_TELEMETRY"};
   for (const char* name : names) {
     if (!env.count(name)) unsetenv(name);
   }
@@ -1351,6 +1360,8 @@ bool SaveSettings() {
       << "online=" << g.online << "\n"
       << "online_host=" << g.online_host << "\n"
       << "autoplay=" << (g.autoplay ? 1 : 0) << "\n"
+      << "triggers=" << (g.triggers ? 1 : 0) << "\n"
+      << "telemetry=" << (g.telemetry ? 1 : 0) << "\n"
       << "bench_track=" << g.btrack << "\n"
       << "bench_car=" << g.bcar << "\n"
       << "bench_mode=" << g.bmode << "\n"
@@ -2934,6 +2945,22 @@ void DrivingPage() {
     if (g.prompts == 3) {
       ImGui::TextDisabled("Keyboard prompts are for players without a controller; driving still needs a pad or wheel.");
     }
+  }
+  EndCard();
+
+  if (BeginCard("CONTROLLER")) {
+    if (ToggleRow("DualSense and Xbox impulse triggers",
+                  "On a DualSense connected over USB, the haptic actuators play the engine, road and kerbs, tyre "
+                  "scrub, gear changes and the rev limiter, and the triggers push back on gear changes and vibrate "
+                  "when a wheel locks or spins. The haptics need the controller's sound device in the Pro Audio "
+                  "profile with its four channels named FL, FR, RL and RR. On an Xbox One or Series controller, the "
+                  "impulse triggers vibrate on wheel slip, ABS lockup and gear changes.",
+                  &g.triggers)) g.dirty = true;
+    if (ToggleRow("Telemetry output (UDP)",
+                  "Sends the car's data (speed, engine speed, gear, G-forces, tyre slip, load, pedals and steering) "
+                  "as UDP packets in the Forza Motorsport 7 Dash format to 127.0.0.1 port 5300, for SimHub, SimTools "
+                  "and Buttkicker software.",
+                  &g.telemetry)) g.dirty = true;
   }
   EndCard();
 
