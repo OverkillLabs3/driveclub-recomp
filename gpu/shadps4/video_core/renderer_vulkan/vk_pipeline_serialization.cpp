@@ -11,30 +11,36 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
 namespace Serialization {
-/* You should increment versions below once corresponding serialization scheme is changed. */
-static const u32 ShaderBinaryVersion = [] {
-    // The switches that change the translated shaders are part of the version, so cached shaders never mix.
-    const char* nan = std::getenv("BB_NAN_MINMAX");
-    const char* undef = std::getenv("BB_UNDEF_ZERO");
-    const char* lds = std::getenv("BB_LDS_BOUNDS");
-    const char* wide = std::getenv("BB_WIDE_LOADS");
-    const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
-    // Content-addressed metadata and immutable pipeline references.
-    return (78u << 16) + (nan && std::atoi(nan) != 0 ? 1u : 0u) + (undef && std::atoi(undef) != 0 ? 2u : 0u) +
-           (motion_log && motion_log[0] == '1' ? 4u : 0u) +
-           (lds && lds[0] == '0' ? 8u : 0u) + (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
-           (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u); // WideLoads: on unless =0
-}();
-/// bbport: the whole version names the cache folder (cache_storage.cpp): each switch combination and each version
-/// base keeps its own, so an A/B of a switch, or two builds of different bases, never clear each other's shaders.
-u32 ShaderCacheVersion() {
-    return ShaderBinaryVersion;
+/* Increment these versions when the translator or serialized layout changes. */
+static u32 ShaderBinaryVersion() {
+    // Read the saved startup setting only after BbSettings::Load.
+    static const u32 version = [] {
+        const char* nan = std::getenv("BB_NAN_MINMAX");
+        const char* undef = std::getenv("BB_UNDEF_ZERO");
+        const char* lds = std::getenv("BB_LDS_BOUNDS");
+        const char* wide = std::getenv("BB_WIDE_LOADS");
+        const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
+        // 82: four-phase convex repeat sampling without the coarsest-mip mean/gain.
+        return (82u << 16) +
+               (BbSettings::Get().startup_texture_repetition ? 1024u : 0u) +
+               (nan && std::atoi(nan) != 0 ? 1u : 0u) +
+               (undef && std::atoi(undef) != 0 ? 2u : 0u) +
+               (motion_log && motion_log[0] == '1' ? 4u : 0u) +
+               (lds && lds[0] == '0' ? 8u : 0u) +
+               (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
+               (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u);
+    }();
+    return version;
 }
-static constexpr u32 ShaderMetaVersion = 9u; // Content-addressed shader binary and metadata
-static constexpr u32 PipelineKeyVersion = 8u; // Immutable shader metadata references
+// Each translator generation and switch combination keeps its own cache.
+u32 ShaderCacheVersion() { return ShaderBinaryVersion(); }
+static constexpr u32 ShaderMetaVersion = 10u;
+static constexpr u32 PipelineKeyVersion = 9u;
+
 } // namespace Serialization
 
 namespace Vulkan {
@@ -84,7 +90,7 @@ u64 RegisterShaderMeta(const Shader::Info& info,
     Serialization::Writer meta{ar};
 
     meta.Write(Serialization::ShaderMetaVersion);
-    meta.Write(Serialization::ShaderBinaryVersion);
+    meta.Write(Serialization::ShaderBinaryVersion());
 
     meta.Write(binary_hash);
 
@@ -119,7 +125,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     u32 binary_version{};
     meta.Read(binary_version);
-    if (binary_version != Serialization::ShaderBinaryVersion) {
+    if (binary_version != Serialization::ShaderBinaryVersion()) {
         return false;
     }
 
