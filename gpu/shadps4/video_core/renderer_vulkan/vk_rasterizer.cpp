@@ -51,6 +51,9 @@ namespace Vulkan {
 namespace {
 DriveMotion* g_drive_motion = nullptr;
 bool g_taa_noted = false; ///< BindBuffers noted the anti-aliasing camera last time (its threads, one at a time)
+float g_camera[27];
+std::mutex g_camera_mutex;
+long long g_camera_stamp = 0;
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
 // vectors from them.
 void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
@@ -74,6 +77,13 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
         }
     } else {
         return;
+    }
+    if (slot == 1) {   // the camera for mod scripts: the two 3x3 blocks at dwords 16 and 32 and the position at 108
+        std::scoped_lock lock{g_camera_mutex};
+        std::memcpy(g_camera, f.data() + 16, 12 * sizeof(float));
+        std::memcpy(g_camera + 12, f.data() + 32, 12 * sizeof(float));
+        std::memcpy(g_camera + 24, f.data() + 108, 3 * sizeof(float));
+        g_camera_stamp = std::chrono::steady_clock::now().time_since_epoch().count();
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
@@ -104,6 +114,15 @@ bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
     return true;
 }
 } // namespace
+
+// The camera of the last frame (view block rows, the transposed block rows, position): 27 floats. 0 when none for a second.
+extern "C" int bbgpu_camera(float* out) {
+    std::scoped_lock lock{g_camera_mutex};
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    if (!g_camera_stamp || now - g_camera_stamp > 1000000000LL) return 0;
+    std::memcpy(out, g_camera, sizeof g_camera);
+    return 27;
+}
 
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {

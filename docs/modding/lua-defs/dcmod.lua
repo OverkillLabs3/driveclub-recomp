@@ -103,6 +103,16 @@ function dcmod.setting(mod, name, fallback) end
 ---The live state of the car the player drives, or nil when no car is driven.
 ---@return dcmod.Car|nil
 function dcmod.car() end
+---@class dcmod.Camera
+---@field x number
+---@field y number
+---@field z number
+---@field right number[] unit vector, x y z
+---@field up number[] unit vector, x y z
+---@field forward number[] unit vector, x y z
+---The game camera of the last frame (world metres, y up), or nil when no frame was drawn for a second.
+---@return dcmod.Camera|nil
+function dcmod.camera() end
 ---The hour of the day of the scene (0 to 24) and the speed of the clock, or nil when no race is loaded.
 ---@return number|nil hour
 ---@return number|nil compression

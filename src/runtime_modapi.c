@@ -42,6 +42,7 @@ void bbgpu_overlay_mod_item(const char *id, int kind, float x, float y, float w,
 void bbgpu_postfx_use(int slot, const char *name);
 void bbgpu_postfx_param(int slot, int index, float value);
 void bbgpu_postfx_scale(int slot, float value);
+int bbgpu_camera(float *out);
 
 #define MOD_PREFIX "/app0/dcmod/"
 #define MAX_LINES 20000
@@ -245,18 +246,24 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
     if (!guest || strncasecmp(guest, MOD_PREFIX, sizeof(MOD_PREFIX) - 1)) return 0;
     const char *call = guest + sizeof(MOD_PREFIX) - 1;
     const int is_car = !strcasecmp(call, "state/car.lua.bin"), is_env = !strcasecmp(call, "state/env.lua.bin");
-    const int is_input = !strcasecmp(call, "state/input.lua.bin");
-    if (is_car || is_env || is_input) {
+    const int is_input = !strcasecmp(call, "state/input.lua.bin"), is_cam = !strcasecmp(call, "state/camera.lua.bin");
+    if (is_car || is_env || is_input || is_cam) {
         /* car: values 1 layout version, 2 car found (1/0), 3 speed m/s, 4 rpm, 5 maximum rpm, 6 rev limiter rpm, 7 gear (-1
          * reverse, 0 neutral), 8 throttle 0..1, 9 brake 0..1, 10 steering -1..1, then four wheels (right front, left front,
          * right rear, left rear) of five numbers: load N, lateral force N, longitudinal force N, slip ratio, slip angle
          * env: values 1 layout version, 2 clock running (1/0), 3 hour of the day 0..24, 4 the game's time compression */
         double values[48];
-        int n = is_car ? runtime_mod_car_state(values + 2, 46) : is_input ? input_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);
+        float cam[27];
+        int n;
+        if (is_cam) {   /* camera: 27 numbers, the view block rows (9 of 12), the transposed block (9 of 12), the position */
+            n = bbgpu_camera(cam) ? 27 : 0;
+            for (int i = 0; i < n; ++i) values[2 + i] = cam[i];
+        } else
+        n = is_car ? runtime_mod_car_state(values + 2, 46) : is_input ? input_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);
         values[0] = 1;
         values[1] = n > 0;
         if (n < 0) n = 0;
-        const char *file_name = is_car ? "/dcmod_state_car.luac" : is_input ? "/dcmod_state_input.luac" : "/dcmod_state_env.luac";
+        const char *file_name = is_cam ? "/dcmod_state_cam.luac" : is_car ? "/dcmod_state_car.luac" : is_input ? "/dcmod_state_input.luac" : "/dcmod_state_env.luac";
         const char *user = runtime_file_user_dir();
         uint8_t chunk[1024];
         const size_t length = numbers_chunk(chunk, sizeof(chunk), values, n + 2);

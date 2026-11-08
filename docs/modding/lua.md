@@ -124,6 +124,15 @@ nPictures: a 256 by 256 RGBA PNG with a transparent corner area drew with its tr
 
 Each call is a path the runtime recognises (`dcmod/ui/...`, `src/runtime_modapi.c`), like `dcmod.log`. The game lower-cases paths, so the library sends a capital letter as `^` and the letter, and any other character outside letters, digits and ` .:=_,-()[]` as `~` and two hex digits, and the runtime turns them back.
 
+### The camera: `dcmod.camera()`
+
+Returns the camera of the last frame as `{ x, y, z, right = {x, y, z}, up = {x, y, z}, forward = {x, y, z} }`: the position in world metres (y is up) and three unit vectors. It is `nil` when no frame has been drawn for a second (menus, loading). The values come from the game's anti-aliasing pass, so they are those of the picture you see, with the camera shake and field of view of the chosen camera.
+
+```lua
+local c = dcmod.camera()
+if c then dcmod.log(string.format("camera at %.1f %.1f %.1f", c.x, c.y, c.z)) end
+```
+
 ### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
 
 `dcmod.time()` returns the hour of the day of the scene (0 to 24, for example 18.5 is 18:30) and the speed of the clock (`hour, compression`), or `nil` when no race is loaded. `dcmod.set_time(hour)` moves the clock to that hour; the sky, the lights and the shadows follow, and the clock keeps running from there. Values are kept to a thousandth of an hour.
