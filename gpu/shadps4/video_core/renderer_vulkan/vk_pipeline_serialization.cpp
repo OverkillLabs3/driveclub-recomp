@@ -25,7 +25,8 @@ static u32 ShaderBinaryVersion() {
         const char* wide = std::getenv("BB_WIDE_LOADS");
         const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
         // 82: four-phase convex repeat sampling without the coarsest-mip mean/gain.
-        return (82u << 16) +
+        // 83: vehicle motion vectors for DLSS (the motion shaders changed).
+        return (83u << 16) +
                (BbSettings::Get().startup_texture_repetition ? 1024u : 0u) +
                (nan && std::atoi(nan) != 0 ? 1u : 0u) +
                (undef && std::atoi(undef) != 0 ? 2u : 0u) +
