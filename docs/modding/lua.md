@@ -154,7 +154,7 @@ dcmod.on_ready(function()
 end)
 ```
 
-For experiments, `dcmod.light_poke(slot, dword, mul, add)` changes one number of the 1936 byte lighting block to `value * mul + add` (slots 1 to 16, `dcmod.light_poke(slot)` removes a change). Known so far: numbers 20 to 22 are the direction of the sun (towards it), 28 to 30 the colour the scene is lit with (setting them to 0 puts the sun out: checked in the game). Zeroing 32 to 34, 156 to 171, 0, 4, 8, 12 and 128 to 139 changed nothing visible by day.
+For experiments, `dcmod.light_poke(slot, dword, mul, add)` changes one number of the 1936 byte lighting block to `value * mul + add` (slots 1 to 16, `dcmod.light_poke(slot)` removes a change). Known so far: numbers 20 to 22 are the direction of the sun (towards it), 28 to 30 the colour the scene is lit with (setting them to 0 puts the sun out: checked in the game). Zeroing 32 to 34, 156 to 171, 0, 4, 8, 12 and 128 to 139 changed nothing visible by day. The 1008 byte block that most scene shaders read (the camera's position is at number 248; numbers 84 to 90 are 25 by day and 0.02 at night, 108 to 115 are bright at dawn and 0 at dusk) was changed on thousands of draws a frame too, and zeroing 84 to 90 or adding 80 to 108 to 110 showed nothing by day, so the sky, ambient light and fog are not in these constants (they come from textures and the sky shader, which a mod changes with `dcmod tex` and `dcmod shader`). That block is not reachable from `light_poke`.
 
 ### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
 
