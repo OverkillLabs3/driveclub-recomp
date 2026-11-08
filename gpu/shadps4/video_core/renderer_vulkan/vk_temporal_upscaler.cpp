@@ -333,6 +333,8 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     BbSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
     BbSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
+    // The jitter is taken out only by an upscale that runs: whether one did last frame.
+    const bool resolving = dispatched_last_frame;
     if (changed || !dispatched_last_frame) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
@@ -352,8 +354,13 @@ bool TemporalUpscaler::OnFrameStart() {
     snapshot_taken = false;
     opaque_valid = false;
     mask_ready = false;
-    // Halton(2, 3); the menu or toggle 1 << 25 disables it.
-    if (!jitter_on) {
+    // Halton(2, 3); the menu or toggle 1 << 25 disables it. None while no upscale runs: the
+    // launcher names an FSR version (BB_UPSCALER, for DriveAA) whatever is chosen, which makes
+    // this upscaler active, but its trigger (trigger_hash) may never come. The scene would then
+    // be shifted by up to half a pixel every frame with nothing to undo it: a shaking picture,
+    // crawling edges, mirrors and distant detail. The first frames of a working upscale go
+    // unjittered.
+    if (!jitter_on || !resolving) {
         jitter = {};
         return changed;
     }

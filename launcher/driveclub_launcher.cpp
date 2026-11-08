@@ -407,6 +407,7 @@ int g_vr_scale_row = -1;        // "Headset picture scale" with Auto: percent pe
 int g_vr_scale = 100;           // launcher.ini vr_scale=
 int g_vr_glow_row = -1;         // "Glow in VR": percent of the game's glow (BB_VR_GLOW)
 int g_vr_glow = 100;            // launcher.ini vr_glow=
+int g_texture_repetition = -1;
 std::wstring g_online_host;       // address of the host to join, from "online_host=" in launcher.ini
 std::wstring UiInstalledVersion();  // version.txt next to the launcher (launcher_wpf_bridge.inc)
 std::wstring PlayTimeText();  // data\user\playtime.txt as "12 h 30 min"
@@ -424,6 +425,7 @@ int g_fsrver = -1, fsrver_saved = 0;  // "FSR version" row (BB_UPSCALER fsr3 / f
 int g_fgpace = -1, fgpace_saved = 0;  // "Frame generation pacing" row (BB_FG_PACING=gpu); launcher.ini fgpace=
 int g_reflex = -1, reflex_saved = 0;  // "NVIDIA Reflex" row (BB_REFLEX); launcher.ini reflex=
 int g_inres = -1, g_wide = -1, g_aspect = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
+
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
 enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
               kGfxHaze, kGfxFxaa, kGfxRows };
@@ -431,6 +433,9 @@ int g_gfx[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 int g_motion_blur = -1;
 int g_prompts = -1, g_xbox_buttons = -1, g_ps_buttons = -1;
 int prompts_saved = 0, xbox_buttons_saved = 0, ps_buttons_saved = 0;
+int g_timelapse_row = -1, g_timelapse_rate_row = -1;
+bool g_timelapse = false;
+int g_timelapse_rate = 500;
 int g_camera_patch_row = -1;
 bool g_camera_patch = true;
 bool g_camera_patch_saved = false;
@@ -573,11 +578,16 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
   for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER", L"BB_FRAME_GEN_AUTO",
-                             L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST", L"BB_VR_STEREO"}) {
+                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST", L"BB_VR_STEREO"}) {
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
 }
 bool UserEnv(const wchar_t* name) { return std::find(g_user_env.begin(), g_user_env.end(), name) != g_user_env.end(); }
+void SetTextureRepetitionEnvironment() {
+  if (!UserEnv(L"BB_TEXTURE_REPETITION"))
+    SetEnvironmentVariableW(L"BB_TEXTURE_REPETITION", g_c[g_texture_repetition].sel ? L"1" : L"0");
+}
+
 
 // ------------------------------------------------------------------------------------------
 // steering wheel: the force feedback lines of data\user\input_config\default.ini (wheel_ffb_*, read by the game's
@@ -1419,6 +1429,18 @@ void BuildModel() {
       L"\x2022 On by itself for 60 FPS and the unlocked modes, off at 30 FPS.\n"
       L"Tip: turn it off if the camera looks wrong.",
       "@camera_patch", true);
+  g_timelapse_row = toggle(L"Timelapse",
+      L"Fast-forward or rewind the environment: time of day, sky, clouds, weather, lightning, scene animation and wind.\n"
+      L"Hold +/= or Numpad + to advance; hold - or Numpad - to rewind recorded history. Release for normal speed.\n"
+      L"Shift: x2 speed. Ctrl: x0.5 speed. Both modifiers cancel each other.\n"
+      L"Vehicle physics stays at normal speed; weather can affect grip. Reverse is limited to retained history; particles hold and audio is not rewound.",
+      "@timelapse", false);
+  {
+    Ctl c{L"Timelapse speed", L"Base environment playback speed while holding + or -.\nDefault: 500x. Shift: x2; Ctrl: x0.5.",
+          Kind::Slider, {}, {"@timelapse_rate"}, 500, 500};
+    c.min = 1; c.max = 3600; c.unit = L"x";
+    g_timelapse_rate_row = int(g_c.size()); g_c.push_back(std::move(c));
+  }
   const int blur = g_blur_patch = toggle(L"Disable motion blur and depth of field",
                           L"Turns off the game's motion blur and depth of field.\n"
                           L"\x2022 Both go together: they share one shader.\n"
@@ -1718,6 +1740,10 @@ void BuildModel() {
                             L"\x2022 Cars you earn by playing still unlock as you progress.\n"
                             L"\x2022 Built from your own game files; your game folders are not changed.",
                             "@unlock", false);
+  g_texture_repetition = toggle(L"Reduce texture repetition",
+      L"Breaks up repeated detail on compatible terrain, roads, walls and opaque cabin materials, including eligible textured plastic, leather and fabric. Vegetation, glass and stitch patterns are excluded. "
+      L"Uses extra texture samples. Enabled by default for High and Ultra; other presets keep the original sampling. Takes effect on the next game start.",
+      "@texture_repetition", false);
   const int unlock_all = toggle(L"Unlock every car and bike",
                                 L"Every car and bike is free from the start, with no driver or club level needed. It includes the add-on content, so Unlock DLC content is not needed with it. Cars you earn by winning an event stay as the game has them. Off by default.",
                                 "@unlockall", false);
@@ -1727,8 +1753,8 @@ void BuildModel() {
   g_telemetry = toggle(L"Telemetry output (UDP)",
                        L"Sends the car's data (speed, G-forces, tyre slip, load, pedals, steering) as UDP packets in the Forza Motorsport 7 Dash format to 127.0.0.1 port 5300, for SimHub, SimTools and Buttkicker software: set their game to Forza Motorsport 7 and port 5300. The engine speed and gear are not available yet, so those read 0. Off by default.",
                        "@telemetry", false);
-  g_triggers = toggle(L"DualSense haptics and triggers",
-                      L"On a PlayStation 5 controller (DualSense) connected with the USB cable: the controller's haptic actuators play the engine, road and kerbs, tyre scrub, gear changes and the rev limiter, and the triggers push back on gear changes and vibrate when a wheel locks or spins. Over Bluetooth only the triggers work. Off by default.",
+  g_triggers = toggle(L"DualSense and Xbox impulse triggers",
+                      L"On a PlayStation 5 controller (DualSense) connected with the USB cable: the controller's haptic actuators play the engine, road and kerbs, tyre scrub, gear changes and the rev limiter, and the triggers push back on gear changes and vibrate when a wheel locks or spins. On an Xbox One or Series controller: impulse triggers vibrate on wheel slip, ABS lockup, and gear shifts. Off by default.",
                       "@triggers", false);
   g_profile_row = seg(L"Save profile",
                       L"Four separate careers on one install, for different players. Picking another profile swaps your saves in when you press Play or Save. "
@@ -1740,6 +1766,7 @@ void BuildModel() {
   g_save_restore_row = int(g_c.size());
   g_c.push_back(Ctl{L"Restore saves", L"Puts back this profile's newest backup. The current saves are backed up first.",
                     Kind::Button, {L"Restore the latest backup"}, {"@saverestore"}, 0, 0});
+
   // Graphics detail the PS4 version keeps low and the game's camera effects, from the game's own quality file
   // (graphics.cpp).
   g_gfx[kGfxCar] = toggle(L"Your car: full detail",
@@ -1983,7 +2010,7 @@ void BuildModel() {
                      L"bigger steps; the keypad works too). [ / ] the picture darker / brighter. F12 the FPS on the "
                      L"monitor."});
   g_cards.push_back({L"SCENE DETAIL", {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery],
-                                      g_gfx[kGfxShadows], g_gfx[kGfxParticles]}, 0, kTabDetail});
+                                      g_gfx[kGfxShadows], g_gfx[kGfxParticles], g_texture_repetition}, 0, kTabDetail});
   g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
   g_cards.push_back({L"CAMERA EFFECTS", {g_gfx[kGfxBlur], g_motion_blur, g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail});
   g_cards.push_back({L"NEURAL RENDERING", {g_neural, g_nr_sub[0], g_nr_sub[1], g_nr_sub[2], g_nr_sub[3], g_nr_sub[4]}, 0, kTabDetail,
@@ -2013,6 +2040,7 @@ void BuildModel() {
   g_cards.back().sub = kSubAssists;
   g_cards.push_back({L"CAMERA", {camera_patch}, 0, kTabPatches,
                      L"Reduces camera and replay shake at high frame rates. Not needed at 30 FPS."});
+  g_cards.push_back({L"ENVIRONMENT", {g_timelapse_row, g_timelapse_rate_row}, 0, kTabPatches});
   g_cards.push_back({L"DISPLAY COMPATIBILITY", {fov}, 0, kTabPatches});
   g_cards.push_back({L"GAMEPLAY PATCHES", {reset, barrier}, 0, kTabPatches});
   g_cards.push_back({L"PHOTO MODE", {pcol, pproc}, 0, kTabPatches});
@@ -2078,7 +2106,7 @@ constexpr int kPs4Preset = 6;
 std::vector<std::pair<int, int>> Ps4Profile() {
   std::vector<std::pair<int,int>> values = {{g_fps,0},{g_outres,0},{g_inres,0},{g_aspect,0},
       {g_aa,0},{g_up,0},{g_aniso,1},{g_mirror,0},{g_hdr,0},{g_fgen,0},
-      {g_motion_blur,0},{g_fov,100},{g_camera_patch_row,0}};
+      {g_motion_blur,0},{g_fov,100},{g_camera_patch_row,0},{g_texture_repetition,0}};
   for (int i=0;i<kGfxRows;++i) if(g_gfx[i]>=0) values.emplace_back(g_gfx[i],g_c[g_gfx[i]].def);
   for(size_t i=0;i<g_c.size();++i) {
     const auto& tag=g_c[i].patches[0];
@@ -2111,11 +2139,13 @@ bool ReadOptimizationMask(uint64_t& mask) {
   in>>std::ws; return in.eof();
 }
 void LoadSettings() {
+  int texture_repetition_saved = -1;
   g_two_thread = !PrimaryGpuIsAmd();  // the saved choice (draw_threads=) replaces it below
   for (const auto& line : ReadLines(IniPath())) {
     if (line.rfind("update=", 0) == 0) g_folder[0].path = Widen(line.substr(7));
     if (line.rfind("base=", 0) == 0) g_folder[1].path = Widen(line.substr(5));
     if (line.rfind("fps=", 0) == 0) fps_counter = line.substr(4) == "1";
+    if (line.rfind("texture_repetition=", 0) == 0) texture_repetition_saved = line.substr(19) == "0" ? 0 : 1;
     if (line.rfind("pedals=", 0) == 0) pedal_display = line.substr(7) == "1";
     if (line.rfind("fast=", 0) == 0) fast_render = line.substr(5) == "1";
     if (line.rfind("name=", 0) == 0) g_name = Widen(line.substr(5));
@@ -2153,6 +2183,8 @@ void LoadSettings() {
       const std::string v = line.substr(20);
       ps_buttons_saved = v == "ps5" ? 1 : 0;
     }
+    if (line.rfind("timelapse=",0)==0) g_timelapse=line.substr(10)=="1";
+    if (line.rfind("timelapse_rate=",0)==0) g_timelapse_rate=(std::clamp)(atoi(line.substr(15).c_str()),1,3600);
     if (line.rfind("camera_patch=",0)==0) { g_camera_patch=line.substr(13)=="1";g_camera_patch_saved=true; }
     if (line.rfind("lock_horizon=", 0) == 0) g_lock_horizon = (std::clamp)(atoi(line.substr(13).c_str()), 0, 2);
     if (line.rfind("camera_shake=", 0) == 0) camera_shake_saved = atoi(line.substr(13).c_str());
@@ -2253,6 +2285,10 @@ void LoadSettings() {
       c.sel = fps_counter ? 1 : 0;
       continue;
     }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@texture_repetition") {
+      c.sel = texture_repetition_saved < 0 ? 0 : texture_repetition_saved;
+      continue;
+    }
     if (c.kind == Kind::Toggle && c.patches[0] == "@pedals") {
       c.sel = pedal_display ? 1 : 0;
       continue;
@@ -2305,6 +2341,8 @@ void LoadSettings() {
       c.sel = g_check_updates ? 1 : 0;
       continue;
     }
+    if (!c.patches.empty() && c.patches[0]=="@timelapse") {c.sel=g_timelapse?1:0;continue;}
+    if (!c.patches.empty() && c.patches[0]=="@timelapse_rate") {c.sel=g_timelapse_rate;continue;}
     if (c.kind == Kind::Toggle && c.patches[0] == "@camera_patch") { c.sel=g_camera_patch?1:0; continue; }
     if (c.kind == Kind::Segmented && c.patches[0] == "@lock_horizon") {
       c.sel = g_lock_horizon;
@@ -2330,6 +2368,18 @@ void LoadSettings() {
       c.sel = unlock_all_cars ? 1 : 0;
       continue;
     }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") {
+      c.sel = skip_intro_saved ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") {
+      c.sel = telemetry_saved == 1 ? 1 : 0;
+      continue;
+    }
+    if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") {
+      c.sel = triggers_saved == 1 ? 1 : 0;
+      continue;
+    }
     if (!has_selection || IsBenchRow(c) || IsWheelRow(c) || IsDriveRow(c)) continue;  // defaults; the benchmark and driving rows are in launcher.ini, the wheel's in default.ini
     c.sel = 0;
     for (size_t i = 0; i < c.patches.size(); ++i) {
@@ -2343,6 +2393,9 @@ void LoadSettings() {
     }
   }
   // After the loop above, which resets every row that has no patch of its own.
+  if (g_skip_intro_row >= 0) g_c[g_skip_intro_row].sel = skip_intro_saved ? 1 : 0;
+  if (g_telemetry >= 0) g_c[g_telemetry].sel = telemetry_saved == 1 ? 1 : 0;
+  if (g_triggers >= 0) g_c[g_triggers].sel = triggers_saved == 1 ? 1 : 0;
   if (g_mirror >= 0 && mirror_saved == 1) g_c[g_mirror].sel = mirror_saved;
   if (g_aniso >= 0 && aniso_saved >= 1 && aniso_saved <= 5) g_c[g_aniso].sel = aniso_saved;
   if (g_lang >= 0) {
@@ -2428,6 +2481,13 @@ void LoadSettings() {
       g_c[g_fov].sel = (std::clamp)(flat_fov_saved, g_c[g_fov].min, g_c[g_fov].max);
     }
   }
+  // Legacy profiles without the key inherit their performance preset default.
+  // Explicit saved choices, including Custom opt-ins, always win.
+  if (texture_repetition_saved < 0 && g_texture_repetition >= 0) {
+    g_c[g_texture_repetition].sel = 0;
+    DerivePreset();
+    g_c[g_texture_repetition].sel = g_c[g_preset].sel == 4 || g_c[g_preset].sel == 5;
+  }
   DerivePreset();
 }
 
@@ -2491,7 +2551,9 @@ void ApplyPreset(int preset) {
     for(const auto& [id,value]:Ps4Profile()) if(id>=0) g_c[id].sel=value;
     NameNativeUpscale(); return;
   }
-  if (preset <= 0 || preset > 5 || g_outres < 0 || g_inres < 0) return;
+  if (preset < 0 || preset > 5) return;
+  if (g_texture_repetition >= 0) g_c[g_texture_repetition].sel = preset == 4 || preset == 5;
+  if (preset == 0 || g_outres < 0 || g_inres < 0) return;
   g_c[g_outres].sel = kPresetOut[preset];
   g_c[g_inres].sel = kPresetIn[preset];
   if (g_aspect >= 0) g_c[g_aspect].sel = 0;
@@ -2571,6 +2633,9 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@updatecheck") g_check_updates = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") skip_intro_saved = c.sel != 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") telemetry_saved = c.sel != 0 ? 1 : 0;
+      if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
         << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
@@ -2582,9 +2647,13 @@ bool SaveSettings() {
     if (g_fov >= 0) ini << "flat_fov=" << g_c[g_fov].sel << "\r\n";
     ini << "flat_fsr=" << (flat_fsr ? 1 : 0) << "\r\n";
     ini << "pedals=" << (pedals_on ? 1 : 0) << "\r\n";
+    ini << "texture_repetition=" << (g_c[g_texture_repetition].sel ? 1 : 0) << "\r\n";
     ini << "button_prompts=" << (g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto") << "\r\n";
     ini << "xbox_buttons=" << (g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? "360" : "one") << "\r\n";
     ini << "playstation_buttons=" << (g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? "ps5" : "ps4") << "\r\n";
+    ini << "timelapse=" << (g_c[g_timelapse_row].sel?1:0) << "\r\n";
+    ini << "timelapse_rate=" << g_c[g_timelapse_rate_row].sel << "\r\n";
+
     ini << "camera_patch=" << (g_c[g_camera_patch_row].sel ? 1 : 0) << "\r\n";
     ini << "lock_horizon=" << g_lock_horizon << "\r\n";
     ini << "camera_shake=" << (g_camera_shake >= 0 ? g_c[g_camera_shake].sel : 100) << "\r\n";
@@ -2631,9 +2700,11 @@ bool SaveSettings() {
     if(!SaveTextAtomically(toggles,std::to_string(mask))) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_fps",fps_on ? "1" : "0")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","show_pedals",pedals_on ? "1" : "0")) return false;
+    if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","texture_repetition",g_c[g_texture_repetition].sel ? "1" : "0")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","button_prompts",g_prompts >= 0 && g_c[g_prompts].sel == 1 ? "playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? "xbox" : "auto")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","xbox_buttons",g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? "360" : "one")) return false;
     if(!SaveIniValue(g_data+L"\\user\\driveclub.ini","playstation_buttons",g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? "ps5" : "ps4")) return false;
+
   }
   std::ostringstream out;
   for (const auto& c : g_c) {
@@ -2673,6 +2744,9 @@ void ResetDefaults() {
     if (IsWheelRow(c)) continue;  // the player's wheel tuning stays (its presets are in its card)
     c.sel = c.def;
     if (c.kind == Kind::Toggle && c.patches[0] == "@skipgpu") g_skip_gpu_check = c.sel != 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@skipintro") skip_intro_saved = c.sel != 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@telemetry") telemetry_saved = c.sel != 0 ? 1 : 0;
+    if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
   }
   g_bench_track = 0;
   g_bench_car = kBenchDefaultCar;
@@ -3919,9 +3993,13 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   SetEnvironmentVariableW(L"BB_BUTTON_PROMPTS", g_prompts >= 0 && g_c[g_prompts].sel == 1 ? L"playstation" : g_prompts >= 0 && g_c[g_prompts].sel == 2 ? L"xbox" : L"auto");
   SetEnvironmentVariableW(L"BB_XBOX_BUTTONS", g_xbox_buttons >= 0 && g_c[g_xbox_buttons].sel == 1 ? L"360" : L"one");
   SetEnvironmentVariableW(L"BB_PLAYSTATION_BUTTONS", g_ps_buttons >= 0 && g_c[g_ps_buttons].sel == 1 ? L"ps5" : L"ps4");
+  SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE",g_c[g_timelapse_row].sel?L"1":L"0");
+  const std::wstring timelapse_rate = std::to_wstring(g_c[g_timelapse_rate_row].sel);
+  SetEnvironmentVariableW(L"BB_ENV_TIMELAPSE_RATE",timelapse_rate.c_str());
   SetEnvironmentVariableW(L"BB_CAMERA_PATCH",g_c[g_camera_patch_row].sel && !VrChosen() ? L"1" : L"0");
   SetLockHorizonEnvironment();
   SetEnvironmentVariableW(L"BB_MOTION_BLUR_REFERENCE", MotionBlurReference());
+  SetTextureRepetitionEnvironment();
   SetEnvironmentVariableW(L"BB_GPU_USER_DIR", user.c_str());
   SetEnvironmentVariableW(L"BB_PREFLIGHT_NOTE", g_preflight_note.empty() ? nullptr : std::wstring(g_preflight_note.begin(), g_preflight_note.end()).c_str());
   SetEnvironmentVariableW(L"BB_CRASH_DIR", (g_home + L"\\logs").c_str());
@@ -4005,7 +4083,10 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   }
   if (g_fgen < 0 && !UserEnv(L"BB_FRAME_GEN")) SetEnvironmentVariableW(L"BB_FRAME_GEN", L"off");
   if (g_telemetry >= 0 && !UserEnv(L"BB_TELEMETRY") && g_c[g_telemetry].sel == 1) SetEnvironmentVariableW(L"BB_TELEMETRY", L"1");
-  if (g_triggers >= 0 && !UserEnv(L"BB_ADAPTIVE_TRIGGERS") && g_c[g_triggers].sel == 1) SetEnvironmentVariableW(L"BB_ADAPTIVE_TRIGGERS", L"1");
+  if (g_triggers >= 0 && g_c[g_triggers].sel == 1) {
+    if (!UserEnv(L"BB_ADAPTIVE_TRIGGERS")) SetEnvironmentVariableW(L"BB_ADAPTIVE_TRIGGERS", L"1");
+    if (!UserEnv(L"BB_IMPULSE_TRIGGERS")) SetEnvironmentVariableW(L"BB_IMPULSE_TRIGGERS", L"1");
+  }
   if (g_fgpace >= 0 && !UserEnv(L"BB_FG_PACING") && g_c[g_fgpace].sel == 1) SetEnvironmentVariableW(L"BB_FG_PACING", L"gpu");
   if (g_reflex >= 0 && !UserEnv(L"BB_REFLEX")) {
     const int r = g_c[g_reflex].sel;

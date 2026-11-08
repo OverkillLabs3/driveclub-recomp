@@ -26,12 +26,15 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/motion_history.h"
+#include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/vk_frame_capture.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
+
+extern "C" const char* runtime_file_mods_dir(int i);
 
 namespace Vulkan {
 
@@ -545,15 +548,17 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     const bool skip_cb_binding =
         regs.color_control.mode == AmdGpu::ColorControl::OperationMode::Disable;
 
-    // Only potentially animated G-buffer draws may use the extra motion attachment. The
-    // ordinary stage variant is needed first to inspect the vertex shader's resources.
+    // DriveClub's vehicle G-buffer has three color targets. Keep the depth, sample,
+    // clip and stage checks so motion output is not added to incompatible passes.
+    // Inspect the ordinary stage variant before selecting motion resources.
     bool motion_possible = false;
+    u32 motion_bound_targets = 0;
     {
-        u32 bound = 0;
+        u32& bound = motion_bound_targets;
         for (s32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS && !skip_cb_binding; ++cb) {
             bound += (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) ? 1 : 0;
         }
-        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 5 &&
+        motion_possible = Shader::MotionVectors::positions_address != 0 && bound >= 3 &&
                           !regs.color_buffers[Shader::MotionVectors::Output] &&
                           regs.depth_buffer.DepthValid() &&
                           regs.depth_buffer.NumSamples() == 1 && !regs.IsClipDisabled() &&
@@ -590,6 +595,15 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     if (!RefreshGraphicsStages(sel)) {
         return false;
     }
+    // Native fragment ownership is available after the ordinary first pass.
+    // Three-target vehicle parts keep broad producers; other materials retain
+    // the pre-integration five-target/selective path.
+    const auto* motion_ps = sel.infos[static_cast<u32>(Shader::SwStage::Fragment)];
+    const bool vehicle_motion = motion_ps && VehicleMotionScope::VehicleProgram(motion_ps->pgm_hash);
+    static const bool force_all_motion =
+        VehicleMotionScope::ExplicitAll(std::getenv("BB_OBJECT_MOTION_ALL"));
+    motion_possible = VehicleMotionScope::Admission(motion_bound_targets, vehicle_motion,
+                                                  force_all_motion, motion_possible);
     if (motion_possible) {
         const auto* vs = sel.infos[static_cast<u32>(Shader::SwStage::Vertex)];
         if (vs) {
@@ -628,12 +642,8 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
                             sel.motion ? "ON " : "off", sizes.c_str());
             }
         }
-        // Keep the old broad path available for visual A/B tests.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
-        }();
-        if (all_motion) {
+        // Positive vehicle ownership admits rigid parts without a bone palette.
+        if (VehicleMotionScope::Broad(vehicle_motion, force_all_motion)) {
             sel.motion = true;
         }
         if (sel.motion && !RefreshGraphicsStages(sel)) {
@@ -1065,7 +1075,9 @@ std::string PipelineCache::GetShaderName(Shader::HwStage stage, u64 hash,
 
 void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage,
                                size_t perm_idx, std::string_view ext) {
-    if (!EmulatorSettings.IsDumpShaders()) {
+    // DC_DUMP_SHADERS=1 writes every shader the game compiles (also in release builds) for modders: see docs/modding
+    static const bool modder_dump = std::getenv("DC_DUMP_SHADERS") != nullptr;
+    if (!EmulatorSettings.IsDumpShaders() && !modder_dump) {
         return;
     }
 
@@ -1085,15 +1097,31 @@ std::optional<std::vector<u32>> PipelineCache::GetShaderPatch(u64 hash, Shader::
 
     using namespace Common::FS;
     const auto patch_dir = GetUserPath(PathType::ShaderDir) / "patch";
-    if (!std::filesystem::exists(patch_dir)) {
-        std::filesystem::create_directories(patch_dir);
+    // looked up once: without a patch folder anywhere (the usual case) a shader costs no file system calls
+    static const bool any_folder = [&] {
+        if (std::filesystem::exists(patch_dir)) return true;
+        for (int i = 0; const char* mods = runtime_file_mods_dir(i); ++i) {
+            if (std::filesystem::exists(std::filesystem::path(mods) / "shaders")) return true;
+        }
+        return false;
+    }();
+    if (!any_folder) {
+        return {};
     }
     const auto filename = fmt::format("{}.{}", GetShaderName(stage, hash, perm_idx), ext);
-    const auto filepath = patch_dir / filename;
+    auto filepath = patch_dir / filename;
+    // a mod's shaders folder comes first
+    for (int i = 0; const char* mods = runtime_file_mods_dir(i); ++i) {
+        const auto candidate = std::filesystem::path(mods) / "shaders" / filename;
+        if (std::filesystem::exists(candidate)) {
+            filepath = candidate;
+            break;
+        }
+    }
     if (!std::filesystem::exists(filepath)) {
         return {};
     }
-    const auto file = IOFile{patch_dir / filename, FileAccessMode::Read};
+    const auto file = IOFile{filepath, FileAccessMode::Read};
     std::vector<u32> code(file.GetSize() / sizeof(u32));
     file.Read(code);
     return code;

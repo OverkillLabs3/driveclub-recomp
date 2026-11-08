@@ -1,0 +1,464 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#include "video_core/renderer_vulkan/host_passes/user_filter_pass.h"
+
+#include <vk_mem_alloc.h>
+
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <vector>
+
+#include "common/assert.h"
+#include "common/logging/log.h"
+#include "postfx_filter.h"
+#include "video_core/host_shaders/fs_tri_vert.h"
+#include "video_core/renderer_vulkan/vk_platform.h"
+#include "video_core/renderer_vulkan/vk_shader_util.h"
+
+extern "C" const char* runtime_file_mods_dir(int i);
+namespace BbOverlay {
+bool bbgpu_load_png_file(const std::string& path, int& width, int& height, std::vector<unsigned char>& rgba);
+}
+
+namespace Vulkan::HostPasses {
+
+namespace {
+
+long long NowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+// The file of a filter in the first mods folder that has it, or an empty path.
+std::filesystem::path FindFilter(const std::string& name) {
+    // names are file names: no folders, no dots
+    for (const char c : name) {
+        if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) {
+            return {};
+        }
+    }
+    for (int i = 0; const char* mods = runtime_file_mods_dir(i); ++i) {
+        std::error_code error;
+        const auto path = std::filesystem::path(mods) / "postfx" / (name + ".spv");
+        if (std::filesystem::is_regular_file(path, error)) {
+            return path;
+        }
+    }
+    return {};
+}
+
+long long Stamp(const std::filesystem::path& path) {
+    std::error_code error;
+    const auto time = std::filesystem::last_write_time(path, error);
+    return error ? 0 : static_cast<long long>(time.time_since_epoch().count());
+}
+
+} // namespace
+
+void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::Format format_, int slot_) {
+    slot = slot_;
+    device = device_;
+    allocator = allocator_;
+    format = format_;
+    sampler = Check<"create user filter sampler">(device.createSamplerUnique({
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+    }));
+    repeat = Check<"create user filter repeat sampler">(device.createSamplerUnique({
+        .magFilter = vk::Filter::eLinear,
+        .minFilter = vk::Filter::eLinear,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eRepeat,
+        .addressModeV = vk::SamplerAddressMode::eRepeat,
+    }));
+    nearest = Check<"create user filter nearest sampler">(device.createSamplerUnique({
+        .magFilter = vk::Filter::eNearest,
+        .minFilter = vk::Filter::eNearest,
+        .mipmapMode = vk::SamplerMipmapMode::eNearest,
+        .addressModeU = vk::SamplerAddressMode::eClampToEdge,
+        .addressModeV = vk::SamplerAddressMode::eClampToEdge,
+    }));
+    std::array<vk::DescriptorSetLayoutBinding, 8> bindings{};
+    for (u32 i = 0; i < bindings.size(); ++i) {
+        bindings[i] = vk::DescriptorSetLayoutBinding{
+            .binding = i,
+            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        };
+    }
+    desc_set_layout = Check<"create user filter descriptor set layout">(device.createDescriptorSetLayoutUnique({
+        .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
+        .bindingCount = static_cast<u32>(bindings.size()),
+        .pBindings = bindings.data(),
+    }));
+    const vk::PushConstantRange push_constants{
+        .stageFlags = vk::ShaderStageFlagBits::eFragment,
+        .offset = 0,
+        .size = sizeof(Constants),
+    };
+    pipeline_layout = Check<"create user filter pipeline layout">(device.createPipelineLayoutUnique({
+        .setLayoutCount = 1U,
+        .pSetLayouts = &*desc_set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constants,
+    }));
+    vertex_module = vk::UniqueShaderModule(CompileSPV(FS_TRI_VERT, device), device);
+}
+
+bool UserFilterPass::LoadShader(const std::string& name) {
+    loaded_name = name;
+    failed = true;
+    pipeline.reset();
+    history_valid = false;
+    const auto path = FindFilter(name);
+    if (path.empty()) {
+        LOG_WARNING(Render_Vulkan, "Post filter '{}': no postfx/{}.spv in a mods folder", name, name);
+        return false;
+    }
+    loaded_path = path.string();
+    loaded_stamp = Stamp(path);
+    std::ifstream file(path, std::ios::binary);
+    const std::vector<char> bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    u32 magic = 0;
+    if (bytes.size() >= 20) {
+        std::memcpy(&magic, bytes.data(), 4);
+    }
+    if (bytes.size() < 20 || bytes.size() % 4 != 0 || magic != 0x07230203u) {
+        LOG_WARNING(Render_Vulkan, "Post filter '{}': {} is not a SPIR-V file", name, loaded_path);
+        return false;
+    }
+    const auto fragment = device.createShaderModuleUnique({
+        .codeSize = bytes.size(),
+        .pCode = reinterpret_cast<const u32*>(bytes.data()),
+    });
+    if (fragment.result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan, "Post filter '{}': the shader was refused ({})", name,
+                    vk::to_string(fragment.result));
+        return false;
+    }
+    const std::array stages{
+        vk::PipelineShaderStageCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eVertex, .module = *vertex_module, .pName = "main"},
+        vk::PipelineShaderStageCreateInfo{
+            .stage = vk::ShaderStageFlagBits::eFragment, .module = *fragment.value, .pName = "main"},
+    };
+    const std::array color_formats{format};
+    const vk::PipelineRenderingCreateInfo rendering{
+        .colorAttachmentCount = color_formats.size(),
+        .pColorAttachmentFormats = color_formats.data(),
+    };
+    const vk::PipelineVertexInputStateCreateInfo vertex_input{};
+    const vk::PipelineInputAssemblyStateCreateInfo input_assembly{
+        .topology = vk::PrimitiveTopology::eTriangleList};
+    const vk::Viewport viewport{.width = 1.0f, .height = 1.0f, .maxDepth = 1.0f};
+    const vk::Rect2D scissor{.extent = {1, 1}};
+    const vk::PipelineViewportStateCreateInfo viewport_info{
+        .viewportCount = 1, .pViewports = &viewport, .scissorCount = 1, .pScissors = &scissor};
+    const vk::PipelineRasterizationStateCreateInfo raster{
+        .polygonMode = vk::PolygonMode::eFill,
+        .cullMode = vk::CullModeFlagBits::eBack,
+        .frontFace = vk::FrontFace::eClockwise,
+        .lineWidth = 1.0f,
+    };
+    const vk::PipelineMultisampleStateCreateInfo multisampling{
+        .rasterizationSamples = vk::SampleCountFlagBits::e1};
+    const std::array blend_attachments{vk::PipelineColorBlendAttachmentState{
+        .blendEnable = false,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    }};
+    const vk::PipelineColorBlendStateCreateInfo blending{
+        .attachmentCount = blend_attachments.size(), .pAttachments = blend_attachments.data()};
+    const std::array dynamic_states{vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    const vk::PipelineDynamicStateCreateInfo dynamic_info{
+        .dynamicStateCount = dynamic_states.size(), .pDynamicStates = dynamic_states.data()};
+    auto created = device.createGraphicsPipelineUnique({}, vk::GraphicsPipelineCreateInfo{
+        .pNext = &rendering,
+        .stageCount = stages.size(),
+        .pStages = stages.data(),
+        .pVertexInputState = &vertex_input,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_info,
+        .pRasterizationState = &raster,
+        .pMultisampleState = &multisampling,
+        .pColorBlendState = &blending,
+        .pDynamicState = &dynamic_info,
+        .layout = *pipeline_layout,
+    });
+    if (created.result != vk::Result::eSuccess) {
+        LOG_WARNING(Render_Vulkan,
+                    "Post filter '{}': the pipeline could not be made ({}); does the shader read binding 0 and the "
+                    "push constants described in docs/modding/postfx.md?",
+                    name, vk::to_string(created.result));
+        return false;
+    }
+    pipeline = std::move(created.value);
+    failed = false;
+    LoadTexture(loaded_path);
+    LOG_WARNING(Render_Vulkan, "Post filter '{}' loaded from {}", name, loaded_path);
+    return true;
+}
+
+void UserFilterPass::FreeTexture() {
+    texture_view.reset();
+    texture = VideoCore::UniqueImage{};
+    if (texture_staging) {
+        vmaDestroyBuffer(allocator, texture_staging, texture_allocation);
+        texture_staging = VK_NULL_HANDLE;
+        texture_allocation = nullptr;
+    }
+    texture_pending = false;
+    texture_width = texture_height = 0;
+}
+
+// The picture of a filter: postfx/<name>.png beside the shader (8 bit RGB or RGBA, at most 2048 by 2048).
+void UserFilterPass::LoadTexture(const std::string& shader_path) {
+    device.waitIdle();
+    FreeTexture();
+    auto png_path = std::filesystem::path(shader_path);
+    png_path.replace_extension(".png");
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(png_path, error)) {
+        return;
+    }
+    int width = 0, height = 0;
+    std::vector<unsigned char> rgba;
+    if (!BbOverlay::bbgpu_load_png_file(png_path.string(), width, height, rgba) || width <= 0 || height <= 0) {
+        LOG_WARNING(Render_Vulkan, "Post filter picture {} is not an 8 bit RGB or RGBA PNG of at most 2048 by 2048",
+                    png_path.string());
+        return;
+    }
+    const VkBufferCreateInfo buffer_ci{.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                                       .size = rgba.size(),
+                                       .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(allocator, &buffer_ci, &alloc_ci, &texture_staging, &texture_allocation, &info) !=
+        VK_SUCCESS) {
+        texture_staging = VK_NULL_HANDLE;
+        return;
+    }
+    std::memcpy(info.pMappedData, rgba.data(), rgba.size());
+    vmaFlushAllocation(allocator, texture_allocation, 0, VK_WHOLE_SIZE);
+    texture = VideoCore::UniqueImage(device, allocator);
+    texture.Create(vk::ImageCreateInfo{
+        .imageType = vk::ImageType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .extent = {u32(width), u32(height), 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk::SampleCountFlagBits::e1,
+        .tiling = vk::ImageTiling::eOptimal,
+        .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        .initialLayout = vk::ImageLayout::eUndefined,
+    });
+    auto view = device.createImageViewUnique({
+        .image = vk::Image(texture),
+        .viewType = vk::ImageViewType::e2D,
+        .format = vk::Format::eR8G8B8A8Unorm,
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    });
+    if (view.result != vk::Result::eSuccess) {
+        FreeTexture();
+        return;
+    }
+    texture_view = std::move(view.value);
+    texture_width = u32(width);
+    texture_height = u32(height);
+    texture_pending = true;
+    LOG_WARNING(Render_Vulkan, "Post filter picture {} loaded ({}x{})", png_path.string(), width, height);
+}
+
+bool UserFilterPass::EnsureImage(vk::Extent2D size) {
+    if (image_views[0] && image_views[1] && image_size.width == size.width && image_size.height == size.height) {
+        return true;
+    }
+    device.waitIdle();
+    history_valid = false;
+    for (int n = 0; n < 2; ++n) {
+        image_views[n].reset();
+        images[n] = VideoCore::UniqueImage(device, allocator);
+        images[n].Create(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = format,
+            .extent = {size.width, size.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+                     vk::ImageUsageFlagBits::eTransferSrc,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        });
+        auto view = device.createImageViewUnique({
+            .image = vk::Image(images[n]),
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        });
+        if (view.result != vk::Result::eSuccess) {
+            return false;
+        }
+        image_views[n] = std::move(view.value);
+    }
+    image_size = size;
+    return true;
+}
+
+bool UserFilterPass::WantsToRun() const {
+    return !ModPostFx::Name(slot).empty();
+}
+
+vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView input, vk::Extent2D size,
+                                     vk::ImageLayout input_layout, const Extras& extras) {
+    const std::string name = ModPostFx::Name(slot);
+    if (name.empty() || !desc_set_layout) {
+        return input;
+    }
+    const long long now = NowMs();
+    if (name != loaded_name) {
+        LoadShader(name);
+        last_check_ms = now;
+    } else if (now - last_check_ms > 1000) {
+        // a changed file is picked up while the game runs
+        last_check_ms = now;
+        if (!loaded_path.empty() && Stamp(loaded_path) != loaded_stamp) {
+            device.waitIdle();
+            LoadShader(name);
+        }
+    }
+    if (failed || !pipeline || !EnsureImage(size)) {
+        return input;
+    }
+
+    if (texture_pending && texture_view) {   // the filter's picture goes up on the first frame it is drawn
+        const auto texture_barrier = [&](vk::ImageLayout from, vk::ImageLayout to, vk::PipelineStageFlags2 src,
+                                        vk::AccessFlags2 src_access, vk::PipelineStageFlags2 dst,
+                                        vk::AccessFlags2 dst_access) {
+            const vk::ImageMemoryBarrier2 b{.srcStageMask = src,
+                                            .srcAccessMask = src_access,
+                                            .dstStageMask = dst,
+                                            .dstAccessMask = dst_access,
+                                            .oldLayout = from,
+                                            .newLayout = to,
+                                            .image = vk::Image(texture),
+                                            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}};
+            cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+        };
+        texture_barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                        vk::PipelineStageFlagBits2::eAllCommands, {}, vk::PipelineStageFlagBits2::eTransfer,
+                        vk::AccessFlagBits2::eTransferWrite);
+        cmdbuf.copyBufferToImage(vk::Buffer(texture_staging), vk::Image(texture), vk::ImageLayout::eTransferDstOptimal,
+                                 vk::BufferImageCopy{.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                                                     .imageExtent = {texture_width, texture_height, 1}});
+        texture_barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+                        vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+        texture_pending = false;
+    }
+    const int cur = history_valid ? 1 - last : last;
+    const int prev = 1 - cur;
+    const bool has_history = history_valid;
+    const vk::ImageMemoryBarrier2 to_attachment{
+        .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .oldLayout = vk::ImageLayout::eUndefined,
+        .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .image = vk::Image(images[cur]),
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_attachment});
+
+    const vk::RenderingAttachmentInfo attachment{
+        .imageView = *image_views[cur],
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eDontCare,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+    const vk::RenderingInfo rendering{
+        .renderArea = {.extent = size},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    };
+    static const long long start_ms = NowMs();
+    Constants constants{};
+    constants.resolution[0] = static_cast<float>(size.width);
+    constants.resolution[1] = static_cast<float>(size.height);
+    constants.time = static_cast<float>(now - start_ms) / 1000.0f;
+    for (int i = 0; i < 16; ++i) {
+        constants.values[i] = ModPostFx::Values(slot)[i].load(std::memory_order_relaxed);
+    }
+    constants.pad = extras.valid ? 1.0f : 0.0f;
+    constants.has_history = has_history ? 1.0f : 0.0f;
+    constants.has_texture = texture_view ? 1.0f : 0.0f;
+    constants.texture_size[0] = static_cast<float>(texture_width);
+    constants.texture_size[1] = static_cast<float>(texture_height);
+    // 0 picture; 1 view-space distance; 2 motion; 3 g-buffer; 4 view ray parameters (the picture stands in without them)
+    const std::array<vk::DescriptorImageInfo, 8> image_infos = {{
+        {*sampler, input, input_layout},
+        {*nearest, extras.valid ? extras.depth : input,
+         extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*sampler, extras.valid ? extras.motion : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*nearest, extras.valid ? extras.gbuffer : input,
+         extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*nearest, extras.valid ? extras.params : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
+        {*sampler, extras.scene ? extras.scene : input, extras.scene ? vk::ImageLayout::eGeneral : input_layout},
+        // 6: this slot's picture of the frame before (the picture stands in on the first frame)
+        {*sampler, has_history ? *image_views[prev] : input,
+         has_history ? vk::ImageLayout::eShaderReadOnlyOptimal : input_layout},
+        // 7: the filter's own PNG (the picture stands in without one)
+        {*repeat, texture_view ? *texture_view : input,
+         texture_view ? vk::ImageLayout::eShaderReadOnlyOptimal : input_layout},
+    }};
+    std::array<vk::WriteDescriptorSet, 8> set_writes{};
+    for (u32 i = 0; i < set_writes.size(); ++i) {
+        set_writes[i] = vk::WriteDescriptorSet{
+            .dstBinding = i,
+            .descriptorCount = 1,
+            .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+            .pImageInfo = &image_infos[i],
+        };
+    }
+    cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
+    cmdbuf.setViewport(0, vk::Viewport{.width = static_cast<float>(size.width),
+                                        .height = static_cast<float>(size.height),
+                                        .maxDepth = 1.0f});
+    cmdbuf.setScissor(0, vk::Rect2D{.extent = size});
+    cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eGraphics, *pipeline_layout, 0, set_writes);
+    cmdbuf.pushConstants(*pipeline_layout, vk::ShaderStageFlagBits::eFragment, 0, sizeof(Constants), &constants);
+    cmdbuf.beginRendering(rendering);
+    cmdbuf.draw(3, 1, 0, 0);
+    cmdbuf.endRendering();
+
+    const vk::ImageMemoryBarrier2 to_sampled{
+        .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .image = vk::Image(images[cur]),
+        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+    };
+    cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_sampled});
+    last = cur;
+    history_valid = true;
+    return *image_views[cur];
+}
+
+} // namespace Vulkan::HostPasses

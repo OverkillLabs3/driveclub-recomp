@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.lens-filter",
+  "name": "Lens effects (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: chromatic aberration, barrel distortion, sharpen and film grain on the finished picture.",
+  "scripts": [ "scripts/mods/lens-filter/main.lua" ]
+}

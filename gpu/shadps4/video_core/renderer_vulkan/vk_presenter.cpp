@@ -183,6 +183,9 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     // bbport: frames are composed in RGBA8 (what frame generation reads and writes) and
     // blitted into the swapchain's format.
     pp_pass.Create(device, FrameGenerator::ColorFormat);
+    for (int i = 0; i < 3; ++i) {
+        user_filter_pass[i].Create(device, instance.GetAllocator(), FrameGenerator::ColorFormat, i);
+    }
     // bbport: HDR output (BB_HDR=1, display in HDR mode): the swapchain in HDR10 from the start,
     // each frame converted by hdr_pass, and the overlay drawn into the SDR frame before that.
     if (EmulatorSettings.IsHdrAllowed()) {
@@ -803,6 +806,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     pp_settings.power = hdr_output ? 1.0f : float(picture.picture_gamma.load()) / 220.0f;
     pp_settings.contrast = hdr_output ? 1.0f : float(picture.picture_contrast.load()) / 100.0f;
     pp_settings.brightness = hdr_output ? 0.0f : float(picture.picture_brightness.load()) / 400.0f;
+    // the post-processing filter of a mod, on the picture before the picture settings (SDR only).
+    if (!hdr_output && !frame->is_hdr) {
+        for (auto& filter : user_filter_pass) {
+            image_view = filter.Render(cmdbuf, image_view, {frame->width, frame->height});
+        }
+    }
     pp_pass.Render(cmdbuf, image_view, image_size, *frame, pp_settings);
 
     // Neural rendering on the finished, display-referred frame (the UI is in it), before the HDR conversion.
@@ -1163,7 +1172,15 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     // spaced sequence on the panel.
     // The source must be complete on the GPU before its images are spaced out.
     const auto source_began = std::chrono::steady_clock::now();
-    if (frame->source_scheduler) {
+    // bbport: VR: with no generated images to space out, the CPU does not wait for the frame here. The headset copy
+    // waits for it on the GPU (ready_semaphore); waiting on the CPU first put xrWaitFrame (BbVr::RecordFrame) after
+    // the whole render, so a frame done just past the runtime's slot lost a whole slot: with OFXR at 40 of 80 Hz
+    // p99 went 28 -> 49 ms. BB_VR_SOURCE_WAIT=1 brings the wait back.
+    static const bool vr_no_source_wait = [] {
+        const char* env = std::getenv("BB_VR_SOURCE_WAIT");
+        return !(env && env[0] == '1');
+    }();
+    if (frame->source_scheduler && !(vr_no_source_wait && BbVr::Active() && generated == 0)) {
         frame->source_scheduler->Wait(frame->ready_tick);
     }
     const auto paced = std::chrono::steady_clock::now();

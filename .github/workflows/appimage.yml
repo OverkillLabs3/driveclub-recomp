@@ -15,6 +15,7 @@ on:
       - 'packaging/appimage/**'
       - 'patches/**'
       - 'src/**'
+      - 'tools/font_cjk_fallback_test.c'
       - 'tools/launcher_linux.cpp'
       - 'tools/prepare_cli.cpp'
 
@@ -78,6 +79,14 @@ jobs:
 
       - name: Build the native Linux runtime
         run: bash build-linux.sh
+
+      # build-linux.sh compiles src/runtime*.c, so the HLE change is build-tested above.
+      # This checks the glyph fallback itself without needing any game files.
+      - name: Font fallback regression test
+        run: |
+          "$CC" -std=c11 -O2 -Wall -Wextra -Wno-unused-function -pthread \
+            -I. -Isrc tools/font_cjk_fallback_test.c -lm -o out/font_cjk_fallback_test
+          out/font_cjk_fallback_test
 
       - name: Build the AppImage
         id: package

@@ -4,6 +4,7 @@
 #include "bbport_write_log.h"
 // bbport: glue between the C loader and the vendored shadPS4 video core.
 #include "bbport_overlay.h"
+#include "postfx_filter.h"
 #include "bbport_safe_start.h"
 #include "video_core/renderer_vulkan/vk_anti_lag.h"
 #include "bbport_settings.h"
@@ -510,6 +511,29 @@ extern "C" void bbgpu_mouse_stick_capture(int capture) { BbOverlay::RequestMouse
 
 extern "C" void bbgpu_overlay_trophy(int id, int grade, const char* title_utf8, const char* description_utf8) {
     BbOverlay::Trophy(id, grade, title_utf8 ? title_utf8 : "", description_utf8 ? description_utf8 : "");
+}
+extern "C" void bbgpu_overlay_mod_item(const char* id, int kind, float x, float y, float w, float h, float size,
+                                       unsigned color, int ttl_ms, const char* text_utf8) {
+    if (kind < 0) {
+        BbOverlay::ModItemClear(id ? id : "");
+    } else {
+        BbOverlay::ModItem(id ? id : "", kind, x, y, w, h, size, color, ttl_ms, text_utf8 ? text_utf8 : "");
+    }
+}
+extern "C" void bbgpu_postfx_use(int slot, const char* name) {
+    if (slot >= 0 && slot < ModPostFx::kSlots) {
+        ModPostFx::SetName(name ? name : "", slot);
+    }
+}
+extern "C" void bbgpu_postfx_scale(int slot, float value) {
+    if (slot >= 0 && slot < ModPostFx::kSlots) {
+        ModPostFx::Scale(slot).store(value < 0.05f ? 0.05f : (value > 1.0f ? 1.0f : value), std::memory_order_relaxed);
+    }
+}
+extern "C" void bbgpu_postfx_param(int slot, int index, float value) {
+    if (slot >= 0 && slot < ModPostFx::kSlots && index >= 0 && index < 16) {
+        ModPostFx::Values(slot)[index].store(value, std::memory_order_relaxed);
+    }
 }
 extern "C" void bbgpu_overlay_note(const char* text_utf8) {
     BbOverlay::Note(text_utf8 ? text_utf8 : "");

@@ -18,6 +18,11 @@ layout(binding = 4) uniform texture2D depth_tex;   // D32, reversed (1 = near)
 layout(binding = 5, rg16f) uniform writeonly image2D motion_img;
 // The depth as it is now, for frame generation (the game may reuse its target).
 layout(binding = 6, r32f) uniform writeonly image2D depth_copy_img;
+// For the filters of mods: the view-space distance of each pixel (the sky is 1e6), and the view ray parameters
+// (4 by 1 texels): texel 0 = frame constants 76..79, texel 1 = 92..95 (ray_x = (a.x * u + a.z) * b.z + b.x, ray_y =
+// (a.y * v + a.w) * b.w + b.y, the view position is (z * ray_x, z * ray_y, -z)).
+layout(binding = 7, r32f) uniform writeonly image2D linear_depth_img;
+layout(binding = 8, rgba32f) uniform writeonly image2D params_img;
 
 layout(push_constant) uniform Constants {
     vec2 size;      // pixels
@@ -67,6 +72,13 @@ void main() {
 
     const float ray_x = (Fr(76u) * centre_uv.x + Fr(78u)) * Fr(94u) + Fr(92u);
     const float ray_y = (Fr(77u) * centre_uv.y + Fr(79u)) * Fr(95u) + Fr(93u);
+    imageStore(linear_depth_img, pixel, vec4(sky ? 1.0e6 : z));
+    if (pixel.x == 0 && pixel.y == 0) {
+        imageStore(params_img, ivec2(0, 0), vec4(Fr(76u), Fr(77u), Fr(78u), Fr(79u)));
+        imageStore(params_img, ivec2(1, 0), vec4(Fr(92u), Fr(93u), Fr(94u), Fr(95u)));
+        imageStore(params_img, ivec2(2, 0), vec4(Ca(118u), Ca(119u), 0.0, 0.0));
+        imageStore(params_img, ivec2(3, 0), vec4(0.0));
+    }
     const float view_x = z * ray_x;
     const float view_y = z * ray_y;
     const float view_w = sky ? 0.0 : 1.0;

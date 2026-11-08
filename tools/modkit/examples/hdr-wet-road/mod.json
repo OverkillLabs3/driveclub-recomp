@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.hdr-wet-road",
+  "name": "Wet road reflections (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: screen space reflections on flat ground and a darker, glossier road, from the depth and the camera.",
+  "scripts": [ "scripts/mods/hdr-wet-road/main.lua" ]
+}

@@ -252,49 +252,16 @@ public:
         CMask,
         FMask,
         HTile,
+        CpuRevokedCMask, // Existing 0/1/2 encodings are unchanged.
     };
 
-    /// Returns meta type if the specified address is a metadata surface.
-    std::optional<MetaType> IsMeta(VAddr address) const {
-        auto it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            return it->second.type;
-        }
-        return std::nullopt;
-    }
-
-    /// Returns true if a slice of the specified metadata surface has been cleared.
-    bool IsMetaCleared(VAddr address, u32 slice) const {
-        const auto& it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            return it.value().clear_mask & (1u << slice);
-        }
-        return false;
-    }
-
-    /// Clears all slices of the specified metadata surface.
-    bool ClearMeta(VAddr address) {
-        auto it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            it.value().clear_mask = u32(-1);
-            return true;
-        }
-        return false;
-    }
-
-    /// Updates the state of a slice of the specified metadata surface.
-    bool TouchMeta(VAddr address, u32 slice, bool is_clear) {
-        auto it = surface_metas.find(address);
-        if (it != surface_metas.end()) {
-            if (is_clear) {
-                it.value().clear_mask |= 1u << slice;
-            } else {
-                it.value().clear_mask &= ~(1u << slice);
-            }
-            return true;
-        }
-        return false;
-    }
+    // Metadata queries are out-of-line so all consumers use one leaf mutex.
+    std::optional<MetaType> IsMeta(VAddr address) const;
+    bool IsMetaCleared(VAddr address, u32 slice) const;
+    bool ClearMeta(VAddr address);
+    bool TouchMeta(VAddr address, u32 slice, bool is_clear);
+    /// Revoke stale CMask claims whose metadata bases lie in an actual CPU-upload span.
+    void RevokeCmaskForCpuUpload(VAddr address, u64 size);
 
     /// Runs the garbage collector.
     void RunGarbageCollector();

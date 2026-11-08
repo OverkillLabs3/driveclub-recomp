@@ -77,6 +77,42 @@ try
     Fails(() => library.Import(link), "symlink import rejected");
 }
 catch (Exception ex) when (ex is UnauthorizedAccessException || (ex is IOException && (ex.HResult & 0xffff) == 1314)) { Console.WriteLine("SKIP folder symlink fixture requires OS privilege; ZIP symlink check passed"); }
+// Patched mods need dcmod and the game's data: DCMOD_EXE, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR must be set.
+if (Environment.GetEnvironmentVariable("DCMOD_EXE") is { Length: > 0 } && Environment.GetEnvironmentVariable("DRIVECLUB_UPDATE_DIR") is { Length: > 0 })
+{
+    string patchedHome = Folder("patched-launcher"); var patchedLibrary = new ModLibrary(patchedHome);
+    string Manifest(string name, int speed) => $$$"""
+        {"name":"{{{name}}}","patches":[{"op":"csv.set","file":"newdata/vehicles.csv","key":"Vehicle Name","match":"a45_amg","set":{"TopSpeed":{{{speed}}}}}]}
+        """;
+    var low = patchedLibrary.Import(Folder("PatchLow", ("mod.json", Manifest("Low", 301)), ("files/data/plain.txt", "plain"))).Packages.Single();
+    var high = patchedLibrary.Import(Folder("PatchHigh", ("mod.json", Manifest("High", 402)), ("notes/readme.txt", "x"))).Packages.Last();
+    Check(low.Patched && high.Patched && high.Files.Count == 0, "mod with patches is recognised and only its files folder counts as game files");
+    // Settings: the mod offers one; the player's value reaches the patch through dcmod build --settings.
+    string settingsManifest = """
+        {"name":"Tunable","id":"test.tunable","category":"Physics","settings":{"power":{"label":"Top speed","type":"number","default":333,"min":100,"max":500}},"patches":[{"op":"csv.set","file":"newdata/vehicles.csv","key":"Vehicle Name","match":"a45_amg","set":{"TopSpeed":{"$setting":"power"}}}]}
+        """;
+    string settingsHome = Folder("settings-launcher"); var settingsLibrary = new ModLibrary(settingsHome);
+    var tunable = settingsLibrary.Import(Folder("Tunable", ("mod.json", settingsManifest))).Packages.Single();
+    Check(tunable.Category == "Physics" && tunable.ManifestId == "test.tunable" && tunable.SettingDefs["power"].Max == 500, "mod category and settings are read from the manifest");
+    settingsLibrary.SetEnabled(tunable.Id, true);
+    string tunableTable = Path.Combine(settingsHome, "mods/newdata/vehicles.csv");
+    Check(File.ReadAllText(tunableTable).Contains("\"333\""), "a setting's default is used before the player chooses");
+    settingsLibrary.SetChoice(tunable.Id, "power", "410");
+    Check(File.ReadAllText(tunableTable).Contains("\"410\"") && settingsLibrary.Load().Packages.Single().Choices["power"] == "410", "a chosen setting value reaches the patch and is kept");
+    Fails(() => settingsLibrary.SetChoice(tunable.Id, "power", "9999"), "a setting value outside its range is rejected");
+    Fails(() => settingsLibrary.SetChoice(tunable.Id, "nope", "1"), "an unknown setting is rejected");
+    patchedLibrary.SetEnabled(low.Id, true);
+    string table = Path.Combine(patchedHome, "mods/newdata/vehicles.csv");
+    Check(File.Exists(table) && File.ReadAllText(table).Contains("\"301\"") && File.ReadAllText(Path.Combine(patchedHome, "mods/data/plain.txt")) == "plain", "enabling a patched mod deploys the patched table and its loose files");
+    Check(!File.Exists(Path.Combine(patchedHome, "mods/dcmod-report.json")) && !File.Exists(Path.Combine(patchedHome, "mods/notes/readme.txt")), "build reports and mod notes are not deployed");
+    patchedLibrary.SetEnabled(high.Id, true);
+    Check(File.ReadAllText(table).Contains("\"301\""), "a mod lower in the list is applied last and wins nothing over the first");
+    patchedLibrary.Move(high.Id, -1);
+    Check(File.ReadAllText(table).Contains("\"402\""), "moving a mod to the top makes its patch win");
+    patchedLibrary.SetEnabled(low.Id, false); patchedLibrary.SetEnabled(high.Id, false);
+    Check(!File.Exists(table) && !File.Exists(Path.Combine(patchedHome, "mods/data/plain.txt")), "disabling every patched mod removes the generated files");
+}
+else Console.WriteLine("SKIP patched mod checks (set DCMOD_EXE, DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR to run them)");
 Console.WriteLine($"{count} checks passed. Fixtures: {root}");
 if (args.Length == 2 && args[0] == "--ui-fixture")
 {

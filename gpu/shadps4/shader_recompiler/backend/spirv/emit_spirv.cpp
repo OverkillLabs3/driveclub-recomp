@@ -19,6 +19,7 @@
 #include "shader_recompiler/runtime_info.h"
 
 namespace Shader::Backend::SPIRV {
+void PrepareWorldRepeat(const IR::Program& program);
 void PlanWideLoads(EmitContext& ctx, const IR::Program& program); // emit_spirv_context_get_set.cpp: BB_WIDE_LOADS
 
 namespace {
@@ -660,6 +661,7 @@ void PatchPhiNodes(const IR::Program& program, EmitContext& ctx) {
 std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_info,
                            const IR::Program& program, Bindings& binding) {
     EmitContext ctx{profile, runtime_info, program.info, binding};
+    PrepareWorldRepeat(program);
     PlanWideLoads(ctx, program);
     Vr::ScanScreenParams(program); // VR multiview: outputs holding the screen position
     const Id main{DefineMain(ctx, program)};
