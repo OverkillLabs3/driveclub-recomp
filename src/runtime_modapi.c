@@ -253,10 +253,10 @@ int runtime_mod_marker(const char *guest, char *out, size_t size) {
          * right rear, left rear) of five numbers: load N, lateral force N, longitudinal force N, slip ratio, slip angle
          * env: values 1 layout version, 2 clock running (1/0), 3 hour of the day 0..24, 4 the game's time compression */
         double values[48];
-        float cam[27];
+        float cam[45];
         int n;
-        if (is_cam) {   /* camera: 27 numbers, the view block rows (9 of 12), the transposed block (9 of 12), the position */
-            n = bbgpu_camera(cam) ? 27 : 0;
+        if (is_cam) {   /* camera: 43 numbers, the view block (12), the transposed block (12), the position (3), the sun (16), the projection scales x and y (2) */
+            n = bbgpu_camera(cam) ? 45 : 0;
             for (int i = 0; i < n; ++i) values[2 + i] = cam[i];
         } else
         n = is_car ? runtime_mod_car_state(values + 2, 46) : is_input ? input_state(values + 2, 46) : runtime_mod_env_state(values + 2, 46);

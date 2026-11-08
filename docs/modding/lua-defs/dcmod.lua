@@ -113,6 +113,13 @@ function dcmod.car() end
 ---The game camera of the last frame (world metres, y up), or nil when no frame was drawn for a second.
 ---@return dcmod.Camera|nil
 function dcmod.camera() end
+---@class dcmod.Sun
+---@field direction number[] unit vector towards the sun, x y z (the sun is up when y is positive)
+---@field colour number[] HDR radiance r g b (about 250 at noon, 0 at night)
+---@field screen table x, y (0 to 1, y down) and front (boolean: in front of the camera)
+---The sun of the last frame, or nil.
+---@return dcmod.Sun|nil
+function dcmod.sun() end
 ---The hour of the day of the scene (0 to 24) and the speed of the clock, or nil when no race is loaded.
 ---@return number|nil hour
 ---@return number|nil compression

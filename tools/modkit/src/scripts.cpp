@@ -100,6 +100,28 @@ function dcmod.camera()
   return { x = v[27], y = v[28], z = v[29], right = { v[3], v[4], v[5] }, up = { v[7], v[8], v[9] },
     forward = { -v[11], -v[12], -v[13] } }
 end
+-- dcmod.sun(): { direction = {x, y, z} (unit vector from the scene towards the sun, so the sun is above the horizon when y is
+-- positive), colour = {r, g, b} (HDR radiance: about 250 at noon, 40 at dusk, 0 at night), screen = {x, y, front} } of the last
+-- frame, or nil. screen is where the sun is in the picture (0 to 1, y down; may lie outside) and front is true when the sun is
+-- in front of the camera. Needs a frame drawn in the last second.
+function dcmod.sun()
+  local chunk = loadfile("dcmod/state/camera.lua.bin")
+  if not chunk then return nil end
+  local v = { chunk() }
+  if v[2] ~= 1 or v[30] == nil then return nil end
+  local d = { v[30], v[31], v[32] }
+  local sun = { direction = d, colour = { v[34], v[35], v[36] } }
+  local fx, fy, fz = -v[11], -v[12], -v[13]
+  local depth = d[1] * fx + d[2] * fy + d[3] * fz
+  local px = d[1] * v[3] + d[2] * v[4] + d[3] * v[5]
+  local py = d[1] * v[7] + d[2] * v[8] + d[3] * v[9]
+  if depth > 0.001 then
+    sun.screen = { 0.5 + 0.5 * v[46] * px / depth, 0.5 - 0.5 * v[47] * py / depth, true }
+  else
+    sun.screen = { 0.5, 0.5, false }
+  end
+  return sun
+end
 function dcmod.set_time(hour)
   loadfile(string.format("dcmod/env/time/%d", math.floor((hour % 24) * 1000 + 0.5)))
 end

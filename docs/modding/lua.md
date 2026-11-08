@@ -133,6 +133,17 @@ local c = dcmod.camera()
 if c then dcmod.log(string.format("camera at %.1f %.1f %.1f", c.x, c.y, c.z)) end
 ```
 
+### The sun: `dcmod.sun()`
+
+Returns `{ direction = {x, y, z}, colour = {r, g, b}, screen = {x, y, front} }` of the last frame, or `nil`. `direction` is the unit vector from the scene towards the sun (the sun is above the horizon when y is positive). `colour` is its HDR radiance: about 250 at noon, 40 at dusk, 0 at night. `screen` is where the sun is in the picture (0 to 1, y down, may lie outside the picture) and `front` is true when it is in front of the camera. Together with the `dcmod.postfx` parameters this is what a light shaft or lens flare filter needs.
+
+```lua
+dcmod.every(0.05, function()
+  local s = dcmod.sun()
+  if s and s.screen[3] then dcmod.postfx.param(0, s.screen[1]); dcmod.postfx.param(1, s.screen[2]) end
+end)
+```
+
 ### Time of day: `dcmod.time()` and `dcmod.set_time(hour)`
 
 `dcmod.time()` returns the hour of the day of the scene (0 to 24, for example 18.5 is 18:30) and the speed of the clock (`hour, compression`), or `nil` when no race is loaded. `dcmod.set_time(hour)` moves the clock to that hour; the sky, the lights and the shadows follow, and the clock keeps running from there. Values are kept to a thousandth of an hour.

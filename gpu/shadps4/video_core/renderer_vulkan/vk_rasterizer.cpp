@@ -46,12 +46,17 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include <atomic>
+#include <cmath>
+#include <mutex>
+#include <chrono>
 namespace Vulkan {
 
 namespace {
 DriveMotion* g_drive_motion = nullptr;
 bool g_taa_noted = false; ///< BindBuffers noted the anti-aliasing camera last time (its threads, one at a time)
-float g_camera[27];
+float g_camera[45];
+std::atomic<long long> g_camera_wanted{0};   ///< when a script last asked for the camera
 std::mutex g_camera_mutex;
 long long g_camera_stamp = 0;
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
@@ -60,6 +65,26 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
     // The anti-aliasing pass has several variants (by resolution): recognise its two constant
     // buffers by size and content. Slot 0: a 4x4 affine move, then matrices. Slot 1: the
     // projection at dword 48 (reversed Z, infinite far plane).
+    if (data && slot == 1 && size == 512) {   // the camera for mod scripts (dwords 16.., 32.. and 108..)
+        const auto* c = static_cast<const float*>(data);
+        if (c[48] > 0.1f && c[48 + 5] > 0.1f && c[48 + 11] == -1.0f && c[111] == 1.0f) {
+            std::scoped_lock lock{g_camera_mutex};
+            std::memcpy(g_camera, c + 16, 12 * sizeof(float));
+            std::memcpy(g_camera + 12, c + 32, 12 * sizeof(float));
+            std::memcpy(g_camera + 24, c + 108, 3 * sizeof(float));
+            g_camera[43] = c[48];   // projection scales: x and y
+            g_camera[44] = c[53];
+            g_camera_stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        }
+    }
+    if (data && size == 1936) {   // the lighting buffer: the sun's direction at dword 20, its colours after it
+        const auto* c = static_cast<const float*>(data);
+        const float len = std::sqrt(c[20] * c[20] + c[21] * c[21] + c[22] * c[22]);
+        if (c[60] == 9999.5f && std::fabs(len - 1.0f) < 0.02f) {
+            std::scoped_lock lock{g_camera_mutex};
+            std::memcpy(g_camera + 27, c + 20, 16 * sizeof(float));
+        }
+    }
     if (!g_drive_motion || slot > 1 || !data) {
         return;
     }
@@ -77,13 +102,6 @@ void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
         }
     } else {
         return;
-    }
-    if (slot == 1) {   // the camera for mod scripts: the two 3x3 blocks at dwords 16 and 32 and the position at 108
-        std::scoped_lock lock{g_camera_mutex};
-        std::memcpy(g_camera, f.data() + 16, 12 * sizeof(float));
-        std::memcpy(g_camera + 12, f.data() + 32, 12 * sizeof(float));
-        std::memcpy(g_camera + 24, f.data() + 108, 3 * sizeof(float));
-        g_camera_stamp = std::chrono::steady_clock::now().time_since_epoch().count();
     }
     g_drive_motion->OnTaaConstants(slot, f.data(), size / 4);
 }
@@ -115,13 +133,14 @@ bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
 }
 } // namespace
 
-// The camera of the last frame (view block rows, the transposed block rows, position): 27 floats. 0 when none for a second.
+// The camera of the last frame (view block rows, the transposed block rows, position, then the sun: 16 floats from the direction, then the projection scales): 45 floats. 0 when none for a second.
 extern "C" int bbgpu_camera(float* out) {
     std::scoped_lock lock{g_camera_mutex};
     const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    g_camera_wanted = now;
     if (!g_camera_stamp || now - g_camera_stamp > 1000000000LL) return 0;
     std::memcpy(out, g_camera, sizeof g_camera);
-    return 27;
+    return 45;
 }
 
 
@@ -2900,7 +2919,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         return env && env[0] == '1';
     }();
     const bool note_taa = sniff_always || BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
-                          drive_aa->Active();
+                          drive_aa->Active() ||
+                          std::chrono::steady_clock::now().time_since_epoch().count() - g_camera_wanted.load() < 3000000000LL;
     // While neither consumer runs the camera is not refreshed: its readiness is dropped when they go off, so one
     // switched back on waits for both constant buffers again instead of an old camera.
     if (g_taa_noted && !note_taa && g_drive_motion) {
