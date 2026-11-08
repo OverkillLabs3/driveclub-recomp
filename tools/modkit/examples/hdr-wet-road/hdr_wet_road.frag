@@ -54,7 +54,7 @@ void main() {
 
     vec3 V = normalize(P0);                  // from the camera to the point
     vec3 R = reflect(V, N);
-    float fresnel = 0.04 + 0.96 * pow(1.0 - clamp(dot(-V, N), 0.0, 1.0), 5.0);
+    float fresnel = 0.02 + 0.98 * pow(1.0 - clamp(dot(-V, N), 0.0, 1.0), 5.0);   // mostly at grazing angles
 
     vec3 refl = vec3(0.0);
     float hit = 0.0;
@@ -71,8 +71,15 @@ void main() {
         float diff = -pos.z - sz;            // positive: the ray is behind the surface
         if (diff > 0.0 && diff < 2.0 + 0.04 * sz) {
             float edge = smoothstep(0.0, 0.1, min(min(q.x, 1.0 - q.x), min(q.y, 1.0 - q.y)));
-            vec2 rq = q + (vec2(jitter, fract(jitter * 7.7)) - 0.5) * px * 12.0 * roughness;
-            refl = texture(picture, rq).rgb;
+            // the further the reflected thing, the blurrier (a wet road is glossy, not a mirror)
+            float travelled = length(pos - P0);
+            float radius = (4.0 + travelled * 3.0) * roughness;
+            vec3 acc = vec3(0.0);
+            for (int k = 0; k < 8; ++k) {
+                float a = 6.2831853 * (float(k) + jitter) / 8.0;
+                acc += texture(picture, q + vec2(cos(a), sin(a)) * px * radius * (0.4 + 0.6 * fract(jitter * 13.0 + float(k) * 0.37))).rgb;
+            }
+            refl = (acc + texture(picture, q).rgb) / 9.0;
             hit = edge;
             break;
         }
@@ -85,6 +92,6 @@ void main() {
     }
     float k = flat_ground * wet;
     vec3 base = c * mix(1.0, darken, k);
-    vec3 out_c = mix(base, refl, clamp(fresnel * strength * hit * k * 2.2, 0.0, 0.9));
+    vec3 out_c = mix(base, refl, clamp(fresnel * strength * hit * k * 1.6, 0.0, 0.55));
     color = vec4(out_c, 1.0);
 }
