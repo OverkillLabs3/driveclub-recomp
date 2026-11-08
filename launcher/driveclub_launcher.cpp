@@ -399,9 +399,9 @@ int g_fgpace = -1, fgpace_saved = 0;  // "Frame generation pacing" row (BB_FG_PA
 int g_reflex = -1, reflex_saved = 0;  // "NVIDIA Reflex" row (BB_REFLEX); launcher.ini reflex=
 int g_inres = -1, g_wide = -1, g_aspect = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
-enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxSsr, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
+enum GfxRow { kGfxCar, kGfxOpp, kGfxScenery, kGfxShadows, kGfxParticles, kGfxDynres, kGfxBlur, kGfxDust,
               kGfxHaze, kGfxFxaa, kGfxRows };
-int g_gfx[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+int g_gfx[kGfxRows] = {-1};
 int g_motion_blur = -1;
 int g_prompts = -1, g_xbox_buttons = -1, g_ps_buttons = -1;
 int prompts_saved = 0, xbox_buttons_saved = 0, ps_buttons_saved = 0;
@@ -423,8 +423,8 @@ const wchar_t* MotionBlurReference() {
 HWND g_motion_blur_tooltip = nullptr;
 
 int g_blur_patch = -1;  // the "Disable motion blur and depth of field" patch row
-int gfx_saved[kGfxRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-const char* const kGfxKey[kGfxRows] = {"gfx_car=", "gfx_opponents=", "gfx_scenery=", "gfx_reflections=", "gfx_shadows=",
+int gfx_saved[kGfxRows] = {-1};
+const char* const kGfxKey[kGfxRows] = {"gfx_car=", "gfx_opponents=", "gfx_scenery=", "gfx_shadows=",
                                        "gfx_particles=", "gfx_dynres=", "gfx_motion_blur=", "gfx_lens_dust=",
                                        "gfx_heat_haze=", "gfx_fxaa="};
 int unlocked_saved = 0;  // "Unlocked" frame rate choice, from launcher.ini: 1 VRR, 2 no V-Sync  // indices of the render resolution and widescreen choices
@@ -1575,10 +1575,6 @@ void BuildModel() {
                            L"\x2022 High: the developers' own pre-race camera values.\n"
                            L"\x2022 Ultra: photo mode's values.",
                            {L"Game", L"High", L"Ultra"}, {"@gfx", "", ""}, 0);
-  g_gfx[kGfxSsr] = toggle(L"High-quality reflections",
-                          L"Uses photo mode's finer reflections on the road and the cars in races.\n"
-                          L"\x2022 The difference is hard to see.",
-                          "@gfx", false);
   g_gfx[kGfxShadows] = seg(L"Shadow edges",
                            L"How smooth the edges of shadows are.\n"
                            L"\x2022 Game: 32 samples near the car, 8 for shadows further than 4 m.\n"
@@ -1795,7 +1791,7 @@ void BuildModel() {
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
   g_cards.push_back({L"SCENE DETAIL", {g_gfx[kGfxCar], g_gfx[kGfxOpp], g_gfx[kGfxScenery],
                                       g_gfx[kGfxShadows], g_gfx[kGfxParticles]}, 0, kTabDetail});
-  g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
+  g_cards.push_back({L"REFLECTIONS", {g_mirror}, 0, kTabDetail});
   g_cards.push_back({L"CAMERA EFFECTS", {g_gfx[kGfxBlur], g_motion_blur, g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail});
   g_cards.push_back({L"NEURAL RENDERING", {g_neural, g_nr_sub[0], g_nr_sub[1], g_nr_sub[2], g_nr_sub[3], g_nr_sub[4]}, 0, kTabDetail,
                      L"Touches up the picture after upscaling. Needs a GeForce RTX card and NVIDIA's own nvngx_dlssnr.dll in the runtime folder: this release does not include it."});
@@ -2235,6 +2231,32 @@ int RenderMemoryTier() {
 
 int MemoryTier() { return (std::max)(RenderMemoryTier(), OutputMemoryTier()); }
 
+bool RenderAbove1080p() {
+  unsigned int w = 0, h = 0;
+  const auto read_size = [](int row, unsigned int& width, unsigned int& height) {
+    if (row < 0 || g_c[row].sel <= 0 || size_t(g_c[row].sel) >= g_c[row].items.size()) return false;
+    const wchar_t* text = g_c[row].items[g_c[row].sel].c_str();
+    for (; *text; ++text) {
+      if (*text >= L'0' && *text <= L'9' && swscanf(text, L"%ux%u", &width, &height) == 2) return true;
+    }
+    return false;
+  };
+  if (!read_size(g_aspect, w, h)) {
+    if (!UpscaleActive() && read_size(g_inres, w, h)) {
+      // Use the explicitly selected render resolution.
+    } else if (!read_size(g_outres, w, h)) {
+      w = unsigned(GetSystemMetrics(SM_CXSCREEN));
+      h = unsigned(GetSystemMetrics(SM_CYSCREEN));
+    }
+  }
+  if (UpscaleActive() && g_up >= 0) {
+    static constexpr float scale[] = {1.0f, 0.667f, 0.588f, 0.5f, 0.333f};
+    const int quality = (std::clamp)(g_c[g_up].sel, 0, int(sizeof(scale) / sizeof(scale[0])) - 1);
+    w = unsigned(w * scale[quality]); h = unsigned(h * scale[quality]);
+  }
+  return w > 1920 || h > 1080;
+}
+
 // Output / render choices per preset: indices into the "Output resolution" and "Render resolution" rows.
 void ApplyPreset(int preset) {
   if(preset==kPs4Preset) {
@@ -2247,7 +2269,7 @@ void ApplyPreset(int preset) {
   if (g_aspect >= 0) g_c[g_aspect].sel = 0;
   if (g_mirror >= 0) g_c[g_mirror].sel = kPresetMirror[preset];
   if (preset == 5) {  // Ultra: every feature of the Graphics tab on, at its best. Neural rendering stays as it is: it needs NVIDIA's own file.
-    for (int k : {kGfxCar, kGfxOpp, kGfxSsr, kGfxParticles, kGfxBlur, kGfxDust, kGfxHaze, kGfxFxaa})
+    for (int k : {kGfxCar, kGfxOpp, kGfxParticles, kGfxBlur, kGfxDust, kGfxHaze, kGfxFxaa})
       if (g_gfx[k] >= 0) g_c[g_gfx[k]].sel = 1;
     for (int k : {kGfxScenery, kGfxShadows})
       if (g_gfx[k] >= 0) g_c[g_gfx[k]].sel = 2;  // Ultra
@@ -3597,7 +3619,9 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     gc.own_car = sel(kGfxCar, 0);
     gc.opponents = sel(kGfxOpp, 0);
     gc.scenery = sel(kGfxScenery, 0);
-    gc.reflections = sel(kGfxSsr, 0);
+    // High quality SSR is costly at 1080p and below, but needed above 1080p.
+    // Use the selected render size, including custom aspect ratios.
+    gc.high_quality_ssr = RenderAbove1080p();
     gc.shadows = sel(kGfxShadows, 0);
     gc.particles = sel(kGfxParticles, 0);
     gc.motion_blur = BlurLocked() ? 1 : sel(kGfxBlur, 1);
