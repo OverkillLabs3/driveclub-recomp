@@ -64,6 +64,15 @@ vec2 project(vec3 v) {
     vec2 r = v.xy / max(-v.z, 1e-4);
     return vec2(((r.x - b.x) / b.z - a.z) / a.x, ((r.y - b.y) / b.w - a.w) / a.y);
 }
+// the same field with only the large patches: what the sun taps and the shadow test need (one noise lookup, not six)
+float density_light(vec3 w) {
+    float h = max(w.y - ground, 0.0);
+    float base = density0 * exp(-falloff * h);
+    if (base < 1e-5) return 0.0;
+    vec3 drift = vec3(p.time * 0.35, 0.0, p.time * 0.15);
+    float big = noise3(w * 0.011 * 1.0 + drift * 0.15) * 0.65 + noise3(w * 0.022 + drift * 0.15) * 0.35;
+    return base * (0.04 + 2.8 * smoothstep(0.30, 0.62, big) * 0.65) * thick;
+}
 float ign(vec2 x) { return fract(52.9829189 * fract(dot(x, vec2(0.06711056, 0.00583715)))); }
 
 void main() {
@@ -88,13 +97,17 @@ void main() {
     const float MAX_DIST = 260.0;
     float dist_surface = (z > SKY ? 1.0e4 : z) * len;                     // metres along the ray to the surface
     float dist = min(dist_surface, MAX_DIST);
+    // above this height the density is below what could be seen: do not march rays up into empty air
+    float h_top = log(max(density0 * 3.0 * thick, 1e-5) / 0.0006) / max(falloff, 1e-3);
+    float cam_h = cam_pos.y - ground;
+    if (dir.y > 1e-3) dist = min(dist, max((h_top - cam_h) / dir.y, 0.0));
 
     // the sky above gives the ambient light: the average of the open sky along the top of the picture (game channel order)
     vec3 sky_sum = vec3(0.0);
     float sky_w = 0.0;
-    for (int j = 0; j < 2; ++j)
-        for (int i = 0; i < 5; ++i) {
-            vec2 sq = vec2(0.1 + 0.2 * float(i), 0.04 + 0.07 * float(j));
+    for (int j = 0; j < 1; ++j)
+        for (int i = 0; i < 4; ++i) {
+            vec2 sq = vec2(0.15 + 0.23 * float(i), 0.05);
             float open = texture(linear_depth, sq).r > SKY ? 1.0 : 0.0;
             sky_sum += texture(picture, sq).rgb * open;
             sky_w += open;
@@ -110,7 +123,7 @@ void main() {
     float phase = mix((1.0 - g2 * g2) / pow(1.0 + g2 * g2 - 2.0 * g2 * cosg, 1.5),
                       (1.0 - g1 * g1) / pow(1.0 + g1 * g1 - 2.0 * g1 * cosg, 1.5), 0.55) / 12.566;
 
-    const int STEPS = 22;
+    const int STEPS = 18;
     float jitter = ign(uv * p.resolution + vec2(p.time * 37.0, p.time * 17.0));
     float trans = 1.0;
     vec3 insc = vec3(0.0);
@@ -124,8 +137,8 @@ void main() {
         float d = density(w);
         if (d < 1e-5) continue;
         // the sun through the fog: two taps towards the sun give the optical depth that shadows this point
-        float od = density(w + sun * 6.0) * 6.0 + density(w + sun * 18.0) * 12.0 + density(w + sun * 45.0) * 27.0;
-        float sun_vis = exp(-od * 0.8);
+        float od = density_light(w + sun * 8.0) * 8.0 + density_light(w + sun * 30.0) * 30.0;
+        float sun_vis = exp(-od * 0.65);
         // things standing in the picture between the fog and the sun (palms, pylons, grandstands) cast shafts into it
         {
             vec3 Pv = vec3(r.x, r.y, -1.0) * (t / len);
@@ -147,7 +160,7 @@ void main() {
         float step_t = exp(-d * dt);
         insc += trans * (1.0 - step_t) * light;
         trans *= step_t;
-        if (trans < 0.01) break;
+        if (trans < 0.02) break;
     }
     color = vec4(c * trans + insc, 1.0);
 }
