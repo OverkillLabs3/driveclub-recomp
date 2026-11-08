@@ -10,11 +10,14 @@ layout(binding = 1) uniform sampler2D linear_depth;
 layout(binding = 2) uniform sampler2D motion;
 layout(binding = 3) uniform sampler2D gbuffer;
 layout(binding = 4) uniform sampler2D params;
+layout(binding = 5) uniform sampler2D scene;
+layout(binding = 6) uniform sampler2D history;       // this slot's picture of the frame before; alpha holds the exposure
 layout(push_constant) uniform P {
     vec2 resolution;
     float time;
     float has_depth;
     vec4 values[4];
+    float has_history;
 } p;
 
 vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
@@ -28,13 +31,22 @@ void main() {
     float shoulder = p.values[1].x;
     float auto_strength = p.values[1].y;   // 0 off .. 1: exposure follows the scene's average brightness
     float auto_target = p.values[1].z;     // the average brightness the picture is brought to
+    float state_alpha = 1.0;
     if (auto_strength > 0.0) {
         float sum = 0.0;
         for (int j = 0; j < 5; ++j)
             for (int i = 0; i < 8; ++i)
                 sum += log2(max(luma(texture(picture, vec2(0.08 + 0.12 * float(i), 0.1 + 0.2 * float(j))).rgb), 1e-3));
         float avg = exp2(sum / 40.0);                         // geometric mean of 40 points
-        exposure += clamp(log2(max(auto_target, 1e-3) / avg), -2.5, 2.5) * auto_strength;
+        float target_stops = clamp(log2(max(auto_target, 1e-3) / avg), -2.5, 2.5);
+        float stops = target_stops;
+        float speed = p.values[1].w;                           // 0..1 per frame: how fast the eye adapts (1: at once)
+        if (p.has_history > 0.5 && speed < 0.999) {
+            float a = texelFetch(history, ivec2(0, 0), 0).a;   // last frame's exposure, stored in the alpha of the picture
+            if (a < 0.9) stops = mix((a - 0.5) * 16.0, target_stops, max(speed, 0.001));
+        }
+        state_alpha = 0.5 + stops / 16.0;
+        exposure += stops * auto_strength;
     }
     c *= exp2(exposure);
     vec3 o = c;
@@ -54,5 +66,5 @@ void main() {
     }
     float l = luma(o);
     o = max(mix(vec3(l), o, sat), 0.0);
-    color = vec4(o, 1.0);
+    color = vec4(o, state_alpha);
 }

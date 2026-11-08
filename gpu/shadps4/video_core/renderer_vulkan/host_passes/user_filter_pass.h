@@ -24,6 +24,8 @@ public:
         float time;
         float pad;
         float values[16];
+        float has_history;   // 1 when binding 6 holds this slot's picture of the frame before
+        float pad2[3];
     };
 
     /// What the HDR stage can also read (all in General layout): the view-space distance of every pixel, the motion
@@ -46,7 +48,7 @@ public:
 
     /// The image the last Render drew into (valid while Render returned its view).
     [[nodiscard]] vk::Image OutputImage() const {
-        return vk::Image(image);
+        return vk::Image(images[last]);
     }
     /// True when a filter is chosen for this slot (whether or not it loaded).
     [[nodiscard]] bool WantsToRun() const;
@@ -71,9 +73,12 @@ private:
     long long last_check_ms = 0;
     bool failed = false;
 
-    VideoCore::UniqueImage image;
-    vk::UniqueImageView image_view;
+    // two pictures taking turns: one is drawn into while the other, the frame before, is read at binding 6
+    VideoCore::UniqueImage images[2];
+    vk::UniqueImageView image_views[2];
     vk::Extent2D image_size{};
+    int last = 0;
+    bool history_valid = false;
 };
 
 } // namespace Vulkan::HostPasses

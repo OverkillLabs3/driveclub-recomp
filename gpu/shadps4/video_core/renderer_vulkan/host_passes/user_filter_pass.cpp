@@ -75,7 +75,7 @@ void UserFilterPass::Create(vk::Device device_, VmaAllocator allocator_, vk::For
         .addressModeU = vk::SamplerAddressMode::eClampToEdge,
         .addressModeV = vk::SamplerAddressMode::eClampToEdge,
     }));
-    std::array<vk::DescriptorSetLayoutBinding, 6> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 7> bindings{};
     for (u32 i = 0; i < bindings.size(); ++i) {
         bindings[i] = vk::DescriptorSetLayoutBinding{
             .binding = i,
@@ -107,6 +107,7 @@ bool UserFilterPass::LoadShader(const std::string& name) {
     loaded_name = name;
     failed = true;
     pipeline.reset();
+    history_valid = false;
     const auto path = FindFilter(name);
     if (path.empty()) {
         LOG_WARNING(Render_Vulkan, "Post filter '{}': no postfx/{}.spv in a mods folder", name, name);
@@ -196,34 +197,37 @@ bool UserFilterPass::LoadShader(const std::string& name) {
 }
 
 bool UserFilterPass::EnsureImage(vk::Extent2D size) {
-    if (image_view && image_size.width == size.width && image_size.height == size.height) {
+    if (image_views[0] && image_views[1] && image_size.width == size.width && image_size.height == size.height) {
         return true;
     }
     device.waitIdle();
-    image_view.reset();
-    image = VideoCore::UniqueImage(device, allocator);
-    image.Create(vk::ImageCreateInfo{
-        .imageType = vk::ImageType::e2D,
-        .format = format,
-        .extent = {size.width, size.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = vk::SampleCountFlagBits::e1,
-        .tiling = vk::ImageTiling::eOptimal,
-        .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
-                 vk::ImageUsageFlagBits::eTransferSrc,
-        .initialLayout = vk::ImageLayout::eUndefined,
-    });
-    auto view = device.createImageViewUnique({
-        .image = vk::Image(image),
-        .viewType = vk::ImageViewType::e2D,
-        .format = format,
-        .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
-    });
-    if (view.result != vk::Result::eSuccess) {
-        return false;
+    history_valid = false;
+    for (int n = 0; n < 2; ++n) {
+        image_views[n].reset();
+        images[n] = VideoCore::UniqueImage(device, allocator);
+        images[n].Create(vk::ImageCreateInfo{
+            .imageType = vk::ImageType::e2D,
+            .format = format,
+            .extent = {size.width, size.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = vk::SampleCountFlagBits::e1,
+            .tiling = vk::ImageTiling::eOptimal,
+            .usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled |
+                     vk::ImageUsageFlagBits::eTransferSrc,
+            .initialLayout = vk::ImageLayout::eUndefined,
+        });
+        auto view = device.createImageViewUnique({
+            .image = vk::Image(images[n]),
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        });
+        if (view.result != vk::Result::eSuccess) {
+            return false;
+        }
+        image_views[n] = std::move(view.value);
     }
-    image_view = std::move(view.value);
     image_size = size;
     return true;
 }
@@ -254,6 +258,9 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         return input;
     }
 
+    const int cur = history_valid ? 1 - last : last;
+    const int prev = 1 - cur;
+    const bool has_history = history_valid;
     const vk::ImageMemoryBarrier2 to_attachment{
         .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
         .srcAccessMask = vk::AccessFlagBits2::eShaderRead,
@@ -261,13 +268,13 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
         .oldLayout = vk::ImageLayout::eUndefined,
         .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-        .image = vk::Image(image),
+        .image = vk::Image(images[cur]),
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     };
     cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_attachment});
 
     const vk::RenderingAttachmentInfo attachment{
-        .imageView = *image_view,
+        .imageView = *image_views[cur],
         .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .loadOp = vk::AttachmentLoadOp::eDontCare,
         .storeOp = vk::AttachmentStoreOp::eStore,
@@ -287,8 +294,9 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         constants.values[i] = ModPostFx::Values(slot)[i].load(std::memory_order_relaxed);
     }
     constants.pad = extras.valid ? 1.0f : 0.0f;
+    constants.has_history = has_history ? 1.0f : 0.0f;
     // 0 picture; 1 view-space distance; 2 motion; 3 g-buffer; 4 view ray parameters (the picture stands in without them)
-    const std::array<vk::DescriptorImageInfo, 6> image_infos = {{
+    const std::array<vk::DescriptorImageInfo, 7> image_infos = {{
         {*sampler, input, input_layout},
         {*nearest, extras.valid ? extras.depth : input,
          extras.valid ? vk::ImageLayout::eGeneral : input_layout},
@@ -297,8 +305,11 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
          extras.valid ? vk::ImageLayout::eGeneral : input_layout},
         {*nearest, extras.valid ? extras.params : input, extras.valid ? vk::ImageLayout::eGeneral : input_layout},
         {*sampler, extras.scene ? extras.scene : input, extras.scene ? vk::ImageLayout::eGeneral : input_layout},
+        // 6: this slot's picture of the frame before (the picture stands in on the first frame)
+        {*sampler, has_history ? *image_views[prev] : input,
+         has_history ? vk::ImageLayout::eShaderReadOnlyOptimal : input_layout},
     }};
-    std::array<vk::WriteDescriptorSet, 6> set_writes{};
+    std::array<vk::WriteDescriptorSet, 7> set_writes{};
     for (u32 i = 0; i < set_writes.size(); ++i) {
         set_writes[i] = vk::WriteDescriptorSet{
             .dstBinding = i,
@@ -325,11 +336,13 @@ vk::ImageView UserFilterPass::Render(vk::CommandBuffer cmdbuf, vk::ImageView inp
         .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
         .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
         .newLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-        .image = vk::Image(image),
+        .image = vk::Image(images[cur]),
         .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
     };
     cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &to_sampled});
-    return *image_view;
+    last = cur;
+    history_valid = true;
+    return *image_views[cur];
 }
 
 } // namespace Vulkan::HostPasses
