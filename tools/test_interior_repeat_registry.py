@@ -12,6 +12,18 @@ class InteriorOwnershipTests(unittest.TestCase):
         mat["names"] = ["renamed-opaque-panel"]
         self.assertEqual(interior.classify([mat, pixel]), [42])
 
+    def test_textured_plastic_can_use_existing_grain_source(self):
+        pixel = shader(1, 42)
+        # Native car instances with these display names reference leather.material.
+        for name in ("plastic_coloured_textured_fine", "plastic_black_weave"):
+            mat = material(1, [pixel["uid"]],
+                           "assets/noodle/materials/vehicle/leather.material")
+            mat["names"] = [name]
+            self.assertEqual(interior.classify([mat, pixel]), [42])
+            # A plastic label cannot admit a different unqualified material.
+            mat["sources"] = ["assets/noodle/materials/vehicle/plastic_normalmapped.material"]
+            self.assertEqual(interior.classify([mat, pixel]), [])
+
     def test_every_material_owner_must_belong_to_cohort(self):
         a, b = shader(1, 42), shader(2, 42)
         leather = material(1, [a["uid"]],

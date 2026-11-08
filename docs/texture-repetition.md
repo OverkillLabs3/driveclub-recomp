@@ -2,7 +2,7 @@
 
 Some native textures form visible repeating rows across large surfaces.
 **Reduce texture repetition** breaks up compatible road, ground and wall layers,
-plus eligible leather and fabric grain in car interiors. It changes sampling,
+plus eligible textured plastic, leather and fabric grain in car interiors. It changes sampling,
 without replacing texture assets.
 
 ## The setting
@@ -35,10 +35,12 @@ before applying the positive surface rules.
 The separate interior cohort covers `leather`, `leather_glow`, `leather_stitched`,
 `fuzzy_felt` and `fuzzy_felt_stitched` families. Only qualifying grain normal/detail
 reads and a matching scalar grain/AO layer change. Albedo, stitches, alpha control
-data and other layers retain their original samples. Glass, paint, logos,
-seatbelts, perforated or embossed patterns, generic plastic/carbon and weather
-layers are excluded. This does not enable every dashboard, pillar or upholstery
-material.
+data and other layers retain their original samples. Some textured plastic uses
+the same native grain family as leather, including materials on interior-shell
+meshes. Selection follows the grain layer, not a plastic display name. Glass,
+paint, logos, seatbelts, perforated or embossed patterns, generic plastic/carbon
+families and rain/weather families are excluded. This does not enable every
+dashboard, pillar or upholstery material.
 
 All source families of every known owner of a program must qualify for the same
 cohort. Programs shared with an excluded family keep original sampling.
@@ -98,7 +100,7 @@ instructions. Generators print package SHA256 hashes and derive ownership again.
 
 ## Validation and limits
 
-- Nine world and four interior generator tests cover family exclusions, every-owner
+- Nine world and five interior generator tests cover family exclusions, every-owner
   and every-source closure, renamed display names and deterministic output.
 - Thirty-three production C++ selector cases cover qualifying layers, stitch/mask
   exclusions, decoded fabric normals, raw albedo rejection, UVs and sampler guards.
