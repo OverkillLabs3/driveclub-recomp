@@ -48,6 +48,24 @@ float atmo_exit(float r, float mu) {
 void main() {
     vec3 c = texture(picture, uv).rgb;
     if (p.has_depth < 0.5 || texture(linear_depth, uv).r < 1.0e5) { color = vec4(c, 1.0); return; }
+    // how much of the neighbourhood is sky: at the edge of a palm frond or a ridge the picture holds a blend of the thing and
+    // the game's own (bright) sky, so an edge pixel takes the colour of the thing round it instead and mixes MY sky in by the
+    // share of sky that is around it
+    vec2 texel = 1.0 / vec2(textureSize(linear_depth, 0));
+    float open_n = 0.0, geo_n = 0.0;
+    vec3 geo = vec3(0.0);
+    for (int k = 0; k < 12; ++k) {
+        float a = 6.2831853 * float(k) / 12.0;
+        vec2 o = vec2(cos(a), sin(a)) * (k < 8 ? 1.5 : 3.0) * texel;
+        if (texture(linear_depth, uv + o).r >= 1.0e5) {
+            open_n += 1.0;
+        } else {
+            geo += texture(picture, uv + o).rgb;
+            geo_n += 1.0;
+        }
+    }
+    float sky_weight = smoothstep(2.0, 11.0, open_n);
+    vec3 edge_colour = geo_n > 0.5 ? geo / geo_n : c;
     vec3 sun_v = normalize(p.values[0].xyz);          // towards the sun, view space (x right, y up, -z forward)
     float coverage = p.values[0].w;                   // cloud cover 0 .. 1
     vec3 up = normalize(p.values[1].xyz);             // the world's up in view space
@@ -128,5 +146,5 @@ void main() {
         float fade = smoothstep(0.015, 0.16, mu);
         sky = mix(sky, cloud_col * 0.55, cloud * fade * 0.92);
     }
-    color = vec4(max(sky, vec3(0.0)).bgr, 1.0);       // blue is .r at the HDR stage
+    color = vec4(mix(edge_colour, max(sky, vec3(0.0)).bgr, sky_weight), 1.0);       // blue is .r at the HDR stage
 }
