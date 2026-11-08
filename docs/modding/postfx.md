@@ -43,7 +43,7 @@ end)
 
 | Call | Does |
 |---|---|
-| `dcmod.postfx.use(name [, slot])` | Switches the filter `postfx/<name>.spv` on in a slot (0 to 2, 0 by default). `"off"` or `nil` switches the slot off. |
+| `dcmod.postfx.use(name [, slot])` | Switches the filter `postfx/<name>.spv` on in a slot (0 to 2 on the finished picture, 3 to 8 on the HDR picture, 0 by default). `"off"` or `nil` switches the slot off. |
 | `dcmod.postfx.param(i, value [, slot])` | Sets number `i` (0 to 15) of that slot's filter. Values are kept to a thousandth. |
 | `dcmod.postfx.scale(fraction, slot)` | The size a slot draws at, 0.05 to 1 of the picture (for chains that downsample, see the HDR stage). |
 

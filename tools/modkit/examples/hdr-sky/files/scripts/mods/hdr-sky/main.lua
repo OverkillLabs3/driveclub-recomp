@@ -1,4 +1,4 @@
--- A sky of its own on the HDR image (slot 7): gradient, sun disc and glow that follow the real sun (dcmod.sun) and the camera.
+-- A physically based sky with clouds on the HDR image (slot 7), lit by the real sun (dcmod.sun) and following the camera.
 dcmod.on_ready(function()
   dcmod.postfx.use("hdr_sky", 7)
 end)
