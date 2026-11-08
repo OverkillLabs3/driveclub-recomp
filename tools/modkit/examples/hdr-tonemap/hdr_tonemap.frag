@@ -26,6 +26,16 @@ void main() {
     if (p.has_depth < 0.5) { color = vec4(c, 1.0); return; }   // the finished picture is left alone
     float curve = p.values[0].x, exposure = p.values[0].y, white = max(p.values[0].z, 1.0), sat = p.values[0].w;
     float shoulder = p.values[1].x;
+    float auto_strength = p.values[1].y;   // 0 off .. 1: exposure follows the scene's average brightness
+    float auto_target = p.values[1].z;     // the average brightness the picture is brought to
+    if (auto_strength > 0.0) {
+        float sum = 0.0;
+        for (int j = 0; j < 5; ++j)
+            for (int i = 0; i < 8; ++i)
+                sum += log2(max(luma(texture(picture, vec2(0.08 + 0.12 * float(i), 0.1 + 0.2 * float(j))).rgb), 1e-3));
+        float avg = exp2(sum / 40.0);                         // geometric mean of 40 points
+        exposure += clamp(log2(max(auto_target, 1e-3) / avg), -2.5, 2.5) * auto_strength;
+    }
     c *= exp2(exposure);
     vec3 o = c;
     if (curve > 4.5) {
