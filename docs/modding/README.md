@@ -44,6 +44,8 @@ The older way still works: a folder or ZIP whose files sit at their game paths i
 | Car and model geometry (positions, triangles, skin weights, materials of a part) | `dcmod mesh` and Blender ([models.md](models.md)) |
 | A track under a new name | `dcmod track clone` ([tracks.md](tracks.md)) |
 | A shader over the whole picture, or on the HDR picture with depth (grading, fog, occlusion, depth of field), scripted | `dcmod.postfx`, `postfx/<name>.spv` ([postfx.md](postfx.md)) |
+| The camera and the sun (position, axes, where the sun is on the screen, its brightness), the colour the scene is lit with | `dcmod.camera`, `dcmod.sun`, `dcmod.set_sun_colour` ([lua.md](lua.md)) |
+| Ready-made looks to start from: tone mapping with automatic exposure, a procedural sky, light shafts and lens ghosts, wet road reflections, fog, ambient occlusion, depth of field, bloom, lens effects | the examples `hdr-tonemap`, `hdr-sky`, `hdr-sunrays`, `hdr-wet-road`, `hdr-depth-fx`, `hdr-bloom`, `hdr-grade`, `lens-filter` in `tools/modkit/examples` ([postfx.md](postfx.md)) |
 | The time of day and the weather of a race, scripted | `dcmod.time`, `dcmod.set_time`, `dcmod.race_weather` ([lua.md](lua.md)) |
 | A different chase, bonnet or dashboard camera | a `text.replace` patch on the camera file ([cameras.md](cameras.md)) |
 | One change for a whole group of cars, tracks or files | `"each"` in a patch ([patches.md](patches.md)) |
