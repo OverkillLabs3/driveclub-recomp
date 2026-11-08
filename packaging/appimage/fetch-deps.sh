@@ -89,8 +89,8 @@ fi
 # --- SDL3 with the audio backends the game needs ----------------------------------------------
 # A static or audio-less SDL3 leaves the game silent; the AppImage bundles this build.
 if [ ! -f "$deps/sdl3/lib/libSDL3.so.0" ]; then
-    for header in alsa/asoundlib.h pulse/pulseaudio.h pipewire-0.3/pipewire/pipewire.h; do
-        [ -f "/usr/include/$header" ] || echo "Note: /usr/include/$header is missing; SDL3 will be built without that audio backend." >&2
+    for header in alsa/asoundlib.h pulse/pulseaudio.h pipewire-0.3/pipewire/pipewire.h wayland-client.h libdecor-0/libdecor.h; do
+        [ -f "/usr/include/$header" ] || echo "Note: /usr/include/$header is missing; SDL3 will be built without that backend." >&2
     done
     src=$deps/src/SDL3-$sdl3_version
     if [ ! -f "$src/CMakeLists.txt" ]; then
@@ -104,7 +104,7 @@ if [ ! -f "$deps/sdl3/lib/libSDL3.so.0" ]; then
         -DSDL_SHARED=ON -DSDL_STATIC=OFF \
         -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF -DSDL_INSTALL_TESTS=OFF \
         -DSDL_ALSA=ON -DSDL_PULSEAUDIO=ON -DSDL_PIPEWIRE=ON -DSDL_JACK=OFF -DSDL_SNDIO=OFF \
-        -DSDL_WAYLAND=OFF -DSDL_WAYLAND_LIBDECOR=OFF >/dev/null
+        -DSDL_WAYLAND=ON -DSDL_WAYLAND_LIBDECOR=ON >/dev/null
     cmake --build "$deps/src/sdl3-build" --parallel "$jobs"
     cmake --install "$deps/src/sdl3-build"
     echo "SDL3 $sdl3_version installed"

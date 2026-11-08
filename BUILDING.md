@@ -80,7 +80,7 @@ Ubuntu 24.04 or newer:
       glslang-tools libx11-dev libxext-dev libxrandr-dev libxi-dev \
       libxcursor-dev libxfixes-dev libxinerama-dev libxss-dev libxtst-dev \
       libasound2-dev libpulse-dev libpipewire-0.3-dev \
-      libxkbcommon-dev libudev-dev libdrm-dev \
+      libxkbcommon-dev libudev-dev libdrm-dev libwayland-dev wayland-protocols libdecor-0-dev \
       nasm squashfs-tools
 
 Ubuntu 24.04 has no `libsdl3-dev` or `libtsl-robin-map-dev`, and its Vulkan headers are older
