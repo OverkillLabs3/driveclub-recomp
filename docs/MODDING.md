@@ -1,5 +1,7 @@
 # Making mods
 
+For patches, the command line kit and the file format references, see [modding/README.md](modding/README.md). This page describes how the game finds files.
+
 A mod is a set of files that replace the game's own files. When the game opens a file by name, DriveClub Recomp looks in the `mods` folder first, and uses your file if it is there. The game's folders are never changed, and removing a mod puts the original back.
 
 This page says what is known to work. What is only reported by players is marked.
@@ -16,7 +18,8 @@ Proven by the launcher itself, which uses the same route for its features: the v
 
 `mods` is the folder next to `DriveClub.exe`. Put files there by hand (both launchers), or use the **Mods** page of the new launcher:
 
-- **Import ZIP** or **Import folder** adds a mod to the library. An imported mod starts disabled.
+- **Import ZIP** or **Import folder** adds a mod to the library. An imported mod starts disabled. A mod that has `patches` in its `mod.json` is applied to your game files with `dcmod.exe` when it is enabled (see [modding/mod-format.md](modding/mod-format.md)); with such mods the launcher builds the result of all enabled mods together.
+- A mod's details show its category and, when its `mod.json` has `settings`, a control for each one; the values you choose are kept and applied when the mods are built ([modding/mod-format.md](modding/mod-format.md)).
 - The checkbox turns a mod on or off. Turning it on copies its files into `mods`; turning it off removes them.
 - **Move up** and **Move down** set the order. When two enabled mods have a file with the same path, the one higher in the list wins. Selecting a mod shows how many files it shares with other enabled mods.
 - **Open mods folder** opens `mods`.
@@ -34,7 +37,7 @@ my-mod.zip
   newdata/vehicles.csv
 ```
 
-The files may also sit inside one folder called `files`, `mods` or `app0`. One enclosing folder around the whole mod is fine too. `mod.json` is optional and only names the mod in the list:
+The files may also sit inside one folder called `files`, `mods` or `app0`. One enclosing folder around the whole mod is fine too. `mod.json` is optional. In its simplest form it only names the mod in the list; it can also list patches, requirements and scripts (see [modding/mod-format.md](modding/mod-format.md)):
 
 ```json
 { "name": "My mod", "version": "1.0", "author": "Your name", "description": "What it changes." }
@@ -66,12 +69,14 @@ Any file the game opens by name can be replaced the same way; the table lists th
 
 ## Resource packs
 
-`.rpk` files are the game's resource packs. They start with `EVOSLITL` and the text `Resource PacK file`. A pack lists every file it holds with its size, so you cannot change a file inside a pack to another length with a text editor. Two ways around that:
+`.rpk` files are the game's resource packs. They start with `EVOSLITL` and the text `Resource PacK file`. A pack lists every file it holds with its size, so you cannot change a file inside a pack to another length with a text editor. Ways around that:
 
-- Replace the whole pack with a pack you built.
-- Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`.
+- Use patches: a mod can change a resource inside a pack (`rpk.patch`, `rpk.set`, `tex.set`) and `dcmod` writes the pack again, so the mod does not carry the pack.
 
-This project does not include tools to unpack or build packs. Tools published by others (not part of this project; check their licences and limits):
+- Replace the whole pack with a pack you built (`dcmod rpk build`).
+- Edit text inside a pack without changing its length: pad with spaces and remove comments. This is how the launcher edits the graphics settings in `global.rpk`; with `dcmod` a text can be any length.
+
+The mod kit (`dcmod`, see [modding/README.md](modding/README.md)) lists, extracts, rebuilds and patches packs, exports model geometry to glTF and back (`dcmod mesh`, for Blender), lists and replaces sound streams (`dcmod audio`), replaces the game's shaders (`dcmod shader`), and a mod can change the inside of a pack with patches instead of shipping the pack. Tools published by others (not part of this project; check their licences and limits):
 
 - [DriveClubFS](https://github.com/Nenkai/DriveClubFS) by Nenkai unpacks the `.ndx` and `.dat` archives and extracts textures, binary resources and XML from `.rpk` files. Its README lists versions 1.00 and 1.28 as tested. It is an unpacker and has no function to rebuild an archive or a pack.
 - [010GameTemplates](https://github.com/Nenkai/010GameTemplates/tree/main/Evolution%20Studios/DriveClub) has 010 Editor templates for the archive, index, tour and save formats.

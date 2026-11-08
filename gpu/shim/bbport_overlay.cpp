@@ -25,6 +25,10 @@
 #include "bbport_neural_settings.h"
 #include "bbport_safe_start.h"
 #include "imgui.h"
+#include "imgui_internal.h"
+#include <map>
+#include <iterator>
+#include <cctype>
 #include "bbport_scene_debug.h"
 #include "../../src/runtime_exit.h"
 #include "../../src/exit_dialog.h"
@@ -55,6 +59,7 @@ asm(".section .rodata\n"
     ".previous\n");
 #endif
 extern "C" int runtime_file_translate(const char* guest, char* out, size_t size);
+extern "C" const char* runtime_file_mods_dir(int i);
 extern "C" const unsigned char bb_font_ttf[];
 extern "C" const unsigned char bb_font_ttf_end[];
 
@@ -1004,8 +1009,131 @@ bool HandleEvent(const SDL_Event& event) {
     }
 }
 
+namespace {
+struct ModItemData {
+    std::string id;
+    int kind = 0;
+    float x = 0, y = 0, w = 0, h = 0, size = 20;
+    uint32_t color = 0xFFFFFFFF;
+    std::chrono::steady_clock::time_point until;
+    std::string text;
+};
+std::mutex mod_mutex; // the items of mod scripts, never held together with imgui_mutex
+std::vector<ModItemData> mod_items;
+std::atomic<bool> mod_items_active{false};
+} // namespace
+
+void ModItem(const std::string& id, int kind, float x, float y, float w, float h, float size, uint32_t color, int ttl_ms,
+             const std::string& text) {
+    std::scoped_lock lock{mod_mutex};
+    ModItemData item;
+    item.id = id;
+    item.kind = kind;
+    item.x = x;
+    item.y = y;
+    item.w = w;
+    item.h = h;
+    item.size = size;
+    item.color = color;
+    item.until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ttl_ms > 0 ? ttl_ms : 1000);
+    item.text = text;
+    for (ModItemData& existing : mod_items) {
+        if (existing.id == id) {
+            existing = std::move(item);
+            return;
+        }
+    }
+    if (mod_items.size() < 256) {
+        mod_items.push_back(std::move(item));
+        mod_items_active = true;
+    }
+}
+
+void ModItemClear(const std::string& id) {
+    std::scoped_lock lock{mod_mutex};
+    std::erase_if(mod_items, [&](const ModItemData& item) { return item.id == id; });
+    mod_items_active = !mod_items.empty();
+}
+
+// The pictures of mod scripts (dcmod.ui.image): images/<name>.png in a mods folder, 8 bit RGB or RGBA, at most 2048 by
+// 2048, loaded the first time a script draws them and kept. A name that cannot be loaded draws nothing.
+static ImTextureData* ModImage(const std::string& name) {
+    static std::map<std::string, ImTextureData*> cache;
+    const auto found = cache.find(name);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    ImTextureData* texture = nullptr;
+    bool valid = !name.empty() && name.size() < 64;
+    for (const char c : name) {
+        valid = valid && (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+    }
+    for (int i = 0; valid && !texture; ++i) {
+        const char* mods = runtime_file_mods_dir(i);
+        if (!mods) {
+            break;
+        }
+        std::ifstream file(std::string(mods) + "/images/" + name + ".png", std::ios::binary);
+        if (!file) {
+            continue;
+        }
+        std::vector<unsigned char> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        int width = 0, height = 0;
+        std::vector<unsigned char> rgba;
+        if (!DecodePng(png, width, height, rgba)) {
+            std::printf("Mod: the picture %s is not an 8 bit RGB or RGBA PNG of at most 2048 by 2048\n", name.c_str());
+            std::fflush(stdout);
+            break;
+        }
+        texture = IM_NEW(ImTextureData)();
+        texture->Create(ImTextureFormat_RGBA32, width, height);
+        std::memcpy(texture->Pixels, rgba.data(), rgba.size());
+        texture->UseColors = true;
+        ImGui::RegisterUserTexture(texture);
+    }
+    cache[name] = texture;
+    return texture;
+}
+
+// The pixels of a PNG file (8 bit RGB or RGBA, at most 2048 by 2048) for the render side: the texture a post-processing
+// filter ships next to its shader (user_filter_pass.cpp). False when the file is missing or not such a PNG.
+bool bbgpu_load_png_file(const std::string& path, int& width, int& height, std::vector<unsigned char>& rgba) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    const std::vector<unsigned char> png((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    return DecodePng(png, width, height, rgba);
+}
+
+// Present thread, inside Render (the ImGui frame is open): draws what mod scripts asked for and drops what has run out.
+static void DrawModItems(ImVec2 display) {
+    std::vector<ModItemData> items;
+    {
+        std::scoped_lock lock{mod_mutex};
+        const auto now = std::chrono::steady_clock::now();
+        std::erase_if(mod_items, [&](const ModItemData& item) { return item.until < now; });
+        items = mod_items;
+        mod_items_active = !mod_items.empty();
+    }
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    for (const ModItemData& item : items) {
+        const ImVec2 at(item.x * display.x, item.y * display.y);
+        if (item.kind == 1) {
+            draw->AddRectFilled(at, ImVec2(at.x + item.w * display.x, at.y + item.h * display.y), item.color);
+        } else if (item.kind == 2) {
+            if (ImTextureData* texture = ModImage(item.text)) {
+                draw->AddImage(texture->GetTexRef(), at, ImVec2(at.x + item.w * display.x, at.y + item.h * display.y),
+                               ImVec2(0, 0), ImVec2(1, 1), item.color);
+            }
+        } else {
+            draw->AddText(ImGui::GetFont(), item.size > 4.0f ? item.size : 20.0f, at, item.color, item.text.c_str());
+        }
+    }
+}
+
 bool Visible() {
-    return initialized && (runtime_exit_captures() || menu_open || text_entry_active || note_active || trophy_active || BbSettings::Get().show_fps ||
+    return initialized && (mod_items_active.load() || runtime_exit_captures() || menu_open || text_entry_active || note_active || trophy_active || BbSettings::Get().show_fps ||
                            BbSettings::Get().show_pedals || picture_row >= 0);
 }
 
@@ -1118,6 +1246,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (BbSettings::Get().show_pedals && !menu_open) {
         PedalPanel(pedal_kind, pedal_throttle, pedal_brake, pedal_clutch);
     }
+    DrawModItems(io.DisplaySize);
     if (picture_row >= 0 && !menu_open) {
         PicturePanel();
     }

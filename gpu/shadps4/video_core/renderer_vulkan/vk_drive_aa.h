@@ -15,6 +15,7 @@
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/renderer_vulkan/vk_amd_ffx.h"
+#include "video_core/renderer_vulkan/host_passes/user_filter_pass.h"
 #include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/texture_cache/image.h"
@@ -169,8 +170,16 @@ private:
     vk::UniqueDescriptorSetLayout copy_desc_layout;
     vk::UniquePipelineLayout copy_pipeline_layout;
     vk::UniquePipeline copy_pipeline;
+    /// For the HDR filters of mods: view-space distance (R32F) and the view ray parameters (RGBA32F, 4 by 1).
+    VideoCore::UniqueImage linear_depth_image, params_image;
+    vk::UniqueImageView linear_depth_view, params_view;
+    bool mod_buffers_valid = false; ///< written by this frame's motion pass
     VideoCore::UniqueImage depth_copy_image;
     vk::UniqueImageView depth_copy_view;
+    /// The HDR filters of a mod (slots 3 to 8, docs/modding/postfx.md): run on the upscaled picture before the
+    /// game's own bloom and tone mapping.
+    HostPasses::UserFilterPass hdr_filter[6];
+    bool hdr_filters_created = false;
     vk::UniqueDescriptorSetLayout dc_motion_desc_layout;
     vk::UniquePipelineLayout dc_motion_pipeline_layout;
     vk::UniquePipeline dc_motion_pipeline;

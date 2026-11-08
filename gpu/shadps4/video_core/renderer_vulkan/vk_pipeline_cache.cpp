@@ -32,6 +32,8 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 
+extern "C" const char* runtime_file_mods_dir(int i);
+
 namespace Vulkan {
 
 using Shader::HwStage;
@@ -1056,7 +1058,9 @@ std::string PipelineCache::GetShaderName(Shader::HwStage stage, u64 hash,
 
 void PipelineCache::DumpShader(std::span<const u32> code, u64 hash, Shader::HwStage stage,
                                size_t perm_idx, std::string_view ext) {
-    if (!EmulatorSettings.IsDumpShaders()) {
+    // DC_DUMP_SHADERS=1 writes every shader the game compiles (also in release builds) for modders: see docs/modding
+    static const bool modder_dump = std::getenv("DC_DUMP_SHADERS") != nullptr;
+    if (!EmulatorSettings.IsDumpShaders() && !modder_dump) {
         return;
     }
 
@@ -1076,15 +1080,31 @@ std::optional<std::vector<u32>> PipelineCache::GetShaderPatch(u64 hash, Shader::
 
     using namespace Common::FS;
     const auto patch_dir = GetUserPath(PathType::ShaderDir) / "patch";
-    if (!std::filesystem::exists(patch_dir)) {
-        std::filesystem::create_directories(patch_dir);
+    // looked up once: without a patch folder anywhere (the usual case) a shader costs no file system calls
+    static const bool any_folder = [&] {
+        if (std::filesystem::exists(patch_dir)) return true;
+        for (int i = 0; const char* mods = runtime_file_mods_dir(i); ++i) {
+            if (std::filesystem::exists(std::filesystem::path(mods) / "shaders")) return true;
+        }
+        return false;
+    }();
+    if (!any_folder) {
+        return {};
     }
     const auto filename = fmt::format("{}.{}", GetShaderName(stage, hash, perm_idx), ext);
-    const auto filepath = patch_dir / filename;
+    auto filepath = patch_dir / filename;
+    // a mod's shaders folder comes first
+    for (int i = 0; const char* mods = runtime_file_mods_dir(i); ++i) {
+        const auto candidate = std::filesystem::path(mods) / "shaders" / filename;
+        if (std::filesystem::exists(candidate)) {
+            filepath = candidate;
+            break;
+        }
+    }
     if (!std::filesystem::exists(filepath)) {
         return {};
     }
-    const auto file = IOFile{patch_dir / filename, FileAccessMode::Read};
+    const auto file = IOFile{filepath, FileAccessMode::Read};
     std::vector<u32> code(file.GetSize() / sizeof(u32));
     file.Read(code);
     return code;

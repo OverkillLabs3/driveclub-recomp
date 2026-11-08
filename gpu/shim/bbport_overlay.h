@@ -49,6 +49,13 @@ void SetTextEntry(bool active, const std::string& prompt, const std::string& tex
 
 /// Any thread: a short line shown at the top of the screen for a few seconds (a hotkey's new value).
 void Note(const std::string& text);
+/// Any thread: something a mod script draws (dcmod.ui in the mod kit). `id` replaces an item with the same id; the item
+/// goes away after `ttl_ms` milliseconds. kind 0 is text at (x, y) with `size` pixels of height, kind 1 a filled
+/// rectangle of w by h; x, y, w and h are fractions of the screen; color is 0xAABBGGRR as ImGui packs it.
+void ModItem(const std::string& id, int kind, float x, float y, float w, float h, float size, uint32_t color, int ttl_ms,
+             const std::string& text);
+void ModItemClear(const std::string& id);
+
 /// A trophy banner: grade 0 platinum, 1 gold, 2 silver, 3 bronze.
 void Trophy(int id, int grade, const std::string& title, const std::string& description);
 
