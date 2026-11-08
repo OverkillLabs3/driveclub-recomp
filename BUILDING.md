@@ -26,6 +26,37 @@ For a separate diagnostic executable, use `BB_DIAGNOSTICS=ON bash build.sh`; see
 This builds the runtime and the launcher, copies the runtime libraries next to them and writes
 `release/driveclub-recomp-1.0-win64.zip`. The zip needs nothing installed on the player's machine.
 
+## CI
+
+The Linux workflow needs no MSYS2 on the developer's machine and can be started with
+**Run workflow** (`workflow_dispatch`).
+
+- `.github/workflows/appimage.yml` (`ubuntu-24.04`) builds the native Linux runtime with
+  `build-linux.sh` (which compiles `src/runtime*.c`) and runs `tools/font_cjk_fallback_test.c`.
+  This is the fast compile/regression gate for the HLE sources.
+
+`DriveClubGame.exe` is a WIN32-only CMake target that links `onecore`, `bcrypt` and `ws2_32`,
+so a native Linux runner cannot produce it; build it locally with `bash build.sh` as described
+in [Game runtime](#game-runtime).
+
+### CJK font fallback
+
+`src/runtime_font_fallback.inc` resolves a glyph missing from the game's primary font against a
+shared CJK face. The face is loaded once, on the first missing glyph, from the first of:
+
+1. `BB_FONT_CJK_FALLBACK` — an absolute host path or a `/app0/...` guest path; `0` or `off`
+   disables the fallback.
+2. `/app0/newui/fonts/tradchinese-dfheistdw7-gb.ttf` and the other CJK faces in `newui/fonts`,
+   resolved through the game's path translator (so a `mods/` copy is picked up).
+3. `mods/newui/fonts/...` or `newui/fonts/...` relative to the working directory, for when the
+   guest-side miss cache has already marked `/app0/newui/fonts` as absent.
+
+Run the regression test from the repository root (no game files needed):
+
+    cc -O2 -pthread -I. -Isrc tools/font_cjk_fallback_test.c -lm -o out/font_cjk_fallback_test
+    out/font_cjk_fallback_test
+    BB_TEST_CJK_FONT=/path/to/a-cjk.ttf out/font_cjk_fallback_test
+
 ## Linux (x86_64)
 
 The Linux support comes from the upstream ARM Linux branch
