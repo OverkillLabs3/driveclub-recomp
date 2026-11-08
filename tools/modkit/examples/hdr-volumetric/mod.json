@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.hdr-volumetric",
+  "name": "Volumetric sunlight (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: sunlight scattered by the air along every view ray, with shafts cut by palms, pylons and buildings (a march through the depth buffer towards the sun).",
+  "scripts": [ "scripts/mods/hdr-volumetric/main.lua" ]
+}
