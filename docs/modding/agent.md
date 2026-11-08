@@ -1,18 +1,12 @@
 # Working with an AI agent (MCP)
 
-`dcmod mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on standard input and output. An agent that speaks MCP (Claude Code, Claude Desktop, Cursor and others) can look through the game's files, write and test patches, and build mods with the same commands a person uses.
+`dcmod mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server on standard input and output. An agent that speaks MCP (most agent programs do) can look through the game's files, write and test patches, and build mods with the same commands a person uses.
 
 ## Set it up
 
 Give the server your game folders (the same ones as `launcher.ini`) and a folder for your mods.
 
-Claude Code:
-
-```bash
-claude mcp add dcmod -- dcmod.exe mcp --update "D:\Game\Update" --base "D:\Game\Base" --mods "D:\my-mods"
-```
-
-Any client that reads a JSON file (`.mcp.json`, `claude_desktop_config.json`, Cursor's `mcp.json`):
+Any client that reads a JSON file of MCP servers (its settings say where) takes this entry; a command line client takes the same command and arguments:
 
 ```json
 {
