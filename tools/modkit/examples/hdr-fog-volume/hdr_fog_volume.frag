@@ -53,6 +53,7 @@ float density(vec3 w) {
     if (base < 1e-5) return 0.0;
     vec3 drift = vec3(p.time * 0.35, 0.0, p.time * 0.15);                 // the wind carries the fog along
     float big = fbm3(w * 0.011 + drift * 0.15);                           // large patches: thick here, clear there
+    if (big < 0.30) return base * 0.04 * thick;                           // clear air: skip the fine layer
     float fine = fbm3(w * 0.055 + drift);                                 // billows inside the patches
     float shape = smoothstep(0.30, 0.62, big) * (0.35 + 0.95 * smoothstep(0.28, 0.72, fine));
     return base * (0.04 + 2.8 * shape) * thick;
@@ -123,7 +124,7 @@ void main() {
     float phase = mix((1.0 - g2 * g2) / pow(1.0 + g2 * g2 - 2.0 * g2 * cosg, 1.5),
                       (1.0 - g1 * g1) / pow(1.0 + g1 * g1 - 2.0 * g1 * cosg, 1.5), 0.55) / 12.566;
 
-    const int STEPS = 18;
+    const int STEPS = 14;
     float jitter = ign(uv * p.resolution + vec2(p.time * 37.0, p.time * 17.0));
     float trans = 1.0;
     vec3 insc = vec3(0.0);

@@ -88,7 +88,7 @@ void main() {
     float r0 = R_EARTH + 2.0;
     float t_max = atmo_exit(r0, mu_s);
 
-    const int N = 12, NL = 5;
+    const int N = 8, NL = 3;
     float ds = t_max / float(N);
     vec3 sum_r = vec3(0.0), sum_m = vec3(0.0);
     float od_r = 0.0, od_m = 0.0;
