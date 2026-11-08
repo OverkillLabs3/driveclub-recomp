@@ -182,13 +182,21 @@ struct Info : InfoPersistent {
         u32 num_pointer_reads;
     };
     static constexpr u32 MaxUdSnapshots = 6;
-    static inline thread_local UdSnapshot ud_snapshots[MaxUdSnapshots];
-    static inline thread_local u32 num_ud_snapshots = 0;
+    // Function local, not `inline thread_local` members: with thin LTO on Windows the linker cannot find the
+    // thread-local initialization routine of a member that is shared by several files.
+    static UdSnapshot* UdSnapshots() noexcept {
+        thread_local UdSnapshot snapshots[MaxUdSnapshots];
+        return snapshots;
+    }
+    static u32& NumUdSnapshots() noexcept {
+        thread_local u32 count = 0;
+        return count;
+    }
 
     const UdSnapshot* Snapshot() const noexcept {
-        for (u32 i = 0; i < num_ud_snapshots; ++i) {
-            if (ud_snapshots[i].info == this) {
-                return &ud_snapshots[i];
+        for (u32 i = 0; i < NumUdSnapshots(); ++i) {
+            if (UdSnapshots()[i].info == this) {
+                return &UdSnapshots()[i];
             }
         }
         return nullptr;

@@ -1026,12 +1026,12 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         const auto* reads = reinterpret_cast<const Shader::Info::PointerRead*>(in);
         in += stage.num_pointer_reads * sizeof(Shader::Info::PointerRead);
         const auto* words = reinterpret_cast<const u32*>(in);
-        Shader::Info::ud_snapshots[i] = {stage.info,       words,         stage.ud_size,
+        Shader::Info::UdSnapshots()[i] = {stage.info,       words,         stage.ud_size,
                                          words + stage.ud_size, stage.flat_size, stage.pgm_base,
                                          reads,            stage.num_pointer_reads};
         in += AlignPacket((stage.ud_size + stage.flat_size) * sizeof(u32));
     }
-    Shader::Info::num_ud_snapshots = packet.num_stages;
+    Shader::Info::NumUdSnapshots() = packet.num_stages;
     self.num_ring_stages = packet.num_stages;
     const AmdGpu::ComputeProgram* cs = nullptr;
     if (packet.kind == PacketKind::Dispatch || packet.kind == PacketKind::IndirectDispatch) {
@@ -1048,7 +1048,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         // still queued here (WriteData, DMA) changed them after that thread read them.
         static u32 flat_reports = 0;
         for (u32 i = 0; i < packet.num_stages && flat_reports < 32; ++i) {
-            const auto& snapshot = Shader::Info::ud_snapshots[i];
+            const auto& snapshot = Shader::Info::UdSnapshots()[i];
             const auto& srt = snapshot.info->srt_info;
             // Stages the pipeline selection did not refresh (no user data) keep their tables.
             if (!srt.walker_func || snapshot.flat_size == 0 || snapshot.user_data_size == 0) {
@@ -1125,7 +1125,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         self.DrawRecord(static_cast<const GraphicsPipeline*>(packet.pipeline), packet.prepared,
                         packet.is_indexed, packet.index_offset);
     }
-    Shader::Info::num_ud_snapshots = 0;
+    Shader::Info::NumUdSnapshots() = 0;
     self.num_ring_stages = 0;
     if (self.constant_ring) {
         self.constant_ring->Stamp(packet.ring_end);
