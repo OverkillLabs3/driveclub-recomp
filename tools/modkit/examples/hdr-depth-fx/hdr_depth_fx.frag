@@ -118,7 +118,19 @@ void main() {
 
     // fog: the further, the more of the colour of the sky above (so the fog always fits the weather and the hour),
     // tinted by the fog colour; the sky itself gets its own amount
-    vec3 sky_here = texture(picture, vec2(uv.x, 0.10)).rgb;
+    // the sky colour is the average of the open sky across the top of the picture (a single lookup above the pixel hits
+    // palm crowns and pylons and paints streaks); toward the horizon it is mixed with the colour near the horizon line
+    vec3 sky_sum = vec3(0.0);
+    float sky_w = 0.0;
+    for (int j = 0; j < 3; ++j) {
+        for (int i = 0; i < 5; ++i) {
+            vec2 sq = vec2(0.1 + 0.2 * float(i), 0.04 + 0.06 * float(j));
+            float open = texture(linear_depth, sq).r > SKY ? 1.0 : 0.0;
+            sky_sum += texture(picture, sq).rgb * open;
+            sky_w += open;
+        }
+    }
+    vec3 sky_here = sky_w > 0.5 ? sky_sum / sky_w : texture(picture, vec2(uv.x, 0.10)).rgb;
     vec3 fog_col = sky_here * fog_color * fog_bright;
     float f = sky ? fog_sky : (1.0 - exp(-fog_density * z));
     c = mix(c, fog_col, clamp(f * fog_strength, 0.0, 1.0));
