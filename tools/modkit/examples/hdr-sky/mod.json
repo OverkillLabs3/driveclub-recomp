@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.hdr-sky",
+  "name": "Procedural sky (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: a gradient sky with a sun disc and glow that follow the real sun and the camera, painted where the depth says sky.",
+  "scripts": [ "scripts/mods/hdr-sky/main.lua" ]
+}

@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.track-map",
+  "name": "Track map (example script mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example script mod: a map of the track that draws itself from where the car has been, with the car as a marker. Shows dcmod.car().position.",
+  "scripts": [ "scripts/mods/track-map/main.lua" ]
+}

@@ -83,8 +83,11 @@ static void apply_guest_patches(void) {
  * registers whenever one is hit (at most BB_GUEST_TRACE_MAX times each, default 20), then lets the
  * instruction run: restore the byte, single-step it, put the int3 back. Windows only. */
 #ifdef _WIN32
-#define TRACE_MAX 32
-static struct { uintptr_t addr; unsigned char orig; int hits; } traces[TRACE_MAX];
+#define TRACE_MAX 160
+/* Plugin hooks (dc_plugin.h) use the same breakpoints: `cb` is set, the registers go to the plugin, and what it changes comes back. */
+typedef struct DcRegs { uint64_t rax,rbx,rcx,rdx,rsi,rdi,rbp,rsp,r8,r9,r10,r11,r12,r13,r14,r15,rip; } DcRegs;
+typedef void (*DcHookFn)(DcRegs *regs, void *user);
+static struct { uintptr_t addr; unsigned char orig; int hits; DcHookFn cb; void *user; } traces[TRACE_MAX];
 static int trace_count, trace_limit=20;
 static __thread int trace_rearm=-1;
 /* BB_GUEST_TRACE_DUMP="reg:len" also hex-dumps len bytes at that register on every hit. */
@@ -111,9 +114,8 @@ static LONG CALLBACK trace_handler(EXCEPTION_POINTERS *e) {
     CONTEXT *c=e->ContextRecord;
     DWORD code=e->ExceptionRecord->ExceptionCode;
     if (code==EXCEPTION_SINGLE_STEP && trace_rearm>=0) {
-        DWORD old;
         unsigned char *p=(unsigned char*)traces[trace_rearm].addr;
-        VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old); *p=0xCC; VirtualProtect(p,1,old,&old);
+        *p=0xCC;
         FlushInstructionCache(GetCurrentProcess(),p,1);
         trace_rearm=-1;
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -122,7 +124,13 @@ static LONG CALLBACK trace_handler(EXCEPTION_POINTERS *e) {
     uintptr_t at=(uintptr_t)e->ExceptionRecord->ExceptionAddress;
     for (int i=0;i<trace_count;++i) {
         if (traces[i].addr!=at) continue;
-        if (traces[i].hits++<trace_limit) {
+        if (traces[i].cb) {
+            DcRegs r={c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp,c->R8,c->R9,c->R10,c->R11,c->R12,c->R13,c->R14,c->R15,c->Rip};
+            traces[i].cb(&r,traces[i].user);
+            c->Rax=r.rax;c->Rbx=r.rbx;c->Rcx=r.rcx;c->Rdx=r.rdx;c->Rsi=r.rsi;c->Rdi=r.rdi;c->Rbp=r.rbp;c->Rsp=r.rsp;
+            c->R8=r.r8;c->R9=r.r9;c->R10=r.r10;c->R11=r.r11;c->R12=r.r12;c->R13=r.r13;c->R14=r.r14;c->R15=r.r15;
+            if (r.rip!=at) { c->Rip=r.rip; return EXCEPTION_CONTINUE_EXECUTION; } /* the plugin moved execution: the original instruction is skipped */
+        } else if (traces[i].hits++<trace_limit) {
             printf("TRACE %#llx #%d rdi=%#llx rsi=%#llx rdx=%#llx rcx=%#llx rax=%#llx rbx=%#llx "
                    "r12=%#llx r13=%#llx r14=%#llx r15=%#llx rsp=%#llx ret=%#llx\n",
                    (unsigned long long)at,traces[i].hits,(unsigned long long)c->Rdi,
@@ -133,21 +141,24 @@ static LONG CALLBACK trace_handler(EXCEPTION_POINTERS *e) {
             trace_dump(c);
             fflush(stdout);
         }
-        DWORD old;
         unsigned char *p=(unsigned char*)at;
-        VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old); *p=traces[i].orig; VirtualProtect(p,1,old,&old);
+        *p=traces[i].orig;
         FlushInstructionCache(GetCurrentProcess(),p,1);
         c->Rip=at;
-        if (traces[i].hits<trace_limit) { c->EFlags|=0x100; trace_rearm=i; } /* trap flag: re-arm after one step */
+        if (traces[i].cb || traces[i].hits<trace_limit) { c->EFlags|=0x100; trace_rearm=i; } /* trap flag: re-arm after one step */
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     return EXCEPTION_CONTINUE_SEARCH;
+}
+static void ensure_trace_handler(void) {
+    static int done;
+    if (!done) { done=1; AddVectoredExceptionHandler(1,trace_handler); }
 }
 static void install_guest_traces(void) {
     const char *spec=getenv("BB_GUEST_TRACE");
     if (!spec || !*spec) return;
     if (getenv("BB_GUEST_TRACE_MAX")) trace_limit=atoi(getenv("BB_GUEST_TRACE_MAX"));
-    AddVectoredExceptionHandler(1,trace_handler);
+    ensure_trace_handler();
     char buf[1024]; snprintf(buf,sizeof buf,"%s",spec);
     for (char *item=strtok(buf,","); item && trace_count<TRACE_MAX; item=strtok(NULL,",")) {
         uintptr_t addr=(uintptr_t)strtoull(item,NULL,16);
@@ -156,7 +167,6 @@ static void install_guest_traces(void) {
         if (!VirtualProtect(p,1,PAGE_EXECUTE_READWRITE,&old)) continue;
         traces[trace_count].addr=addr; traces[trace_count].orig=*p; traces[trace_count].hits=0;
         *p=0xCC;
-        VirtualProtect(p,1,old,&old);
         FlushInstructionCache(GetCurrentProcess(),p,1);
         printf("Guest trace at %#llx\n",(unsigned long long)addr);
         ++trace_count;
@@ -228,6 +238,72 @@ static DWORD WINAPI sampler(void *arg) {
     }
     return 0;
 }
+/* ---- native plugins (src/dc_plugin.h) ---- */
+extern const char *runtime_file_mods_dir(int i);
+typedef struct DcPluginApi {
+    uint32_t version, size;
+    void (*log)(const char *);
+    int (*read)(uint64_t, void *, uint64_t);
+    int (*write)(uint64_t, const void *, uint64_t);
+    int (*hook)(uint64_t, DcHookFn, void *);
+} DcPluginApi;
+static void plugin_log(const char *text) { printf("Plugin: %.400s\n", text ? text : ""); fflush(stdout); }
+static int guest_ok(uint64_t a, uint64_t n, int write) {
+    if (!n || !a || a + n < a) return -1;  /* any address of the process: the game's code and data, its stacks and heaps */
+    MEMORY_BASIC_INFORMATION mi;
+    for (uint64_t at = a; at < a + n; at = (uint64_t)mi.BaseAddress + mi.RegionSize) {
+        if (!VirtualQuery((void *)at, &mi, sizeof mi) || mi.State != MEM_COMMIT || (mi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return -1;
+        if (write && !(mi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return -1;
+    }
+    return 0;
+}
+static int plugin_read(uint64_t a, void *out, uint64_t n) { if (!out || guest_ok(a, n, 0)) return -1; memcpy(out, (void *)a, n); return 0; }
+/* read only memory (the game's constants) is made writable for the copy, then put back */
+static int plugin_write(uint64_t a, const void *d, uint64_t n) {
+    if (!d || guest_ok(a, n, 0)) return -1;
+    DWORD old;
+    if (!VirtualProtect((void *)a, (SIZE_T)n, PAGE_EXECUTE_READWRITE, &old)) return -1;
+    memcpy((void *)a, d, n);
+    VirtualProtect((void *)a, (SIZE_T)n, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), (void *)a, (SIZE_T)n);
+    return 0;
+}
+static int plugin_hook(uint64_t addr, DcHookFn fn, void *user) {
+    if (!fn || trace_count >= TRACE_MAX || guest_ok(addr, 1, 0)) return -1;
+    ensure_trace_handler();
+    DWORD old;
+    unsigned char *p = (unsigned char *)addr;
+    if (!VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old)) return -1;
+    traces[trace_count].addr = addr; traces[trace_count].orig = *p; traces[trace_count].hits = 0;
+    traces[trace_count].cb = fn; traces[trace_count].user = user;
+    *p = 0xCC;
+    /* the page stays writable: the handler rewrites the byte on every hit, from any thread */
+    FlushInstructionCache(GetCurrentProcess(), p, 1);
+    ++trace_count;
+    return 0;
+}
+static void install_plugins(void) {
+    const char *on = getenv("DC_PLUGINS");
+    if (!on || !*on || *on == '0') return;
+    static const DcPluginApi api = {1, sizeof(DcPluginApi), plugin_log, plugin_read, plugin_write, plugin_hook};
+    for (int i = 0; runtime_file_mods_dir(i); ++i) {
+        char pattern[700];
+        snprintf(pattern, sizeof pattern, "%s\\plugins\\*.dll", runtime_file_mods_dir(i));
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            char path[900];
+            snprintf(path, sizeof path, "%s\\plugins\\%s", runtime_file_mods_dir(i), fd.cFileName);
+            HMODULE m = LoadLibraryA(path);
+            int (*init)(const DcPluginApi *) = m ? (int (*)(const DcPluginApi *))GetProcAddress(m, "dc_plugin_init") : NULL;
+            if (!init) { printf("Plugin: %s has no dc_plugin_init, not loaded\n", fd.cFileName); continue; }
+            const int r = init(&api);
+            printf("Plugin: %s loaded (init returned %d)\n", fd.cFileName, r);
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+}
 static void start_guest_sampler(void) {
     if (!getenv("BB_GUEST_SAMPLE")) return;
     CreateThread(NULL,0,sampler,NULL,0,NULL);
@@ -236,6 +312,7 @@ static void start_guest_sampler(void) {
 #else
 static void install_guest_traces(void) {}
 static void start_guest_sampler(void) {}
+static void install_plugins(void) {}
 #endif
 
 /* ---- UserService ---- */
@@ -243,7 +320,7 @@ static int login_event_pending=1;
 static ABI int32_t user_initialize(const void *params) {
     (void)params;
     static int once;
-    if (!once) { once=1; apply_guest_patches(); install_guest_traces(); start_guest_sampler(); }
+    if (!once) { once=1; apply_guest_patches(); install_guest_traces(); install_plugins(); start_guest_sampler(); }
     note("UserService initialized (user 1 logged in)");
     return 0;
 }

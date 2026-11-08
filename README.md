@@ -47,7 +47,20 @@ when no folder has been chosen.
 - Steering wheels with force feedback from the car's tyre physics, pedals with clutch, an H-pattern shifter and a USB handbrake
 - DLC content (add-on cars, bikes, tours and livery decals) can be unlocked from the launcher, built from your own game files. Cars you earn by playing still unlock through normal progression
 - A launcher window that resizes from every edge and corner and stays sharp at any display scale
-- A `mods` folder for loose-file mods: files in it replace the game's own files of the same path
+- A modkit (`dcmod`) with a **Mods** page in the launcher: change tables, cars, tracks, textures, shaders, sound and Lua scripts, or write graphics filters on the HDR picture. See [Modkit](#modkit-mod-the-game) and [Making mods](docs/MODDING.md)
+
+## Modkit: mod the game
+
+DriveClub Recomp comes with **dcmod**, a modkit for the game's own files. `dcmod.exe` sits next to `DriveClub.exe`, and the `modkit` folder has the documentation, ready-made examples and a Blender add-on (the same pages are in [docs/modding](docs/modding/README.md)). A mod is a folder with a `mod.json`, replacement files and small patches. Patches are applied to your own copy of the game data, so a mod contains none of the game's data, and several mods can change the same file as long as they change different things. The **Mods** page of the launcher imports, orders, switches on and off, and sets up mods.
+
+- **Tables, text and settings:** vehicle and track tables, language files, camera files, graphics settings and XML data.
+- **Cars and tracks:** give a car another car's model, make a car under a new name with its own model files and physics row, or copy a track under a new name. Export car and track models to glTF, edit them in Blender and import them back.
+- **Textures, shaders and sound:** convert textures to and from DDS and PNG, dump the game's shaders and replace them, replace a sound with your own WAV or music and choose what an event plays.
+- **Lua scripts:** run your own scripts in the game with live car data (speed, gears, tyre forces, position), the cars of the race, the camera and the sun, your own HUD, panels with buttons and sliders over the game, the time of day and the weather, and settings that stay between runs.
+- **Graphics mods:** write a shader that runs on the finished picture or on the linear HDR picture before the game's own tone mapping, with the scene depth, motion and the sun available. The download ships no filter, so the game looks as it always did until you add one. Example filters (a sky with clouds, volumetric fog, ambient occlusion, light shafts, a wet road, tone mapping, bloom, colour grading) are in the source repository under `tools/modkit/examples`.
+- **Plugins and agents:** native DLL plugins can hook the game's code (opt-in), and `dcmod mcp` lets an AI agent browse the game files and make mods.
+
+Start with [Getting started](docs/modding/getting-started.md). Only use mods from people you trust: a mod can contain scripts and plugins.
 
 ## Controls
 Any gamepad works. Keyboard, mouse and gamepad can be used at the same time.

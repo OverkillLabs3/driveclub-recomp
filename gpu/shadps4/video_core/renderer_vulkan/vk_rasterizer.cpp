@@ -38,6 +38,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/texture_cache/sampler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vr/vr_multiview.h" // VR multiview
 #include "video_core/renderer_vulkan/vr/vr_foveation.h" // VR foveated rendering
@@ -53,17 +54,83 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
 
+#include <atomic>
+#include <cmath>
+#include <mutex>
+#include <chrono>
 namespace Vulkan {
 
 namespace {
 DriveMotion* g_drive_motion = nullptr;
 bool g_taa_noted = false; ///< BindBuffers noted the anti-aliasing camera last time (its threads, one at a time)
+float g_camera[45];
+std::atomic<long long> g_camera_wanted{0};   ///< when a script last asked for the camera
+std::mutex g_camera_mutex;
+long long g_camera_stamp = 0;
+std::atomic<float> g_sun_scale[3] = {1.0f, 1.0f, 1.0f};   ///< a mod's multiplier of the sun's colour (1: the game's own)
+struct LightPoke { std::atomic<int> dword{-1}; std::atomic<float> mul{1.0f}; std::atomic<float> add{0.0f}; };
+LightPoke g_light_poke[16];   ///< a mod's changes of single numbers of the lighting constants: value * mul + add
+bool SunScaleActive() {
+    if (g_sun_scale[0] != 1.0f || g_sun_scale[1] != 1.0f || g_sun_scale[2] != 1.0f) {
+        return true;
+    }
+    for (const auto& poke : g_light_poke) {
+        if (poke.dword >= 0) {
+            return true;
+        }
+    }
+    return false;
+}
+// The lighting constants (1936 bytes, recognised like in NoteTaaBuffer): the sun's radiance at dwords 24..26 and its
+// plain colour at 28..30 are multiplied by what a mod asked for, and the single numbers it poked are changed. Works on
+// this draw's own copy only.
+void ApplySunScale(void* data, u64 size) {
+    if (size != 1936 || !SunScaleActive()) {
+        return;
+    }
+    auto* c = static_cast<float*>(data);
+    const float len = std::sqrt(c[20] * c[20] + c[21] * c[21] + c[22] * c[22]);
+    if (c[60] != 9999.5f || std::fabs(len - 1.0f) > 0.02f) {
+        return;
+    }
+    for (int i = 0; i < 3; ++i) {
+        const float k = g_sun_scale[i];
+        c[24 + i] *= k;
+        c[28 + i] *= k;
+    }
+    for (const auto& poke : g_light_poke) {
+        const int d = poke.dword;
+        if (d >= 0 && d < 484) {
+            c[d] = c[d] * poke.mul + poke.add;
+        }
+    }
+}
 // The game's anti-aliasing pass carries its camera matrices: frame generation takes its motion
 // vectors from them.
 void NoteTaaBuffer(u64 hash, u32 slot, const void* data, u32 size) {
     // The anti-aliasing pass has several variants (by resolution): recognise its two constant
     // buffers by size and content. Slot 0: a 4x4 affine move, then matrices. Slot 1: the
     // projection at dword 48 (reversed Z, infinite far plane).
+    if (data && slot == 1 && size == 512) {   // the camera for mod scripts (dwords 16.., 32.. and 108..)
+        const auto* c = static_cast<const float*>(data);
+        if (c[48] > 0.1f && c[48 + 5] > 0.1f && c[48 + 11] == -1.0f && c[111] == 1.0f) {
+            std::scoped_lock lock{g_camera_mutex};
+            std::memcpy(g_camera, c + 16, 12 * sizeof(float));
+            std::memcpy(g_camera + 12, c + 32, 12 * sizeof(float));
+            std::memcpy(g_camera + 24, c + 108, 3 * sizeof(float));
+            g_camera[43] = c[48];   // projection scales: x and y
+            g_camera[44] = c[53];
+            g_camera_stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        }
+    }
+    if (data && size == 1936) {   // the lighting buffer: the sun's direction at dword 20, its colours after it
+        const auto* c = static_cast<const float*>(data);
+        const float len = std::sqrt(c[20] * c[20] + c[21] * c[21] + c[22] * c[22]);
+        if (c[60] == 9999.5f && std::fabs(len - 1.0f) < 0.02f) {
+            std::scoped_lock lock{g_camera_mutex};
+            std::memcpy(g_camera + 27, c + 20, 16 * sizeof(float));
+        }
+    }
     if (!g_drive_motion || slot > 1 || !data) {
         return;
     }
@@ -162,6 +229,30 @@ bool CorrectMotionBlur(const Shader::Info& stage, void* data, u64 size) {
     return true;
 }
 } // namespace
+
+extern "C" void bbgpu_light_poke(int slot, int dword, float mul, float add) {   // dword < 0 clears the slot
+    if (slot < 0 || slot >= 16) {
+        return;
+    }
+    g_light_poke[slot].mul = mul;
+    g_light_poke[slot].add = add;
+    g_light_poke[slot].dword = dword;
+}
+extern "C" void bbgpu_sun_scale(float r, float g, float b) {
+    g_sun_scale[0] = r;
+    g_sun_scale[1] = g;
+    g_sun_scale[2] = b;
+}
+
+// The camera of the last frame (view block rows, the transposed block rows, position, then the sun: 16 floats from the direction, then the projection scales): 45 floats. 0 when none for a second.
+extern "C" int bbgpu_camera(float* out) {
+    std::scoped_lock lock{g_camera_mutex};
+    const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+    g_camera_wanted = now;
+    if (!g_camera_stamp || now - g_camera_stamp > 1000000000LL) return 0;
+    std::memcpy(out, g_camera, sizeof g_camera);
+    return 45;
+}
 
 
 static Shader::PushData MakeUserData(const AmdGpu::Regs& regs) {
@@ -750,7 +841,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         // frame on the draw recording thread with DLAA/DLSS/FSR or frame generation on (the camera check runs then).
         const bool host_read =
             constant_ring->HasHostCopy() &&
-            (motion_blur || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
+            (motion_blur || (size == 1936 && SunScaleActive()) || size == 864 || (index <= 1 && (size == 416 || size == 512)) ||
              (size == 512 && BbVr::Active()) || // VR: the G-buffer camera (BbVr::NoteCameraConstants)
              (Vr::Multiview::Enabled() && (size == 1936 || Vr::Multiview::EyeLightBinding(stage.pgm_hash, index))) ||
              (index == 0 && stage.pgm_hash == 0xc56053b9 && stage.sw_stage == Shader::SwStage::Compute));
@@ -762,6 +853,7 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
         }
         // Patch only this draw's shadow, before publishing it to the recording thread.
         if (motion_blur) CorrectMotionBlur(stage, write, size);
+        ApplySunScale(write, size);
         if (host_read) {
             std::memcpy(dst, write, size);
         }
@@ -1037,12 +1129,12 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         const auto* reads = reinterpret_cast<const Shader::Info::PointerRead*>(in);
         in += stage.num_pointer_reads * sizeof(Shader::Info::PointerRead);
         const auto* words = reinterpret_cast<const u32*>(in);
-        Shader::Info::ud_snapshots[i] = {stage.info,       words,         stage.ud_size,
+        Shader::Info::UdSnapshots()[i] = {stage.info,       words,         stage.ud_size,
                                          words + stage.ud_size, stage.flat_size, stage.pgm_base,
                                          reads,            stage.num_pointer_reads};
         in += AlignPacket((stage.ud_size + stage.flat_size) * sizeof(u32));
     }
-    Shader::Info::num_ud_snapshots = packet.num_stages;
+    Shader::Info::NumUdSnapshots() = packet.num_stages;
     self.num_ring_stages = packet.num_stages;
     const AmdGpu::ComputeProgram* cs = nullptr;
     if (packet.kind == PacketKind::Dispatch || packet.kind == PacketKind::IndirectDispatch) {
@@ -1059,7 +1151,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         // still queued here (WriteData, DMA) changed them after that thread read them.
         static u32 flat_reports = 0;
         for (u32 i = 0; i < packet.num_stages && flat_reports < 32; ++i) {
-            const auto& snapshot = Shader::Info::ud_snapshots[i];
+            const auto& snapshot = Shader::Info::UdSnapshots()[i];
             const auto& srt = snapshot.info->srt_info;
             // Stages the pipeline selection did not refresh (no user data) keep their tables.
             if (!srt.walker_func || snapshot.flat_size == 0 || snapshot.user_data_size == 0) {
@@ -1136,7 +1228,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         self.DrawRecord(static_cast<const GraphicsPipeline*>(packet.pipeline), packet.prepared,
                         packet.is_indexed, packet.index_offset);
     }
-    Shader::Info::num_ud_snapshots = 0;
+    Shader::Info::NumUdSnapshots() = 0;
     self.num_ring_stages = 0;
     if (self.constant_ring) {
         self.constant_ring->Stamp(packet.ring_end);
@@ -1972,15 +2064,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
         const VAddr index_address = is_indexed
             ? regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size : 0;
-        // Without a character-size skeleton the draw is gated on its bone palette changing
-        // since last frame (model constants follow the camera, the palette does not). The
-        // check comes first: most gated draws are static world pieces with long index lists.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
-        }();
-        bool gated = !all_motion;
-        u64 palette = 0;
+        // Vehicle parts keep broad history. Other draws retain the original
+        // palette-only gate before scanning long index lists.
+        const auto* motion_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const bool vehicle_motion = motion_ps && VehicleMotionScope::VehicleProgram(motion_ps->pgm_hash);
+        static const bool force_all_motion =
+            VehicleMotionScope::ExplicitAll(std::getenv("BB_OBJECT_MOTION_ALL"));
+        bool gated = !VehicleMotionScope::Broad(vehicle_motion, force_all_motion);
+        u64 motion_state = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;
             const auto buffer = resource.GetSharp(vs);
@@ -1992,11 +2083,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 break;
             }
             const VAddr address = buffer.base_address;
-            if (role == Motion::BufferRole::SmallSkeleton &&
+            if ((role == Motion::BufferRole::SmallSkeleton ||
+                 VehicleMotionScope::HashModelState(vehicle_motion, size)) &&
                 memory->IsValidGpuMapping(address, 0) &&
                 memory->ClampRangeSize(address, size) == size) {
-                palette = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
-                                               palette);
+                motion_state = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
+                                                  motion_state);
             }
         }
         push_data.motion_param = 0;
@@ -2006,7 +2098,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                                              .index_count = regs.num_indices,
                                              .instances = regs.num_instances.NumInstances(),
                                              .first_instance = first_instance},
-                                            palette)) {
+                                            motion_state)) {
             Motion::VertexRange range{base_vertex, regs.num_indices};
             u64 topology = 0;
             if (is_indexed) {
@@ -3619,7 +3711,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
     }();
     // VR needs the projection too (BbVr::NoteProjection: the driver's head camera's field of view).
     const bool note_taa = sniff_always || BbSettings::Get().frame_gen != BbSettings::FrameGenOff ||
-                          drive_aa->Active() || BbVr::Active();
+                          drive_aa->Active() || BbVr::Active() ||
+                          std::chrono::steady_clock::now().time_since_epoch().count() - g_camera_wanted.load() < 3000000000LL;
     // While neither consumer runs the camera is not refreshed: its readiness is dropped when they go off, so one
     // switched back on waits for both constant buffers again instead of an old camera.
     if (g_taa_noted && !note_taa && g_drive_motion) {

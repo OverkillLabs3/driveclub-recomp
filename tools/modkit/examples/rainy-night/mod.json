@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.rainy-night",
+  "name": "Rainy night (example script mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example script mod: heavy rain under an overcast sky in every race. Shows dcmod.race_weather.",
+  "scripts": [ "scripts/mods/rainy-night/main.lua" ]
+}

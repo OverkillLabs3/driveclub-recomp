@@ -7,6 +7,8 @@
  * +0x350 returns the car's simulation: +0x8 its state, +0x20 its setup, whose +0x8 is the drivetrain; the driver's
  * +0x180 is the speed in m/s), and the original is called.
  */
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 
 typedef ABI void (*tele_entry_fn)(void *, int, void *, int);
@@ -27,8 +29,6 @@ static uintptr_t tele_vt(uintptr_t obj, size_t off) { return tele_rd(tele_rd(obj
  * What the game's car state gives (the same block the wheel force feedback reads): per wheel in the order right front,
  * left front, right rear, left rear: load (N) at +0xa50, lateral force +0xa60, longitudinal force +0xa70, slip ratio
  * +0xb30, slip angle +0xb50. The speed is the driver object's. */
-#include <winsock2.h>
-#include <ws2tcpip.h>
 
 static SOCKET tele_socket = INVALID_SOCKET;
 static struct sockaddr_in tele_to;
@@ -114,8 +114,12 @@ static void tele_send_dash(const uint8_t *state, float speed) {
     sendto(tele_socket, (const char *)p, (int)sizeof p, 0, (const struct sockaddr *)&tele_to, (int)sizeof tele_to);
 }
 
-/* The DualSense's adaptive triggers (BB_ADAPTIVE_TRIGGERS=1): the brake trigger firms up and pulses when a front wheel
- * locks, the throttle trigger vibrates when a rear wheel spins. SDL3 passes the raw output report through. */
+/* Adaptive triggers on DualSense (BB_ADAPTIVE_TRIGGERS=1) and impulse triggers on Xbox (BB_IMPULSE_TRIGGERS=1
+ * or BB_ADAPTIVE_TRIGGERS=1):
+ * - DualSense: brake firms up and pulses when a front wheel locks, throttle vibrates when rear wheels spin,
+ *   resistance walls simulate gear shifts and rev limiter. SDL3 passes the raw output report through.
+ * - Xbox One / Series: left impulse trigger vibrates on front lockup / ABS and downshifts, right impulse
+ *   trigger vibrates on drive wheel slip, upshifts, and the engine rev limiter. */
 static void tele_trigger_zones(uint8_t *effect, uint8_t mode, int first_zone, int strength, int frequency) {
     uint32_t zones = 0, force = 0;
     for (int z = first_zone; z < 10; ++z) {
@@ -132,6 +136,8 @@ static void tele_trigger_zones(uint8_t *effect, uint8_t mode, int first_zone, in
 static void tele_triggers(const uint8_t *state, float speed) {
     static uint64_t last_us, kick_until, kick_started;
     static uint8_t last[47];
+    static uint16_t last_left_rumble = 0, last_right_rumble = 0;
+    static SDL_Gamepad *last_g = NULL;
     static int last_gear = 0, kick_strength = 0, kick_right = 0, kick_left = 0;
     const uint64_t now = now_us();
     /* A gear change is felt at once, not at the next report. */
@@ -148,37 +154,134 @@ static void tele_triggers(const uint8_t *state, float speed) {
     if (now - last_us < 20000 && now > kick_until) return;   /* the report goes out at most about 50 times a second */
     last_us = now;
     SDL_Gamepad *g = gamepad;
-    if (!g || SDL_GetGamepadType(g) != SDL_GAMEPAD_TYPE_PS5) return;
-    const float *ratio = (const float *)(state + 0xb30);
-    const float front = fminf(ratio[0], ratio[1]);   /* most negative: a locking front wheel */
-    const float rear = fmaxf(fabsf(ratio[2]), fabsf(ratio[3]));
-    const bool moving = speed > 8.0f;   /* slip ratios jump about at walking pace: no rattle from a standstill */
-    uint8_t report[47];
-    memset(report, 0, sizeof report);
-    report[0] = 0x04 | 0x08;   /* the right and the left trigger effect */
-    uint8_t *right = report + 10, *left = report + 21;
-    if (now < kick_until && kick_right) {
-        tele_trigger_zones(right, 0x21, 0, 8, 0);                /* a wall through the whole travel: the shift pushes the trigger back */
-    } else if (tele_engine.limiter > 1000.0f && tele_engine.rpm >= tele_engine.limiter * 0.985f &&
-               pad_last_read.r2 > 80) {
-        tele_trigger_zones(right, 0x26, 2, 4, 45);               /* the engine on its rev limiter */
-    } else if (moving && rear > 0.3f && pad_last_read.r2 > 80) {
-        const int strength = rear > 0.7f ? 7 : rear > 0.5f ? 5 : 3;
-        tele_trigger_zones(right, 0x26, 2, strength, 30);        /* a rear wheel spinning */
-    } else {
-        tele_trigger_zones(right, 0x21, 3, 2, 0);                /* a light, even resistance */
+    if (!g) {
+        if (last_g && (last_left_rumble || last_right_rumble)) {
+            SDL_RumbleGamepadTriggers(last_g, 0, 0, 0);
+            last_left_rumble = 0;
+            last_right_rumble = 0;
+        }
+        last_g = NULL;
+        return;
     }
-    if (now < kick_until && kick_left) {
-        tele_trigger_zones(left, 0x21, 0, kick_strength, 0);     /* a downshift pushes the brake side too */
-    } else if (moving && front < -0.3f && pad_last_read.l2 > 80) {
-        tele_trigger_zones(left, 0x26, 2, 6, 20);                /* a front wheel locking */
-    } else {
-        tele_trigger_zones(left, 0x21, 2, 4, 0);                 /* a firmer brake pedal */
+    if (g != last_g) {
+        if (last_g && (last_left_rumble || last_right_rumble)) {
+            SDL_RumbleGamepadTriggers(last_g, 0, 0, 0);
+        }
+        last_g = g;
+        last_left_rumble = 0;
+        last_right_rumble = 0;
     }
-    (void)kick_started;
-    if (memcmp(report, last, sizeof report) == 0) return;
-    memcpy(last, report, sizeof report);
-    SDL_SendGamepadEffect(g, report, (int)sizeof report);
+    const SDL_GamepadType type = SDL_GetGamepadType(g);
+
+    /* The event/menu screens can keep the car simulating in the background after the race is done.
+     * In that case, the driver is no longer actively holding the throttle/brake inputs, so the trigger outputs
+     * must be cleared instantly rather than continued from stale telemetry. */
+    const bool active_input = pad_last_read.l2 > 8 || pad_last_read.r2 > 8;
+    if (!active_input) {
+        memset(last, 0, sizeof last);
+        last_left_rumble = 0;
+        last_right_rumble = 0;
+        if (type == SDL_GAMEPAD_TYPE_PS5) {
+            uint8_t report[47];
+            memset(report, 0, sizeof report);
+            report[0] = 0x04 | 0x08;
+            if (memcmp(report, last, sizeof report) != 0) {
+                memcpy(last, report, sizeof report);
+                SDL_SendGamepadEffect(g, report, (int)sizeof report);
+            }
+        } else {
+            SDL_RumbleGamepadTriggers(g, 0, 0, 0);
+        }
+        return;
+    }
+
+    if (type == SDL_GAMEPAD_TYPE_PS5) {
+        const float *ratio = (const float *)(state + 0xb30);
+        const float front = fminf(ratio[0], ratio[1]);   /* most negative: a locking front wheel */
+        const float rear = fmaxf(fabsf(ratio[2]), fabsf(ratio[3]));
+        const bool moving = speed > 8.0f;   /* slip ratios jump about at walking pace: no rattle from a standstill */
+        uint8_t report[47];
+        memset(report, 0, sizeof report);
+        report[0] = 0x04 | 0x08;   /* the right and the left trigger effect */
+        uint8_t *right = report + 10, *left = report + 21;
+        if (now < kick_until && kick_right) {
+            tele_trigger_zones(right, 0x21, 0, 8, 0);                /* a wall through the whole travel: the shift pushes the trigger back */
+        } else if (tele_engine.limiter > 1000.0f && tele_engine.rpm >= tele_engine.limiter * 0.985f &&
+                   pad_last_read.r2 > 80) {
+            tele_trigger_zones(right, 0x26, 2, 4, 45);               /* the engine on its rev limiter */
+        } else if (moving && rear > 0.3f && pad_last_read.r2 > 80) {
+            const int strength = rear > 0.7f ? 7 : rear > 0.5f ? 5 : 3;
+            tele_trigger_zones(right, 0x26, 2, strength, 30);        /* a rear wheel spinning */
+        } else {
+            tele_trigger_zones(right, 0x21, 3, 2, 0);                /* a light, even resistance */
+        }
+        if (now < kick_until && kick_left) {
+            tele_trigger_zones(left, 0x21, 0, kick_strength, 0);     /* a downshift pushes the brake side too */
+        } else if (moving && front < -0.3f && pad_last_read.l2 > 80) {
+            tele_trigger_zones(left, 0x26, 2, 6, 20);                /* a front wheel locking */
+        } else {
+            tele_trigger_zones(left, 0x21, 2, 4, 0);                 /* a firmer brake pedal */
+        }
+        (void)kick_started;
+        if (memcmp(report, last, sizeof report) == 0) return;
+        memcpy(last, report, sizeof report);
+        SDL_SendGamepadEffect(g, report, (int)sizeof report);
+        return;
+    }
+
+    const char *name = SDL_GetGamepadName(g);
+    const bool has_trigger_rumble = (type == SDL_GAMEPAD_TYPE_XBOXONE) ||
+        SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false) ||
+        (name && (strstr(name, "Xbox One") || strstr(name, "Xbox Series") || strstr(name, "Xbox Elite")));
+
+    if (has_trigger_rumble) {
+        static bool xbox_logged;
+        if (!xbox_logged) {
+            xbox_logged = true;
+            printf("Runtime: Xbox impulse triggers active on %s\n", name ? name : "controller");
+        }
+        const float *ratio = (const float *)(state + 0xb30);
+        const float front = fminf(ratio[0], ratio[1]);   /* most negative: a locking front wheel */
+        const float rear = fmaxf(ratio[2], ratio[3]);    /* positive drive slip on rear wheels */
+        const float front_drive = fmaxf(ratio[0], ratio[1]); /* positive drive slip on front wheels */
+        const float drive_slip = fmaxf(rear, front_drive);
+        const bool moving = speed > 5.0f;
+        uint16_t left_rumble = 0, right_rumble = 0;
+
+        /* Left trigger (LT): Brake lockup / ABS and downshift kicks */
+        if (moving && front < -0.20f && pad_last_read.l2 > 40) {
+            float slip = (-front - 0.20f) / 0.50f;
+            if (slip > 1.0f) slip = 1.0f;
+            left_rumble = (uint16_t)(16000 + slip * 48000.0f);
+        }
+        if (now < kick_until && kick_left) {
+            uint16_t kick = (uint16_t)(kick_strength * 65535 / 8);
+            if (kick > left_rumble) left_rumble = kick;
+        }
+
+        /* Right trigger (RT): Wheel spin, rev limiter, and gear shift kicks */
+        if (moving && drive_slip > 0.20f && pad_last_read.r2 > 40) {
+            float slip = (drive_slip - 0.20f) / 0.50f;
+            if (slip > 1.0f) slip = 1.0f;
+            right_rumble = (uint16_t)(16000 + slip * 48000.0f);
+        }
+        if (tele_engine.limiter > 1000.0f && tele_engine.rpm >= tele_engine.limiter * 0.985f &&
+            pad_last_read.r2 > 40) {
+            if (right_rumble < 55000) right_rumble = 55000;
+        }
+        if (now < kick_until && kick_right) {
+            uint16_t kick = (uint16_t)(kick_strength * 65535 / 8);
+            if (kick > right_rumble) right_rumble = kick;
+        }
+
+        if (left_rumble == 0 && right_rumble == 0 && last_left_rumble == 0 && last_right_rumble == 0) {
+            return;
+        }
+
+        SDL_RumbleGamepadTriggers(g, left_rumble, right_rumble, (left_rumble || right_rumble) ? 60 : 0);
+        last_left_rumble = left_rumble;
+        last_right_rumble = right_rumble;
+    }
 }
 
 /* Called for every frame the player's car was found. */
@@ -186,8 +289,9 @@ static void tele_publish(const uint8_t *state, float speed) {
     if (tele_udp_on < 0) tele_udp_on = tele_udp_init();
     if (tele_triggers_on < 0) {
         const char *e = getenv("BB_ADAPTIVE_TRIGGERS");
-        tele_triggers_on = e && *e && *e != '0';
-        if (tele_triggers_on) printf("Runtime: adaptive triggers on (DualSense only)\n");
+        const char *xb = getenv("BB_IMPULSE_TRIGGERS");
+        tele_triggers_on = (e && *e && *e != '0') || (xb && *xb && *xb != '0');
+        if (tele_triggers_on) printf("Runtime: adaptive & impulse triggers on (DualSense / Xbox)\n");
     }
     if (tele_udp_on) tele_send_dash(state, speed);
     if (tele_triggers_on) {
@@ -200,8 +304,13 @@ static void tele_publish(const uint8_t *state, float speed) {
 static bool tele_wanted(void) {
     static int wanted = -1;
     if (wanted < 0) {
-        const char *a = getenv("BB_TELEMETRY"), *b = getenv("BB_ADAPTIVE_TRIGGERS");
-        wanted = (a && *a && *a != '0') || (b && *b && *b != '0');
+        const char *a = getenv("BB_TELEMETRY"), *b = getenv("BB_ADAPTIVE_TRIGGERS"), *c = getenv("BB_IMPULSE_TRIGGERS");
+        wanted = (a && *a && *a != '0') || (b && *b && *b != '0') || (c && *c && *c != '0');
+        /* a mod with scripts may read the car (dcmod/state/car): its boot script is in a mods folder */
+        if (!wanted && runtime_file_mods_have("scripts/bootscripts/defaultbootscript.lua.bin")) {
+            wanted = 1;
+            printf("Runtime: a mod has scripts: the car state is available to them (dcmod.car)\n");
+        }
     }
     return wanted;
 }

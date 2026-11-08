@@ -1,0 +1,9 @@
+{
+  "$schema": "../../mod.schema.json",
+  "id": "example.hdr-ssgi",
+  "name": "Screen space global illumination (example filter mod)",
+  "version": "1.0",
+  "author": "DriveClub Recomp",
+  "description": "Example filter mod: ambient occlusion and a bounce of light taken from the screen, smoothed over time with the history binding and the motion vectors.",
+  "scripts": [ "scripts/mods/hdr-ssgi/main.lua" ]
+}

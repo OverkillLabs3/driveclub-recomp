@@ -19,6 +19,8 @@
 #include "video_core/host_shaders/drive_aa_copy_comp.h"
 #include "video_core/host_shaders/drive_aa_sharpen_comp.h"
 #include "video_core/host_shaders/dc_motion_comp.h"
+#include "postfx_filter.h"
+#include "video_core/renderer_vulkan/host_passes/user_filter_pass.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
 #include "bbport_vr.h"
 #include "bbport_neural_settings.h"
@@ -620,7 +622,7 @@ void DriveAA::CreatePipeline() {
             }));
     device.destroyShaderModule(sharpen_module);
 
-    const std::array<vk::DescriptorSetLayoutBinding, 7> dc_bindings = {{
+    const std::array<vk::DescriptorSetLayoutBinding, 9> dc_bindings = {{
         {.binding = 0,
          .descriptorType = vk::DescriptorType::eStorageBuffer,
          .descriptorCount = 1,
@@ -646,6 +648,14 @@ void DriveAA::CreatePipeline() {
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
         {.binding = 6,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 7,
+         .descriptorType = vk::DescriptorType::eStorageImage,
+         .descriptorCount = 1,
+         .stageFlags = vk::ShaderStageFlagBits::eCompute},
+        {.binding = 8,
          .descriptorType = vk::DescriptorType::eStorageImage,
          .descriptorCount = 1,
          .stageFlags = vk::ShaderStageFlagBits::eCompute},
@@ -787,10 +797,16 @@ bool DriveAA::EnsureResources(u32 w, u32 h, u32 ow, u32 oh, bool dlss, u32 image
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h);
     make(result_image, result_view, right_result_view, vk::Format::eR16G16B16A16Sfloat,
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
-             vk::ImageUsageFlagBits::eTransferSrc,
+             vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst,
          ow, oh);
     make(depth_copy_image, depth_copy_view, right_depth_copy_view, vk::Format::eR32Sfloat,
          vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h);
+    // The buffers of mods' filters (0.4.2): one picture, so in VR the first layer only.
+    vk::UniqueImageView linear_depth_right, params_right;
+    make(linear_depth_image, linear_depth_view, linear_depth_right, vk::Format::eR32Sfloat,
+         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, w, h);
+    make(params_image, params_view, params_right, vk::Format::eR32G32B32A32Sfloat,
+         vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, 4, 1);
     if (dlss) {
         make(raw_image, raw_view, right_raw_view, vk::Format::eR16G16B16A16Sfloat,
              vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled, ow, oh);
@@ -828,6 +844,7 @@ void DriveAA::OnTaa(VideoCore::ImageId color_id, VideoCore::ImageId depth_id,
     };
     late_pending = false;
     redirect_valid = false;
+    mod_buffers_valid = false;
     jitter_due = true;
     if (!Active() || !color_id || !depth_id || !output_id) {
         return skip("no image");
@@ -1129,6 +1146,8 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                     stereo ? ", per eye" : "");
     }
     std::array<vk::ImageView, 2> gbuffer_views{};
+    // The filters of mods (0.4.2) read the G-buffer too: in VR the left eye's, the one picture they know.
+    vk::ImageView gbuffer_view{};
     const auto record_dc = [&](vk::ImageView eye_gbuffer, vk::ImageView eye_depth, vk::ImageView eye_motion,
                                vk::ImageView eye_depth_copy, float eye_shift) {
         const vk::DescriptorBufferInfo buf0_info{
@@ -1163,7 +1182,15 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
             .imageLayout = vk::ImageLayout::eGeneral,
         };
 
-        const std::array<vk::WriteDescriptorSet, 7> writes = {{
+        const vk::DescriptorImageInfo linear_depth_desc_info{
+            .imageView = *linear_depth_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const vk::DescriptorImageInfo params_desc_info{
+            .imageView = *params_view,
+            .imageLayout = vk::ImageLayout::eGeneral,
+        };
+        const std::array<vk::WriteDescriptorSet, 9> writes = {{
             {.dstBinding = 0,
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageBuffer,
@@ -1192,6 +1219,14 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
              .descriptorCount = 1,
              .descriptorType = vk::DescriptorType::eStorageImage,
              .pImageInfo = &depth_copy_desc_info},
+            {.dstBinding = 7,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &linear_depth_desc_info},
+            {.dstBinding = 8,
+             .descriptorCount = 1,
+             .descriptorType = vk::DescriptorType::eStorageImage,
+             .pImageInfo = &params_desc_info},
         }};
         const struct {
             float size_x, size_y;
@@ -1223,7 +1258,12 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         for (u32 eye = 0; eye < eyes; ++eye) {
             gbuffer_views[eye] = View(gbuffer, gbuffer_format, vk::ImageAspectFlagBits::eColor, eye);
         }
+        gbuffer_view = gbuffer_views[0];
         barrier(vk::Image(depth_copy_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
+        barrier(vk::Image(linear_depth_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
+        barrier(vk::Image(params_image), vk::ImageLayout::eUndefined, all, vk::AccessFlagBits2::eNone,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite);
         const float shift = stereo ? Vr::Multiview::Shift() : 0.0f;
         const std::array depth_copy_views{*depth_copy_view, *right_depth_copy_view};
@@ -1234,6 +1274,13 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
         barrier(vk::Image(depth_copy_image), vk::ImageLayout::eGeneral,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
                 vk::AccessFlagBits2::eShaderRead);
+        barrier(vk::Image(linear_depth_image), vk::ImageLayout::eGeneral,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
+                vk::AccessFlagBits2::eShaderRead);
+        barrier(vk::Image(params_image), vk::ImageLayout::eGeneral,
+                vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite, all,
+                vk::AccessFlagBits2::eShaderRead);
+        mod_buffers_valid = true;
     } else if (stereo) {
         // Each eye from its own depth and stencil (the stencil as below), its pixels the centre view's moved by its shift.
         const float shift = Vr::Multiview::Shift();
@@ -1608,6 +1655,99 @@ void DriveAA::Reconstruct(VideoCore::ImageId color_id, VideoCore::ImageId depth_
                    {vk::Image(result_image), *result_view, vk::Format::eR16G16B16A16Sfloat, ow, oh,
                     nr_encoding >= 1, nr_encoding == 2},
                    {*motion_view, depth_view, w, h}, was_reset);
+
+    // The HDR filters of a mod run on the upscaled picture, before the game's own bloom and tone mapping.
+    {
+        bool want = false;
+        for (int i = 0; i < 6; ++i) {
+            want = want || !ModPostFx::Name(3 + i).empty();
+        }
+        if (want) {
+            if (!hdr_filters_created) {
+                for (int i = 0; i < 6; ++i) {
+                    hdr_filter[i].Create(instance.GetDevice(), instance.GetAllocator(),
+                                         vk::Format::eR16G16B16A16Sfloat, 3 + i);
+                }
+                hdr_filters_created = true;
+            }
+            const vk::MemoryBarrier2 written{
+                .srcStageMask = all,
+                .srcAccessMask = vk::AccessFlagBits2::eShaderWrite,
+                .dstStageMask = all,
+                .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+            };
+            cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &written});
+            vk::ImageView view = *result_view;
+            vk::Image last{};
+            vk::Extent2D last_size{ow, oh};
+            vk::ImageLayout layout = vk::ImageLayout::eGeneral;
+            const vk::ImageView scene_view = *result_view;
+            for (int i = 0; i < 6; ++i) {
+                if (!hdr_filter[i].WantsToRun()) {
+                    continue;
+                }
+                const float fraction = ModPostFx::Scale(3 + i).load(std::memory_order_relaxed);
+                const vk::Extent2D slot_size{std::max(1u, u32(float(ow) * fraction)),
+                                             std::max(1u, u32(float(oh) * fraction))};
+                HostPasses::UserFilterPass::Extras extras{};
+                if (mod_buffers_valid && gbuffer_view) {
+                    extras = {*linear_depth_view, *motion_view, gbuffer_view, *params_view, scene_view, true};
+                } else {
+                    extras.scene = scene_view;
+                }
+                const vk::ImageView out = hdr_filter[i].Render(cmdbuf, view, slot_size, layout, extras);
+                if (out != view) {
+                    view = out;
+                    last = hdr_filter[i].OutputImage();
+                    last_size = slot_size;
+                    layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+                }
+            }
+            if (last) {
+                // the filtered picture goes back into the result image that everything after this reads
+                const std::array<vk::ImageMemoryBarrier2, 2> to_copy = {{
+                    {.srcStageMask = all,
+                     .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                     .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                     .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+                     .oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                     .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+                     .image = last,
+                     .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}},
+                    {.srcStageMask = all,
+                     .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+                     .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                     .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                     .oldLayout = vk::ImageLayout::eGeneral,
+                     .newLayout = vk::ImageLayout::eTransferDstOptimal,
+                     .image = vk::Image(result_image),
+                     .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}},
+                }};
+                cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 2, .pImageMemoryBarriers = to_copy.data()});
+                // a last slot that drew smaller than the picture is scaled back up (linear)
+                const vk::ImageBlit region{
+                    .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .srcOffsets = {{vk::Offset3D{0, 0, 0}, vk::Offset3D{int32_t(last_size.width), int32_t(last_size.height), 1}}},
+                    .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .dstOffsets = {{vk::Offset3D{0, 0, 0}, vk::Offset3D{int32_t(ow), int32_t(oh), 1}}},
+                };
+                cmdbuf.blitImage(last, vk::ImageLayout::eTransferSrcOptimal, vk::Image(result_image),
+                                 vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eLinear);
+                const vk::ImageMemoryBarrier2 back{
+                    .srcStageMask = vk::PipelineStageFlagBits2::eTransfer,
+                    .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+                    .dstStageMask = all,
+                    .dstAccessMask = rw,
+                    .oldLayout = vk::ImageLayout::eTransferDstOptimal,
+                    .newLayout = vk::ImageLayout::eGeneral,
+                    .image = vk::Image(result_image),
+                    .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+                };
+                cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &back});
+            }
+            scheduler.GetDynamicState().Invalidate();   // the guest pipelines' dynamic state is emitted again
+        }
+    }
 
     if (upscale) {
         // The pass scaling the game's picture into its display buffer samples the upscaled one

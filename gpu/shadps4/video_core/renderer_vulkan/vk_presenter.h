@@ -15,6 +15,7 @@
 #include "video_core/renderer_vulkan/host_passes/fsr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/hdr_pass.h"
 #include "video_core/renderer_vulkan/host_passes/pp_pass.h"
+#include "video_core/renderer_vulkan/host_passes/user_filter_pass.h"
 #include "video_core/renderer_vulkan/vk_frame_generation.h"
 #include "video_core/renderer_vulkan/vk_neural_rendering.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
@@ -173,6 +174,7 @@ private:
     HostPasses::FsrPass::Settings fsr_settings{};
     HostPasses::PostProcessingPass::Settings pp_settings{};
     HostPasses::PostProcessingPass pp_pass;
+    HostPasses::UserFilterPass user_filter_pass[3]; // the post-processing filters of a mod (postfx/<name>.spv), in order
     /// bbport: BB_HDR=1 with the display in HDR mode: the swapchain is HDR10 and each frame goes
     /// through hdr_pass (the game itself makes an SDR picture and never asks for HDR).
     bool hdr_output{false};

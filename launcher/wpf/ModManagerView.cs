@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
@@ -10,6 +11,8 @@ namespace DriveClub.Launcher;
 
 public partial class MainWindow
 {
+    private static string SettingText(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.ValueKind == JsonValueKind.True ? "true" : value.ValueKind == JsonValueKind.False ? "false" : value.GetRawText();
+
     private int ModsPage => Array.IndexOf(names, "Mods");  // by name: the VR tab moved it from 7 to 8
     private ModLibrary? modLibrary;
     private ModLibraryState modState = new();
@@ -106,7 +109,40 @@ public partial class MainWindow
         {
             Paragraph(selected.Name, 19, heading: true);
             if (!string.IsNullOrWhiteSpace(selected.Version + selected.Author)) Paragraph(string.Join("  ·  ", new[] { selected.Version, selected.Author }.Where(s => !string.IsNullOrWhiteSpace(s))), 12, "#8B93A1");
+            if (!string.IsNullOrWhiteSpace(selected.Category)) Paragraph("Category: " + selected.Category, 12, "#8B93A1");
             if (!string.IsNullOrWhiteSpace(selected.Description)) Paragraph(selected.Description);
+            foreach (var (key, def) in selected.SettingDefs)
+            {
+                string label = string.IsNullOrWhiteSpace(def.Label) ? key : def.Label;
+                string current = selected.Choices.TryGetValue(key, out var chosen) ? SettingText(JsonDocument.Parse(chosen).RootElement) : def.Default is { } d ? SettingText(d) : "";
+                string id = selected.Id, name = key;
+                Task Apply(string json) => ChangeMods(() => modLibrary!.SetChoice(id, name, json), "Setting updated.");
+                FrameworkElement control;
+                if (def.Type == "bool")
+                {
+                    var box = new CheckBox { Content = label, IsChecked = current == "true", Foreground = Brush("#E8EAED") };
+                    box.Click += async (_, _) => await Apply(box.IsChecked == true ? "true" : "false");
+                    control = box;
+                }
+                else
+                {
+                    Paragraph(label + (def.Type == "number" && (def.Min != null || def.Max != null) ? $"  ({def.Min?.ToString() ?? "..."} to {def.Max?.ToString() ?? "..."})" : ""), 12, "#8B93A1");
+                    if (def.Type == "choice")
+                    {
+                        var combo = new ComboBox { ItemsSource = def.Choices, SelectedItem = current, Height = 32 };
+                        combo.SelectionChanged += async (_, _) => { if (combo.SelectedItem is string pick && pick != current) await Apply(JsonSerializer.Serialize(pick)); };
+                        control = combo;
+                    }
+                    else
+                    {
+                        var text = new TextBox { Text = current, Height = 32, Padding = new Thickness(6, 5, 6, 0) };
+                        text.LostFocus += async (_, _) => { if (text.Text != current) await Apply(def.Type == "number" ? text.Text : JsonSerializer.Serialize(text.Text)); };
+                        control = text;
+                    }
+                }
+                AutomationProperties.SetName(control, "Setting " + label);
+                Place(canvas, control, detailsX, dy, inner, 32); dy += 46;
+            }
             var priority = new Grid(); priority.ColumnDefinitions.Add(new()); priority.ColumnDefinitions.Add(new() { Width = new GridLength(12) }); priority.ColumnDefinitions.Add(new());
             var higher = ModButton("Move up", "ModPriorityUp", async () => await ChangeMods(() => modLibrary!.Move(selected.Id, -1), "Mod priority updated."));
             var lower = ModButton("Move down", "ModPriorityDown", async () => await ChangeMods(() => modLibrary!.Move(selected.Id, 1), "Mod priority updated."));

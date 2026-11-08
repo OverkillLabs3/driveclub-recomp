@@ -29,6 +29,10 @@ static BbPrompts::Device PadDevice(SDL_JoystickID id) {
 
 WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}, height{height_} {
     // Gamepads are sampled by runtime_pad.c; their events are pumped here with the window's.
+    // RAWINPUT backend is required for Xbox impulse trigger rumble (SDL_RumbleGamepadTriggers).
+    // The hint must be set before SDL initialises the gamepad subsystem.
+    { const char *_at = std::getenv("BB_ADAPTIVE_TRIGGERS"), *_it = std::getenv("BB_IMPULSE_TRIGGERS");
+      if ((_at && *_at && *_at != '0') || (_it && *_it && *_it != '0')) SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1"); }
     if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         UNREACHABLE_MSG("Failed to initialize SDL video: {}", SDL_GetError());
     }
