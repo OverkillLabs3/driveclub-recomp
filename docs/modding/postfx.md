@@ -2,6 +2,8 @@
 
 A mod can put its own shader over the game's picture, the way colour grading, vignettes, film grain or a different look are made in other games. The filter is a SPIR-V fragment shader in the mod, `postfx/<name>.spv`. A Lua script switches it on and gives it numbers.
 
+The download ships no filter, so the game looks as it always did until you add one. The example filters named on this page (and their shader source) are in the source repository under `tools/modkit/examples`; they are not in the download's `modkit/examples` folder.
+
 The filter sees the finished picture of the game (the 3D scene, after the upscaler, with the game's own HUD in it) and runs before the picture settings of the launcher (gamma, contrast, brightness). The mod's overlay text (`dcmod.ui`) is drawn after it, so it is not filtered. A filter works in the SDR picture; with HDR output on, filters are skipped.
 
 ## The shader
