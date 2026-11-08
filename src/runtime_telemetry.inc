@@ -7,9 +7,20 @@
  * +0x350 returns the car's simulation: +0x8 its state, +0x20 its setup, whose +0x8 is the drivetrain; the driver's
  * +0x180 is the speed in m/s), and the original is called.
  */
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/mman.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int SOCKET;
+#define INVALID_SOCKET (-1)
+#define closesocket close
+#endif
 
 typedef ABI void (*tele_entry_fn)(void *, int, void *, int);
 typedef ABI uintptr_t (*tele_obj1_fn)(uintptr_t);
@@ -52,8 +63,10 @@ static bool tele_udp_init(void) {
     } else if (spec[0] != '1' || spec[1]) {
         snprintf(host, sizeof host, "%s", spec);
     }
+#ifdef _WIN32
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+#endif
     tele_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (tele_socket == INVALID_SOCKET) return false;
     memset(&tele_to, 0, sizeof tele_to);
@@ -362,13 +375,35 @@ static ABI void tele_entry(void *a, int type, void *b, int index) {
 
 /* A stub within reach of the call: memory allocated near the image, or else the padding after a function in it (it
  * holds the 12 bytes of the stub; never executed otherwise). */
+#ifdef _WIN32
+static unsigned char *tele_alloc_at(uintptr_t at) {
+    return (unsigned char *)VirtualAlloc((void *)at,64,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
+}
+static bool tele_make_writable(unsigned char *p, size_t size) {
+    DWORD old;
+    return VirtualProtect(p,size,PAGE_EXECUTE_READWRITE,&old)!=0;
+}
+#else
+static unsigned char *tele_alloc_at(uintptr_t at) {
+    void *p=mmap((void *)at,0x10000,PROT_READ|PROT_WRITE|PROT_EXEC,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
+    if (p==MAP_FAILED) return NULL;
+    if ((uintptr_t)p!=at) { munmap(p,0x10000); return NULL; }
+    return (unsigned char *)p;
+}
+static bool tele_make_writable(unsigned char *p, size_t size) {
+    const uintptr_t page=(uintptr_t)sysconf(_SC_PAGESIZE);
+    const uintptr_t start=(uintptr_t)p&~(page-1), end=((uintptr_t)p+size+page-1)&~(page-1);
+    return mprotect((void *)start,end-start,PROT_READ|PROT_WRITE|PROT_EXEC)==0;
+}
+#endif
+
 static unsigned char *tele_stub_place(unsigned char *where) {
     for (uintptr_t at=((uintptr_t)where&~(uintptr_t)0xffff)-0x10000; at>0x10000 && (uintptr_t)where-at<0x70000000; at-=0x10000) {
-        unsigned char *p=(unsigned char *)VirtualAlloc((void *)at,64,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
+        unsigned char *p=tele_alloc_at(at);
         if (p) return p;
     }
     for (uintptr_t at=((uintptr_t)where&~(uintptr_t)0xffff)+0x4000000; at<(uintptr_t)where+0x70000000; at+=0x10000) {
-        unsigned char *p=(unsigned char *)VirtualAlloc((void *)at,64,MEM_RESERVE|MEM_COMMIT,PAGE_EXECUTE_READWRITE);
+        unsigned char *p=tele_alloc_at(at);
         if (p) return p;
     }
     for (unsigned char *p=where-0x100000; p<where+0x100000; ++p) {
@@ -379,8 +414,7 @@ static unsigned char *tele_stub_place(unsigned char *where) {
         for (unsigned char *b=p; b<(unsigned char *)q; ++b)
             if (*b!=0x66 && *b!=0x2e && *b!=0x0f && *b!=0x1f && *b!=0x84 && *b!=0x00 && *b!=0x90 && *b!=0x44 && *b!=0x40 && *b!=0x80 && *b!=0xcc) { pad=false; break; }
         if (!pad) continue;
-        DWORD old;
-        if (VirtualProtect(p,12,PAGE_EXECUTE_READWRITE,&old)) return p;
+        if (tele_make_writable(p,12)) return p;
     }
     return NULL;
 }
@@ -402,11 +436,22 @@ static void tele_install(void) {
     stub[0]=0x48; stub[1]=0xb8; memcpy(stub+2,&target,8);   /* movabs rax, tele_entry */
     stub[10]=0xff; stub[11]=0xe0;                            /* jmp rax */
     const int64_t off=(int64_t)((uintptr_t)stub-(uintptr_t)(call+5));
+    const int32_t newrel=(int32_t)off;
+#ifdef _WIN32
     DWORD old;
     if (off!=(int32_t)off || !VirtualProtect(call,5,PAGE_EXECUTE_READWRITE,&old)) { printf("Runtime: telemetry: not hooked\n"); return; }
-    const int32_t newrel=(int32_t)off;
     memcpy(call+1,&newrel,4);
     VirtualProtect(call,5,old,&old);
     FlushInstructionCache(GetCurrentProcess(),call,5);
+#else
+    const uintptr_t page=(uintptr_t)sysconf(_SC_PAGESIZE);
+    void *start=(void *)((uintptr_t)call&~(page-1));
+    const size_t span=(((uintptr_t)call+5+page-1)&~(page-1))-(uintptr_t)start;
+    if (off!=(int32_t)off || mprotect(start,span,PROT_READ|PROT_WRITE|PROT_EXEC)) { printf("Runtime: telemetry: not hooked\n"); return; }
+    memcpy(call+1,&newrel,4);
+    mprotect(start,span,PROT_READ|PROT_EXEC);
+    __builtin___clear_cache((char *)stub,(char *)stub+12);
+    __builtin___clear_cache((char *)call,(char *)call+5);
+#endif
     printf("Runtime: telemetry: reading the player's car every frame\n");
 }

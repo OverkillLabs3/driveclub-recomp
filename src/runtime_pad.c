@@ -98,23 +98,14 @@ static void touch_click(PadData *d, int right) {
  * with a clutch axis, 2 for a wheel without one, 1 for a gamepad's triggers (R2 throttle, L2 brake), 0 before the
  * game has read a pad. */
 static PadData pad_last_read;   /* the last read of any port, under lock */
-#ifdef _WIN32
 #include "runtime_haptics.inc"   /* DualSense haptics from the car data, over the controller's USB sound card */
 #include "runtime_telemetry.inc"   /* the player's car every frame: telemetry out and adaptive triggers (off unless asked for) */
-#else
-/* Both need Windows (WASAPI, Winsock, the game's car data patched in place): off on other systems. */
-static volatile int hap_active;
-static volatile uint8_t hap_rumble_large, hap_rumble_small;
-static bool tele_wanted(void) { return false; }
-static void tele_install(void) {}
-#endif
 static bool pad_was_read;
 /* The values of the car the player drives, for mod scripts (dcmod/state/car, runtime_modapi.c): speed in m/s, engine speed,
  * highest engine speed, rev limiter, gear, throttle, brake, steering, then per wheel (right front, left front, right
  * rear, left rear) load, lateral force, longitudinal force, slip ratio and slip angle, then the car's place in the world (x, y, z
  * of the middle of the four wheels, metres) and its heading (radians, atan2(x, z) of the way it points). 0 when no car is driven. */
 int runtime_mod_car_state(double *v, int max) {
-#ifdef _WIN32
     if (max < 32 || !tele_car.us || now_us() - tele_car.us > 500000) return 0;
     const uint8_t *state = (const uint8_t *)tele_car.state;
     PadData p;
@@ -140,10 +131,6 @@ int runtime_mod_car_state(double *v, int max) {
         v[31] = atan2(fx, fz);
     }
     return 32;
-#else
-    (void)v; (void)max;
-    return 0;
-#endif
 }
 int runtime_pad_pedals(float *throttle, float *brake, float *clutch) {
     pthread_mutex_lock(&lock);
