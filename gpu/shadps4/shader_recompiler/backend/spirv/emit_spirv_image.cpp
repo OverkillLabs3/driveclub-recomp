@@ -147,79 +147,178 @@ static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coo
     ctx.AddLabel(repeat_label);
     const Id cell = ctx.OpFloor(V, uv), frac = ctx.OpFSub(V, uv, cell);
     const auto component = [&](Id x, u32 i) { return ctx.OpCompositeExtract(F, x, i); };
-    const auto smooth = [&](Id x) {
-        return ctx.OpFMul(F, ctx.OpFMul(F, x, x), ctx.OpFSub(F, f(3), ctx.OpFMul(F, f(2), x)));
+    const Id zero = ctx.ConstU32(0u), one = ctx.ConstU32(1u);
+    // Round sqrt(2) upward: no supported site can be excluded by float rounding.
+    const Id lower = ctx.OpFloor(V, ctx.OpFSub(V, frac, v(f(0x1.6a09e8p+0f), f(0x1.6a09e8p+0f))));
+    const Id cell_x = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], component(cell, 0)));
+    const Id cell_y = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], component(cell, 1)));
+    const auto hash = [&](Id x, Id y, Id j, u32 domain) {
+        Id h = ctx.OpIAdd(U, ctx.OpIAdd(U, ctx.OpIMul(U, x, ctx.ConstU32(1664525u)),
+                                       ctx.OpIMul(U, y, ctx.ConstU32(1013904223u))),
+                         ctx.OpIAdd(U, ctx.OpIMul(U, j, ctx.ConstU32(3266489917u)),
+                                    ctx.ConstU32(domain)));
+        h = ctx.OpIMul(U, ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u))),
+                      ctx.ConstU32(2246822519u));
+        h = ctx.OpIMul(U, ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(13u))),
+                      ctx.ConstU32(3266489917u));
+        return ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u)));
     };
-    const Id fx = rx ? smooth(component(frac, 0)) : f(0),
-             fy = ry ? smooth(component(frac, 1)) : f(0);
-    const Id ax = ctx.OpFSub(F, f(1), fx), ay = ctx.OpFSub(F, f(1), fy);
-    std::array<Id, 4> weights{ctx.OpFMul(F, ax, ay), ctx.OpFMul(F, fx, ay), ctx.OpFMul(F, ax, fy),
-                              ctx.OpFMul(F, fx, fy)};
-    Id sum = f(0);
-    for (auto& weight : weights) {
-        weight = ctx.OpPow(F, weight, f(8));
-        sum = ctx.OpFAdd(F, sum, weight);
-    }
+    const auto uniform_pair = [&](Id h) {
+        return v(ctx.OpFMul(F, ctx.OpConvertUToF(F, ctx.OpBitwiseAnd(U, h, ctx.ConstU32(65535u))),
+                           f(1.f / 65536.f)),
+                 ctx.OpFMul(F, ctx.OpConvertUToF(F, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u))),
+                           f(1.f / 65536.f)));
+    };
+    // Inverse Poisson(0.5) CDF for midpoint U32 uniforms. Count 10 is the
+    // fallback; the omitted tail is smaller than one 32-bit random quantum.
+    static constexpr std::array<u32, 10> poisson_cdf{
+        2605029347u, 3907544021u, 4233172690u, 4287444134u, 4294228065u,
+        4294906458u, 4294962991u, 4294967029u, 4294967281u, 4294967295u};
+    // Invocation-private loop state avoids touching the game's deferred Phis.
+    // Each expansion has separate state and resets it before the loops.
+    const auto state = [&](Id type, Id initial) {
+        const Id id = ctx.AddGlobalVariable(ctx.TypePointer(spv::StorageClass::Private, type),
+                                            spv::StorageClass::Private, initial);
+        if (ctx.profile.supported_spirv >= 0x00010400)
+            ctx.interfaces.push_back(id);
+        return id;
+    };
+    const Id cell_index = state(U, zero), site_index = state(U, zero);
+    const Id sum_value = state(C, ctx.ConstantNull(C));
+    const Id sum_weight = state(F, f(0)), transparency = state(F, f(1));
+    ctx.OpStore(cell_index, zero);
+    ctx.OpStore(sum_value, ctx.ConstantNull(C));
+    ctx.OpStore(sum_weight, f(0));
+    ctx.OpStore(transparency, f(1));
     const Id image = ctx.OpLoad(tex.image_type, tex.id);
     const Id sampler = ctx.OpLoad(ctx.sampler_type, ctx.samplers[handle >> 16]);
+    const Id cell_header = ctx.OpLabel(), cell_body = ctx.OpLabel();
+    const Id cell_continue = ctx.OpLabel(), cell_merge = ctx.OpLabel();
+    ctx.OpBranch(cell_header);
+    ctx.AddLabel(cell_header);
+    const Id ci = ctx.OpLoad(U, cell_index);
+    const Id more_cells = ctx.OpULessThan(ctx.U1[1], ci, ctx.ConstU32(16u));
+    ctx.OpLoopMerge(cell_merge, cell_continue, spv::LoopControlMask::MaskNone);
+    ctx.OpBranchConditional(more_cells, cell_body, cell_merge);
+    ctx.AddLabel(cell_body);
+    const Id ox = ctx.OpUMod(U, ci, ctx.ConstU32(4u));
+    const Id oy = ctx.OpUDiv(U, ci, ctx.ConstU32(4u));
+    const Id cell_offset = v(ctx.OpFAdd(F, ctx.OpConvertUToF(F, ox), component(lower, 0)),
+                             ctx.OpFAdd(F, ctx.OpConvertUToF(F, oy), component(lower, 1)));
+    const Id key_x = ctx.OpIAdd(U, cell_x, ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], component(cell_offset, 0))));
+    const Id key_y = ctx.OpIAdd(U, cell_y, ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], component(cell_offset, 1))));
+    const Id count_hash = hash(key_x, key_y, zero, 0xb5297a4du);
+    // Count 0/1 covers 90.98% of cells; only the rare tail traverses the tree.
+    const Id common_count = ctx.OpLabel(), tail_count = ctx.OpLabel(), count_merge = ctx.OpLabel();
+    const Id is_common = ctx.OpULessThan(ctx.U1[1], count_hash, ctx.ConstU32(poisson_cdf[1]));
+    ctx.OpSelectionMerge(count_merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(is_common, common_count, tail_count);
+    ctx.AddLabel(common_count);
+    const Id common_value = ctx.OpSelect(U, ctx.OpUGreaterThanEqual(ctx.U1[1], count_hash,
+                                        ctx.ConstU32(poisson_cdf[0])), one, zero);
+    ctx.OpBranch(count_merge);
+    ctx.AddLabel(tail_count);
+    const auto count_tree = [&](auto&& self, u32 lo, u32 hi) -> Id {
+        if (lo == hi) return ctx.ConstU32(lo);
+        const u32 mid = (lo + hi) / 2;
+        const Id left = ctx.OpLabel(), right = ctx.OpLabel(), join = ctx.OpLabel();
+        const Id is_left = ctx.OpULessThan(ctx.U1[1], count_hash, ctx.ConstU32(poisson_cdf[mid]));
+        ctx.OpSelectionMerge(join, spv::SelectionControlMask::MaskNone);
+        ctx.OpBranchConditional(is_left, left, right);
+        ctx.AddLabel(left);
+        const Id a = self(self, lo, mid), a_label = ctx.last_label;
+        ctx.OpBranch(join);
+        ctx.AddLabel(right);
+        const Id b = self(self, mid + 1, hi), b_label = ctx.last_label;
+        ctx.OpBranch(join);
+        ctx.AddLabel(join);
+        return ctx.OpPhi(U, a, a_label, b, b_label);
+    };
+    const Id tail_value = count_tree(count_tree, 2, 10), tail_finish = ctx.last_label;
+    ctx.OpBranch(count_merge);
+    ctx.AddLabel(count_merge);
+    const Id count = ctx.OpPhi(U, common_value, common_count, tail_value, tail_finish);
+    ctx.OpStore(site_index, zero);
+    const Id site_header = ctx.OpLabel(), site_body = ctx.OpLabel();
+    const Id site_continue = ctx.OpLabel(), site_merge = ctx.OpLabel();
+    ctx.OpBranch(site_header);
+    ctx.AddLabel(site_header);
+    const Id si = ctx.OpLoad(U, site_index);
+    const Id more_sites = ctx.OpULessThan(ctx.U1[1], si, count);
+    ctx.OpLoopMerge(site_merge, site_continue, spv::LoopControlMask::MaskNone);
+    ctx.OpBranchConditional(more_sites, site_body, site_merge);
+    ctx.AddLabel(site_body);
+    // R=sqrt(2) has complete support in this shifted 4x4 neighbourhood. Independent
+    // count, position and texture-phase domains remove fixed-cell strata.
+    const Id point = ctx.OpFAdd(V, cell_offset, uniform_pair(hash(key_x, key_y, si, 0x68bc21ebu)));
+    const Id delta = ctx.OpFSub(V, point, frac);
+    const Id distance2 = ctx.OpDot(F, delta, delta);
+    const Id radius_weight = ctx.OpFMax(F, f(0), ctx.OpFSub(F, f(1), ctx.OpFMul(F, distance2, f(.5f))));
+    const Id weight = ctx.OpFMul(F, radius_weight, radius_weight);
+    const Id previous_value = ctx.OpLoad(C, sum_value);
+    const Id previous_weight = ctx.OpLoad(F, sum_weight);
+    const Id previous_transparency = ctx.OpLoad(F, transparency);
+    const Id sample_body = ctx.OpLabel(), sample_merge = ctx.OpLabel();
+    const Id supported = ctx.OpFOrdGreaterThan(ctx.U1[1], weight, f(0));
+    ctx.OpSelectionMerge(sample_merge, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(supported, sample_body, sample_merge);
+    ctx.AddLabel(sample_body);
+    // Period 2 is common to Wrap and Mirror: paired layers keep identical
+    // numeric translations even when their sampler modes differ.
+    const Id phase = uniform_pair(hash(key_x, key_y, si, 2246822519u));
+    const Id shifted = ctx.OpFAdd(
+        V, uv, v(rx ? ctx.OpFMul(F, component(phase, 0),
+                                f(2.f)) : f(0),
+                 ry ? ctx.OpFMul(F, component(phase, 1),
+                                f(2.f)) : f(0)));
+    const Id sample_coords = tex.view_type == AmdGpu::ImageType::Color2DArray
+                                 ? ctx.OpCompositeConstruct(ctx.F32[3], component(shifted, 0),
+                                                            component(shifted, 1), component(coords, 2))
+                                 : shifted;
     const Id combined = ctx.OpSampledImage(tex.sampled_type, image, sampler);
-    Id blended = ctx.ConstantNull(C), square_sum = f(0);
-    for (u32 i = 0; i < 4; ++i) {
-        const Id cx = rx ? ctx.OpFAdd(F, component(cell, 0), f(float(i & 1))) : f(0);
-        const Id cy = ry ? ctx.OpFAdd(F, component(cell, 1), f(float(i >> 1))) : f(0);
-        const Id ix = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], cx));
-        const Id iy = ctx.OpBitcast(U, ctx.OpConvertFToS(ctx.S32[1], cy));
-        Id h = ctx.OpIAdd(U,
-                          ctx.OpIAdd(U, ctx.OpIMul(U, ix, ctx.ConstU32(1664525u)),
-                                     ctx.OpIMul(U, iy, ctx.ConstU32(1013904223u))),
-                          ctx.ConstU32(2246822519u));
-        const auto mix = [&](Id h, u32 shift, u32 mul) {
-            return ctx.OpIMul(
-                U, ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(shift))),
-                ctx.ConstU32(mul));
-        };
-        h = mix(h, 16, 2246822519u);
-        h = mix(h, 13, 3266489917u);
-        h = ctx.OpBitwiseXor(U, h, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u)));
-        const Id ox =
-            rx ? ctx.OpFMul(F, ctx.OpConvertUToF(F, ctx.OpBitwiseAnd(U, h, ctx.ConstU32(65535u))),
-                            f((samp.clamp_x == AmdGpu::ClampMode::Mirror ? 2.f : 1.f) / 65536.f))
-               : f(0);
-        const Id oy =
-            ry ? ctx.OpFMul(F,
-                            ctx.OpConvertUToF(F, ctx.OpShiftRightLogical(U, h, ctx.ConstU32(16u))),
-                            f((samp.clamp_y == AmdGpu::ClampMode::Mirror ? 2.f : 1.f) / 65536.f))
-               : f(0);
-        const Id shifted = ctx.OpFAdd(V, uv, v(ox, oy));
-        const Id sample_coords =
-            tex.view_type == AmdGpu::ImageType::Color2DArray
-                ? ctx.OpCompositeConstruct(ctx.F32[3], component(shifted, 0), component(shifted, 1),
-                                           ctx.OpCompositeExtract(F, coords, 2))
-                : shifted;
-        const Id sample = ctx.OpImageSampleExplicitLod(C, combined, sample_coords,
-                                                       spv::ImageOperandsMask::Grad, dx, dy);
-        const Id weight = ctx.OpFDiv(F, weights[i], sum);
-        blended = ctx.OpFAdd(C, blended, ctx.OpVectorTimesScalar(C, sample, weight));
-        square_sum = ctx.OpFAdd(F, square_sum, ctx.OpFMul(F, weight, weight));
-    }
-    ctx.AddCapability(spv::Capability::ImageQuery);
-    const Id levels = ctx.OpImageQueryLevels(U, image);
-    const Id lod = ctx.OpConvertUToF(F, ctx.OpISub(U, levels, ctx.ConstU32(1u)));
-    const Id centre = tex.view_type == AmdGpu::ImageType::Color2DArray
-                          ? ctx.OpCompositeConstruct(ctx.F32[3], f(.5f), f(.5f),
-                                                     ctx.OpCompositeExtract(F, coords, 2))
-                          : v(f(.5f), f(.5f));
-    const Id mean =
-        ctx.OpImageSampleExplicitLod(C, combined, centre, spv::ImageOperandsMask::Lod, lod);
-    const Id altered = ctx.OpFAdd(
-        C, mean,
-        ctx.OpVectorTimesScalar(C, ctx.OpFSub(C, blended, mean), ctx.OpInverseSqrt(F, square_sum)));
-    Id result = ctx.OpFMix(C, original, altered, splat(amount));
-    // Never alter opacity/cutout semantics through the generic colour hook.
+    const Id sample = ctx.OpImageSampleExplicitLod(C, combined, sample_coords,
+                                                   spv::ImageOperandsMask::Grad, dx, dy);
+    const Id added_value = ctx.OpFAdd(C, previous_value, ctx.OpVectorTimesScalar(C, sample, weight));
+    const Id added_weight = ctx.OpFAdd(F, previous_weight, weight);
+    const Id added_transparency = ctx.OpFMul(F, previous_transparency, ctx.OpFSub(F, f(1), weight));
+    ctx.OpBranch(sample_merge);
+    ctx.AddLabel(sample_merge);
+    const Id next_value = ctx.OpPhi(C, added_value, sample_body, previous_value, site_body);
+    const Id next_weight = ctx.OpPhi(F, added_weight, sample_body, previous_weight, site_body);
+    const Id next_transparency = ctx.OpPhi(F, added_transparency, sample_body,
+                                          previous_transparency, site_body);
+    ctx.OpStore(sum_value, next_value);
+    ctx.OpStore(sum_weight, next_weight);
+    ctx.OpStore(transparency, next_transparency);
+    ctx.OpBranch(site_continue);
+    ctx.AddLabel(site_continue);
+    ctx.OpStore(site_index, ctx.OpIAdd(U, si, one));
+    ctx.OpBranch(site_header);
+    ctx.AddLabel(site_merge);
+    ctx.OpBranch(cell_continue);
+    ctx.AddLabel(cell_continue);
+    ctx.OpStore(cell_index, ctx.OpIAdd(U, ci, one));
+    ctx.OpBranch(cell_header);
+    ctx.AddLabel(cell_merge);
+    const Id total_weight = ctx.OpLoad(F, sum_weight);
+    const Id nonempty = ctx.OpLabel(), finish = ctx.OpLabel();
+    const Id has_weight = ctx.OpFOrdGreaterThan(ctx.U1[1], total_weight, f(0));
+    ctx.OpSelectionMerge(finish, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(has_weight, nonempty, finish);
+    ctx.AddLabel(nonempty);
+    const Id average = ctx.OpVectorTimesScalar(C, ctx.OpLoad(C, sum_value),
+                                               ctx.OpFDiv(F, f(1), total_weight));
+    // Opacity 1-product(1-K) tends to zero with W at empty support boundaries.
+    // Convex coefficients preserve DC/bounds; no global mean or gain is used.
+    const Id coverage = ctx.OpFSub(F, f(1), ctx.OpLoad(F, transparency));
+    Id result = ctx.OpFMix(C, original, average, splat(ctx.OpFMul(F, amount, coverage)));
     result = ctx.OpCompositeInsert(C, ctx.OpCompositeExtract(F, original, 3), result, 3);
+    ctx.OpBranch(finish);
+    ctx.AddLabel(finish);
+    const Id with_empty_fallback = ctx.OpPhi(C, result, nonempty, original, cell_merge);
     ctx.OpBranch(merge);
     ctx.AddLabel(merge);
-    return ctx.OpPhi(C, result, repeat_label, original, before);
+    return ctx.OpPhi(C, with_empty_fallback, finish, original, before);
 }
 
 Id EmitImageSampleImplicitLod(EmitContext &ctx, IR::Inst *inst, u32 handle,

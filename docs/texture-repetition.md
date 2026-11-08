@@ -70,16 +70,30 @@ material provenance cannot identify every authored detail inside an image.
 
 ## Sampling and cost
 
-The shader retains its original sample. Where the footprint blend is positive,
-it samples four deterministic translated UV phases using the original gradients,
-plus the coarsest mip for approximate variance correction. Matching layers share
-phase offsets and weights. No UV rotation or density scaling is introduced.
+The shader retains its original sample and blends translated texture phases from
+a deterministic sparse point catalogue. Smooth, local weights avoid a fixed
+four-corner blending grid. All coefficients are nonnegative and sum to one;
+there is no global-mip mean or contrast gain. Matching layers share phase offsets
+and weights, including mixed Repeat/Mirror pairs. No UV rotation or density
+scaling is introduced. Alpha retains its original sample.
 
 The blend starts at about 512 screen pixels per repeat and reaches full strength
 at about 32. Close detail retains the original result. When the blend is zero,
-a shader branch skips all five extra reads. Gradients are calculated before that
-branch. Positive-blend regions still cost extra texture reads; the narrower
-material scope and zero-blend path have not been timed for a measured FPS gain.
+a shader branch skips the catalogue and additional reads. Gradients are calculated
+before all new branches and loops and reused for every translated sample.
+
+At positive blend, the catalogue checks 16 neighbouring cells and adds about
+3.14 texture reads on average, with a data-dependent count. These checks also
+cost arithmetic and branches; fewer reads alone do not establish faster shaders.
+Blending can soften fine grain, and some original repetition remains. The feature
+reduces visible repetition rather than eliminating every repeated motif.
+
+A local Fraser Valley comparison measured 129.98 FPS with the effect off and
+107.26 FPS with it on (about 17.5% lower). Both used 45 measured seconds after
+15 seconds of warmup, 4K output with DLSS Performance and a 237 FPS cap. These
+were single runs with separate cold caches; the release logs cannot establish
+that shader compilation had completely stopped. This is a substantial observed
+cost, not a cross-GPU or fully warmed performance guarantee.
 
 The setting is frozen at startup and participates in shader-cache identity after
 configuration loading. Relevant image formats, number formats, mip-chain and
@@ -88,7 +102,7 @@ requested setting does not mutate compiled pipelines; restart is required.
 
 ## Reproducing the registries
 
-Supply the original packages from a legally owned game extraction:
+Supply the original extracted packages:
 
 ```sh
 python tools/generate_world_repeat_registry.py global.rpk vehicleglobal.rpk
@@ -117,11 +131,15 @@ instructions. Generators print package SHA256 hashes and derive ownership again.
   fallback is introduced.
 - Launcher and fresh-process runtime tests cover presets, legacy migration,
   opt-out, save/reload, environment precedence and the startup/restart boundary.
-- Four real-Sirit SPIR-V harness variants pass `spirv-val`; control-flow checks
-  verify that the zero-blend path bypasses the extra reads and preserves alpha.
+- Thirty-two actual-helper Sirit SPIR-V variants pass `spirv-val`, covering
+  two SPIR-V versions, 2D/array inputs, both gradient paths, all Repeat/Mirror
+  combinations and two sequential expansions. Control-flow/dataflow checks
+  verify supported cells, guarded reads, normalization, empty/zero fallbacks,
+  original alpha and derivative placement. Six deliberately broken variants
+  are rejected. See [the portable test instructions](../tools/repeat_sampling_test.md).
 - Changed C++ integration units compile against existing local dependencies.
 
 These checks do not establish final visual quality, cross-GPU performance or a
-clean release build. The narrowed scope and interior extension still need live
-visual regression testing, including motion and streaming. No frame-rate gain
-is claimed.
+clean release build. Visual checks of grain retention, motion, streaming and
+normal-map lighting remain separate from the structural shader test. No
+frame-rate gain is claimed.
