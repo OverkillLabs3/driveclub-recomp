@@ -37,6 +37,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/texture_cache/sampler.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
@@ -1424,15 +1425,14 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             regs.index_buffer_type.index_type == AmdGpu::IndexType::Index16 ? 2u : 4u;
         const VAddr index_address = is_indexed
             ? regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size : 0;
-        // Without a character-size skeleton the draw is gated on its bone palette changing
-        // since last frame (model constants follow the camera, the palette does not). The
-        // check comes first: most gated draws are static world pieces with long index lists.
-        static const bool all_motion = [] {
-            const char* value = std::getenv("BB_OBJECT_MOTION_ALL");
-            return value && value[0] == '1';
-        }();
-        bool gated = !all_motion;
-        u64 palette = 0;
+        // Vehicle parts keep broad history. Other draws retain the original
+        // palette-only gate before scanning long index lists.
+        const auto* motion_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const bool vehicle_motion = motion_ps && VehicleMotionScope::VehicleProgram(motion_ps->pgm_hash);
+        static const bool force_all_motion =
+            VehicleMotionScope::ExplicitAll(std::getenv("BB_OBJECT_MOTION_ALL"));
+        bool gated = !VehicleMotionScope::Broad(vehicle_motion, force_all_motion);
+        u64 motion_state = 0;
         for (const auto& resource : vs.buffers) {
             if (resource.IsSpecial()) continue;
             const auto buffer = resource.GetSharp(vs);
@@ -1444,11 +1444,12 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                 break;
             }
             const VAddr address = buffer.base_address;
-            if (role == Motion::BufferRole::SmallSkeleton &&
+            if ((role == Motion::BufferRole::SmallSkeleton ||
+                 VehicleMotionScope::HashModelState(vehicle_motion, size)) &&
                 memory->IsValidGpuMapping(address, 0) &&
                 memory->ClampRangeSize(address, size) == size) {
-                palette = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
-                                               palette);
+                motion_state = XXH3_64bits_withSeed(reinterpret_cast<const void*>(address), size,
+                                                  motion_state);
             }
         }
         push_data.motion_param = 0;
@@ -1458,7 +1459,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
                                              .index_count = regs.num_indices,
                                              .instances = regs.num_instances.NumInstances(),
                                              .first_instance = first_instance},
-                                            palette)) {
+                                            motion_state)) {
             Motion::VertexRange range{base_vertex, regs.num_indices};
             u64 topology = 0;
             if (is_indexed) {

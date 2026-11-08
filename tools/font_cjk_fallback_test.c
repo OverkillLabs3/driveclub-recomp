@@ -6,6 +6,10 @@
  * Optional: BB_TEST_CJK_FONT=<real CJK .ttf> additionally checks Chinese glyph coverage.
  * Run from the repository root (the bundled fonts are referenced by relative path).
  */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
