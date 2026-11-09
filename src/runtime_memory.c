@@ -109,7 +109,7 @@ static void rw_write_lock(void) {
             if (__atomic_compare_exchange_n(&rw_state,&s,RW_WRITER,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) break;
             continue;
         }
-        __atomic_fetch_or(&rw_state,RW_WAITING,__ATOMIC_RELAXED);
+        if (!(__atomic_fetch_or(&rw_state,RW_WAITING,__ATOMIC_ACQUIRE)&~RW_WAITING)) continue;
         pthread_cond_wait(&rw_readers_done,&rw_mutex);
     }
     pthread_mutex_unlock(&rw_mutex);
@@ -119,6 +119,7 @@ static void rw_write_unlock(void) {
     pthread_mutex_lock(&rw_mutex);
     __atomic_store_n(&rw_state,0,__ATOMIC_RELEASE);
     pthread_cond_broadcast(&rw_writer_done);
+    pthread_cond_broadcast(&rw_readers_done);
     pthread_mutex_unlock(&rw_mutex);
 }
 static void write_lock(void) {
