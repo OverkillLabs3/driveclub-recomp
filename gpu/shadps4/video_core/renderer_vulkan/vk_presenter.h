@@ -68,6 +68,10 @@ struct Frame {
         VmaAllocation allocation{};
         vk::Image image{};
         vk::ImageView view{};
+        VmaAllocation hdr_allocation{};
+        vk::Image hdr_image{};
+        vk::ImageView hdr_view{};
+        bool hdr_ready{false};
     };
     std::array<Generated, FrameGenerator::MaxGenerated> generated{};
     u32 generated_count{};
@@ -148,6 +152,7 @@ private:
     /// when missing; the others are freed. Returns how many there are.
     u32 EnsureGenerated(Frame* frame, u32 count);
     void DestroyGenerated(Frame* frame, u32 from = 0);
+    void ConvertGeneratedToHdr(vk::CommandBuffer cmdbuf, Frame* frame, u64 cpu_address);
     /// bbport: frame generation is off (or the output HDR): its memory is freed.
     void ReleaseFrameGen(Frame* frame);
     /// bbport: present thread, after a game frame: how many generated frames the display can

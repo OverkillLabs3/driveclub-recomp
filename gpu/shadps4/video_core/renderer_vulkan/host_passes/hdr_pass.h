@@ -27,7 +27,8 @@ public:
     /// (ShaderReadOnlyOptimal); hudless and scene may be null. `output` is drawn whole
     /// (ColorAttachmentOptimal).
     void Render(vk::CommandBuffer cmdbuf, vk::ImageView frame, vk::ImageView hudless,
-                vk::ImageView scene, vk::ImageView output, vk::Extent2D size, Params params);
+                vk::ImageView scene, vk::ImageView output, vk::Extent2D size, Params params,
+                vk::ImageView ui_reference = {});
 
 private:
     vk::UniquePipeline pipeline{};
