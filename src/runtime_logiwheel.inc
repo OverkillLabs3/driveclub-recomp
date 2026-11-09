@@ -295,12 +295,14 @@ static float col_f25(float u) { if (u>=1.0f) return 1.0f; const float r=1.0f-u; 
  * follows the front's load to the power 0.68; this 0.69-0.74 (the load on the pneumatic part alone: 0.46-0.53), so
  * braking into a corner is 28-40% heavier (AC +36%). From half the peak on it blends into col_trail's fall past the peak,
  * by 1.5 times the peak (blended by the peak, most of the fall came within a degree of slip, like a switch), and never
- * under the caster's trail, 20% of the centre's, however far the tyres slide: the steering geometry keeps turning the
- * front wheels toward where they travel. The force at 0.8-1.5 times the peak: .99 .93 .86 .80 .72 .58 .48 .44 (Assetto
- * Corsa's M235i .94 .87 .79 .73 .70 .60 .63 .67; blended by the peak .83 .66 .61 .62 .62 .55 .50 .47). Scaled to
- * col_trail at half the peak, where most cornering is, so the gains mean what they did. */
+ * under the caster's trail however far the tyres slide: the steering geometry keeps turning the front wheels toward
+ * where they travel: 45% of the centre's. At 20% the wheel went from 0.8-1.0 to 0.15-0.3 in 0.2 s as a car rotated
+ * away faster than the countersteer, and a player lost 4 cars of 29 slides; at 45% it holds 0.75 of a corner's force
+ * there, and understeer keeps its detail. The force at 0.8-1.5 times the peak: .99 .93 .86 .80 .73 .64 .60 .61
+ * (Assetto Corsa's M235i .94 .87 .79 .73 .70 .60 .63 .67; blended by the peak .83 .66 .61 .62 .62 .55 .50 .47).
+ * Scaled to col_trail at half the peak, where most cornering is, so the gains mean what they did. */
 #define COL_MECH 0.8f
-#define COL_CASTER 0.2f
+#define COL_CASTER 0.45f
 static float col_brush(float u) { if (u>=1.0f) return 0.0f; const float r=1.0f-u; return r*r*r/(1.0f-u+u*u/3.0f); }
 static float col_trail_brush(float u, float load_factor) {
     const float scale=col_trail_at(0.5f)/(COL_MECH+(1.0f-COL_MECH)*col_brush(0.5f));
