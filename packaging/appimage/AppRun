@@ -395,4 +395,9 @@ args=("$data/prep/boot-linked.bin" --content-profile "$data/prep/content.bin"
       --mods "$data/mods" --stub-unresolved --timeout 0)
 if [ "$base_dir" != "$update_dir" ]; then args+=(--app0-base "$base_dir"); fi
 args+=("${game_args[@]}")
-exec "$bindir/driveclub-probe" "${args[@]}"
+prefix=()
+if [ -n "${DRIVECLUB_LAUNCH_PREFIX:-}" ]; then
+    eval "prefix=($DRIVECLUB_LAUNCH_PREFIX)"
+    echo "prefix   ${prefix[*]}"
+fi
+exec "${prefix[@]}" "$bindir/driveclub-probe" "${args[@]}"
