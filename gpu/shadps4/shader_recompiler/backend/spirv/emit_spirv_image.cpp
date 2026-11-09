@@ -88,7 +88,7 @@ Id EmitImageSampleRaw(EmitContext& ctx, IR::Inst* inst, u32 handle, Id address1,
 static bool GlobalRepeatEnabled() { return BbSettings::Get().startup_texture_repetition; }
 
 void PrepareWorldRepeat(const IR::Program& program) {
-    WorldRepeat::selected.clear();
+    WorldRepeat::Selected().clear();
     if (GlobalRepeatEnabled())
         WorldRepeat::Prepare(program);
 }
@@ -96,7 +96,7 @@ void PrepareWorldRepeat(const IR::Program& program) {
 static Id ApplyGlobalRepeat(EmitContext& ctx, IR::Inst* inst, u32 handle, Id coords, Id shader_bias,
                             const IR::Value& offset, Id original, Id provided_dx = {},
                             Id provided_dy = {}) {
-    if (!GlobalRepeatEnabled() || !WorldRepeat::selected.contains(inst) ||
+    if (!GlobalRepeatEnabled() || !WorldRepeat::Selected().contains(inst) ||
         ctx.sw_stage != SwStage::Fragment || !offset.IsEmpty())
         return original;
     const auto& tex = ctx.images[handle & 0xffff];

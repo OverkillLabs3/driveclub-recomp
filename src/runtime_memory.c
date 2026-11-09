@@ -318,6 +318,12 @@ static int pool(void) {
     }
     if (!section) { fprintf(stderr,"Runtime: cannot create %" PRIu64 " MiB of guest memory (error %lu); is the page file large enough?\n",bytes>>20,GetLastError()); return -1; }
     backing_base=MapViewOfFile3(section,GetCurrentProcess(),NULL,0,bytes,0,PAGE_READWRITE,NULL,0);
+    /* The graphics driver commits its own memory too: with the commit limit nearly used up, its allocations fail
+     * ("ErrorOutOfDeviceMemory" with plenty of video memory free) and the game crashes soon after. */
+    MEMORYSTATUSEX status; status.dwLength=sizeof status;
+    if (backing_base && GlobalMemoryStatusEx(&status) && status.ullAvailPageFile<(UINT64_C(3)<<30))
+        fprintf(stderr,"Runtime: only %" PRIu64 " MiB of commit are left after the guest memory (%" PRIu64 " MiB). Enlarge the Windows page file (System Properties > Advanced > Performance > Virtual memory) or lower Output resolution; crashes and out-of-memory errors in the graphics driver are likely\n",
+                (uint64_t)(status.ullAvailPageFile>>20),bytes>>20);
     return backing_base ? 0 : -1;
 }
 #else

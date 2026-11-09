@@ -570,9 +570,7 @@ void NoteBox() {
 
 /// The pedals the game read last (F2), bottom left: clutch, brake and throttle as bars with their percentage. A pedal
 /// at the end of its travel is drawn bright and outlined, so a press that stops short of full shows.
-void PedalPanel() {
-    float throttle = 0.0f, brake = 0.0f, clutch = 0.0f;
-    const int kind = runtime_pad_pedals(&throttle, &brake, &clutch);
+void PedalPanel(int kind, float throttle, float brake, float clutch) {
     if (!kind) return;
     struct Bar { const char* name; float value; ImU32 color; };
     Bar bars[3];
@@ -1091,6 +1089,10 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (!Visible()) {
         return;
     }
+    // The pad lock is taken here, before the ImGui mutex: the input sampler holds the pad lock while it asks
+    // ExitDialogAvailable() for the ImGui mutex, so taking the two in the other order deadlocks (pedal inputs on).
+    float pedal_throttle = 0.0f, pedal_brake = 0.0f, pedal_clutch = 0.0f;
+    const int pedal_kind = BbSettings::Get().show_pedals ? runtime_pad_pedals(&pedal_throttle, &pedal_brake, &pedal_clutch) : 0;
     std::scoped_lock lock{imgui_mutex};
     static auto last_render = now;
     const float ms = std::chrono::duration<float, std::milli>(now - last_render).count();
@@ -1114,7 +1116,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
         FpsCounter();
     }
     if (BbSettings::Get().show_pedals && !menu_open) {
-        PedalPanel();
+        PedalPanel(pedal_kind, pedal_throttle, pedal_brake, pedal_clutch);
     }
     if (picture_row >= 0 && !menu_open) {
         PicturePanel();
