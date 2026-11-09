@@ -3591,6 +3591,7 @@ int Run(int argc, char** argv) {
     ImGui::Render();
     SDL_SetRenderDrawColor(renderer, 16, 18, 22, 255);
     SDL_RenderClear(renderer);
+    SDL_SetRenderScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
     SDL_RenderPresent(renderer);
   }
