@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Builds the native x86_64 Linux runtime: out/driveclub-probe, out/gpu/libbbgpu.so, the
-# out/driveclub-prepare helper and out/driveclub-launcher. See BUILDING.md.
+# Builds the native Linux runtime (x86_64 or aarch64): out/driveclub-probe, out/gpu/libbbgpu.so, the
+# out/driveclub-prepare helper, out/driveclub-launcher and out/driveclub-cpu-selftest. See BUILDING.md.
 #
-# The Linux port follows the upstream ARM Linux branch (seregasmith/ARM_linux_driveclub-recomp,
-# branch arm_linux). On x86_64 the game's own code runs on the host CPU; the guest CPU layer
-# (src/guest_cpu.h) is a set of plain calls there, so no FEX is involved.
+# The Linux port follows the ARM Linux branch (seregasmith/ARM_linux_driveclub-recomp, branch arm_linux).
+# On x86_64 the game's own code runs on the host CPU; the guest CPU layer (src/guest_cpu.h) is a set of
+# plain calls there. On aarch64 the game's x86-64 code runs in FEXCore's JIT (cpu/, third_party/FEX),
+# built into out/fex/libbbcpu.so; everything else is native.
 #
 # Environment:
 #   CC, CXX           compilers (default: cc and c++)
@@ -13,6 +14,9 @@
 #   BB_PGO_DIR        profile directory (default pgo)
 #   BB_VULKAN_HEADERS include directory with a recent vulkan/vulkan.h (see packaging/appimage/fetch-deps.sh)
 #   BB_DEPS_DIR       prefix with the AppImage build dependencies (default out/deps)
+#   BB_ARCH           target architecture, x86_64 or aarch64 (default: this machine's; set it to cross-compile)
+#   FEX_CC, FEX_CXX   aarch64: compilers for FEXCore (default clang and clang++; FEX needs Clang)
+#   FEX_TUNE_ARCH     aarch64: FEXCore -march (default armv8.2-a), FEX_TUNE_CPU its -mcpu (default generic)
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 CC=${CC:-$(command -v cc || command -v gcc || true)}
@@ -75,6 +79,39 @@ if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
     exit 1
 fi
 
+# The guest CPU: on aarch64 the game's x86-64 code runs in FEXCore's JIT, linked into out/fex/libbbcpu.so
+# (cpu/: FEX's CMake project builds it, cpu/fex_project.cmake adds the target; FEX uses the fmt it ships
+# with, as a distribution's older fmt does not build it). BB_ARCH names the target
+# when cross-compiling (with CC/CXX for it and CMAKE_TOOLCHAIN_FILE for the CMake parts).
+arch=${BB_ARCH:-$(uname -m)}
+cpu=()
+case $arch in
+    x86_64) ;;
+    aarch64)
+        if [ ! -f third_party/FEX/External/vixl/CMakeLists.txt ] && git rev-parse --git-dir >/dev/null 2>&1; then
+            git submodule update --init --recursive third_party/FEX
+        fi
+        [ -f third_party/FEX/CMakeLists.txt ] ||
+            { echo 'third_party/FEX is missing: git submodule update --init --recursive' >&2; exit 1; }
+        if [ ! -f out/fex/build.ninja ]; then
+            CC=${FEX_CC:-clang} CXX=${FEX_CXX:-clang++} cmake -S third_party/FEX -B out/fex -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release -DCMAKE_PROJECT_FEX_INCLUDE="$PWD/cpu/fex_project.cmake" \
+                -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON \
+                -DBUILD_TESTING=OFF -DBUILD_THUNKS=OFF -DBUILD_FEXCONFIG=OFF -DBUILD_STEAM_SUPPORT=OFF \
+                -DBUILD_FEX_LINUX_TESTS=OFF -DENABLE_ZYDIS=OFF -DTUNE_ARCH="${FEX_TUNE_ARCH:-armv8.2-a}" \
+                -DTUNE_CPU="${FEX_TUNE_CPU:-generic}" >/dev/null
+        fi
+        if ! ninja -C out/fex bbcpu > out/fex-build.log 2>&1; then
+            grep -v '^[[]' out/fex-build.log | tail -40 >&2
+            echo 'Guest CPU library build failed (full log: out/fex-build.log)' >&2
+            exit 1
+        fi
+        echo 'Guest CPU: FEXCore (out/fex/libbbcpu.so)'
+        cpu=(-Lout/fex -lbbcpu -Wl,-rpath,'$ORIGIN/../lib/driveclub-recomp/cpu' -Wl,-rpath,"$PWD/out/fex")
+        ;;
+    *) echo "Unsupported host architecture $arch (x86_64 or aarch64)." >&2; exit 1 ;;
+esac
+
 # ATRAC9: the game's audio codec, compiled once without this project's warning policy.
 if [ ! -f out/libatrac9.a ] || [ -n "$(find third_party/LibAtrac9/C/src -newer out/libatrac9.a -name '*.c' -print -quit)" ]; then
     rm -rf out/atrac9 && mkdir -p out/atrac9
@@ -93,7 +130,12 @@ runtime=(src/runtime*.c)
 "$CC" "${cflags[@]}" -no-pie "${includes[@]}" -I. -Isrc src/probe.c "${runtime[@]}" src/vulkan_smoke.c \
     out/libatrac9.a -Lout/gpu -lbbgpu \
     -Wl,-rpath,'$ORIGIN/../lib/driveclub-recomp/gpu' -Wl,-rpath,"$PWD/out/gpu" -rdynamic \
-    "${libraries[@]}" -lm -ldl -o out/driveclub-probe
+    ${cpu[@]+"${cpu[@]}"} "${libraries[@]}" -lm -ldl -o out/driveclub-probe
+
+# The guest CPU's crossings checked without the game: FEXCore on aarch64, the host CPU on x86_64.
+selftest=(tools/cpu_selftest.c)
+[ "$arch" = x86_64 ] && selftest+=(src/runtime_cpu.c)
+"$CC" -std=c11 -O2 -g -Wall -Wextra -pthread -Isrc "${selftest[@]}" ${cpu[@]+"${cpu[@]}"} -o out/driveclub-cpu-selftest
 
 # First-run preparation of the user's game dumps: launcher/prepare.cpp is portable C++ and is driven by
 # this small CLI instead of the Windows launcher.
@@ -113,3 +155,4 @@ imgui=gpu/third_party/imgui
 echo "Built $PWD/out/driveclub-probe"
 echo "Built $PWD/out/driveclub-prepare"
 echo "Built $PWD/out/driveclub-launcher"
+echo "Built $PWD/out/driveclub-cpu-selftest"

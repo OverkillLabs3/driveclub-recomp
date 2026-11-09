@@ -33,7 +33,8 @@ The Linux workflow needs no MSYS2 on the developer's machine and can be started 
 
 - `.github/workflows/appimage.yml` (`ubuntu-24.04`) builds the native Linux runtime with
   `build-linux.sh` (which compiles `src/runtime*.c`) and runs `tools/font_cjk_fallback_test.c`.
-  This is the fast compile/regression gate for the HLE sources.
+  This is the fast compile/regression gate for the HLE sources. The same workflow builds the
+  aarch64 AppImage natively on `ubuntu-24.04-arm` (see [AppImage](#appimage)).
 
 `DriveClubGame.exe` is a WIN32-only CMake target that links `onecore`, `bcrypt` and `ws2_32`,
 so a native Linux runner cannot produce it; build it locally with `bash build.sh` as described
@@ -57,7 +58,7 @@ Run the regression test from the repository root (no game files needed):
     out/font_cjk_fallback_test
     BB_TEST_CJK_FONT=/path/to/a-cjk.ttf out/font_cjk_fallback_test
 
-## Linux (x86_64)
+## Linux (x86_64 and aarch64)
 
 The Linux support comes from the upstream ARM Linux branch
 ([seregasmith/ARM_linux_driveclub-recomp](https://github.com/seregasmith/ARM_linux_driveclub-recomp),
@@ -68,6 +69,23 @@ no FEX library is built. CMake builds `libbbgpu.so`; the loader/HLE runtime is c
 build; `driveclub-prepare` (from `tools/prepare_cli.cpp`, using the portable
 `launcher/prepare.cpp`) prepares the game dumps, and the AppImage's `AppRun` starts the runtime
 with the prepared files.
+
+On aarch64 (ARM64 handhelds and boards: Snapdragon devices on SteamOS ARM, Armada OS and the like)
+the game's x86-64 code runs in FEXCore's JIT, linked into `out/fex/libbbcpu.so` from `cpu/` and
+the `third_party/FEX` submodule (`git submodule update --init --recursive third_party/FEX`);
+the runtime, the GPU library and Vulkan stay native. `build-linux.sh` does this by itself on an
+aarch64 machine. On both architectures it also builds `out/driveclub-cpu-selftest`, which checks
+the guest CPU's crossings without the game (shipped in the aarch64 AppImage as
+`AppRun --cpu-selftest`). FEX needs Clang (`FEX_CC`/`FEX_CXX`, default
+`clang`/`clang++`) and uses the fmt it ships with.
+
+Cross-compiling for aarch64 on an x86_64 machine works with `BB_ARCH=aarch64`, `CC`/`CXX` for the
+target (e.g. wrappers around `clang --target=aarch64-linux-gnu -fuse-ld=lld`), a
+`CMAKE_TOOLCHAIN_FILE` for the CMake parts (with `llvm-ar`/`llvm-ranlib` as `CMAKE_AR`,
+`CMAKE_<LANG>_COMPILER_AR` and `CMAKE_RANLIB`, and `CMAKE_CXX_SCAN_FOR_MODULES=OFF`) and
+`PKG_CONFIG_LIBDIR` pointing at the target's pkg-config folders, for example in an Ubuntu 24.04
+container with the arm64 `-dev` packages (multiarch). `packaging/appimage/fetch-deps.sh` then
+cross-builds SDL3 and FFmpeg, and `build-appimage.sh` packs the aarch64 AppImage (`STRIP=llvm-strip`).
 
 ### Dependencies
 
@@ -127,7 +145,8 @@ the AppImage itself with `--play`).
     bash packaging/appimage/build-appimage.sh 0.4.0
 
 This builds the runtime and the native Linux launcher (unless `SKIP_BUILD=1`), stages an
-AppDir and writes `release/driveclub-recomp-0.4.0-x86_64.AppImage` and its `.sha256`. Running
+AppDir and writes `release/driveclub-recomp-0.4.0-<arch>.AppImage` (`x86_64` or `aarch64`) and
+its `.sha256`. Running
 the AppImage without arguments opens the launcher; `--play` skips it. The launcher keeps its
 data in `data/` beside the AppImage when that folder is writable, like the Windows build, and
 otherwise in `~/.local/share/driveclub-recomp`. DATA FOLDER > Change... selects another
@@ -144,11 +163,16 @@ The package bundles SDL3, the minimal FFmpeg, fmt, protobuf, zydis, libpng, the 
 ImGui code, its bundled interface font and the C++ runtime. glibc, the Vulkan
 loader/ICD/driver, the X11 stack (through XWayland on Wayland desktops), the font stack and the
 audio backends stay the host's (bundling them breaks the driver and the desktop). It is built on
-Ubuntu 24.04, so it needs glibc 2.39 or newer on the player's machine.
+Ubuntu 24.04, so it needs glibc 2.39 or newer on the player's machine. On aarch64 the host's
+Vulkan driver is Turnip (Mesa) for Adreno GPUs: Mesa 26 lost the device on the Adreno 740 without
+the fixes in seregasmith's `packaging/mesa-sm8550` patches; SteamOS ARM's current Mesa (27.0-devel)
+runs the game as it is.
 
-`.github/workflows/appimage.yml` builds the AppImage on `ubuntu-24.04` for tag pushes
+`.github/workflows/appimage.yml` builds the AppImage for x86_64 on `ubuntu-24.04` and for aarch64
+on `ubuntu-24.04-arm` (natively, FEX from the submodule) for tag pushes
 (`v*`), manual runs and pull requests that touch the pipeline, extracts the built AppImage and
-smoke-tests it (`--version`, `--selftest`, `--help`), failing on unresolved shared libraries,
+smoke-tests it (`--version`, `--selftest`, `--help`, and on aarch64 `--cpu-selftest`), failing on
+unresolved shared libraries,
 and uploads it as an artifact.
 
 ## Finding a stall
