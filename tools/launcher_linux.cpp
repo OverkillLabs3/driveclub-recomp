@@ -131,6 +131,8 @@ struct Settings {
   int preset = 0;          // Custom, Handheld, Low, Medium, High, Ultra, PS4
   int fsr_ver = 0;         // FSR 3.1, FSR 4, FSR (AMD driver)
   int reflex = 0;          // Off, On, On + Boost
+  int fgen = 0;
+  int fgpace = 0;
   int model_lod = 0;       // Highest .. Lowest
   int dynres = 1;          // Off, Automatic, On
   int blur_ref = 0;        // Fast (60 Hz), Slow (30 Hz)
@@ -259,6 +261,8 @@ const char* const kPresetName[7] = {"Custom", "Handheld (720p)", "Low", "Medium"
                                     "Ultra", "PS4 (original)"};
 const char* const kFsrName[3] = {"FSR 3.1", "FSR 4", "FSR (AMD driver)"};
 const char* const kReflexName[3] = {"Off", "On", "On + Boost"};
+const char* const kFgenName[6] = {"Off", "FSR 3.1 (2x)", "DLSS (2x)", "DLSS (3x)", "DLSS (4x)", "DLSS (Auto)"};
+const char* const kFgPaceName[2] = {"Standard", "GPU timing (experimental)"};
 const char* const kLodName[5] = {"Highest", "High", "Default", "Low", "Lowest"};
 const char* const kDynResName[3] = {"Off", "Automatic", "On"};
 const char* const kBlurRefName[2] = {"Fast (60 Hz)", "Slow (30 Hz)"};
@@ -944,6 +948,8 @@ void LoadSettings() {
   ParseInt(kv, "preset", g.preset);
   ParseInt(kv, "fsr_ver", g.fsr_ver);
   ParseInt(kv, "reflex", g.reflex);
+  ParseInt(kv, "fgen", g.fgen);
+  ParseInt(kv, "fgpace", g.fgpace);
   ParseInt(kv, "model_lod", g.model_lod);
   ParseInt(kv, "dynres", g.dynres);
   ParseInt(kv, "blur_ref", g.blur_ref);
@@ -1052,6 +1058,8 @@ void Sanitize() {
   g.preset = std::clamp(g.preset, 0, 6);
   g.fsr_ver = std::clamp(g.fsr_ver, 0, 2);
   g.reflex = std::clamp(g.reflex, 0, 2);
+  g.fgen = std::clamp(g.fgen, 0, 5);
+  g.fgpace = std::clamp(g.fgpace, 0, 1);
   g.model_lod = std::clamp(g.model_lod, -2, 2);
   g.dynres = std::clamp(g.dynres, 0, 2);
   g.blur_ref = std::clamp(g.blur_ref, 0, 1);
@@ -1127,7 +1135,10 @@ std::map<std::string, std::string> EnvironmentForLaunch() {
   set("BB_LOCK_HORIZON", std::to_string(g.lock_horizon));
   set("BB_CAMERA_SHAKE", std::to_string(g.camera_shake));
   set("BB_MIRROR_RATE", g.mirror == 1 ? "0" : "1");
-  set("BB_FRAME_GEN", "off");
+  set("BB_FRAME_GEN", g.fgen == 0 ? "off" : g.fgen == 1 ? "fsr3" : "dlss");
+  if (g.fgen >= 2) set("BB_FRAME_GEN_MULTIPLIER", g.fgen == 2 ? "2" : g.fgen == 3 ? "3" : "4");
+  if (g.fgen == 5) set("BB_FRAME_GEN_AUTO", "1");
+  if (g.fgen > 0 && g.fgpace == 1) set("BB_FG_PACING", "gpu");
   set("BB_AA", g.aa == 0 ? "off" : g.aa == 1 ? "fsr3" : "dlss");
   set("BB_AA_SCALE", g.upscale == 0 ? "native" : g.upscale == 1 ? "quality" : g.upscale == 2 ? "balanced"
                             : g.upscale == 3 ? "performance" : "ultra_performance");
@@ -1200,7 +1211,7 @@ void ApplyEnvironment(const std::map<std::string, std::string>& env) {
       "BB_WHEEL_ASSIST", "BB_RESTART_COMMAND", "BB_SETTINGS_SUMMARY", "BB_UPSCALER", "BB_REFLEX",
       "BB_MOTION_BLUR_REFERENCE", "BB_BUTTON_PROMPTS", "BB_XBOX_BUTTONS", "BB_PLAYSTATION_BUTTONS",
       "BB_ONLINE", "BB_COOP_SERVER", "BB_NP_LOCAL", "BB_PRESENT_THREAD", "BB_NEURAL",
-      "BB_NR_CONFIG"};
+      "BB_NR_CONFIG", "BB_FRAME_GEN_MULTIPLIER", "BB_FRAME_GEN_AUTO", "BB_FG_PACING"};
   for (const char* name : names) {
     if (!env.count(name)) unsetenv(name);
   }
@@ -1325,6 +1336,8 @@ bool SaveSettings() {
       << "preset=" << g.preset << "\n"
       << "fsr_ver=" << g.fsr_ver << "\n"
       << "reflex=" << g.reflex << "\n"
+      << "fgen=" << g.fgen << "\n"
+      << "fgpace=" << g.fgpace << "\n"
       << "model_lod=" << g.model_lod << "\n"
       << "dynres=" << g.dynres << "\n"
       << "blur_ref=" << g.blur_ref << "\n"
@@ -2712,6 +2725,19 @@ void DisplayPage() {
     if (ComboRow("NVIDIA Reflex", "Cuts input latency on GeForce cards. On + Boost keeps the clocks high "
                                  "between frames; it uses more power.",
                  &g.reflex, kReflexName, 3)) g.dirty = true;
+    if (ComboRow("Frame generation (experimental)",
+                 "Adds a generated frame between each two real ones, so motion looks 2 to 4 times as smooth. "
+                 "FSR 3.1 (2x) runs on any graphics card. DLSS (2x) needs a GeForce RTX 40 series or newer, and "
+                 "DLSS (3x) and (4x) an RTX 50 series. DLSS (Auto) picks the multiplier that keeps the display's "
+                 "refresh rate. It adds a little delay and can smear fast motion. It works best when the game "
+                 "already runs at 45 FPS or more, with the Unlocked frame rate.",
+                 &g.fgen, kFgenName, 6)) g.dirty = true;
+    if (g.fgen > 0 &&
+        ComboRow("Frame generation pacing",
+                 "How the generated frames are spaced in time. Standard spaces them from when the game's frame "
+                 "reaches the presenter. GPU timing spaces them from when the graphics card finished the frame, "
+                 "which can feel smoother when the frame rate varies. Ctrl+F8 in the game switches between them.",
+                 &g.fgpace, kFgPaceName, 2)) g.dirty = true;
   }
   EndCard();
 
