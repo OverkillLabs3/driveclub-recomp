@@ -430,6 +430,9 @@ static bool wheel_name_matches(const char *name) {
     char want[64], which[32]; wheel_device_want(want,sizeof want,which,sizeof which);
     if (strcmp(want,"auto")) return *want && strstr(n,want)!=NULL;
     if (strstr(n,"pedal")) return false;   /* "FANATEC ClubSport Pedals" and the like are no wheel */
+    static const char *const flight[]={"throttle","twcs","hotas","joystick","t.16000","t16000","warthog","tca ",
+                                       "flight","yoke","rudder","airbus","boeing"};
+    for (size_t i=0;i<sizeof(flight)/sizeof(*flight);++i) if (strstr(n,flight[i])) return false;
     static const char *const words[]={"wheel","moza","racing","fanatec","thrustmaster","simagic","simucube","cammus",
                                       "logitech g2","logitech g9","g29","g920","g923","t300","t248","t150","t500","tx racing"};
     for (size_t i=0;i<sizeof(words)/sizeof(*words);++i) if (strstr(n,words[i])) return true;
