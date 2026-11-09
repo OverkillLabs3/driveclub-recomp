@@ -6,5 +6,5 @@ Comment=DriveClub (PS4) running natively on Linux
 Exec=driveclub-recomp
 Icon=driveclub-recomp
 Terminal=false
-Categories=Game;Simulation;
+Categories=Game;Racing;
 StartupNotify=true

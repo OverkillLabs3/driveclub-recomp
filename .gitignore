@@ -11,4 +11,3 @@ launcher/wpf/obj/
 launcher/tests/**/bin/
 launcher/tests/**/obj/
 pgo/*.profraw
-!tools/modkit/examples/**/mods/

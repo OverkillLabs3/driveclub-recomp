@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.hdr-grade",
-  "name": "HDR grade (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: a cinematic grade on the linear HDR image before the game's own bloom and tone mapping (exposure, contrast, saturation, split toning, vignette, grain).",
-  "scripts": [ "scripts/mods/hdr-grade/main.lua" ]
-}

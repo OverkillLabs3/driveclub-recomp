@@ -212,15 +212,3 @@ validates the generated SPIR-V. These checks require no game files or captured r
 The player release is built with link-time optimization and a recorded profile (`pgo/default.profdata`): `packaging/package.sh` does this by itself when the profile is there. To build it by hand: `BB_PGO=use BB_LTO=ON bash build.sh`. The default `bash build.sh` stays the quick build.
 
 To record a new profile after the code has changed a lot: build with `BB_PGO=generate BB_LTO=ON`, run the game's benchmark and a race or two with your usual settings (the profile is written every 30 seconds into `pgo/`), then merge the `.profraw` files with `llvm-profdata merge -output=pgo/default.profdata pgo/*.profraw`.
-
-## The mod kit (dcmod)
-
-`dcmod` is a separate C++17 program in `tools/modkit` (no dependencies; it compiles the bundled Lua 5.1.5 in `third_party/lua51`).
-
-```bash
-bash tools/modkit/build.sh     # out/dcmod.exe (out/dcmod on Linux); on Windows from the MSYS2 CLANG64 shell
-bash tools/modkit/test.sh      # self-test on made-up data, no game files needed
-bash tools/modkit/tests/realdata.sh   # round trips on your game files (set DRIVECLUB_UPDATE_DIR and DRIVECLUB_BASE_DIR)
-```
-
-The release package copies `dcmod.exe` next to the launcher (`packaging/package.sh`). See [docs/modding](docs/modding/README.md).

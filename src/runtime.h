@@ -81,21 +81,6 @@ void runtime_file_miss_stats(uint64_t *slow, uint64_t *fast, uint64_t *slow_us);
 void runtime_benchmark_configure(const char *user);
 const char *runtime_benchmark_guest_arg(void);
 int runtime_benchmark_marker(const char *guest);
-/* Calls from mod scripts (runtime_modapi.c). */
-/* A path of a mod script (runtime_modapi.c). 0: not one; 1: a call that has no file (the open fails); 2: a file the
- * runtime made for the script, its host path is in `out`. */
-int runtime_mod_marker(const char *guest, char *out, size_t size);
-/* The values of the car the player drives (runtime_pad.c): fills `values` with up to `max` numbers in the order of
- * docs/modding/lua.md and returns how many; 0 when no car is driven. */
-int runtime_mod_car_state(double *values, int max);
-/* The game's clock (runtime_scene_debug.inc): hour of the day and time compression; and a request for an hour. */
-int runtime_mod_env_state(double *values, int max);
-void runtime_mod_set_hours(float hours);
-void runtime_set_race_config_name(int weather, const char *name);
-void runtime_wish_race_config(int weather, const char *name);
-void runtime_apply_race_config_wishes(void);
-/* Whether a folder of mods has the file (a path below the game's root such as scripts/bootscripts/x). */
-int runtime_file_mods_have(const char *relative);
 void runtime_benchmark_flip(void);
 void runtime_benchmark_note_mods(const char *dir);
 int runtime_file_mount(const char *guest, const char *host);

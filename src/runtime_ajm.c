@@ -190,11 +190,6 @@ static uint32_t at9_frame(Instance *in, const unsigned char **input, uint64_t *i
     if (frame*channels>(int)(sizeof(pcm)/sizeof(*pcm))) return RESULT_CODEC_ERROR|RESULT_FATAL;
     int e=Atrac9Decode(in->handle,*input,pcm,&used);
     if (e) { *internal=e; return RESULT_CODEC_ERROR|RESULT_FATAL; }
-    { /* DC_AUDIO_DUMP=file: the frames the game hands to the decoder, for format research */
-        static FILE *dump; static int tried; static unsigned long left=40000;
-        if (!tried) { tried=1; const char *f=getenv("DC_AUDIO_DUMP"); if (f && *f) dump=fopen(f,"wb"); }
-        if (dump && left) { --left; fwrite(in->config,1,4,dump); fwrite(&used,4,1,dump); fwrite(*input,1,(size_t)used,dump); fflush(dump); }
-    }
     *input+=used; *input_size-=(uint64_t)used; in->superframe_remain-=(uint32_t)used;
     ++frames_decoded;
     uint32_t skip=0;

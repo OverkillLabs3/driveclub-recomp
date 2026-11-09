@@ -16,10 +16,7 @@ namespace WorldRepeat {
 using IR::Inst;
 using IR::Opcode;
 using IR::Value;
-inline std::unordered_set<const Inst*>& Selected() {
-    thread_local std::unordered_set<const Inst*> set;
-    return set;
-}
+inline thread_local std::unordered_set<const Inst*> selected;
 inline bool IsSample(const Inst* i) {
     return i->GetOpcode() == Opcode::ImageSampleImplicitLod ||
            i->GetOpcode() == Opcode::ImageGradient;
@@ -276,7 +273,7 @@ inline bool RepeatImage(const Info& info, u32 handle) {
            repeat(samp.clamp_y);
 }
 inline void Prepare(const IR::Program& program) {
-    Selected().clear();
+    selected.clear();
     const auto& info = program.info;
     if (info.sw_stage != SwStage::Fragment)
         return;
@@ -362,7 +359,7 @@ inline void Prepare(const IR::Program& program) {
                 if (bc5 || fabric)
                     normals.push_back(sample);
             }
-            Selected().insert(normals.begin(), normals.end());
+            selected.insert(normals.begin(), normals.end());
             if (!normals.empty())
                 for (const auto* sample : group) {
                     const auto sharp = info.images[sample->Arg(0).U32() & 65535].GetSharp(info);
@@ -370,7 +367,7 @@ inline void Prepare(const IR::Program& program) {
                     if (sharp.GetDataFmt() == AmdGpu::DataFormat::FormatBc4 &&
                         sharp.GetNumberFmt() == AmdGpu::NumberFormat::Unorm &&
                         all_roles[sample] == 1u && !roles[1][sample])
-                        Selected().insert(sample);
+                        selected.insert(sample);
                 }
             continue;
         }
@@ -385,8 +382,8 @@ inline void Prepare(const IR::Program& program) {
         }
         if (colours.empty() || normals.empty())
             continue;
-        Selected().insert(colours.begin(), colours.end());
-        Selected().insert(normals.begin(), normals.end());
+        selected.insert(colours.begin(), colours.end());
+        selected.insert(normals.begin(), normals.end());
     }
 }
 } // namespace WorldRepeat

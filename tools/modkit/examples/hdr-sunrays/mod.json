@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.hdr-sunrays",
-  "name": "Sun light shafts (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: light shafts and lens ghosts that follow the sun, from the sun's place on the screen (dcmod.sun) and the open sky in the depth.",
-  "scripts": [ "scripts/mods/hdr-sunrays/main.lua" ]
-}

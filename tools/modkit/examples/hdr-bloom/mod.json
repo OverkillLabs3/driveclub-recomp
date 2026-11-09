@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.hdr-bloom",
-  "name": "HDR bloom and glare (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: a bloom with an anamorphic glare on the linear HDR image, from a chain of five slots of one shader at different sizes.",
-  "scripts": [ "scripts/mods/hdr-bloom/main.lua" ]
-}

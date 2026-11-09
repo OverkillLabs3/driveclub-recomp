@@ -300,12 +300,6 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
         return false;
     }
 
-    // a modder's replacement SPIR-V (mods/shaders/<name>.spv) wins over the cached one
-    const auto patched = EmulatorSettings.IsPatchShaders()
-                             ? GetShaderPatch(program->info.pgm_hash, program->info.hw_stage, 0, "spv")
-                             : std::nullopt;
-    const std::vector<u32>& use_spv = patched ? *patched : spv;
-
     const u64 cache_hash = program->info.sw_stage == Shader::SwStage::Compute
                                ? compute_key.value
                                : sel.graphics_key.stage_hashes[stage];
@@ -313,7 +307,7 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
 
     auto [it_pgm, new_program] = program_cache.try_emplace(program->info.pgm_hash);
     if (new_program) {
-        module = CompileSPV(use_spv, instance.GetDevice());
+        module = CompileSPV(spv, instance.GetDevice());
         it_pgm.value() = std::move(program);
     } else {
         const auto it = std::ranges::find(it_pgm.value()->modules, cache_hash,
@@ -327,7 +321,7 @@ bool PipelineCache::LoadPipelineStage(Serialization::Archive& ar, size_t stage) 
             }
             return true;
         }
-        module = CompileSPV(use_spv, instance.GetDevice());
+        module = CompileSPV(spv, instance.GetDevice());
     }
     sel.runtime_infos[stage] = spec.runtime_info;
     spec.info = &it_pgm.value()->info;

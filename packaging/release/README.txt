@@ -67,7 +67,6 @@ Files
 launcher.ini   the two folders you chose
 data\          your patch choices and settings
 mods\          files here replace the game's own files of the same path
-modkit\        for making mods: documents (docs\MODDING.md), examples, mod.json schema and a Blender add-on; dcmod.exe is the command line kit
 logs\          one log per start, launcher.log and crash_*.dmp after a crash (see "Reporting a problem" below)
 
 Reporting a problem

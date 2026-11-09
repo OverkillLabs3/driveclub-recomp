@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.lap-logger",
-  "name": "Lap logger (example script mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example script mod: logs every lap and a once-a-minute message. Shows dcmod.on and dcmod.every.",
-  "scripts": [ "scripts/mods/lap-logger/main.lua" ]
-}

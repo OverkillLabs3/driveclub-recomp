@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.tuning-panel",
-  "name": "Tuning panel (example script mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example script mod: a panel (F8) with a button, a switch and sliders for the time of day and the vignette. Shows dcmod.gui, dcmod.set_time and dcmod.postfx.",
-  "scripts": [ "scripts/mods/tuning-panel/main.lua" ]
-}

@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.race-board",
-  "name": "Race board (example script mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example script mod: a live leaderboard of every car in the race, drawn over the game. Shows dcmod.cars and dcmod.ui.",
-  "scripts": [ "scripts/mods/race-board/main.lua" ]
-}

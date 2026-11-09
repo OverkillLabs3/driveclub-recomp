@@ -1,1 +1,0 @@
-{ "id": "example.vignette-filter", "name": "Vignette filter", "version": "1.0", "description": "A post-processing filter (a SPIR-V fragment shader) with a vignette and a warm tint.", "scripts": [ "scripts/mods/vignette/main.lua" ] }

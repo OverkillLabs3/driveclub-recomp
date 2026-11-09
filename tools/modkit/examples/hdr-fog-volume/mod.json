@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.hdr-fog-volume",
-  "name": "Thick volumetric fog (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: ground fog marched through a drifting 3D noise density field in the world, self-shadowed by the sun, lit by the sky, thick enough to swallow the distance.",
-  "scripts": [ "scripts/mods/hdr-fog-volume/main.lua" ]
-}

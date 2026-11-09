@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.lut-grade",
-  "name": "Colour lookup table grade (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: colour grading with a 32x32x32 lookup table shipped as a PNG next to the shader (make_lut.py writes one).",
-  "scripts": [ "scripts/mods/lut-grade/main.lua" ]
-}

@@ -1,9 +1,0 @@
-{
-  "$schema": "../../mod.schema.json",
-  "id": "example.hdr-lens-dirt",
-  "name": "Lens dirt (example filter mod)",
-  "version": "1.0",
-  "author": "DriveClub Recomp",
-  "description": "Example filter mod: the bright parts of the picture light up the smudges and specks of a dirty lens, from a PNG shipped next to the shader (make_dirt.py writes one).",
-  "scripts": [ "scripts/mods/hdr-lens-dirt/main.lua" ]
-}
