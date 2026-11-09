@@ -107,11 +107,11 @@ The game knows most wheels by name and starts from the settings that suit their 
 
 | Wheel | Detail | Damper | Countersteer assist | Power steering | Friction | Minimum force |
 |---|---|---|---|---|---|---|
-| Direct drive | 100 | 0 | Off | Off | 2 | 0 |
+| Direct drive | 100 | 0 | Off | On | 3 | 0 |
 | Belt | 100 | 0 | On | On | 2 | 0 |
 | Gear | 60 | 0 | On | On | 0 | 5 |
 
-Gain 70 and max force 100 for every kind. Power steering lightens the big forces of heavy cars, as a road car's does, so a weaker motor keeps its detail in fast corners; a direct drive wheel has the torque for the tyres' force as it is.
+Gain 70 and max force 100 for every kind. Power steering lightens the big forces of heavy cars, as a road car's does, and hardly touches gentle ones: normal driving keeps its weight while hard corners and slides stay below the wheel's limit, and a weaker motor keeps its detail in fast corners. Friction is the steering's own resistance; much more than 3 hides the road's small forces.
 
 **Live FFB Tuner** (a button on the Wheel page, or `Live FFB Tuner.bat`) has the same settings in a small window that stays open over the game: the game picks up each change within a second, so you can feel it on the next corner. The settings are kept in `default.ini` (`wheel_ffb_wheel_type` and `wheel_ffb_physics_*`; the file explains the others, such as `wheel_ffb_physics_filter`, `_min_force`, `_power_steering`, `_friction`, `_effects` and `_hit_protection`). If the wheel feels flat in hard corners, lower the gain: the log in `logs` says how often the force was at the wheel's maximum (`FFB clipping`). `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
 

@@ -72,7 +72,7 @@ static int ffb_ph_gain=70, ffb_ph_filter=0, ffb_ph_min_force=0, ffb_ph_damper=0,
  * motor keeps detail in fast corners instead of running out. wheel_ffb_physics_friction: the steering's friction, percent
  * of the wheel at gain 100 (the wheelbase's friction effect). */
 static bool ffb_ph_power_steering;
-static int ffb_ph_friction=2;
+static int ffb_ph_friction=3;
 /* wheel_ffb_wheel_type = direct, belt or gear: the kind of wheelbase, for the settings above that suit each kind
  * (FFB_WHEEL_DEFAULTS) where default.ini has no line of its own; auto (no line): from the wheel's name. */
 enum { FFB_WHEEL_DIRECT, FFB_WHEEL_BELT, FFB_WHEEL_GEAR };
@@ -385,8 +385,9 @@ static const char wheel_default_config[]=
     "# game's own tyre formula at the wheel's position now. wheel_ffb_wheel_type: direct, belt or gear (no line: from\n"
     "# the wheel's name); the settings marked * below suit each kind when they have no line of their own. Settings, percent:\n"
     "# wheel_ffb_physics_gain (0..300, 70; 100: a 1 g corner at about 60% of the wheel's maximum with power steering),\n"
-    "# wheel_ffb_physics_power_steering* (on: the big forces of heavy cars lightened, for gear and belt wheels; off: the\n"
-    "# tyres' force as it is, for direct drive), wheel_ffb_physics_friction* (0..30: the steering's friction),\n"
+    "# wheel_ffb_physics_power_steering* (on: the big forces of heavy cars lightened, as a road car's power steering does,\n"
+    "# so normal driving keeps its weight below the wheel's limit; off: the tyres' force as it is),\n"
+    "# wheel_ffb_physics_friction* (0..30: the steering's friction; much hides the road's small forces),\n"
     "# wheel_ffb_physics_filter (0..100), wheel_ffb_physics_min_force* (0..30, for gear wheels),\n"
     "# wheel_ffb_physics_max_force (30..100, 100: the most of the wheel's force the steering asks for; stronger forces\n"
     "# bend smoothly toward it), wheel_ffb_physics_detail* (0..200: how much of the quick changes in the force you feel),\n"
@@ -397,7 +398,7 @@ static const char wheel_default_config[]=
     "# wheel_ffb_physics_damper* (0..100), wheel_ffb_physics_effects (0..100, 0; a buzz from a tyre past its grip, a front\n"
     "# sliding or locked, the rears spinning or sliding, faster the faster it slides). wheel_ffb_soft_lock and\n"
     "# wheel_ffb_invert apply too. The road (each surface's bumps, kerbs, and their kickback) is always at its full strength.\n"
-    "# Direct drive: detail 100, damper 0, friction 2, countersteer off, power steering off. Belt: detail 100, damper 0,\n"
+    "# Direct drive: detail 100, damper 0, friction 3, countersteer off, power steering on. Belt: detail 100, damper 0,\n"
     "# friction 2, countersteer on, power steering on. Gear: detail 60, damper 0, minimum force 5, friction 0,\n"
     "# countersteer on, power steering on.\n"
     "# Bikes keep the 0.4.1 force (the tyre formula needs four wheels); wheel_ffb_physics_tyre = classic,\n"
@@ -537,11 +538,15 @@ static int ffb_wheel_kind(const char *name) {
 }
 static const char *const ffb_wheel_names[3]={"direct","belt","gear"};
 /* The settings that suit each kind of wheelbase, for those default.ini has no line of: direct drive as a player tuned
- * theirs against Assetto Corsa (the base's own damper at 20); belt and gear lighten the big forces with the power
- * assist, so their weaker motors keep detail in fast corners, and leave out the friction their belts and gears have of
- * their own; gear wheels rattle with much detail and need a little force to move through their gears' play. */
+ * theirs against Assetto Corsa (the base's own damper at 20), with the power assist of a road car, so normal driving
+ * keeps its weight at a gain that leaves the hard corners and slides below the wheel's limit (off, players found the
+ * wheel light and vague below hard corners), and friction 3, about 2% of the wheel: enough not to feel weightless,
+ * too little to hide the road's small forces (10 was 7%, more than most bumps' quick force). Belt and gear lighten the
+ * big forces with the assist too, so their weaker motors keep detail in fast corners, and leave out the friction their
+ * belts and gears have of their own; gear wheels rattle with much detail and need a little force to move through their
+ * gears' play. */
 static const struct { int detail, damper, min_force, friction; bool countersteer, power; } FFB_WHEEL_DEFAULTS[3]={
-    {100,0,0,2,false,false},   /* direct drive */
+    {100,0,0,3,false,true},    /* direct drive */
     {100,0,0,2,true,true},     /* belt */
     {60,0,5,0,true,true}};     /* gear */
 static void ffb_wheel_defaults(void) {

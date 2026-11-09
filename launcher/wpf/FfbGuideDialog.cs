@@ -19,7 +19,7 @@ internal sealed class FfbGuideDialog : Window
     // What each wheel type sets (the backend's kWheelKind, with gain 70 for all)
     private static readonly string[] KindSets =
     [
-        "Sets: Gain 70 · Detail 100 · Damper 0 · Countersteer assist off",
+        "Sets: Gain 70 · Detail 100 · Damper 0 · Countersteer assist off · Power steering on",
         "Sets: Gain 70 · Detail 100 · Damper 0 · Countersteer assist on · Power steering on",
         "Sets: Gain 70 · Detail 60 · Damper 0 · Minimum force 5 · Countersteer assist on · Power steering on",
     ];

@@ -15,8 +15,8 @@ if (-not (Test-Path -LiteralPath $ini)) {
 # The settings that suit each kind of wheelbase, as the game uses them where default.ini has no line (the runtime's
 # FFB_WHEEL_DEFAULTS, src/runtime_wheel.inc; the launcher's kWheelKind). Choosing a wheel type sets all of them.
 $kinds = @{
-    direct = @{ wheel_ffb_physics_detail=100; wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=2
-                wheel_ffb_physics_countersteer='off'; wheel_ffb_physics_power_steering='off' }
+    direct = @{ wheel_ffb_physics_detail=100; wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=3
+                wheel_ffb_physics_countersteer='off'; wheel_ffb_physics_power_steering='on' }
     belt   = @{ wheel_ffb_physics_detail=100; wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=0; wheel_ffb_physics_friction=2
                 wheel_ffb_physics_countersteer='on';  wheel_ffb_physics_power_steering='on' }
     gear   = @{ wheel_ffb_physics_detail=60;  wheel_ffb_physics_damper=0; wheel_ffb_physics_min_force=5; wheel_ffb_physics_friction=0

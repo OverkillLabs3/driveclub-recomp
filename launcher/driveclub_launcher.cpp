@@ -581,7 +581,7 @@ FILETIME g_wheel_ini_time{};  // default.ini as last read or written here
 // where default.ini has no line, so these rows show them there too. The road (its surfaces, bumps, kerbs and their
 // kickback) is always at its full, real strength in the physics model, and it has no vibration effects.
 struct WheelKindDefaults { int detail, damper, min_force, friction; bool countersteer, power; };
-const WheelKindDefaults kWheelKind[3] = {{100, 0, 0, 2, false, false}, {100, 0, 0, 2, true, true}, {60, 0, 5, 0, true, true}};
+const WheelKindDefaults kWheelKind[3] = {{100, 0, 0, 3, false, true}, {100, 0, 0, 2, true, true}, {60, 0, 5, 0, true, true}};
 const char* const kWheelType[4] = {"auto", "direct", "belt", "gear"};
 const wchar_t* const kWheelKindName[3] = {L"direct drive", L"belt", L"gear"};
 constexpr int kFfbGainDefault = 70;
@@ -2088,13 +2088,13 @@ void BuildModel() {
                                                      L"Tip: off on direct drive, on for belt and gear wheels. This changes how the car handles, not just the force feedback.",
                               "@ffb:wheel_ffb_physics_countersteer", false);
   g_c[g_ffb_countersteer].physics_only = true;
-  g_ffb_power = toggle(L"Power steering", L"Lightens the big forces of heavy cars, as a road car's power steering does, so a weaker wheel keeps its detail in fast corners.\n"
-                                          L"\x2022 Off: the tyres' force as it is (direct drive).",
-                       "@ffb:wheel_ffb_physics_power_steering", false);
+  g_ffb_power = toggle(L"Power steering", L"Lightens the big forces of heavy cars, as a road car's power steering does, and hardly touches gentle ones: normal driving keeps its weight while hard corners stay below the wheel's limit.\n"
+                                          L"\x2022 Off: the tyres' force as it is.",
+                       "@ffb:wheel_ffb_physics_power_steering", true);
   g_c[g_ffb_power].physics_only = true;
   g_ffb_friction = slider(L"Steering friction", L"The steering's own friction, as a real rack and column have.\n"
-                                                L"Tip: 2 on direct drive; belt and gear wheels have their own.",
-                          "wheel_ffb_physics_friction", 0, 30, 2);
+                                                L"Tip: 3 on direct drive; much more hides the road's small forces. Belt and gear wheels have their own.",
+                          "wheel_ffb_physics_friction", 0, 30, 3);
   g_ffb_softlock = seg(L"Soft lock", L"Stops the wheel where the car's own steering stops, so you can't turn it further than the car can.\n"
                                      L"\x2022 Game: the right angle for each car.\n"
                                      L"Tip: set your wheel's own software to 900 degrees as well.",
