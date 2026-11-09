@@ -122,6 +122,20 @@ README.
 `BB_RESTART_COMMAND` lets the in-game settings restart the runtime (the AppImage sets it to
 the AppImage itself with `--play`).
 
+#### DLSS
+
+DLSS and DLSS Frame Generation need the DLSS bridge and NVIDIA's NGX libraries next to
+`libbbgpu.so`. With a checkout of the [NVIDIA DLSS SDK](https://github.com/NVIDIA/DLSS)
+(only `include/` and `lib/Linux_x86_64` are used), point `BB_DLSS_SDK` at it:
+
+    BB_DLSS_SDK=/path/to/DLSS bash build-linux.sh
+
+This also builds `out/gpu/libdriveclub_dlss.so` (from `gpu/dlss_bridge`) and copies
+`libnvidia-ngx-dlss.so.*` and `libnvidia-ngx-dlssg.so.*` from the SDK beside it; the AppImage
+bundles them when they are there. NGX itself comes from the NVIDIA driver
+(`libnvidia-ngx.so.1`, part of the driver's utilities package). Without the bridge the game
+keeps FSR and logs `Anti-aliasing: DLSS is not available; using FSR 3.1`.
+
 ### AppImage
 
     bash packaging/appimage/build-appimage.sh 0.4.0

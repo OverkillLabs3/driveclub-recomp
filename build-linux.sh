@@ -75,6 +75,22 @@ if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
     exit 1
 fi
 
+if [ -n "${BB_DLSS_SDK:-}" ]; then
+    dlss_args=(-S gpu/dlss_bridge -B out/dlss-bridge -G Ninja -DCMAKE_BUILD_TYPE=Release
+               -DCMAKE_CXX_COMPILER="$CXX" -DDLSS_SDK_ROOT="$BB_DLSS_SDK")
+    if [ -n "$vulkan_headers" ]; then dlss_args+=(-DVULKAN_INCLUDE="$vulkan_headers"); fi
+    cmake "${dlss_args[@]}" >/dev/null
+    if ! ninja -C out/dlss-bridge > out/dlss-bridge-build.log 2>&1; then
+        tail -40 out/dlss-bridge-build.log >&2
+        echo 'DLSS bridge build failed (full log: out/dlss-bridge-build.log)' >&2
+        exit 1
+    fi
+    cp out/dlss-bridge/libdriveclub_dlss.so out/gpu/
+    cp "$BB_DLSS_SDK"/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.* \
+       "$BB_DLSS_SDK"/lib/Linux_x86_64/rel/libnvidia-ngx-dlssg.so.* out/gpu/
+    echo "DLSS bridge: out/gpu/libdriveclub_dlss.so with the NGX libraries of $BB_DLSS_SDK"
+fi
+
 # ATRAC9: the game's audio codec, compiled once without this project's warning policy.
 if [ ! -f out/libatrac9.a ] || [ -n "$(find third_party/LibAtrac9/C/src -newer out/libatrac9.a -name '*.c' -print -quit)" ]; then
     rm -rf out/atrac9 && mkdir -p out/atrac9
