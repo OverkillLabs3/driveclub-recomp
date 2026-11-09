@@ -37,6 +37,11 @@ public partial class MainWindow : Window
     private Action? arrangeHome;
     private readonly string root = AppContext.BaseDirectory;
     private int currentPage, revision, pageGeneration;
+    // data\user\input_config\default.ini, where the force feedback rows live (Live FFB Tuner writes it too), and its time
+    // when the backend last read it
+    private string WheelIni => Path.Combine(root, "data", "user", "input_config", "default.ini");
+    private DateTime wheelIniTime;
+    private static DateTime WriteTime(string path) { try { return File.GetLastWriteTimeUtc(path); } catch { return default; } }
     private (ScrollViewer Viewer, double Offset, int Generation)? pendingScroll;
     private int navigationSelection = -1;
     private bool suppress, busy, allowClose;
@@ -111,12 +116,37 @@ public partial class MainWindow : Window
             refreshRate = hz > 1 ? hz : 240;
         };
         Closing += (_, e) => { if (busy && !allowClose) { e.Cancel = true; SetStatus("Please wait for the current operation to finish."); } };
+        // Back from Live FFB Tuner: the force feedback rows as default.ini has them now. The backend takes those rows from
+        // the file and keeps every other unsaved change on the page.
+        Activated += async (_, _) =>
+        {
+            if (busy || state.Controls.Count == 0 || WriteTime(WheelIni) == wheelIniTime) return;
+            int at = revision;
+            state.ChangedId = -1;
+            try
+            {
+                var result = await backend.Call("validate", state);
+                if (at != revision || busy) return;
+                bool differs = result.Controls.Any(c => c.Tag.StartsWith("@ffb:") && state.Controls.FirstOrDefault(s => s.Id == c.Id) is { } shown && (shown.Selected != c.Selected || shown.Hidden != c.Hidden));
+                if (differs) { Adopt(result); SetStatus("Force feedback updated from Live FFB Tuner."); }
+                else wheelIniTime = WriteTime(WheelIni);
+            }
+            catch (Exception ex) { SetStatus(ex.Message, true); }
+        };
         Loaded += async (_, _) =>
         {
             try
             {
                 Adopt(await backend.Call("state"));
                 OperationStatus(state.FoldersOk ? "" : "Choose the game folders on Play.");
+                // this version's reset of a wheel player's force feedback settings, said once (not when the window only
+                // starts the game or a benchmark: the next time it opens)
+                var args = Environment.GetCommandLineArgs();
+                if (!preview && state.FfbResetNotice.Length > 0 && !args.Contains("--play") && !args.Contains("--benchmark"))
+                {
+                    MessageBox.Show(this, state.FfbResetNotice, "Force feedback has been rebuilt", MessageBoxButton.OK, MessageBoxImage.Information);
+                    try { File.Delete(Path.Combine(Path.GetDirectoryName(WheelIni)!, "ffb_reset.txt")); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                }
                 if (Environment.GetCommandLineArgs().Contains("--mod-manager")) ShowPage(ModsPage, false);
                 if (!preview && Environment.GetCommandLineArgs().Contains("--benchmark")) { ShowPage(6, false); await Launch(true); }
                 else if (!preview && (Environment.GetCommandLineArgs().Contains("--play") || (File.Exists(Path.Combine(root, "launcher.ini")) && File.ReadLines(Path.Combine(root, "launcher.ini")).Any(x => x.Trim() == "auto_play=1")))) await Launch(false);
@@ -243,6 +273,7 @@ public partial class MainWindow : Window
         suppress = true;
         foreach (var c in state.Controls) c.PropertyChanged -= SettingChanged;
         state = incoming;
+        wheelIniTime = WriteTime(WheelIni);  // the backend has just read (and maybe written) it
         HeaderText.Text = incoming.InstalledVersion.Length == 0 ? "PC LAUNCHER" : "PC LAUNCHER  \u00b7  VERSION " + incoming.InstalledVersion;
         // Sidebar, window border, page margins, two panels, gap and scrollbar.
         MinWidth = Math.Ceiling(228 + 2 + 72 + 2 * MeasureGameStatus(double.PositiveInfinity).Width + 24 + 10);
@@ -281,8 +312,10 @@ public partial class MainWindow : Window
         state.ChangedId = setting.Id;
         if (args.PropertyName == "Selected")
         {
-            string action = setting.Id == state.PresetId ? "preset" : setting.Tag == "@drive_preset" ? "drive-preset" : setting.Tag == "@wheelpreset" ? "wheel-preset" : "validate";
-            try { var result = await backend.Call(action, state); if (changed == revision) { Adopt(result); OperationStatus("Unsaved changes"); } }
+            string action = setting.Id == state.PresetId ? "preset" : setting.Tag == "@drive_preset" ? "drive-preset" : "validate";
+            // force feedback rows are written at once (the backend says so), the others on Save
+            bool ffb = setting.Tag.StartsWith("@ffb:");
+            try { var result = await backend.Call(action, state); if (changed == revision) { Adopt(result); OperationStatus(ffb && result.Message.Length > 0 ? result.Message : "Unsaved changes"); } }
             catch (Exception ex) { SetStatus(ex.Message, true); }
         }
     }

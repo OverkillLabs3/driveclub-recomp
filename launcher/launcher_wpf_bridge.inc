@@ -54,6 +54,7 @@ bool UiReleaseVersion(std::wstring value) {
   return digits && parts >= 1 && parts <= 3;
 }
 std::wstring g_ui_update_version, g_ui_update_note;
+std::wstring g_ffb_reset_notice;   // FfbResetNotice, for the state the window opens with
 bool g_ui_capture_cancelled = false, g_ui_restart_required = false;
 // A hint's first line says what the option does; the bullets, tips and notes after it are the details the (i) opens.
 std::pair<std::wstring,std::wstring> SplitHint(const std::wstring& hint,const wchar_t* more){
@@ -92,7 +93,8 @@ Json UiState(const std::wstring& error=L"") {
     {"BenchmarkRanSummary",Narrow(g_bench_ran_short)},{"BenchmarkRanDetails",[&]{Json lines=Json::array();for(const auto& line:g_bench_ran_lines)lines.push_back(Narrow(line));return lines;}()},
     {"Message",Narrow(g_status)},{"CaptureCancelled",g_ui_capture_cancelled},
     {"InstalledVersion",Narrow(UiInstalledVersion())},{"PlayTime",Narrow(PlayTimeText())},{"UpdateVersion",Narrow(g_ui_update_version)},
-    {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required}};
+    {"UpdateNote",Narrow(g_ui_update_note)},{"RestartRequired",g_ui_restart_required},
+    {"WheelDetected",Narrow(g_wheel_detected_name)},{"WheelDetectedType",g_wheel_detected},{"FfbResetNotice",Narrow(g_ffb_reset_notice)}};
 }
 void ImportUiState(const Json& input) {
   g_folder[0].path=Widen(input.value("UpdatePath",Narrow(g_folder[0].path)));
@@ -113,7 +115,7 @@ void ImportUiState(const Json& input) {
     else if(id==g_btrack){if(selected<0||selected>=kBenchTrackCount)throw std::runtime_error("Invalid track");g_bench_track=selected;}
     else if(id==g_bcar){if(selected<0||selected>=kBenchCarCount)throw std::runtime_error("Invalid car");g_bench_car=selected;}
     else if(c.kind==Kind::Slider){if(selected<c.min||selected>c.max)throw std::runtime_error("Invalid slider value");c.sel=selected;}
-    else {const int count=c.kind==Kind::Toggle?2:int(c.items.size());if(selected<((id==g_drive_preset||id==g_ffb_preset)?-1:0)||selected>=count)throw std::runtime_error("Invalid setting value");c.sel=selected;}
+    else {const int count=c.kind==Kind::Toggle?2:int(c.items.size());if(selected<((id==g_drive_preset||IsFfbKeyRow(c))?-1:0)||selected>=count)throw std::runtime_error("Invalid setting value");c.sel=selected;}
     if(c.patches[0]=="@skipgpu")g_skip_gpu_check=c.sel!=0;
   }
   NameNativeUpscale();ShowBenchChoices();CheckFolders();
@@ -128,8 +130,14 @@ int RunWpfBridge(int argc,wchar_t** argv) {
   try{
     if(command==L"--ui-state"){
       if(!g_skip_gpu_check){g_gpu_problem=CheckCpu();if(g_gpu_problem.empty())g_gpu_problem=CheckGpu();}
+      // this version's reset of the force feedback settings: the window shows it on opening, then removes ffb_reset.txt
+      g_ffb_reset_notice=FfbResetNotice();
     }else if(argc>=4){
       std::ifstream in(argv[2],std::ios::binary);const Json request=Json::parse(in);ImportUiState(request);
+      // The force feedback rows as default.ini has them: Live FFB Tuner may have changed it while the window showed older
+      // values. Rows changed now (a row, a preset, a reset) take the window's value and are written at once.
+      const bool wheel_file=WheelIniReady();std::vector<int> ffb_window(g_c.size(),-1);
+      if(wheel_file)for(size_t i=0;i<g_c.size();++i)if(IsFfbKeyRow(g_c[i])){ffb_window[i]=g_c[i].sel;g_c[i].sel=g_c[i].loaded;}
       if(command==L"--ui-reset-page"){
         const int page=request.value("ResetPage",-2), sub=request.value("ResetSubpage",-1);
         if(page < -1 || page >= kTabCount || (page==kTabDriving && (sub<0 || sub>=kSubCount)))
@@ -138,6 +146,8 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         if(page==-1)ids={g_preset,g_fps,g_outres,g_aa};
         else for(const auto& card:g_cards)if(card.tab==page && (page!=kTabDriving || card.sub==sub))
           ids.insert(ids.end(),card.ctls.begin(),card.ctls.end());
+        // the force feedback settings the card does not show go back to what suits the wheel type too
+        if(page==kTabDriving && sub==kSubWheel)ids.insert(ids.end(),{g_ffb_slider[1],g_ffb_slider[2],g_ffb_effects,g_ffb_hit,g_ffb_power,g_ffb_friction});
         for(int id:ids){
           auto& c=g_c[id];
           if(c.kind==Kind::Action || c.kind==Kind::Button || c.patches[0]=="@name" || c.patches[0]=="@onhost" || id==g_lang)continue;
@@ -148,17 +158,23 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         }
         DerivePreset();
         if(page==kTabDriving && sub==kSubAssists)DeriveDrivePreset();
-        if(page==kTabDriving && sub==kSubWheel)DeriveWheelPreset();
+        if(page==kTabDriving && sub==kSubWheel){
+          std::vector<int> ffb;for(int id:ids)if(IsFfbKeyRow(g_c[id]))ffb.push_back(id);
+          SaveWheelRows(ffb);
+        }
         NameNativeUpscale();ShowBenchChoices();
       }
       else if(command==L"--ui-validate"){
         const int changed=request.value("ChangedId",-1);
+        // a wheel type (FFB Engineer): every force feedback setting as suits it
+        if(wheel_file && changed==g_ffb_type)SaveWheelRows(ApplyWheelType(ffb_window[changed]));
+        else if(wheel_file && changed>=0 && changed<int(g_c.size()) && IsFfbKeyRow(g_c[changed])){g_c[changed].sel=ffb_window[changed];SaveWheelRows({changed});}
         if(changed==g_fps)ApplyFrameModeCameraDefault();
         if(changed==g_aspect && g_c[g_aspect].sel>0){g_c[g_outres].sel=g_c[g_inres].sel=0;}
         if((changed==g_outres || changed==g_inres) && (g_c[g_outres].sel>0 || g_c[g_inres].sel>0)){
           if(g_aspect>=0)g_c[g_aspect].sel=0;
         }
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
+        DerivePreset();DeriveDrivePreset();
         if(changed>=0 && changed<int(g_c.size()) && g_c[changed].patches[0]=="@skipgpu") {
           g_gpu_problem=g_skip_gpu_check?L"":CheckCpu();
           if(!g_skip_gpu_check && g_gpu_problem.empty())g_gpu_problem=CheckGpu();
@@ -166,7 +182,6 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       }
       else if(command==L"--ui-preset")ApplyPreset(g_c[g_preset].sel);
       else if(command==L"--ui-drive-preset"){if(g_c[g_drive_preset].sel>=0)ApplyDrivePreset(g_c[g_drive_preset].sel);}
-      else if(command==L"--ui-wheel-preset"){if(g_c[g_ffb_preset].sel>=0)ApplyWheelPreset(g_c[g_ffb_preset].sel);}
       else if(command==L"--ui-wheelsetup"){
         OpenWheelSetup();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
@@ -178,6 +193,12 @@ int RunWpfBridge(int argc,wchar_t** argv) {
       else if(command==L"--ui-benchhistory"){
         OpenBenchHistory();
         if(g_status_color.GetValue()==kBad.GetValue())throw std::runtime_error(Narrow(g_status));
+      }
+      else if(command==L"--ui-ffbreset"){
+        // FFB Engineer's Reset to defaults: every force feedback setting as suits the wheel type, each car back to 100%
+        if(wheel_file)SaveWheelRows(ApplyWheelType(ffb_window[g_ffb_type]));
+        const int cars=ResetFfbCars(L".launcher-backup");
+        g_status=cars?L"Force feedback reset to the defaults, and "+std::to_wstring(cars)+(cars==1?L" car":L" cars")+L" back to 100%.":L"Force feedback reset to the defaults.";
       }
       else if(command==L"--ui-ffbtuner"){
         OpenFfbTuner();
@@ -237,7 +258,7 @@ int RunWpfBridge(int argc,wchar_t** argv) {
         if(!g_ui_capture_cancelled && g_status_color.GetValue()!=kOk.GetValue())throw std::runtime_error(Narrow(g_status));
       }
       else if(command==L"--ui-apply"||command==L"--ui-run"||command==L"--ui-benchmark"){
-        DerivePreset();DeriveDrivePreset();DeriveWheelPreset();
+        DerivePreset();DeriveDrivePreset();
         if(!SaveSettings()) throw std::runtime_error(Narrow(g_settings_error));
         if(command!=L"--ui-apply"){
           if(!FoldersOk()){WriteJsonFile(output,UiState(L"Choose valid game folders on Play."));return 1;}

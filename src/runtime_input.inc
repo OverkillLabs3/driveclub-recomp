@@ -96,6 +96,7 @@ static Binding ffb_gain_keys[2][4];
 static int ffb_gain_key_count[2];
 static void wheel_parse(const char *lhs, char *rhs);   /* runtime_wheel.inc */
 static void wheel_config_append(const char *path);
+static void wheel_ffb_rework_reset(const char *path);
 
 #define LAYOUT_MARKER "# DriveClub racing layout 4"
 static const char default_config[]=
@@ -232,7 +233,7 @@ static void input_load(void) {
         if ((f=fopen(path,"wb"))) { fwrite(default_config,1,sizeof(default_config)-1,f); fclose(f); }
         f=fopen(path,"rb");
     }
-    if (f) { fclose(f); wheel_config_append(path); f=fopen(path,"rb"); }
+    if (f) { fclose(f); wheel_config_append(path); wheel_ffb_rework_reset(path); f=fopen(path,"rb"); }
     if (f) {
         char line[256];
         while (fgets(line,sizeof line,f)) parse_line(line);

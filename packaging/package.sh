@@ -35,7 +35,7 @@ fi
 for f in "$WPF_OUT"/*; do
   case "$(basename "$f")" in native-build|*.pdb) ;; *) cp -r "$f" "$OUT/" ;; esac
 done
-cp "tools/FFB Tuner.ps1" "tools/FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe
+cp "tools/Live FFB Tuner.ps1" "tools/Live FFB Tuner.bat" "$OUT/"   # the force feedback sliders, next to DriveClub.exe
 cp out/DriveClubGame.exe "$OUT/runtime/"
 strip --strip-all "$OUT/runtime/DriveClubGame.exe" || true
 cp patches/DriveClub.xml "$OUT/runtime/patches/"

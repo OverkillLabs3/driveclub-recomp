@@ -141,10 +141,12 @@ struct Settings {
   char online_host[64] = "127.0.0.1:8080";
   int drive_preset = 0;    // Custom, Sim, Assisted, Game defaults
   bool ffb_on = true;      // wheel_ffb in the runtime's input_config/default.ini
-  int ffb_model = 0;       // Game, Software, Reworked Physics
+  int ffb_model = 2;       // Original, Software, Reworked Physics
   int ffb_gain = 100;      // game and software models, percent (0..2000)
-  int ffb_physics_gain = 100, ffb_physics_filter = 0, ffb_physics_min_force = 0,
-      ffb_physics_damper = 10, ffb_physics_effects = 100;
+  // Reworked Physics: gain, detail, damper, max force and countersteer assist (the Windows launcher's rows); detail,
+  // damper and countersteer assist suit the wheel type where default.ini has no line (FfbKindDefaults)
+  int ffb_physics_gain = 70, ffb_physics_detail = 100, ffb_physics_damper = 0, ffb_physics_max_force = 100;
+  bool ffb_countersteer = false;
   int ffb_soft_lock = 0;   // Game, Off, 540, 720, 900, 1080
   int ffb_wave = 0;        // Square, Sine
   bool ffb_invert = false;
@@ -267,7 +269,12 @@ const char* const kXboxName[2] = {"Xbox 360", "Xbox One / Series"};
 const char* const kPsName[2] = {"PS4", "PS5"};
 const char* const kOnlineName[2] = {"Off", "Join a session"};
 const char* const kDrivePresetName[4] = {"Custom", "Sim", "Assisted", "Game defaults"};
-const char* const kFfbModelName[3] = {"Game (original)", "Software", "Reworked Physics"};
+const char* const kFfbModelName[3] = {"Original (not recommended)", "Software", "Reworked Physics"};
+// The force model as wheel_ffb_model and this launcher's settings have it. "game" (0 in this launcher's settings) is
+// what was saved for the game's own force until 0.4.1, when it was the default, so nearly every player has it without
+// having chosen it: it reads as Reworked Physics, as in the runtime.
+int FfbModelFromName(const std::string& v) { return v == "original" ? 0 : v == "software" || v == "1" ? 1 : 2; }
+const char* FfbModelName(int i) { return i == 0 ? "original" : i == 1 ? "software" : "physics"; }
 const char* const kSoftLockName[6] = {"Game", "Off", "540°", "720°", "900°", "1080°"};
 const char* const kWaveName[2] = {"Square", "Sine"};
 const char* const kNrPresetName[3] = {"Automatic", "Original", "Optimized"};
@@ -849,20 +856,48 @@ int FindChoice(const Choice* choices, int count, const std::set<std::string>& se
   return -1;
 }
 
+// The settings that suit each kind of wheelbase, where default.ini has no line (the runtime's FFB_WHEEL_DEFAULTS,
+// src/runtime_wheel.inc): direct drive, belt, gear. The kind: wheel_ffb_wheel_type, or the game's find from the wheel's
+// name (input_config/wheel_detected.txt), else belt.
+struct FfbKind { int detail, damper; bool countersteer; };
+constexpr FfbKind kFfbKind[3] = {{100, 0, false}, {100, 0, true}, {60, 0, true}};
+void FfbKindDefaults(const std::map<std::string, std::string>& kv) {
+  auto kind_of = [](const std::string& v) { return v.rfind("direct", 0) == 0 ? 0 : v == "belt" ? 1 : v == "gear" ? 2 : -1; };
+  int kind = -1;
+  if (const auto t = kv.find("wheel_ffb_wheel_type"); t != kv.end()) kind = kind_of(t->second);
+  if (kind < 0) {
+    const auto found = ReadIni(InputDefaultIni().parent_path() / "wheel_detected.txt");
+    if (const auto t = found.find("type"); t != found.end()) kind = kind_of(t->second);
+  }
+  const FfbKind& d = kFfbKind[kind < 0 ? 1 : kind];
+  g.ffb_physics_detail = d.detail;
+  g.ffb_physics_damper = d.damper;
+  g.ffb_countersteer = d.countersteer;
+}
+// The Reworked Physics rows as default.ini had them when read or last written: only the rows changed since are
+// written, so the settings that suit the wheel type stay unwritten until the player changes them.
+struct { int gain, detail, damper, max_force; bool countersteer; } g_ffb_loaded{70, 100, 0, 100, false};
+void RememberFfbLoaded() {
+  g_ffb_loaded = {g.ffb_physics_gain, g.ffb_physics_detail, g.ffb_physics_damper, g.ffb_physics_max_force, g.ffb_countersteer};
+}
+
 void LoadWheelSettings() {
   const auto kv = ReadIni(InputDefaultIni());
-  if (kv.empty()) return;
+  FfbKindDefaults(kv);
+  if (kv.empty()) { RememberFfbLoaded(); return; }
   ParseBool(kv, "wheel_ffb", g.ffb_on);
   const auto model = kv.find("wheel_ffb_model");
   if (model != kv.end()) {
-    g.ffb_model = model->second == "physics" ? 2 : model->second == "software" ? 1 : 0;
+    g.ffb_model = FfbModelFromName(model->second);
   }
   ParseInt(kv, "wheel_ffb_gain", g.ffb_gain);
   ParseInt(kv, "wheel_ffb_physics_gain", g.ffb_physics_gain);
-  ParseInt(kv, "wheel_ffb_physics_filter", g.ffb_physics_filter);
-  ParseInt(kv, "wheel_ffb_physics_min_force", g.ffb_physics_min_force);
+  ParseInt(kv, "wheel_ffb_physics_detail", g.ffb_physics_detail);
   ParseInt(kv, "wheel_ffb_physics_damper", g.ffb_physics_damper);
-  ParseInt(kv, "wheel_ffb_physics_effects", g.ffb_physics_effects);
+  ParseInt(kv, "wheel_ffb_physics_max_force", g.ffb_physics_max_force);
+  if (const auto cs = kv.find("wheel_ffb_physics_countersteer"); cs != kv.end())
+    g.ffb_countersteer = !(cs->second == "off" || cs->second == "false" || cs->second == "0");
+  RememberFfbLoaded();
   const auto soft = kv.find("wheel_ffb_soft_lock");
   if (soft != kv.end()) {
     const std::string& v = soft->second;
@@ -955,13 +990,13 @@ void LoadSettings() {
     std::snprintf(g.online_host, sizeof g.online_host, "%s", kv.at("online_host").c_str());
   ParseInt(kv, "drive_preset", g.drive_preset);
   ParseBool(kv, "ffb_on", g.ffb_on);
-  ParseInt(kv, "ffb_model", g.ffb_model);
+  if (const auto model = kv.find("ffb_model"); model != kv.end()) g.ffb_model = FfbModelFromName(model->second);
   ParseInt(kv, "ffb_gain", g.ffb_gain);
   ParseInt(kv, "ffb_physics_gain", g.ffb_physics_gain);
-  ParseInt(kv, "ffb_physics_filter", g.ffb_physics_filter);
-  ParseInt(kv, "ffb_physics_min_force", g.ffb_physics_min_force);
+  ParseInt(kv, "ffb_physics_detail", g.ffb_physics_detail);
   ParseInt(kv, "ffb_physics_damper", g.ffb_physics_damper);
-  ParseInt(kv, "ffb_physics_effects", g.ffb_physics_effects);
+  ParseInt(kv, "ffb_physics_max_force", g.ffb_physics_max_force);
+  ParseBool(kv, "ffb_countersteer", g.ffb_countersteer);
   ParseInt(kv, "ffb_soft_lock", g.ffb_soft_lock);
   ParseInt(kv, "ffb_wave", g.ffb_wave);
   ParseBool(kv, "ffb_invert", g.ffb_invert);
@@ -1063,10 +1098,9 @@ void Sanitize() {
   g.ffb_model = std::clamp(g.ffb_model, 0, 2);
   g.ffb_gain = std::clamp(g.ffb_gain, 0, 2000);
   g.ffb_physics_gain = std::clamp(g.ffb_physics_gain, 0, 300);
-  g.ffb_physics_filter = std::clamp(g.ffb_physics_filter, 0, 100);
-  g.ffb_physics_min_force = std::clamp(g.ffb_physics_min_force, 0, 30);
+  g.ffb_physics_detail = std::clamp(g.ffb_physics_detail, 0, 200);
   g.ffb_physics_damper = std::clamp(g.ffb_physics_damper, 0, 100);
-  g.ffb_physics_effects = std::clamp(g.ffb_physics_effects, 0, 100);
+  g.ffb_physics_max_force = std::clamp(g.ffb_physics_max_force, 30, 100);
   g.ffb_soft_lock = std::clamp(g.ffb_soft_lock, 0, 5);
   g.ffb_wave = std::clamp(g.ffb_wave, 0, 1);
   g.nr_preset = std::clamp(g.nr_preset, 0, 2);
@@ -1257,13 +1291,15 @@ bool SaveWheelSettings() {
     ok = SetIniValue(path, key, value) && ok;
   };
   write("wheel_ffb", g.ffb_on ? "on" : "off");
-  write("wheel_ffb_model", g.ffb_model == 0 ? "game" : g.ffb_model == 1 ? "software" : "physics");
+  write("wheel_ffb_model", FfbModelName(g.ffb_model));
   write("wheel_ffb_gain", std::to_string(g.ffb_gain));
-  write("wheel_ffb_physics_gain", std::to_string(g.ffb_physics_gain));
-  write("wheel_ffb_physics_filter", std::to_string(g.ffb_physics_filter));
-  write("wheel_ffb_physics_min_force", std::to_string(g.ffb_physics_min_force));
-  write("wheel_ffb_physics_damper", std::to_string(g.ffb_physics_damper));
-  write("wheel_ffb_physics_effects", std::to_string(g.ffb_physics_effects));
+  // Reworked Physics: only the rows changed since they were read (g_ffb_loaded)
+  if (g.ffb_physics_gain != g_ffb_loaded.gain) write("wheel_ffb_physics_gain", std::to_string(g.ffb_physics_gain));
+  if (g.ffb_physics_detail != g_ffb_loaded.detail) write("wheel_ffb_physics_detail", std::to_string(g.ffb_physics_detail));
+  if (g.ffb_physics_damper != g_ffb_loaded.damper) write("wheel_ffb_physics_damper", std::to_string(g.ffb_physics_damper));
+  if (g.ffb_physics_max_force != g_ffb_loaded.max_force) write("wheel_ffb_physics_max_force", std::to_string(g.ffb_physics_max_force));
+  if (g.ffb_countersteer != g_ffb_loaded.countersteer) write("wheel_ffb_physics_countersteer", g.ffb_countersteer ? "on" : "off");
+  if (ok) RememberFfbLoaded();
   write("wheel_ffb_soft_lock", soft[std::clamp(g.ffb_soft_lock, 0, 5)]);
   write("wheel_ffb_vibration_wave", g.ffb_wave == 1 ? "sine" : "square");
   write("wheel_ffb_invert", g.ffb_invert ? "true" : "false");
@@ -1333,13 +1369,13 @@ bool SaveSettings() {
       << "ps_buttons=" << g.ps_buttons << "\n"
       << "drive_preset=" << g.drive_preset << "\n"
       << "ffb_on=" << (g.ffb_on ? 1 : 0) << "\n"
-      << "ffb_model=" << g.ffb_model << "\n"
+      << "ffb_model=" << FfbModelName(g.ffb_model) << "\n"
       << "ffb_gain=" << g.ffb_gain << "\n"
       << "ffb_physics_gain=" << g.ffb_physics_gain << "\n"
-      << "ffb_physics_filter=" << g.ffb_physics_filter << "\n"
-      << "ffb_physics_min_force=" << g.ffb_physics_min_force << "\n"
+      << "ffb_physics_detail=" << g.ffb_physics_detail << "\n"
       << "ffb_physics_damper=" << g.ffb_physics_damper << "\n"
-      << "ffb_physics_effects=" << g.ffb_physics_effects << "\n"
+      << "ffb_physics_max_force=" << g.ffb_physics_max_force << "\n"
+      << "ffb_countersteer=" << (g.ffb_countersteer ? 1 : 0) << "\n"
       << "ffb_soft_lock=" << g.ffb_soft_lock << "\n"
       << "ffb_wave=" << g.ffb_wave << "\n"
       << "ffb_invert=" << (g.ffb_invert ? 1 : 0) << "\n"
@@ -2813,7 +2849,7 @@ void WheelPage() {
     if (ToggleRow("Force feedback", "Sends the game's forces to the wheel. Off leaves it without forces.",
                   &g.ffb_on)) g.dirty = true;
     if (ComboRow("Force model",
-                 "Game: the game's own spring, as the PS4 version sends it. Software: the steering force is "
+                 "Original: the game's own spring, as the PS4 version sends it. Software: the steering force is "
                  "worked out by the runtime, smoothed between the game's frames. Reworked Physics: the force "
                  "comes from the front tyres in the game's simulation, as in a racing sim.",
                  &g.ffb_model, kFfbModelName, 3)) g.dirty = true;
@@ -2829,25 +2865,26 @@ void WheelPage() {
 
   if (BeginCard("FORCE FEEDBACK")) {
     if (g.ffb_model == 2) {
-      if (SliderRow("Gain", "How strong the steering force is overall. 100: a 1 g corner at about 60% of "
-                            "the wheel's maximum.",
+      if (ToggleRow("Countersteer assist", "When the back slides and you countersteer, the game turns the car's wheels "
+                                           "further than yours. On: easier slides. Off on direct drive, on for belt and gear.",
+                    &g.ffb_countersteer)) g.dirty = true;
+      if (SliderRow("Gain", "How strong the steering force is, for every car. Higher: more weight; too high goes flat "
+                            "in strong corners. Start at 70; the FFB gain buttons change only the car you're driving.",
                     &g.ffb_physics_gain, 0, 300, "%d%%")) g.dirty = true;
-      if (SliderRow("Filter", "Smooths the force. Higher feels softer; lower feels more detailed.",
-                    &g.ffb_physics_filter, 0, 100, "%d%%")) g.dirty = true;
-      if (SliderRow("Minimum force", "Keeps small forces visible on gear and belt wheels. Keep it at 0 on a "
-                                    "direct drive wheel.",
-                    &g.ffb_physics_min_force, 0, 30, "%d%%")) g.dirty = true;
-      if (SliderRow("Damper", "How heavy the wheel is to turn; heaviest at a standstill. 10 to 30 stops a direct "
-                              "drive wheel wobbling.",
+      if (SliderRow("Detail", "How much of the quick changes you feel: bumps, kerbs, the tyres gripping. Higher: "
+                              "livelier; lower: smoother. Lower it if the wheel feels grainy or rattles.",
+                    &g.ffb_physics_detail, 0, 200, "%d%%")) g.dirty = true;
+      if (SliderRow("Damper", "Weight that grows the faster you turn. Higher: calmer, settles on the centre; too "
+                              "high feels heavy. 0 if your wheel has a damper of its own.",
                     &g.ffb_physics_damper, 0, 100, "%d%%")) g.dirty = true;
-      if (SliderRow("Tyre effects", "A buzz in the wheel when a tyre slides, locks under braking or spins. "
-                                    "0 turns it off.",
-                    &g.ffb_physics_effects, 0, 100, "%d%%")) g.dirty = true;
+      if (SliderRow("Max force", "Caps the strongest forces; weaker ones stay as they are. Try 70 to 85 if slides "
+                                 "or crashes kick too hard.",
+                    &g.ffb_physics_max_force, 30, 100, "%d%%")) g.dirty = true;
     } else {
       if (SliderRow("Gain", "Percent of the game's forces. The game's forces are light on most wheels, so "
                             "several hundred is normal; the strongest clip at the wheel's maximum.",
                     &g.ffb_gain, 0, 2000, "%d%%")) g.dirty = true;
-      ImGui::TextDisabled("Filter, minimum force, damper and tyre effects belong to Reworked Physics.");
+      ImGui::TextDisabled("Countersteer assist, detail, damper and max force belong to Reworked Physics.");
     }
   }
   EndCard();

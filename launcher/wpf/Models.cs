@@ -69,6 +69,9 @@ public sealed class LauncherState
     public string UpdateNote { get; set; } = "";
     public uint ShellProcessId { get; set; }
     public bool RestartRequired { get; set; }
+    public string WheelDetected { get; set; } = "";       // the wheel's name as the game found it, for FFB Engineer
+    public int WheelDetectedType { get; set; } = -1;      // and its kind: 0 direct drive, 1 belt, 2 gear, -1 not yet seen
+    public string FfbResetNotice { get; set; } = "";      // this version's reset of the force feedback settings, to say once
 }
 public sealed class Backend
 {

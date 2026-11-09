@@ -91,27 +91,29 @@ Pedals on a USB of their own (`wheel_pedals` in `default.ini`) and wheels that W
 The button rows (shift up and down, the PS4 buttons, FFB gain + and −) take a button of any controller, not only the wheel: a button box or a second controller is written with its name (`wheel_button = 3, cross, BBI-32 Button Box`). They also take a key, or a key with Ctrl, Shift or Alt, so a Stream Deck that sends keys works too (F13 to F24 are free for it); keys reach the game while its window is in front. The launcher's FFB gain + and − rows take a button or a key the same way.
 
 **Force feedback**
-- **Reworked Physics** (recommended): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top. It learns each car's tyres in the first corners.
-- **Original Physics** (the default): the forces the PS4 game made for a Logitech wheel. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal).
+- **Reworked Physics** (the default): the force is worked out from the car's front tyres in the game's own simulation, the way a racing sim does it. The wheel gets heavier as the tyres load up in a corner and when you brake into one, lighter over a crest, goes light when the front tyres start to slide and the car runs wide, and turns the right way by itself when the back of the car steps out. Kerbs, bumps and the road come through on top.
+- **Original Physics** (not recommended): the forces the PS4 game made for a Logitech wheel, a light spring. Its settings are `wheel_ffb_gain` and `wheel_ffb_vibration` in `default.ini` (100 = as the game sends them, up to 2000; a few hundred is normal). It is `wheel_ffb_model = original`; settings saved by 0.4.1 or older have `game` there, which now gives Reworked Physics, so choose Original again if you want it.
 
-**Preset** sets the sliders for your kind of wheel: **Direct drive** (Fanatec DD, Moza, Simagic, Simucube, ...) or **Gear or belt** (most Logitech, Thrustmaster and Fanatec CSL wheels). Then adjust them to taste:
+The game knows most wheels by name and starts from the settings that suit their kind: **direct drive** (Fanatec DD and CSL DD, Moza, Simagic, Simucube, Logitech G PRO, Thrustmaster T818, ...), **belt** (Thrustmaster T300, TX, T-GT, TS-PC, Fanatec CSL Elite and ClubSport V2) or **gear** (Logitech G29, G920, G923, Thrustmaster T150, TMX, T248). **FFB Engineer...** on the launcher's Wheel page picks the kind by hand and sets every setting for it, then offers one change for each thing you may feel, each saying what it changes (light in the centre: Damper +5; too strong: Gain −10; too busy: Detail −15...); **Reset to defaults** puts every setting back to what suits your wheel. The page shows only what is there to tune to your liking:
 
 | Setting | Range | What it does |
 |---|---|---|
-| Gain | 0–300% | The overall strength. At 100% a hard corner uses about 60% of the wheel's force. |
-| Filter | 0–100% | Smooths the force. 0 on a direct drive, a little on gear wheels. |
-| Minimum force | 0–30% | Lifts the smallest forces past the dead spot that gear and belt wheels have around the centre. |
-| Damper | 0–100% | Weight when you turn the wheel, strongest when the car stands still, as with real tyres. |
-| Kerbs | 0–200% | The rumble of kerbs. |
-| Road | 0–200% | Bumps and the road surface. |
-| Slip | 0–200% | A buzz when the tyres slide, spin or lock. |
-| Soft lock | Game, Off, 540°–1080° | Stops the wheel at the car's own steering lock (Game) or at a fixed angle. |
-| Vibration wave | Sine, Square | Square feels sharper on gear and belt wheels. |
-| Invert forces | | Turns the forces around if the wheel pulls the wrong way. |
+| Countersteer assist | On, Off | The game turns the road wheels further than your wheel when you countersteer a slide. Off on direct drive, on for belt and gear wheels. |
+| Gain | 0–300% | The overall strength, for every car. 70 to start. |
+| Detail | 0–200% | How much of the quick changes you feel: kerbs, bumps, the tyres biting and letting go. |
+| Damper | 0–100% | Heavier to turn the faster you turn: a calmer wheel and centre. 0 if your wheelbase has a damper of its own. |
+| Max force | 30–100% | The most of the wheel's force the steering asks for; stronger forces bend smoothly toward it. |
+| FFB gain + and − | | Wheel buttons that make the car you're driving 5% stronger or weaker; each car keeps its own. |
 
-Direct drive: gain 100, filter 0, minimum force 0, kerbs 50, road 50, slip 30, damper 10. Gear or belt: gain 130, filter 10, minimum force 8, kerbs 80, road 80, slip 50, damper 0.
+| Wheel | Detail | Damper | Countersteer assist | Power steering | Friction | Minimum force |
+|---|---|---|---|---|---|---|
+| Direct drive | 100 | 0 | Off | On | 3 | 0 |
+| Belt | 100 | 0 | On | On | 2 | 0 |
+| Gear | 60 | 0 | On | On | 0 | 5 |
 
-The settings are kept in `default.ini` (`wheel_ffb_physics_*`), and the game picks up changes to it within a second, so `FFB Tuner.bat` can change them while you drive. If the wheel feels flat in hard corners, lower the gain: the log in `logs` says how often the force was at the wheel's maximum (`FFB clipping`). `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
+Gain 70 and max force 100 for every kind. Power steering lightens the big forces of heavy cars, as a road car's does, and hardly touches gentle ones: normal driving keeps its weight while hard corners and slides stay below the wheel's limit, and a weaker motor keeps its detail in fast corners. Friction is the steering's own resistance; much more than 3 hides the road's small forces.
+
+**Live FFB Tuner** (a button on the Wheel page, or `Live FFB Tuner.bat`) has the same settings in a small window that stays open over the game: the game picks up each change within a second, so you can feel it on the next corner. The settings are kept in `default.ini` (`wheel_ffb_wheel_type` and `wheel_ffb_physics_*`; the file explains the others, such as `wheel_ffb_physics_filter`, `_min_force`, `_power_steering`, `_friction`, `_effects` and `_hit_protection`). If the wheel feels flat in hard corners, lower the gain: the log in `logs` says how often the force was at the wheel's maximum (`FFB clipping`). `wheel_ffb = off` turns force feedback off. `FfbTest.exe` plays single forces on the wheel without the game, to check the directions.
 
 **Field of view**
 The **Field of view** slider on the **Assists and view** page sets the view from 50% to 150% of the game's own, for every camera. While playing, **F5** narrows it and **F6** widens it in 5% steps; the new value shows at the top of the screen and is kept for the next start (`data\user\camera.ini`). At 100% the view is left as the game and the patches have it. Any other value counts from the game's own view and takes the place of the widescreen field-of-view fix (which is about 131%).

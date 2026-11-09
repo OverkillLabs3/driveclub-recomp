@@ -89,7 +89,7 @@ public static class Program
                 state=JsonSerializer.Deserialize<LauncherState>(JsonSerializer.Serialize(state,Backend.JsonOptions),Backend.JsonOptions)!;
                 var physics=state.Controls.Single(c=>c.Tag=="@ffb:wheel_ffb_model");physics.Selected=0;
                 var response=await new Backend().Call("validate",state);Invoke(window,"Adopt",response);Invoke(window,"ShowPage",4,false);Set(window,"drivingSubpage",1);Invoke(window,"ShowPage",4,false);Invoke(window,"Adopt",response);await Idle();
-                var setting=response.Controls.Single(c=>c.Label=="Force feedback");var help=Id<Button>(window,"SettingHelp"+setting.Id);
+                var setting=response.Controls.Single(c=>c.Tag=="@ffb:wheel_ffb_physics_gain");var help=Id<Button>(window,"SettingHelp"+setting.Id);
                 await Modal(window,setting.Label,d=>{var text=Desc((FrameworkElement)d.Content).OfType<TextBox>().Single();Check(text.IsReadOnly&&text.Text.Contains(setting.Details),"details button opens full selectable native explanation");Check(text.ActualHeight>120&&!Desc(text).OfType<FilmGrainOverlay>().Any(),"reading pane expands and has no input-field grain");},()=>help.RaiseEvent(new RoutedEventArgs(Button.ClickEvent)));
 
                 Invoke(window,"ShowPage",6,false);await Idle();
