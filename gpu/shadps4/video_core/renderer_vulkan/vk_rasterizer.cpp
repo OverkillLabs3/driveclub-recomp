@@ -4116,11 +4116,14 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         auto& image = texture_cache.GetImage(image_id);
 
         const auto slice = image_view.info.range.base.layer;
+        // A fast clear through HTILE resets depth and stencil together: left uncleared, stencil
+        // keeps old marks wherever the frame draws nothing (open sky), which hides the snow there.
+        const bool is_meta_clear = texture_cache.IsMetaCleared(htile_address, slice);
         const bool is_depth_clear =
             (regs.depth_render_control.depth_clear_enable && regs.depth_control.depth_enable &&
              regs.depth_control.depth_write_enable) ||
-            texture_cache.IsMetaCleared(htile_address, slice);
-        const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
+            is_meta_clear;
+        const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable || is_meta_clear;
         texture_cache.TouchMeta(htile_address, slice, false);
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);
 
