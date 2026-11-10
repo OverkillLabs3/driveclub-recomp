@@ -1303,11 +1303,16 @@ void TemporalUpscaler::OnColorTarget(VideoCore::ImageId color) {
     if (ui_phase || !camera_motion.Depth()) {
         return;
     }
+    // The depth id is kept from the G-buffer pass, and that image can be freed since (the game
+    // resizes targets at the same address): only compare against an image still in the cache.
+    const auto* depth = texture_cache.TryGetRegistered(camera_motion.Depth());
+    if (!depth) {
+        return;
+    }
     const auto& image = texture_cache.GetImage(color);
-    const auto& depth = texture_cache.GetImage(camera_motion.Depth());
     if (image.info.pixel_format == vk::Format::eR8G8B8A8Unorm &&
-        image.info.size.width == depth.info.size.width &&
-        image.info.size.height == depth.info.size.height) {
+        image.info.size.width == depth->info.size.width &&
+        image.info.size.height == depth->info.size.height) {
         ldr_target = color;
     }
 }
