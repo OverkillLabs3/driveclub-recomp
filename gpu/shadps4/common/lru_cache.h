@@ -4,6 +4,7 @@
 #pragma once
 
 #include <deque>
+#include <limits>
 #include <type_traits>
 
 #include "common/types.h"
@@ -50,6 +51,9 @@ public:
         Detach(item);
         item.prev = nullptr;
         item.next = nullptr;
+        // A Touch through a stale id must not put a freed item back in the list: the owner of a
+        // reused slot would then be listed twice and freed twice.
+        item.tick = std::numeric_limits<TickType>::max();
         free_items.push_back(id);
     }
 

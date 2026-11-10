@@ -220,6 +220,14 @@ public:
         auto& image = slot_images[id];
         return !uid || image.image_uid == uid ? &image : nullptr;
     }
+    /// The image if it is still registered; does not change its place in the LRU list.
+    [[nodiscard]] const Image* TryGetRegistered(ImageId id) const {
+        if (!id || !slot_images.is_allocated(id)) {
+            return nullptr;
+        }
+        const Image& image = slot_images[id];
+        return True(image.flags & ImageFlagBits::Registered) ? &image : nullptr;
+    }
     [[nodiscard]] Image& GetImage(ImageId id) {
         auto& image = slot_images[id];
         TouchImage(image);
