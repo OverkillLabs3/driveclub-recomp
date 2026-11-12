@@ -226,7 +226,7 @@ target_compile_definitions(bbnet PRIVATE CPPHTTPLIB_OPENSSL_SUPPORT CPPHTTPLIB_Z
 target_link_libraries(bbnet PRIVATE OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB)
 # libScePngDec (bbnet/png_dec.cpp): the game decodes downloaded pictures (avatars) with it.
 find_package(PNG REQUIRED)
-target_sources(bbnet PRIVATE bbnet/png_dec.cpp)
+target_sources(bbnet PRIVATE bbnet/png_dec.cpp shadps4/core/libraries/libpng/pngenc.cpp)
 target_link_libraries(bbnet PRIVATE PNG::PNG)
 if (WIN32)
     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
