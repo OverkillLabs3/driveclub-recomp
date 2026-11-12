@@ -78,6 +78,48 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
 
 TextureCache::~TextureCache() = default;
 
+bool TextureCache::SyncBadgeTexture(VAddr address) {
+    const auto id = FindImageFromRange(address, 0);
+    if (!id) {
+        return false;
+    }
+    auto& image = slot_images[id];
+    const auto& info = image.info;
+    // This guest call reads a single 32-bit 2D surface. Preserve its tiled layout
+    // for the game's CPU conversion, using the same tiler as GPU buffer aliases.
+    if (info.props.is_depth || info.props.is_block || info.num_bits != 32 ||
+        info.num_samples != 1 || info.resources.layers != 1 || info.resources.levels != 1 ||
+        info.size.depth != 1 || info.size.width != info.size.height ||
+        (info.size.width != 64 && info.size.width != 256) ||
+        !Core::Memory::Instance()->IsValidMapping(address, info.guest_size)) {
+        return false;
+    }
+    const auto& mip = info.mips_layout[0];
+    vk::BufferImageCopy region{
+        .bufferOffset = mip.offset,
+        .bufferRowLength = mip.pitch,
+        .bufferImageHeight = mip.height,
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageExtent = {info.size.width, info.size.height, 1},
+    };
+    const auto staging = runtime.GetStagingPool().Request(
+        info.guest_size, MemoryType::HostCached, instance.StorageMinAlignment());
+    tile_manager.TileImage(image, std::span{&region, 1}, staging.buffer, staging.offset);
+    scheduler.RequestHostReadBarrier();
+    scheduler.Finish(6);
+    staging.Invalidate();
+    const bool written = Core::Memory::Instance()->TryWriteBacking(
+        std::bit_cast<u8*>(address), staging.mapped, info.guest_size);
+    if (const char* trace = std::getenv("BB_BADGE_PIXELS"); trace && trace[0] == '1') {
+        const size_t nonzero = std::count_if(staging.mapped, staging.mapped + info.guest_size,
+                                             [](u8 value) { return value != 0; });
+        std::fprintf(stderr, "BADGE_SURFACE source=%#llx %ux%u tiled=%d nonzeroBytes=%zu written=%d\n",
+                     static_cast<unsigned long long>(address), info.size.width, info.size.height,
+                     int(info.IsTiled()), nonzero, int(written));
+    }
+    return written;
+}
+
 void TextureCache::ProcessDownloadImages() {
     std::unique_lock lk{download_images_mutex};
     // A fence does not wait for the GPU: each linear image is copied into its own staging buffer and
