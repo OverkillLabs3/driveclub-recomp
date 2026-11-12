@@ -780,6 +780,41 @@ static void patch_shared_alloc(unsigned char *image, uint64_t size) {
     protect(thunks, page_size, 5);
     printf("BB_SHARED_LOG/PAD: %d SystemShared allocator sites patched (log %d, pad %d)\n", patched, log, padding);
 }
+/* The PNG export reads a GPU texture through the game's CPU surface converter. */
+static uintptr_t badge_convert_target;
+static ABI int badge_convert_surface(void *layout, void *pixels, const void *texture) {
+    const int written = bbgpu_sync_badge_texture((uintptr_t)texture);
+    const char *trace = getenv("BB_BADGE_PIXELS");
+    if (trace && trace[0]=='1')
+        fprintf(stderr,"BADGE_CONVERT source=%p output=%p synchronized=%d\n",texture,pixels,written);
+    const uint64_t args[] = {(uintptr_t)layout, (uintptr_t)pixels, (uintptr_t)texture};
+    return (int)guest_cpu_call(badge_convert_target, 3, args);
+}
+static void patch_badge_readback(unsigned char *image, uint64_t size) {
+    const char *enabled=getenv("BB_BADGE_READBACK");
+    if (enabled && enabled[0]=='0') return;
+    const uint64_t site_offset=0x791f05, target_offset=0xb4a190;
+    static const unsigned char signature[]={
+        0x4c,0x89,0xff,0x4c,0x89,0xee,0x48,0x89,0xda,
+        0xe8,0x86,0x82,0x3b,0x00,0x85,0xc0
+    };
+    if (size<=target_offset || memcmp(image+site_offset-9,signature,sizeof signature)) return;
+    unsigned char *site=image+site_offset, *thunk=allocate_code(page_size);
+    const int64_t to=(int64_t)((uintptr_t)thunk-((uintptr_t)site+5));
+    if (to!=(int32_t)to) {
+        protect(thunk,page_size,5);
+        return;
+    }
+    badge_convert_target=(uintptr_t)image+target_offset;
+    const uintptr_t hook=host_entry((uintptr_t)badge_convert_surface);
+    thunk[0]=0x48; thunk[1]=0xb8; memcpy(thunk+2,&hook,8);
+    thunk[10]=0xff; thunk[11]=0xe0;
+    protect(thunk,page_size,5);
+    const int32_t rel=(int32_t)to;
+    memcpy(site+1,&rel,4);
+    puts("Club Badge: synchronize the source texture before CPU surface conversion");
+}
+
 /* BB_EXPOSURE_STALE=1 (opt-in; gpu/shadps4/video_core/page_manager.cpp): the auto-exposure's two histogram copies
  * (eboot 0x702ad2 and 0x702afc: mov edx, 0x400; call memcpy 0x123e3b0) and its value read (0x702b0d: xor ecx, ecx;
  * call getter 0x758980) call host hooks through near thunks (movabs rax, hook; jmp rax): same arguments, and they
@@ -1659,6 +1694,7 @@ int main(int argc, char **argv) {
     if (!cpu_only) apply_ui_resolution(image, size);
     if (!cpu_only) apply_cull_scale(image, size);
     if (!cpu_only) patch_shared_alloc(image, size);
+    if (!cpu_only) patch_badge_readback(image, size);
     if (!cpu_only && !patch_exposure_exact(image, size)) patch_exposure_copy(image, size);
     if (!cpu_only) patch_cloud_get(image, size);
     if (!cpu_only) patch_query_get(image, size);

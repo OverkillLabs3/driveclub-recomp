@@ -383,6 +383,18 @@ extern "C" int bbgpu_handle_fault(void* ucontext, void* address) {
     return Core::Signals::Instance()->DispatchAccessViolation(ucontext, address) ? 1 : 0;
 }
 
+extern "C" int bbgpu_sync_badge_texture(uintptr_t address) {
+    auto* rasterizer = Core::Memory::Instance()->GetRasterizer();
+    if (!liverpool || !rasterizer || g_gpu_shutdown_complete) {
+        return 0;
+    }
+    bool written = false;
+    liverpool->SendCommand<true>([&] {
+        written = rasterizer->GetTextureCache().SyncBadgeTexture(address);
+    });
+    return written;
+}
+
 extern "C" void bbgpu_print_recent_passes(void) {
     if (BbRecent::crumb) {
         // The GPU's own count of the work its command processor reached: the faulting draw is this one or

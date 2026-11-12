@@ -65,6 +65,9 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym);
 namespace Libraries::PngDec {
 void RegisterLib(Core::Loader::SymbolsResolver* sym);
 }
+namespace Libraries::PngEnc {
+void RegisterLib(Core::Loader::SymbolsResolver* sym);
+}
 
 extern "C" {
 int32_t runtime_thread_spawn(void** out, void* PS4_SYSV_ABI (*entry)(void*), void* argument,
@@ -482,4 +485,5 @@ extern "C" void bbnet_register(void) {
     Libraries::Np::NpWebApi2::RegisterLib(sym);
     Libraries::Rudp::RegisterLib(sym);
     Libraries::PngDec::RegisterLib(sym);
+    Libraries::PngEnc::RegisterLib(sym);
 }
