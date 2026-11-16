@@ -35,7 +35,7 @@ CAMERAS
 
 KEYS (number row; the numpad works too)
   0        recentre: sit as you drive, look straight ahead, press 0
-           (it also recentres by itself when you get into the car)
+           (it also recentres by itself the first time you get into the car)
   2 / 1    seat up / down
   5 / 6    seat left / right
   4 / 3    seat forward / back
