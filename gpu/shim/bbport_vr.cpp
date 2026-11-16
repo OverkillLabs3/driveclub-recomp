@@ -294,8 +294,6 @@ struct State {
     XrVector3f last_head{};        // the head's last place in the room (a jump: the runtime's room moved)
     long long last_head_us = 0;
     bool room_moved = false;       // the runtime said its room (LOCAL) moves
-    float last_yaw = 0.0f;         // the head's last turn, degrees (tens of degrees in a frame: the runtime turned it)
-    long long last_yaw_us = 0;
     // the recentred head
     bool have_centre = false;
     bool manual_centre = false; // the player recentred by the key: their aim (the wheel lined up) is kept from then on
@@ -3965,46 +3963,6 @@ VkImageView NoteFrame(VkCommandBuffer cmd, VkImage frame, VkImageView display_vi
                          camera, window_width, window_height);
 }
 
-// How long the runtime's calls hold the frame (logged every 30 s): a streaming runtime (Virtual Desktop) that keeps its
-// images while its encoder or network is behind holds the game here, and the game's picture stalls with it.
-struct XrWaits {
-    enum { kWaitFrame, kBeginFrame, kAcquire, kWaitImage, kEndFrame, kCount };
-    long long since_us = 0;
-    unsigned frames = 0, timeouts = 0, no_render = 0;
-    double total_ms[kCount]{};
-    float most_ms[kCount]{};
-    unsigned over_20[kCount]{};
-} xr_waits;
-void NoteXrWait(int which, long long from_us) {
-    const float ms = float(NowUs() - from_us) / 1000.0f;
-    xr_waits.total_ms[which] += ms;
-    xr_waits.most_ms[which] = std::max(xr_waits.most_ms[which], ms);
-    xr_waits.over_20[which] += ms > 20.0f;
-}
-void ReportXrWaits() {
-    const long long now = NowUs();
-    if (!xr_waits.since_us) {
-        xr_waits.since_us = now;
-        return;
-    }
-    if (now - xr_waits.since_us < 30000000) {
-        return;
-    }
-    static const char* const names[XrWaits::kCount] = {"wait frame", "begin", "acquire", "wait image", "end frame"};
-    char text[512];
-    int n = std::snprintf(text, sizeof text, "VR: runtime calls over %.0f s, %u frames (%u timed out waiting for an image, "
-                                             "%u not to be shown):", double(now - xr_waits.since_us) / 1e6,
-                          xr_waits.frames, xr_waits.timeouts, xr_waits.no_render);
-    for (int i = 0; i < XrWaits::kCount && n > 0 && n < int(sizeof text); ++i) {
-        n += std::snprintf(text + n, sizeof text - n, "%s %s %.1f ms on average, %.0f the most, %u over 20",
-                           i ? ";" : "", names[i], xr_waits.frames ? xr_waits.total_ms[i] / xr_waits.frames : 0.0,
-                           double(xr_waits.most_ms[i]), xr_waits.over_20[i]);
-    }
-    std::printf("%s\n", text);
-    xr_waits = {};
-    xr_waits.since_us = now;
-}
-
 void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t height) {
     if (!Active() || st.failed) {
         return;
@@ -4013,16 +3971,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     if (!st.running) {
         return;
     }
-    ReportXrWaits();
-    ++xr_waits.frames;
     XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
     st.frame_state = {XR_TYPE_FRAME_STATE};
-    const long long wait_from = NowUs();
     if (!Ok(xr.WaitFrame(st.session, &wait, &st.frame_state), "xrWaitFrame")) {
         return;
     }
-    NoteXrWait(XrWaits::kWaitFrame, wait_from);
-    xr_waits.no_render += !st.frame_state.shouldRender;
     if (st.frame_state.predictedDisplayPeriod > 0) {
         const uint32_t hz = uint32_t(1e9 / double(st.frame_state.predictedDisplayPeriod) + 0.5);
         const uint32_t was = headset_hz.load(std::memory_order_relaxed);
@@ -4036,13 +3989,11 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         }
     }
     {
-        const long long begin_from = NowUs(); // with the wait for the queue's lock
         std::scoped_lock lock{*g_queue_mutex};
         XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};
         if (!Ok(xr.BeginFrame(st.session, &begin), "xrBeginFrame")) {
             return;
         }
-        NoteXrWait(XrWaits::kBeginFrame, begin_from);
     }
     st.frame_begun = true;
 
@@ -4080,18 +4031,6 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
         if (position_tracked) {
             st.last_head = at;
             st.last_head_us = NowUs();
-        }
-        // Only logged: a head does not turn 30 degrees from one frame to the next; such a jump is the runtime (or the
-        // headset) turning its room without telling us, which moves the view as a recentre would.
-        {
-            const float yaw = Yaw(location.pose.orientation);
-            float turn = std::fabs(yaw - st.last_yaw);
-            if (turn > 180.0f) turn = 360.0f - turn;
-            if (st.last_yaw_us && NowUs() - st.last_yaw_us < 200000 && turn > 30.0f) {
-                std::printf("VR: the head turned %.0f degrees in one frame (the runtime turned its room?)\n", turn);
-            }
-            st.last_yaw = yaw;
-            st.last_yaw_us = NowUs();
         }
         if (!st.have_centre && (position_tracked || NowUs() - st.untracked_us > 3000000)) {
             st.centre_yaw = Yaw(location.pose.orientation);
@@ -4229,22 +4168,16 @@ void RecordFrame(VkCommandBuffer cmd, VkImage image, uint32_t width, uint32_t he
     }
     uint32_t index = 0;
     {
-        const long long acquire_from = NowUs(); // with the wait for the queue's lock
         std::scoped_lock lock{*g_queue_mutex}; // the runtime may submit to the game's queue (EnsureSwapchain)
         XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         if (!Ok(xr.AcquireSwapchainImage(st.swapchain, &acquire, &index), "xrAcquireSwapchainImage")) {
             return;
         }
-        NoteXrWait(XrWaits::kAcquire, acquire_from);
         XrSwapchainImageWaitInfo image_wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         image_wait.timeout = 100000000; // 100 ms
-        const long long wait_from = NowUs();
-        const XrResult waited = xr.WaitSwapchainImage(st.swapchain, &image_wait);
-        if (!Ok(waited, "xrWaitSwapchainImage")) {
+        if (!Ok(xr.WaitSwapchainImage(st.swapchain, &image_wait), "xrWaitSwapchainImage")) {
             return;
         }
-        NoteXrWait(XrWaits::kWaitImage, wait_from);
-        xr_waits.timeouts += waited == XR_TIMEOUT_EXPIRED;
     }
     st.image_acquired = true;
     st.width = width;
@@ -4544,9 +4477,7 @@ void AfterSubmit() {
             end.layerCount = 2;
         }
     }
-    const long long end_from = NowUs();
     Ok(xr.EndFrame(st.session, &end), "xrEndFrame");
-    NoteXrWait(XrWaits::kEndFrame, end_from);
 }
 
 } // namespace BbVr
