@@ -149,7 +149,8 @@ struct Functions {
 
 struct Settings {
     bool afr = true, rigid = true, smoothing = true;
-    bool auto_recentre = true; // recentre on getting into the car the first time after the start; 0: only by the key
+    int auto_recentre = 1; // recentre on getting into the car: 1 the first time after the start, 2 every time (after
+                           // 3 s or more out of the car, the key too), 0 only by the key
     bool diag = false; // diag = 1: the hook goes in without a headset too and logs the game's head point
     float ipd = 0.063f;
     float seat[3] = {0.0f, 0.0f, 0.0f}; // from the game's own head point (each car its own); vr_seat.ini keeps the keys
@@ -479,6 +480,13 @@ int KeyCode(const char* name) {
 // BB_VR_SMAA = 0 or 1, BB_VR_GLOW = percent, BB_VR_SMOOTHING = 0 (off), 1 (light) or 2 (strong). They come after
 // vr.ini.
 void LauncherSettings() {
+    if (const char* v = std::getenv("BB_VR_AUTO_RECENTRE"); v && *v) {
+        settings.auto_recentre = std::clamp(std::atoi(v), 0, 2);
+        std::printf("VR: recentring on getting into the car: %s\n",
+                    settings.auto_recentre == 0   ? "off (only by the key)"
+                    : settings.auto_recentre == 1 ? "the first time after the start"
+                                                  : "every time");
+    }
     if (const char* v = std::getenv("BB_VR_SMOOTHING"); v && *v) {
         // Light: 2 Hz still, about 7 Hz at 5 cm/s or 20 degrees/s (a few hundredths of a second behind). Strong (the
         // earlier default): 0.5 Hz still, 1 Hz at 5 cm/s: a slow lean was about a sixth of a second behind.
@@ -590,7 +598,7 @@ void ReadSettings() {
         if (k == "afr") settings.afr = value != 0;
         else if (k == "rigid") settings.rigid = value != 0;
         else if (k == "smoothing") settings.smoothing = value != 0;
-        else if (k == "auto_recentre") settings.auto_recentre = value != 0;
+        else if (k == "auto_recentre") settings.auto_recentre = std::clamp(int(value), 0, 2);
         else if (k == "diag") settings.diag = value != 0;
         else if (k == "draw_trace") settings.draw_trace = value != 0;
         // audit = 1: the multiview audit (BB_VR_AUDIT), the passes that give both eyes one eye's picture, in the log
@@ -2311,7 +2319,7 @@ void ReadKeys() {
                 st.have_centre = false;
                 const bool row = (GetAsyncKeyState(settings.keys[k]) & 0x8000) != 0;
                 std::printf("VR: the recentre key (%s)%s\n", row ? "the number row's" : "keypad 5",
-                            !st.manual_centre && settings.auto_recentre ? ": no more recentring on getting into the car"
+                            !st.manual_centre && settings.auto_recentre == 1 ? ": no more recentring on getting into the car"
                                                                         : "");
                 st.manual_centre = true;
             } else if (k == 8 && Vulkan::Vr::Multiview::Requested()) {
@@ -4367,11 +4375,16 @@ void AfterSubmit() {
             // when the game started). Later races, restarts and cars keep the centre, as the key or this set it: the
             // head is rarely straight ahead when a race starts, and a few degrees off turns the wheel against the
             // real one.
-            if (cockpit && settings.auto_recentre && !st.manual_centre && !st.auto_centred) {
+            // auto_recentre = 2: every time (as in vr10), unless the cockpit view was left only for a moment.
+            const bool every = settings.auto_recentre == 2 &&
+                               (!st.cockpit_left_us || NowUs() - st.cockpit_left_us > 3000000);
+            const bool first = settings.auto_recentre == 1 && !st.manual_centre && !st.auto_centred;
+            if (cockpit && (every || first)) {
                 std::scoped_lock lock{head_mutex};
                 st.have_centre = false;
                 st.auto_centred = true;
-                std::printf("VR: getting into the car the first time: recentring (later only by the key)\n");
+                std::printf("VR: getting into the car%s: recentring%s\n", first ? " the first time" : "",
+                            first ? " (later only by the key)" : "");
             }
             if (!cockpit) {
                 st.cockpit_left_us = NowUs();

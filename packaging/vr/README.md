@@ -142,7 +142,7 @@ resample = 1       # each eye cut to the runtime's angles and, below 100%, stret
                    # shown pixel for pixel; above 100% the drawn pixels go as they are (resample_kernel = 1 to 4:
                    # our filter down to the runtime's size instead, 1 as vr9; it loses detail)
 frame_pose = 1     # each frame stated to the headset with the turn it was really drawn with; 0: the hook's
-auto_recentre = 1  # recentre on getting into the car the first time after the start (later only by the key); 0: only by the key
+auto_recentre = 1  # recentre on getting into the car: 1 the first time after the start, 2 every race (as in vr10), 0 only by the key (the launcher: VR tab, Recentre on getting into the car)
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture
 hud_distance = 1.1 # the HUD panel: metres ahead, hud_width = 1.4 (metres, 16:9), hud_y = 0 (metres above the eyes)

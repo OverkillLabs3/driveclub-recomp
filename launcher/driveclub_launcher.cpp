@@ -203,6 +203,8 @@ int g_vr_edge = 0;          // "Edge margin" (vr_edge= in launcher.ini): 0 off, 
 int g_vr_exposure = 2;      // "Exposure in VR" (vr_exposure= in launcher.ini): -1, -0.5, 0, +0.5, +1 EV (BB_VR_EXPOSURE_BIAS)
 int g_vr_smooth = 1;        // "Head smoothing in VR" (vr_smooth=): 0 off, 1 light, 2 strong (BB_VR_SMOOTHING)
 int g_vr_smooth_row = -1;
+int g_vr_recentre = 1;      // "Recentre on getting into the car" (vr_recentre=): 0 off, 1 first race, 2 every race (BB_VR_AUTO_RECENTRE)
+int g_vr_recentre_row = -1;
 int g_vr_ffr_row = -1, g_vr_edge_row = -1, g_vr_stereo_row = -1, g_vr_exposure_row = -1;
 int g_vr_ffr_extra = 0;     // "Foveated reflections and occlusion" (vr_ffr_extra=): 0 off, 1 on (BB_VR_FFR_EXTRA)
 int g_vr_ffr_extra_row = -1;
@@ -697,6 +699,7 @@ bool RowHidden(const Ctl& c) {
   if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) return true; // always Auto (see LoadSettings)
   if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) return !VrChosen();
   if (g_vr_smooth_row >= 0 && &c == &g_c[g_vr_smooth_row]) return !VrChosen();
+  if (g_vr_recentre_row >= 0 && &c == &g_c[g_vr_recentre_row]) return !VrChosen();
   if ((g_vr_ffr_row >= 0 && &c == &g_c[g_vr_ffr_row]) || (g_vr_edge_row >= 0 && &c == &g_c[g_vr_edge_row]))
     return !VrChosen();
   if (g_vr_ffr_extra_row >= 0 && &c == &g_c[g_vr_ffr_extra_row]) return !VrChosen();
@@ -1665,6 +1668,15 @@ void BuildModel() {
                         L"\x2022 Light: still heads stay steady, moving ones follow at once.\n"
                         L"\x2022 Strong: the steadiest, but leaning and moving the head lag a little behind.",
                         {L"Off", L"Light", L"Strong"}, {"@vrsmooth", "", ""}, 1);
+  g_vr_recentre_row = seg(L"Recentre on getting into the car",
+                          L"Where your head is and the direction you face become the seat when you get into the car. "
+                          L"The recentre key (0, or keypad 5) does it any time.\n"
+                          L"\x2022 Off: only by the key.\n"
+                          L"\x2022 First race: once after the game starts (the headset may have been on the desk), then "
+                          L"only by the key. Later races and restarts keep your centre, and the wheel stays lined up.\n"
+                          L"\x2022 Every race: at each race start, restart and car (as in vr10); your head should face "
+                          L"straight ahead then.",
+                          {L"Off", L"First race", L"Every race"}, {"@vrrecentre", "", ""}, 1);
   g_vr_ffr_row = seg(L"Foveated rendering",
                      L"The edges of each eye, which the lenses blur anyway, are drawn with less detail.\n"
                      L"\x2022 Light: only the far edges and corners.\n"
@@ -2022,7 +2034,7 @@ void BuildModel() {
   g_cards.push_back({L"HDR", {g_hdr, g_hdr_paper, g_hdr_peak}, 0, kTabGraphics});
   g_cards.push_back({L"PICTURE", {g_picture[0], g_picture[1], g_picture[2]}, 0, kTabGraphics,
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
-  g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, vr_stereo, g_vrsize, g_vr_scale_row, g_vr_smooth_row}, 0, kTabVr,
+  g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, vr_stereo, g_vrsize, g_vr_scale_row, g_vr_smooth_row, g_vr_recentre_row}, 0, kTabVr,
                      L"Setup and the headset apps: VR README.md next to the game."});
   g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_aa_row, g_vr_up_row, g_vr_glow_row, g_vr_exposure_row, g_vr_ffr_row, g_vr_ffr_extra_row, g_vr_edge_row}, 0, kTabVr,
                      L"FXAA and the other camera effects are on the Detail tab; DLSS's sharpness on the Display tab."});
@@ -2218,6 +2230,7 @@ void LoadSettings() {
     if (line.rfind("vr_aa=", 0) == 0) g_vr_aa = (std::clamp)(atoi(line.substr(6).c_str()), 0, 3);
     if (line.rfind("vr_up=", 0) == 0) g_vr_up = (std::clamp)(atoi(line.substr(6).c_str()), 0, 4);
     if (line.rfind("vr_smooth=", 0) == 0) g_vr_smooth = (std::clamp)(atoi(line.substr(10).c_str()), 0, 2);
+    if (line.rfind("vr_recentre=", 0) == 0) g_vr_recentre = (std::clamp)(atoi(line.substr(12).c_str()), 0, 2);
     if (line.rfind("vr_ffr=", 0) == 0) g_vr_ffr = (std::clamp)(atoi(line.substr(7).c_str()), 0, 3);
     if (line.rfind("vr_edge=", 0) == 0) g_vr_edge = (std::clamp)(atoi(line.substr(8).c_str()), 0, 3);
     if (line.rfind("vr_ffr_extra=", 0) == 0) g_vr_ffr_extra = atoi(line.substr(13).c_str()) != 0;
@@ -2333,6 +2346,10 @@ void LoadSettings() {
     }
     if (c.kind == Kind::Segmented && c.patches[0] == "@vrsmooth") {
       c.sel = g_vr_smooth;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrrecentre") {
+      c.sel = g_vr_recentre;
       continue;
     }
     if (c.kind == Kind::Segmented && c.patches[0] == "@vrffr") {
@@ -2651,6 +2668,7 @@ bool SaveSettings() {
       if (g_vr_up_row >= 0 && &c == &g_c[g_vr_up_row]) g_vr_up = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vrffr") g_vr_ffr = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vrsmooth") g_vr_smooth = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrrecentre") g_vr_recentre = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vredge") g_vr_edge = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vrffrx") g_vr_ffr_extra = c.sel;
       if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) g_vr_auto = c.sel == kVrSizeAuto;
@@ -2665,7 +2683,7 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_ffr_extra=" << g_vr_ffr_extra << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_recentre=" << g_vr_recentre << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_ffr_extra=" << g_vr_ffr_extra << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -4199,6 +4217,8 @@ std::wstring StartGame(HANDLE* process = nullptr) {
     const bool smaa = g_vr && VrAa() == kVrAaSmaa;
     SetEnvironmentVariableW(L"BB_VR_SMAA", g_vr ? (smaa ? L"1" : L"0") : nullptr);
   }
+  if (!UserEnv(L"BB_VR_AUTO_RECENTRE"))
+    SetEnvironmentVariableW(L"BB_VR_AUTO_RECENTRE", g_vr ? std::to_wstring(g_vr_recentre).c_str() : nullptr);
   if (!UserEnv(L"BB_VR_SMOOTHING"))
     SetEnvironmentVariableW(L"BB_VR_SMOOTHING", g_vr ? std::to_wstring(g_vr_smooth).c_str() : nullptr);
   if (!UserEnv(L"BB_VR_FFR"))
