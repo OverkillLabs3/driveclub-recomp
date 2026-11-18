@@ -1649,8 +1649,13 @@ void Rasterizer::VrScaleGlow() {
 void Rasterizer::DumpEyeTargets(int step) {
     const char* user = std::getenv("BB_GPU_USER_DIR");
     const u64 hidden = BbVr::DumpHide(step);
-    char sub[48];
-    std::snprintf(sub, sizeof(sub), "step%02d_%llx", step, (unsigned long long)hidden);
+    char sub[64];
+    // each press its own folder (the first and a later lap compared): the press number in front
+    static int press = 0;
+    if (step == 0) {
+        ++press;
+    }
+    std::snprintf(sub, sizeof(sub), "%02d_step%02d_%llx", press, step, (unsigned long long)hidden);
     const std::filesystem::path directory =
         std::filesystem::path(user && *user ? user : ".") / "eye_dump" / sub;
     static const u64 only = [] { // dump_target = <hex>: that target alone
@@ -1726,6 +1731,80 @@ void Rasterizer::DumpEyeTargets(int step) {
     std::printf("VR: eye dump: %zu targets, both eyes, in %s\n", images.size(), directory.string().c_str());
     std::fflush(stdout);
     eye_dump_targets.clear();
+}
+
+// VR metering (BbVr::NoteMeter): every 4th quarter-size scene copy, its drawn rectangle of the left eye's layer is
+// read back (R11G11B10, about 2 MB) and its mean log luminance taken over the whole and over the middle (MeterBox).
+void Rasterizer::MeterCopy(VideoCore::ImageId id, s32 x, s32 y, u32 w, u32 h) {
+    static u32 count = 0;
+    if (count++ % 4 != 0) {
+        return;
+    }
+    auto& image = texture_cache.GetImage(id);
+    const auto& extent = image.backing->image.image_ci.extent;
+    if (image.info.pixel_format != vk::Format::eB10G11R11UfloatPack32 || x < 0 || y < 0 || w < 16 || h < 16 ||
+        u32(x) + w > extent.width || u32(y) + h > extent.height) {
+        return;
+    }
+    const VkDeviceSize size = VkDeviceSize(w) * h * 4;
+    const VkBufferCreateInfo buffer_ci{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+    };
+    const VmaAllocationCreateInfo alloc_ci{
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+    };
+    VkBuffer buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(instance.GetAllocator(), &buffer_ci, &alloc_ci, &buffer, &allocation, &info) != VK_SUCCESS) {
+        return;
+    }
+    scheduler.EndRendering();
+    runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal, vk::PipelineStageFlagBits2::eTransfer,
+                    vk::AccessFlagBits2::eTransferRead);
+    runtime.FlushBarriers();
+    const vk::BufferImageCopy region{
+        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+        .imageOffset = {x, y, 0},
+        .imageExtent = {w, h, 1},
+    };
+    scheduler.CommandBuffer().copyImageToBuffer(image.GetImage(), vk::ImageLayout::eTransferSrcOptimal, buffer,
+                                                region);
+    float box[4];
+    BbVr::MeterBox(box);
+    scheduler.DeferPriorityOperation([allocator = instance.GetAllocator(), buffer, allocation, info, w, h,
+                                      bx0 = u32(box[0] * float(w)), bx1 = u32(box[1] * float(w)),
+                                      by0 = u32(box[2] * float(h)), by1 = u32(box[3] * float(h))] {
+        vmaInvalidateAllocation(allocator, allocation, 0, VK_WHOLE_SIZE);
+        const u32* texels = static_cast<const u32*>(info.pMappedData);
+        // B10G11R11: R in bits 0-10 (6-bit mantissa), G 11-21, B 22-31 (5-bit); every 2nd texel each way
+        const auto unpack = [](u32 v, u32 mbits) {
+            const u32 e = v >> mbits, m = v & ((1u << mbits) - 1);
+            return e == 0 ? std::ldexp(float(m) / float(1u << mbits), -14)
+                          : std::ldexp(1.0f + float(m) / float(1u << mbits), int(e) - 15);
+        };
+        double full = 0.0, middle = 0.0;
+        u32 full_n = 0, middle_n = 0;
+        for (u32 j = 0; j < h; j += 2) {
+            for (u32 i = 0; i < w; i += 2) {
+                const u32 v = texels[size_t(j) * w + i];
+                const float lum = 0.2126f * unpack(v & 0x7ff, 6) + 0.7152f * unpack((v >> 11) & 0x7ff, 6) +
+                                  0.0722f * unpack(v >> 22, 5);
+                const double l = std::log(std::max(lum, 1e-4f));
+                full += l, ++full_n;
+                if (i >= bx0 && i < bx1 && j >= by0 && j < by1) {
+                    middle += l, ++middle_n;
+                }
+            }
+        }
+        if (full_n && middle_n > 16) {
+            BbVr::NoteMeter(full / full_n, middle / middle_n);
+        }
+        vmaDestroyBuffer(allocator, buffer, allocation);
+    });
 }
 
 void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
@@ -2117,6 +2196,16 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         }
     }
     DebugState.IncDrawCall();
+    // VR: the game's quarter-size copy of the lit scene (ps 0d240764, the exposure's and the glow's source) is read for
+    // metering the middle of the eye (vr.ini meter_middle)
+    if (BbVr::MeterWanted() && cb_descs[0].first) {
+        const auto* meter_ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        if (meter_ps && meter_ps->pgm_hash == 0x0d240764) {
+            const auto& vp = regs.viewports[0];
+            MeterCopy(cb_descs[0].first, s32(vp.xoffset - vp.xscale), s32(vp.yoffset + vp.yscale),
+                      u32(std::fabs(vp.xscale) * 2.0f + 0.5f), u32(std::fabs(vp.yscale) * 2.0f + 0.5f));
+        }
+    }
 
     ResetBindings(false);
     phase.emplace(BbStats::phase_ns[6]);

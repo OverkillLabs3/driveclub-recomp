@@ -413,6 +413,10 @@ int g_vr_scale_row = -1;        // "Headset picture scale" with Auto: percent pe
 int g_vr_scale = 100;           // launcher.ini vr_scale=
 int g_vr_glow_row = -1;         // "Glow in VR": percent of the game's glow (BB_VR_GLOW)
 int g_vr_glow = 100;            // launcher.ini vr_glow=
+int g_vr_meter_row = -1;        // "Exposure follows the road (VR)": percent (BB_VR_METER)
+int g_vr_meter = 100;           // launcher.ini vr_meter=
+int g_vr_expsmooth = 0;         // "Smooth exposure changes (VR)" (vr_exposure_smooth=): 0 the game's speed, 1 ours (BB_VR_EXPOSURE_SMOOTH)
+int g_vr_expsmooth_row = -1;
 int g_texture_repetition = -1;
 std::wstring g_online_host;       // address of the host to join, from "online_host=" in launcher.ini
 std::wstring UiInstalledVersion();  // version.txt next to the launcher (launcher_wpf_bridge.inc)
@@ -696,6 +700,8 @@ bool RowHidden(const Ctl& c) {
   if (g_vr_exposure_row >= 0 && &c == &g_c[g_vr_exposure_row]) return !VrChosen();
   if (g_vr_glow_row >= 0 && &c == &g_c[g_vr_glow_row])
     return !VrChosen();
+  if (g_vr_meter_row >= 0 && &c == &g_c[g_vr_meter_row]) return !VrChosen();
+  if (g_vr_expsmooth_row >= 0 && &c == &g_c[g_vr_expsmooth_row]) return !VrChosen();
   if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) return true; // always Auto (see LoadSettings)
   if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) return !VrChosen();
   if (g_vr_smooth_row >= 0 && &c == &g_c[g_vr_smooth_row]) return !VrChosen();
@@ -1655,10 +1661,29 @@ void BuildModel() {
     g_vr_glow_row = int(g_c.size());
     g_c.push_back(std::move(c));
   }
+  {
+    Ctl c{L"Exposure follows the road (VR)",
+          L"The game sets its exposure by everything in the picture. In the headset that is mostly the dark cabin "
+          L"(the roof, the pillars, your legs), so it brightens the outside until the road, the walls and the cars "
+          L"wash out white.\n"
+          L"\x2022 100%: the exposure is measured on the middle of the view, the part a 16:9 screen shows, as on "
+          L"a monitor or the PS4.\n"
+          L"\x2022 Lower: part way back to the game's own; 0%: the game's own (the washed-out look).\n"
+          L"No cost in FPS.",
+          Kind::Slider, {}, {"@vrmeter"}, 100, 100};
+    c.min = 0;
+    c.max = 100;
+    g_vr_meter_row = int(g_c.size());
+    g_c.push_back(std::move(c));
+  }
+  g_vr_expsmooth_row = seg(L"Smooth exposure changes (VR)",
+                           L"How fast the exposure follows the game.\n"
+                           L"\x2022 Off: at the game's own speed, as on a monitor; a tunnel takes its brightness at once.\n"
+                           L"\x2022 On: our older smoothing: it brightens slowly and holds while you look down at the "
+                           L"dash or up at the roof.",
+                           {L"Off", L"On"}, {"@vrexpsmooth", ""}, 0);
   g_vr_exposure_row = seg(L"Exposure in VR",
                           L"How bright the game's auto-exposure makes the picture in the headset.\n"
-                          L"\x2022 In VR it adapts over about a second and holds while you look down at the dash "
-                          L"or up at the sky, so they do not flash the picture.\n"
                           L"\x2022 Lower if the sky and the road are too bright, higher if it is too dark.\n"
                           L"In game: [ and ] change it by a quarter stop.",
                           {L"-1 EV", L"-0.5", L"0", L"+0.5", L"+1 EV"}, {"@vrexposure", "", "", "", ""}, 2);
@@ -2036,7 +2061,7 @@ void BuildModel() {
                      L"For SDR. With HDR on, use HDR brightness.\nIn game: Page Up / Page Down change the brightness; F4 picks contrast or gamma."});
   g_cards.push_back({L"VR HEADSET (EXPERIMENTAL)", {vr, vr_stereo, g_vrsize, g_vr_scale_row, g_vr_smooth_row, g_vr_recentre_row}, 0, kTabVr,
                      L"Setup and the headset apps: VR README.md next to the game."});
-  g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_aa_row, g_vr_up_row, g_vr_glow_row, g_vr_exposure_row, g_vr_ffr_row, g_vr_ffr_extra_row, g_vr_edge_row}, 0, kTabVr,
+  g_cards.push_back({L"VR PICTURE AND FRAME RATE", {g_vr_aa_row, g_vr_up_row, g_vr_glow_row, g_vr_meter_row, g_vr_expsmooth_row, g_vr_exposure_row, g_vr_ffr_row, g_vr_ffr_extra_row, g_vr_edge_row}, 0, kTabVr,
                      L"FXAA and the other camera effects are on the Detail tab; DLSS's sharpness on the Display tab."});
   g_cards.push_back({L"VR KEYS IN GAME", {}, 0, kTabVr,
                      L"0 recentres the view. 2 / 1 seat up / down, 5 / 6 left / right, 4 / 3 forward / back (Ctrl: "
@@ -2237,6 +2262,8 @@ void LoadSettings() {
     if (line.rfind("vr_auto=", 0) == 0) g_vr_auto = line.substr(8) == "1", g_vr_auto_saved = true;
     if (line.rfind("vr_scale=", 0) == 0) g_vr_scale = (std::clamp)(atoi(line.substr(9).c_str()), 50, 200);
     if (line.rfind("vr_glow=", 0) == 0) g_vr_glow = (std::clamp)(atoi(line.substr(8).c_str()), 0, 100);
+    if (line.rfind("vr_meter=", 0) == 0) g_vr_meter = (std::clamp)(atoi(line.substr(9).c_str()), 0, 100);
+    if (line.rfind("vr_exposure_smooth=", 0) == 0) g_vr_expsmooth = atoi(line.substr(19).c_str()) != 0;
     if (line.rfind("vr_exposure=", 0) == 0) g_vr_exposure = (std::clamp)(atoi(line.substr(12).c_str()), 0, 4);
     if (line.rfind("draw_threads=", 0) == 0) g_two_thread = line.substr(13) == "1";
     if (line.rfind("hdr=", 0) == 0) hdr_saved = atoi(line.substr(4).c_str());
@@ -2306,6 +2333,14 @@ void LoadSettings() {
       // always Auto now (its row is hidden): Off only drew the flat 16:9 size for the headset to stretch, and the
       // fixed sizes of earlier versions ("VR eye ..." patches) are gone; Headset picture scale sizes it
       c.sel = kVrSizeAuto;
+      continue;
+    }
+    if (c.kind == Kind::Slider && c.patches[0] == "@vrmeter") {
+      c.sel = g_vr_meter;
+      continue;
+    }
+    if (c.kind == Kind::Segmented && c.patches[0] == "@vrexpsmooth") {
+      c.sel = g_vr_expsmooth;
       continue;
     }
     if (c.kind == Kind::Slider && c.patches[0] == "@vrglow") {
@@ -2674,6 +2709,8 @@ bool SaveSettings() {
       if (g_vrsize >= 0 && &c == &g_c[g_vrsize]) g_vr_auto = c.sel == kVrSizeAuto;
       if (g_vr_scale_row >= 0 && &c == &g_c[g_vr_scale_row]) g_vr_scale = c.sel;
       if (g_vr_glow_row >= 0 && &c == &g_c[g_vr_glow_row]) g_vr_glow = c.sel;
+      if (g_vr_meter_row >= 0 && &c == &g_c[g_vr_meter_row]) g_vr_meter = c.sel;
+      if (c.kind == Kind::Segmented && c.patches[0] == "@vrexpsmooth") g_vr_expsmooth = c.sel;
       if (c.kind == Kind::Segmented && c.patches[0] == "@vrexposure") g_vr_exposure = c.sel;
       if (c.kind == Kind::Toggle && c.patches[0] == "@twothread") g_two_thread = c.sel != 0;
       if (c.kind == Kind::Toggle && c.patches[0] == "@autoplay") g_auto_play = c.sel != 0;
@@ -2683,7 +2720,7 @@ bool SaveSettings() {
       if (c.kind == Kind::Toggle && c.patches[0] == "@triggers") triggers_saved = c.sel != 0 ? 1 : 0;
     }
     ini << "update=" << Narrow(g_folder[0].path) << "\r\nbase=" << Narrow(g_folder[1].path) << "\r\nfps=" << (fps_on ? 1 : 0)
-        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_recentre=" << g_vr_recentre << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_ffr_extra=" << g_vr_ffr_extra << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
+        << "\r\nfast=" << (fast_on ? 1 : 0) << "\r\nunlocked=" << ((g_fps >= 0 && g_c[g_fps].sel >= 3) ? g_c[g_fps].sel - 2 : 0) << "\r\nskip_gpu_check=" << (g_skip_gpu_check ? 1 : 0) << "\r\nmirror=" << (g_mirror >= 0 ? g_c[g_mirror].sel : 0) << "\r\nlanguage=" << g_lang_id << "\r\naniso=" << (g_aniso >= 0 ? g_c[g_aniso].sel : 0) << "\r\nup=" << (g_up >= 0 ? g_c[g_up].sel : 0) << "\r\nsharpness=" << (g_sharp >= 0 ? g_c[g_sharp].sel : 80) << "\r\nfps_cap=" << (g_fps_cap >= 0 && g_c[g_fps_cap].sel < g_c[g_fps_cap].max ? g_c[g_fps_cap].sel : 0) <<"\r\nhdr=" << (g_hdr >= 0 ? g_c[g_hdr].sel : 0) << "\r\nhdr_paper=" << (g_hdr_paper >= 0 ? g_c[g_hdr_paper].sel : 350) << "\r\nhdr_peak=" << (g_hdr_peak >= 0 ? g_c[g_hdr_peak].sel : 1000) << "\r\naa=" << (g_aa >= 0 ? g_c[g_aa].sel : 0) << "\r\nfgen=" << (g_fgen >= 0 ? g_c[g_fgen].sel : fgen_saved) <<"\r\nname=" << Narrow(g_name) << "\r\nprofile=" << (g_profile_row >= 0 ? g_c[g_profile_row].sel : 0) << "\r\nonline=" << (g_online_row >= 0 ? g_c[g_online_row].sel : 0) << "\r\nonline_host=" << Narrow(g_online_host) <<"\r\nfull=" << (full_on ? 1 : 0) << "\r\nskip_intro=" << ((g_skip_intro_row >= 0 && g_c[g_skip_intro_row].sel) ? 1 : 0) << "\r\nunlock_all=" << (unlock_all_on ? 1 : 0) << "\r\ndlc_unlock=" << (unlock_on ? 1 : 0) << "\r\noverlays=" << (g_allow_overlays ? 1 : 0) << "\r\nvr=" << (g_vr ? 1 : 0) << "\r\nvr_stereo=" << (g_vr_stereo ? 1 : 0) << "\r\nvr_taa=" << (g_vr_taa ? 1 : 0) << "\r\nvr_smaa=" << (g_vr_smaa ? 1 : 0) << "\r\nvr_aa=" << (g_vr_aa >= 0 ? g_vr_aa : 0) << "\r\nvr_up=" << g_vr_up << "\r\nvr_smooth=" << g_vr_smooth << "\r\nvr_recentre=" << g_vr_recentre << "\r\nvr_ffr=" << g_vr_ffr << "\r\nvr_edge=" << g_vr_edge << "\r\nvr_ffr_extra=" << g_vr_ffr_extra << "\r\nvr_auto=" << (g_vr_auto ? 1 : 0) << "\r\nvr_scale=" << g_vr_scale << "\r\nvr_glow=" << g_vr_glow << "\r\nvr_meter=" << g_vr_meter << "\r\nvr_exposure_smooth=" << g_vr_expsmooth << "\r\nvr_exposure=" << g_vr_exposure << "\r\nauto_play=" << (g_auto_play ? 1 : 0) << "\r\ncheck_updates=" << (g_check_updates ? 1 : 0) << "\r\ndraw_threads=" << (g_two_thread ? 1 : 0) << "\r\n";
     for (int k = 0; k < kGfxRows; ++k) {
       if (g_gfx[k] >= 0) ini << kGfxKey[k] << g_c[g_gfx[k]].sel << "\r\n";
     }
@@ -4226,6 +4263,10 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   if (!UserEnv(L"BB_VR_AUTO_SIZE"))
     SetEnvironmentVariableW(L"BB_VR_AUTO_SIZE",
                             g_vr && g_vrsize >= 0 && g_c[g_vrsize].sel == kVrSizeAuto ? L"1" : nullptr);
+  if (!UserEnv(L"BB_VR_METER"))
+    SetEnvironmentVariableW(L"BB_VR_METER", g_vr && g_vr_meter_row >= 0 ? std::to_wstring(g_c[g_vr_meter_row].sel).c_str() : nullptr);
+  if (!UserEnv(L"BB_VR_EXPOSURE_SMOOTH"))
+    SetEnvironmentVariableW(L"BB_VR_EXPOSURE_SMOOTH", g_vr ? (g_vr_expsmooth ? L"1" : L"0") : nullptr);
   if (!UserEnv(L"BB_VR_GLOW")) {
     const bool glow = g_vr && g_vr_glow_row >= 0;
     SetEnvironmentVariableW(L"BB_VR_GLOW", glow ? std::to_wstring(g_c[g_vr_glow_row].sel).c_str() : nullptr);

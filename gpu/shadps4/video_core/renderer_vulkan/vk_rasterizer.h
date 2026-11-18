@@ -477,6 +477,7 @@ private:
     u32 fg_display_draws = 0; ///< draws into the display buffer since other work
     bool fg_capture_pending = false;
     void DumpEyeTargets(int step); ///< VR eye dump (BbVr::EyeDump)
+    void MeterCopy(VideoCore::ImageId id, s32 x, s32 y, u32 w, u32 h); ///< VR: the middle's metering (BbVr::NoteMeter)
     bool vr_ffr_scene = false;   ///< VR foveated rendering: from the G-buffer pass to the anti-aliasing (the scene)
     bool vr_hud_pending = false; ///< VR: the next display draw that is not a scene overlay starts the HUD
     VideoCore::ImageId vr_depth{}; ///< VR: this frame's scene depth (the biggest G-buffer pass's)

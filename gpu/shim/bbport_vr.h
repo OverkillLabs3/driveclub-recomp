@@ -95,6 +95,13 @@ bool JitterLog();
 /// The game's auto-exposure value as it reads it (average luminance, exposure; their product is kept): in VR it adapts
 /// over vr.ini exposure_time seconds, holds while the head looks up or down, and takes exposure_bias.
 void FilterExposure(float* value);
+/// vr.ini meter_middle: the exposure meters the middle of the eye (a 16:9 screen's part): MeterCopy reads the game's
+/// quarter-size scene copy every few frames and gives the mean log luminance of the whole and of the middle (MeterBox,
+/// fractions x0 x1 y0 y1 of the eye's picture).
+bool MeterWanted();
+void MeterBox(float* box);
+void NoteMeter(double full_log, double middle_log);
+float MeterRatio();
 /// The head's pitch in degrees (up positive), for the log.
 float HeadPitch();
 /// Foveated rendering now (asked for and not turned off with the ' key).

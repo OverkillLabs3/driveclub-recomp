@@ -191,7 +191,7 @@ struct Settings {
     // left the frame 10-23 degrees behind: with the old 10 such frames were stated at the hook's turn and the
     // picture jumped up and down by that much.
     float frame_pose_max = 45.0f;
-    uint64_t hidden[16]{};
+    uint64_t hidden[32]{};
     // dump_each = 1: hide_shader's list is not hidden in play; the = key saves one frame as it is and then one frame
     // with each of them hidden alone (EyeDump, DumpHide)
     bool dump_each = false;
@@ -243,6 +243,16 @@ struct Settings {
     // gate let the exposure follow the game up, 1 s left the road 2.5 stops brighter than the game's for a while;
     // 0.5 s at most 1.1 stops (on the same log), with swings 0.54 instead of 0.51.
     float exposure_down = 0.5f;
+    // meter_middle: the game meters the whole eye, and in the headset that is mostly the dark cabin (roof, pillars, the
+    // legs), so it brightens the outside until the road, the walls and the cars wash out. With this the exposure follows
+    // the middle of the eye instead, the part a 16:9 screen shows (60 degrees high), as the game was made for:
+    // 1 = fully (the default: on a measured race the middle was 1.4-1.8 stops brighter than the whole eye, and that
+    // looked right in the headset, overcast and readable), 0.5 = half way (log), 0 = the game's own metering.
+    float meter_middle = 1.0f;
+    // exposure_smooth = 1: our own smoothing of the game's exposure (exposure_time, exposure_down, exposure_hold,
+    // exposure_rate, exposure_gate), made while the game metered the whole cabin; 0 (the default): the game's own speed,
+    // a tunnel's brightness at once (the launcher's "Smooth exposure changes in VR")
+    bool exposure_smooth = false;
     float ffr_inner = 35.0f, ffr_outer = 42.0f, ffr_down = 0.8f;
     // hide_target = <hex> ...: draws into a render target at these guest addresses are skipped (the audit's names)
     uint64_t hidden_targets[4]{};
@@ -478,6 +488,14 @@ int KeyCode(const char* name) {
 // BB_VR_SMAA = 0 or 1, BB_VR_GLOW = percent, BB_VR_SMOOTHING = 0 (off), 1 (light) or 2 (strong). They come after
 // vr.ini.
 void LauncherSettings() {
+    if (const char* v = std::getenv("BB_VR_METER"); v && *v) {
+        settings.meter_middle = std::clamp(float(std::atof(v)) / 100.0f, 0.0f, 1.0f);
+        std::printf("VR: the exposure meters the middle of the eye %.0f%%\n", settings.meter_middle * 100.0f);
+    }
+    if (const char* v = std::getenv("BB_VR_EXPOSURE_SMOOTH"); v && *v) {
+        settings.exposure_smooth = *v != '0';
+        std::printf("VR: exposure changes %s\n", settings.exposure_smooth ? "smoothed (ours)" : "at the game's own speed");
+    }
     if (const char* v = std::getenv("BB_VR_AUTO_RECENTRE"); v && *v) {
         settings.auto_recentre = std::clamp(std::atoi(v), 0, 2);
         std::printf("VR: recentring on getting into the car: %s\n",
@@ -545,7 +563,7 @@ void ReadSettings() {
             BbSettings::Get().dlss_model = c == 'k' ? 11 : c == 'l' ? 12 : c == 'm' ? 13 : 0;
             continue;
         }
-        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 16, hex)
+        // hide_shader = dc8e480a 44606ffd: draws with these vertex or pixel shaders are skipped (up to 32, hex)
         char list[200] = "";
         if (std::sscanf(line, " hide_shader = %199[^\r\n#]", list) == 1) {
             char* at = list;
@@ -624,6 +642,8 @@ void ReadSettings() {
         else if (k == "exposure_rate" && value >= 0.0f && value <= 600.0f) settings.exposure_rate = value;
         else if (k == "exposure_gate" && value >= 0.0f && value <= 60.0f) settings.exposure_gate = value;
         else if (k == "exposure_down" && value >= 0.0f && value <= 10.0f) settings.exposure_down = value;
+        else if (k == "meter_middle" && value >= 0.0f && value <= 1.0f) settings.meter_middle = value;
+        else if (k == "exposure_smooth") settings.exposure_smooth = value != 0;
         else if (k == "ffr_inner" && value >= 5.0f && value <= 80.0f) settings.ffr_inner = value;
         else if (k == "ffr_outer" && value >= 5.0f && value <= 85.0f) settings.ffr_outer = value;
         else if (k == "ffr_down" && value >= 0.3f && value <= 2.0f) settings.ffr_down = value;
@@ -2921,12 +2941,57 @@ bool EyeDump() {
     return eye_dump.exchange(false);
 }
 
+// ---- metering the middle of the eye (meter_middle) ----------------------------------------------------------------
+std::atomic<float> meter_ratio{1.0f};
+std::atomic<long long> meter_us{0};
+bool MeterWanted() {
+    return Active() && settings.exposure_filter && settings.meter_middle > 0.0f;
+}
+void MeterBox(float* box) {
+    // the part of the left eye a 16:9 screen at the cockpit's 60.18 degrees shows: tangents +-0.5795 up and down,
+    // +-1.0303 to the sides; as fractions of the eye's picture, top-left at 0
+    box[0] = 0.0f, box[1] = 1.0f, box[2] = 0.25f, box[3] = 0.75f;
+    XrFovf fov{};
+    if (!EyeFov(0, fov)) {
+        return;
+    }
+    const float l = std::tan(fov.angleLeft), r = std::tan(fov.angleRight);
+    const float u = std::tan(fov.angleUp), d = std::tan(fov.angleDown);
+    if (!(r > l) || !(u > d)) {
+        return;
+    }
+    const float tv = std::tan(kCockpitVfov * 0.5f * Pi / 180.0f), th = tv * 16.0f / 9.0f;
+    box[0] = std::clamp((-th - l) / (r - l), 0.0f, 1.0f);
+    box[1] = std::clamp((th - l) / (r - l), 0.0f, 1.0f);
+    box[2] = std::clamp((u - tv) / (u - d), 0.0f, 1.0f);
+    box[3] = std::clamp((u + tv) / (u - d), 0.0f, 1.0f);
+}
+void NoteMeter(double full_log, double middle_log) {
+    // in log luminance: the ratio full / middle, the share of it meter_middle asks for, at most 3 stops down and 1 up
+    const double stops = std::clamp((full_log - middle_log) / 0.6931472 * settings.meter_middle, -3.0, 1.0);
+    meter_ratio = float(std::exp2(stops));
+    meter_us = NowUs();
+    static long long logged_us = 0;
+    if (settings.exposure_log && NowUs() - logged_us > 1000000) {
+        logged_us = NowUs();
+        std::printf("VR exposure meter: the middle is %+.2f stops from the whole eye, exposure %+.2f stops\n",
+                    (middle_log - full_log) / 0.6931472, stops);
+    }
+}
+float MeterRatio() {
+    // stale (no copy for a second: menus, another camera): the game's own
+    return MeterWanted() && NowUs() - meter_us.load() < 1000000 ? meter_ratio.load() : 1.0f;
+}
+
 void FilterExposure(float* value) {
     // value: the exposure the picture is scaled by (bigger: brighter, so a + bias brightens) and its reciprocal term, their product the game's key
     if (!Active() || !settings.exposure_filter || !(value[0] > 0.0f) || !(value[1] > 0.0f)) {
         return;
     }
     const float key = value[0] * value[1];
+    // meter_middle: the game's value scaled by the full eye's mean luminance over the middle's (both geometric, from
+    // the game's own quarter-size copy of the scene, MeterCopy in vk_rasterizer.cpp); the product stays the game's.
+    value[0] *= MeterRatio();
     static float held = 0.0f; // the log luminance used
     static bool started = false;
     static auto last = std::chrono::steady_clock::now();
@@ -2956,8 +3021,11 @@ void FilterExposure(float* value) {
         settle_left -= dt;
     }
     // looking down at the dash or up at the sky: keep the road's exposure
-    if (settling || std::fabs(HeadPitch()) < settings.exposure_hold) {
-        const float time = settling ? std::min(settings.exposure_time, 0.5f)
+    // exposure_smooth = 0 (the default since the middle is metered): the game's own speed, no hold, no cap
+    const bool smooth = settings.exposure_smooth;
+    if (settling || !smooth || std::fabs(HeadPitch()) < settings.exposure_hold) {
+        const float time = !smooth ? 0.0f
+                         : settling ? std::min(settings.exposure_time, 0.5f)
                          : measured < held ? settings.exposure_down : settings.exposure_time;
         const float a = time > 0.0f ? 1.0f - std::exp(-dt / time) : 1.0f;
         float next = held + a * (measured - held);
@@ -2974,7 +3042,7 @@ void FilterExposure(float* value) {
         static float brighter_for = 0.0f;
         brighter_for = measured > held + 0.35f ? brighter_for + dt : 0.0f;
         const bool gate_open = settings.exposure_gate > 0.0f && brighter_for >= settings.exposure_gate;
-        if (settings.exposure_rate > 0.0f && since != 0 && !settling && !gate_open) {
+        if (smooth && settings.exposure_rate > 0.0f && since != 0 && !settling && !gate_open) {
             float hours = 0.0f, compression = 1.0f;
             if (!runtime_scene_debug_time(&hours, &compression) || !std::isfinite(compression)) {
                 compression = 1.0f;
@@ -3068,7 +3136,7 @@ uint64_t DumpHide(int step) {
     if (!settings.dump_each) {
         return 0;
     }
-    return step >= 1 && step <= 16 ? settings.hidden[step - 1] : 0;
+    return step >= 1 && step <= 32 ? settings.hidden[step - 1] : 0;
 }
 
 void SetSoloHide(uint64_t hash) {

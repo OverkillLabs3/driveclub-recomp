@@ -7,6 +7,7 @@
 #include "bbport_frametrace.h"
 #include "bbport_vr.h"
 #include "bbport_guest_call.h"
+extern "C" int runtime_scene_debug_time(float* hours, float* compression); // src/runtime_scene_debug.inc
 #include "common/assert.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
@@ -2167,8 +2168,12 @@ PS4_SYSV_ABI bool ExposureExactGet(void* obj, u32 frame, void** out, u32* count)
         const auto now = std::chrono::steady_clock::now();
         if (BbVr::ExposureLog() && now - last > std::chrono::milliseconds(250)) {
             last = now;
-            std::printf("VR exposure: %.5g %.5g -> %.5g %.5g (%c), head pitch %+.0f\n", game[0], game[1], v[0], v[1],
-                        path, BbVr::HeadPitch());
+            float hours = -1.0f, compression = 0.0f; // the game's time of day and how fast it runs
+            if (!runtime_scene_debug_time(&hours, &compression)) {
+                hours = -1.0f, compression = 0.0f;
+            }
+            std::printf("VR exposure: %.5g %.5g -> %.5g %.5g (%c), head pitch %+.0f, time %.2f h x%.0f\n", game[0],
+                        game[1], v[0], v[1], path, BbVr::HeadPitch(), hours, compression);
             std::fflush(stdout);
         }
     }
