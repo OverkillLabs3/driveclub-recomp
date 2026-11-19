@@ -18,6 +18,7 @@ LAUNCHER: THE VR TAB (the test PC's settings)
   Anti-aliasing in VR   TAA (game's, soft) / Off (sharp, jagged) / SMAA (sharp, smooth edges)
                         / DLSS (RTX, steadiest far away; its quality on the next row)
   Glow in VR            20% (the game's bloom looks like a film over the edges in the headset)
+  Exposure follows the road (VR)  100% (the outside as on a monitor, not washed out by the cabin)
   Exposure in VR        0; + brighter, - darker
   Foveated rendering    Medium (a few FPS when the graphics card is the limit)
   Edge margin           Off (only for frame generation on the PC)
@@ -50,7 +51,8 @@ IF SOMETHING IS WRONG
   Menu at your feet or the view turned sideways: press 0
   "xrGetSystem ... failed (-35)" in the log with Virtual Desktop running: reconnect in
            Virtual Desktop on the headset and start the game again
-  Low FPS: lower the Headset picture scale, Foveated rendering Medium or Strong,
+  Low FPS: lower the Headset picture scale, Foveated rendering Medium or Strong
+           (plus Foveated reflections and occlusion), Ambient occlusion off (Graphics tab),
            check Dynamic resolution is off, close background downloads (game launchers,
            torrents), Wallpaper Engine and overlays: the game is CPU-limited
   Bugs and FPS reports: send the log from the logs folder, plus the headset, the connection

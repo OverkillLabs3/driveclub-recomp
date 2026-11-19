@@ -65,19 +65,29 @@ The VR tab's card *VR picture and frame rate*, in both stereo modes:
 - **Glow in VR**: how much of the game's glow (bloom) the headset gets. The game lays a blurred copy of the picture
   over it: on a screen it looks like haze and light, in the headset like a soft film over every edge. 100% is as the
   game draws it; lower gives clearer edges and deeper shadows; at 0% bright skies lose their halo. No cost in FPS.
+- **Exposure follows the road (VR)**: the game sets its exposure from how bright the whole picture is, like a
+  camera. In the headset most of the picture is the dark cabin (the roof, the pillars, your legs), so it brightened the
+  outside until the road, the walls and the cars washed out white, the more so the more cabin you looked at. At 100%
+  (the default) the exposure is measured on the middle of the view, the part a 16:9 screen shows, as the game was made
+  for: the outside looks as on a monitor or the PS4 (overcast stays overcast, the markings stay visible) and the cabin
+  is as dark as a real one in daylight. Lower takes it part way back to the game's own; 0% is the old washed-out look.
+  `meter_middle` in `vr.ini` (0 to 1). No cost in FPS.
+- **Smooth exposure changes (VR)**: Off (the default): the exposure moves at the game's own speed, as on a monitor; a
+  tunnel takes its brightness at once. On: our older smoothing (it brightens at most 3 stops a minute, darkens in 0.5
+  s, follows a tunnel after 1.5 s and holds while you look down at the dash or up at the roof; `exposure_rate`,
+  `exposure_down`, `exposure_gate`, `exposure_hold` in `vr.ini`).
 - **Exposure in VR**: makes the whole picture brighter (+) or darker (-); in game **[** and **]** change it by a
-  quarter stop. The game sets its exposure from how bright the whole picture is, like a camera: a shaded turn or
-  the dark dash raised it, and the road flashed white when the turn opened up. In the headset, in the car, it now
-  brightens by at most 3 stops a minute (more in a race with the time sped up), so turns and shade barely change it
-  while a sunset is still followed; it darkens as fast as the game's, and comes back quickly after a short bright
-  stretch. When it stays darker for longer than 1.5 seconds (a tunnel, a long shade), the exposure follows the
-  game's within about a second, so tunnels are no longer black. The first seconds in the car take the track's level
-  at once, day or night, and it holds while you look down at the dash or up at the sky. `exposure_rate` in `vr.ini`
-  sets the 3 (0: the game's speed), `exposure_gate` the 1.5 seconds (0: always the 3 stops a minute, as in vr7),
-  `exposure_down` how many seconds it takes to darken (0.5; out of a tunnel). Lens dust is off in VR: it is a camera's lens, not an eye.
+  quarter stop (only while the game's window is in front). Lens dust is off in VR: it is a camera's lens, not an eye.
 - **Foveated rendering**: the edges of each eye, which the lenses blur anyway, are drawn with less detail. Light,
   Medium (full detail within about 35 degrees of the middle) or Strong. It helps a few FPS when the graphics card is
-  the limit.
+  the limit (on the test PC, true stereo at 100%: Off 52, Light 59, Medium 62, Strong 66 FPS).
+- **Foveated reflections and occlusion** (with Foveated rendering on): the screen-space reflections and the ambient
+  occlusion get the same reduced edges. About 2 FPS more; on the test PC it could not be seen in the headset.
+  `ffr_extra = 1` in `vr.ini` does the same.
+- **Screen-space reflections** and **Ambient occlusion** (Graphics tab, flat and VR): turn off two of the game's most
+  expensive effects. In VR on the test PC each gave about 6-7 FPS (both on 63, AO off 71, SSR off 69). Without SSR
+  the road loses its reflections, which shows a lot in the rain (the cars keep theirs, a little simpler); without AO, where shadows
+  overlap (trees over the road) they get quite dark. Both are on by default.
 - **Edge margin (frame generation)**: black edges when you turn your head come from generated frames. Each eye is
   drawn this many degrees wider, so frame generation on the PC (OpenXR Toolkit's) has the scene there. Frames made in
   the headset (Virtual Desktop's SSW, Meta's ASW) do not get it: without PC frame generation leave it Off.
@@ -109,7 +119,7 @@ The number row, on every keyboard (the keypad works too, for those who have one)
 
 | Key | Keypad | |
 |---|---|---|
-| 0 | 5 | Recentre: where your head is and the direction you face become the seat (sit as you drive). It also happens by itself the first time you get into the car after the start; later races, restarts and cars keep your centre |
+| 0 | 5 | Recentre: where your head is and the direction you face become the seat (sit as you drive). It also happens by itself the first time you get into the car (the launcher: Recentre on getting into the car) |
 | 2 / 1 | 8 / 2 | Seat up / down (2 cm, with Ctrl 10 cm) |
 | 5 / 6 | 4 / 6 | Seat left / right |
 | 4 / 3 | 9 / 3 | Seat forward / back |
@@ -128,7 +138,8 @@ they answer only with `dev_keys = 1` in `vr.ini`, so they never get in the way o
 ## vr.ini
 Optional, next to `DriveClubGame.exe` (`runtime\vr.ini`): `key = value` lines. A `vr.ini` without the launcher
 switch also turns VR on (for running the game without the launcher). The launcher's VR tab wins over the lines it
-has rows for (anti-aliasing, glow, exposure, smoothing, foveated rendering, edge margin). Defaults:
+has rows for (anti-aliasing, glow, exposure and its metering and smoothing, head smoothing, recentring, foveated
+rendering, edge margin). Defaults:
 
 ```
 afr = 1            # with Stereo mode AFR: alternate frames; 0: one picture for both eyes (full frame rate, no depth)
@@ -142,7 +153,10 @@ resample = 1       # each eye cut to the runtime's angles and, below 100%, stret
                    # shown pixel for pixel; above 100% the drawn pixels go as they are (resample_kernel = 1 to 4:
                    # our filter down to the runtime's size instead, 1 as vr9; it loses detail)
 frame_pose = 1     # each frame stated to the headset with the turn it was really drawn with; 0: the hook's
-auto_recentre = 1  # recentre on getting into the car: 1 the first time after the start, 2 every race (as in vr10), 0 only by the key (the launcher: VR tab, Recentre on getting into the car)
+auto_recentre = 1  # recentre on getting into the car: 1 the first time after the start, 2 every race (as in vr10),
+                   # 0 only by the key (the launcher: VR tab, Recentre on getting into the car)
+meter_middle = 1   # the exposure measured on the 16:9 middle of the eye: 1 fully, 0 the game's own (whole eye)
+exposure_smooth = 0 # 1: our older exposure smoothing; 0: the game's own speed
 cockpit_vfov = 90  # the cockpit camera's vertical field of view in the headset, degrees
 hud_layer = 1      # in the car the HUD is a panel of its own ahead of the seat; 0: drawn into the picture
 hud_distance = 1.1 # the HUD panel: metres ahead, hud_width = 1.4 (metres, 16:9), hud_y = 0 (metres above the eyes)
