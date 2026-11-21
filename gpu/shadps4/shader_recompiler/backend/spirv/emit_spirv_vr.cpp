@@ -728,8 +728,15 @@ void ShiftPosition(EmitContext& ctx) {
         ctx.Name(ctx.vr_multiview, "vr_multiview");
     }
     const Id multiview = ctx.vr_multiview;
-    const Id perspective =
+    Id perspective =
         ctx.OpLogicalAnd(ctx.U1[1], multiview, ctx.OpFOrdNotEqual(ctx.U1[1], w, ctx.ConstF32(1.f)));
+    // z = 0 is infinitely far (reversed infinite depth): no parallax. The stars and the moon are a unit sphere around
+    // the camera written at z = 0 with w about 1, so shift / w put them an arm's length away: doubled in the headset.
+    static const bool shift_infinite = std::getenv("BB_VR_SHIFT_INFINITE") != nullptr; // development: the old way
+    if (!shift_infinite) {
+        const Id z = ctx.OpLoad(ctx.F32[1], ctx.OpAccessChain(ctx.output_f32, ctx.output_position, ctx.ConstU32(2U)));
+        perspective = ctx.OpLogicalAnd(ctx.U1[1], perspective, ctx.OpFOrdNotEqual(ctx.U1[1], z, ctx.f32_zero_value));
+    }
     const Id x = ctx.OpLoad(ctx.F32[1], x_pointer);
     const Id eye_shift = ctx.OpSelect(ctx.F32[1], perspective, shift, ctx.f32_zero_value);
     if (ctx.sw_stage == SwStage::Vertex && t_eye.valid) {

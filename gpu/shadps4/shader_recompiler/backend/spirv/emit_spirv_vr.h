@@ -41,7 +41,7 @@ Id Coords(EmitContext& ctx, const EmitContext::TextureDefinition& texture, Id im
 
 /// End of the hardware vertex shader, in multiview pipelines (specialisation constant 200): the position's x plus
 /// vr_shift[view] when w is not 1 (perspective geometry: the player's view in a main-view pass; full-screen passes draw
-/// at w = 1 and stay put).
+/// at w = 1 and stay put) and z is not 0 (z = 0 is at infinity: the stars, the moon, the sky's own geometry).
 void Epilogue(EmitContext& ctx);
 
 /// Before emission: a hardware vertex shader's outputs that hold the position's x / w (times a constant, plus one), the
