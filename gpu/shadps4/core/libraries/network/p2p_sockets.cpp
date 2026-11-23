@@ -229,7 +229,7 @@ public:
     }
 
     void Stop() {
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
         std::lock_guard lock(start_mutex);
         if (!running.exchange(false, std::memory_order_acq_rel)) {
             return;
@@ -481,7 +481,7 @@ private:
     }
 
     void ReceiveMain() {
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
         std::vector<u8> buffer(65536);
         while (running.load(std::memory_order_acquire)) {
             sockaddr_in from{};

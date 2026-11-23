@@ -11,8 +11,12 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <ucontext.h>
+#ifdef __APPLE__
+#include <sys/ucontext.h>
+#else
 #include <sys/syscall.h>
 #include <asm/prctl.h>
+#endif
 #endif
 
 void guest_cpu_init(void *(*map)(size_t size, int prot)) { (void)map; }
@@ -50,6 +54,20 @@ uint64_t guest_cpu_tsc_frequency(void) {
     }
     return hz;
 }
+#ifdef __APPLE__
+/* macOS: GS is the pthread TSD and cannot be moved; the guest TCB lives in a TSD slot
+ * (runtime_thread.c), as on Windows. */
+void guest_cpu_set_gs(void *base) { (void)base; fputs("STOP: guest_cpu_set_gs on macOS\n",stderr); exit(21); }
+int guest_cpu_signal_regs(const void *ucontext, GuestRegs *regs) {
+    const _STRUCT_X86_THREAD_STATE64 *s=&((const ucontext_t *)ucontext)->uc_mcontext->__ss;
+    const uint64_t order[GUEST_GPRS]={s->__rax,s->__rcx,s->__rdx,s->__rbx,s->__rsp,s->__rbp,s->__rsi,s->__rdi,
+                                      s->__r8,s->__r9,s->__r10,s->__r11,s->__r12,s->__r13,s->__r14,s->__r15};
+    for (int i=0;i<GUEST_GPRS;++i) regs->gpr[i]=order[i];
+    regs->rip=s->__rip;
+    return GUEST_CPU_IN_GUEST;
+}
+uintptr_t guest_cpu_host_pc(const void *ucontext) { return (uintptr_t)((const ucontext_t *)ucontext)->uc_mcontext->__ss.__rip; }
+#else
 void guest_cpu_set_gs(void *base) {
     if (syscall(SYS_arch_prctl,ARCH_SET_GS,(unsigned long)base)) { perror("STOP: arch_prctl(ARCH_SET_GS)"); exit(21); }
 }
@@ -62,6 +80,7 @@ int guest_cpu_signal_regs(const void *ucontext, GuestRegs *regs) {
     return GUEST_CPU_IN_GUEST;
 }
 uintptr_t guest_cpu_host_pc(const void *ucontext) { return (uintptr_t)((const ucontext_t *)ucontext)->uc_mcontext.gregs[REG_RIP]; }
+#endif
 int guest_cpu_handle_fault(int sig, siginfo_t *info, void *ucontext) { (void)sig; (void)info; (void)ucontext; return 0; }
 #endif
 #else

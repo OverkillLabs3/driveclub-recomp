@@ -69,7 +69,7 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
-if (NOT WIN32)
+if (NOT WIN32 AND NOT APPLE)
     pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
 endif()
 find_package(miniz QUIET)
@@ -231,6 +231,12 @@ target_link_libraries(bbnet PRIVATE PNG::PNG)
 if (WIN32)
     target_sources(bbnet PRIVATE third_party/wepoll/wepoll.c)
     target_include_directories(bbnet PRIVATE third_party/wepoll)
+elseif (APPLE)
+    # epoll over kqueue, as shadPS4 does on macOS (packaging/macos/fetch-deps.sh).
+    find_package(epoll-shim REQUIRED)
+    target_link_libraries(bbnet PRIVATE epoll-shim::epoll-shim)
+    target_compile_options(bbnet PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_macos_compat.h>)
 endif()
 # UPnP port mapping (net_upnp.h). Windows links the static MSYS2 package; Linux the shared one.
 find_path(MINIUPNPC_INCLUDE miniupnpc.h PATH_SUFFIXES miniupnpc REQUIRED)
@@ -268,7 +274,7 @@ target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_definitions(bbgpu PRIVATE BB_DIAGNOSTICS=$<BOOL:${BB_DIAGNOSTICS}>)
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
 # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against DriveClubGame.
-if (NOT WIN32)
+if (NOT WIN32 AND NOT APPLE) # macOS: -undefined dynamic_lookup, below
     target_link_options(bbgpu PRIVATE -Wl,--allow-shlib-undefined)
 endif()
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan
@@ -281,6 +287,13 @@ if (WIN32)
     target_compile_definitions(bbgpu PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
     target_compile_options(bbgpu PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_win_compat.h)
     target_link_libraries(bbgpu PUBLIC Vulkan::Vulkan ws2_32 bcrypt ntdll synchronization winmm)
+elseif (APPLE)
+    target_compile_options(bbgpu PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-include ${CMAKE_CURRENT_SOURCE_DIR}/shim/bb_macos_compat.h>)
+    # macOS: the Khronos loader over MoltenVK. The runtime's exports (runtime_*) are resolved
+    # from the executable at load time, as an ELF shared library does on Linux.
+    target_link_libraries(bbgpu PUBLIC Vulkan::Vulkan)
+    target_link_options(bbgpu PRIVATE -undefined dynamic_lookup)
 else()
     # The Vulkan loader is the host's; recording it as a dependency keeps libbbgpu loadable
     # when the executable is linked with --as-needed.
@@ -289,7 +302,7 @@ endif()
 
 # The SRT walker's x86-64 code generator (Xbyak, vendored). Other hosts (aarch64) interpret the walker
 # instead (shader_recompiler/ir/passes/flatten_extended_userdata_pass.cpp).
-if (WIN32 OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+if (WIN32 OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$" OR CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
     target_include_directories(bbgpu PRIVATE third_party/xbyak)
 endif()
 
