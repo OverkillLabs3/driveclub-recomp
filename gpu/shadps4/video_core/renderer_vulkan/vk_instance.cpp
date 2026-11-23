@@ -316,6 +316,18 @@ bool Instance::CreateDevice() {
                "Required Vulkan feature unavailable: nullDescriptor");
 
     // Optional
+    // bbport: no sparse buffers (MoltenVK): the buffer arenas import a host shadow of guest memory.
+#ifndef _WIN32
+    {
+        const auto base_features = physical_device.getFeatures();
+        if (!base_features.sparseBinding || !base_features.sparseResidencyBuffer) {
+            ASSERT_MSG(add_extension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME),
+                       "No sparse buffers and no {}: the buffer cache cannot place its arenas",
+                       VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+            VideoCore::host_shadow_arenas = true;
+        }
+    }
+#endif
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
     maintenance_8 = add_extension(VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
     attachment_feedback_loop = add_extension(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);

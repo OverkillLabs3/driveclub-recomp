@@ -1477,8 +1477,9 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 end_block = (first_addr + total_size) >> block_shift;
     auto* new_arena = &arenas.emplace_back(instance, first_addr, total_size, MemoryType::Sparse);
     GuardWholeArena(new_arena);
-    auto* bind = BindsForArena(new_arena);
-    resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
+    // Shadowed arenas alias the same host memory: the new one already holds what the old ones did.
+    auto* bind = host_shadow_arenas ? nullptr : BindsForArena(new_arena);
+    if (bind) resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
         const u64 start = std::max(base_block, backing.start);
         const u64 end = std::min(end_block, backing.end);
         bind->binds.push_back(vk::SparseMemoryBind{
@@ -1512,6 +1513,36 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
         return;
     }
     BbStats::Timer timer{BbStats::t_resident};
+
+    if (host_shadow_arenas) {
+        // The arenas are bound to the shadow already: residency is bookkeeping. A backing's
+        // offset is its first block, so base + (offset << block_shift) is the guest address's
+        // shadow, whichever arena reads it.
+        const auto staging =
+            staging_pool.Request(resident_blocks * sizeof(vk::DeviceAddress), MemoryType::HostUncached);
+        auto* bda_addrs = reinterpret_cast<vk::DeviceAddress*>(staging.mapped);
+        u64 offset = staging.offset;
+        boost::container::small_vector<vk::BufferCopy, 8> copies;
+        for (const auto& range : bind_ranges) {
+            Backing backing;
+            backing.start = range.start;
+            backing.end = range.end;
+            backing.memory = vk::DeviceMemory{};
+            backing.offset = range.start;
+            backing.base = HostShadow();
+            resident_ranges.Add(backing);
+            const u64 resource_offset = (range.start << block_shift) - arena->cpu_addr;
+            for (u64 block = 0; block < ((range.end - range.start) << block_shift); block += block_size) {
+                *(bda_addrs++) = arena->BufferDeviceAddress() + resource_offset + block;
+            }
+            const u64 copy_size = (range.end - range.start) * sizeof(vk::DeviceAddress);
+            copies.emplace_back(offset, range.start * sizeof(vk::DeviceAddress), copy_size);
+            offset += copy_size;
+        }
+        staging.Flush();
+        runtime.CopyBuffer(staging.buffer, bda_pagetable_buffer.get(), copies);
+        return;
+    }
 
     // Shaders reach the arenas by raw device address, so the memory behind them has to be allocated with the
     // device address flag. Without it a driver is free to keep that memory out of its address space, and AMD
@@ -1811,6 +1842,10 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, VAddr device_a
 
 void BufferCache::SubmitPendingArenaBinds(Vulkan::SubmitInfo& info) {
     if (pending_binds.empty()) {
+        return;
+    }
+    if (host_shadow_arenas) {
+        pending_binds.clear(); // nothing is sparse
         return;
     }
 
