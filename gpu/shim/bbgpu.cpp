@@ -215,6 +215,13 @@ s32 PS4_SYSV_ABI sceKernelUsleep(u32 microseconds) {
 namespace {
 // SDL video must be driven from one thread: the window lives on its own host thread.
 std::thread g_window_thread;
+#ifdef __APPLE__
+// Cocoa: the window loop runs on the process's first thread (compat_macos.c bb_mac_main).
+extern "C" void bb_mac_run_on_main(void (*fn)(void*), void* arg);
+std::mutex g_window_loop_mutex;
+std::condition_variable g_window_loop_cv;
+bool g_window_loop_done = false;
+#endif
 std::mutex g_window_mutex;
 std::condition_variable g_window_cv;
 bool g_window_ready;
@@ -299,7 +306,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Bloodborne";
     const s32 width = config->width, height = config->height;
-    g_window_thread = std::thread([title, width, height] {
+    auto window_loop = [title, width, height] {
         Common::SetCurrentThreadName("bb:window");
         auto* window = new Frontend::WindowSDL(width, height, title.c_str());
         {
@@ -314,13 +321,31 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
         if (g_window_shutdown) {
             delete window;
             g_window=nullptr;
+#ifdef __APPLE__
+            {
+                std::scoped_lock lock{g_window_loop_mutex};
+                g_window_loop_done = true;
+            }
+            g_window_loop_cv.notify_all();
+#endif
             return;
         }
         LOG_INFO(Frontend, "Window closed by user");
         runtime_ffb_release("the window closed");
         std::fflush(stdout);
         std::_Exit(0);
-    });
+    };
+#ifdef __APPLE__
+    using WindowLoop = decltype(window_loop);
+    bb_mac_run_on_main(
+        [](void* loop) {
+            std::unique_ptr<WindowLoop> owned{static_cast<WindowLoop*>(loop)};
+            (*owned)();
+        },
+        new WindowLoop(std::move(window_loop)));
+#else
+    g_window_thread = std::thread(std::move(window_loop));
+#endif
     std::atexit(bbgpu_shutdown);
     {
         std::unique_lock lock{g_window_mutex};
@@ -348,6 +373,12 @@ extern "C" void bbgpu_shutdown(void) {
         Libraries::Kernel::StopKernelService();
         g_window_shutdown=true;
         if(g_window_thread.joinable()) g_window_thread.join();
+#ifdef __APPLE__
+        if (!pthread_main_np()) {
+            std::unique_lock lock{g_window_loop_mutex};
+            g_window_loop_cv.wait(lock, [] { return g_window_loop_done; });
+        }
+#endif
         runtime_ffb_release("the game exited");
         g_gpu_shutdown_complete=true;
         std::puts("GPU: shutdown complete");

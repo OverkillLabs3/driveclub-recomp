@@ -37,12 +37,19 @@
  * mappings, which macOS places low and growing, never land where the guest's go:
  *   [BB_MAC_LOW_HEAP, BB_MAC_LOW_END)   the runtime heap, then runtime_low_map (LOW_MIN..LOW_MAX)
  *   [BB_MAC_USER_MIN, BB_MAC_USER_MAX)  the PS4 user range (runtime_memory.c USER_MIN..USER_MAX)
- * Rosetta 2 itself holds [0x0fc0000000, 0x7000000000), between the two. */
+ * The kernel holds [0x0fc0000000, 0x7000000000), between the two, in every process (max
+ * protection none; native arm64 processes too). */
 #define BB_MAC_LOW_HEAP       UINT64_C(0x0400000000)  /* runtime heap: 16 GiB */
 #define BB_MAC_LOW_HEAP_END   UINT64_C(0x0800000000)  /* = runtime_memory.c LOW_MIN */
 #define BB_MAC_LOW_END        UINT64_C(0x0fc0000000)  /* = runtime_memory.c LOW_MAX */
 #define BB_MAC_USER_MIN       UINT64_C(0x7000000000)
 #define BB_MAC_USER_MAX       UINT64_C(0xfc00000000)
+/* The game maps one subsystem's memory at fixed addresses from 0x1000000000, the bottom of the
+ * PS4 app area, inside the macOS kernel's hole. probe.c patch_app_area moves it here, and
+ * runtime_memory.c find_free keeps this range for it. */
+#define BB_MAC_APP_AREA       UINT64_C(0xb000000000)
+#define BB_MAC_APP_AREA_END   UINT64_C(0xc000000000)
+#define BB_PS4_APP_AREA       UINT64_C(0x1000000000)
 int bb_mac_reserved(uintptr_t address, size_t size);
 /* Gives [address, address+size) back to the reservation (instead of munmap). */
 int bb_mac_unreserve_release(void *address, size_t size);
@@ -78,6 +85,11 @@ int bb_mac_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *deadli
 #define pthread_mutex_timedlock bb_mac_mutex_timedlock
 /* Sends `sig` to every thread of the process but the caller (watchdog dumps). */
 void bb_mac_signal_other_threads(int sig);
+
+/* Runs `body` on a second thread and serves bb_mac_run_on_main jobs on this, the first one,
+ * which Cocoa requires; exits with what `body` returns. */
+int bb_mac_main(int (*body)(int, char **), int argc, char **argv);
+void bb_mac_run_on_main(void (*fn)(void *), void *arg);
 
 /* ---- time ---- */
 #ifndef TIMER_ABSTIME

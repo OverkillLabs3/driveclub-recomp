@@ -76,8 +76,10 @@ core points the Vulkan loader at the executable's folder on macOS). Check Vulkan
 
 What differs from Linux (`src/compat_macos.h`, force-included into the runtime):
 
-- **Address space.** Rosetta 2 holds `[0x0fc0000000, 0x7000000000)` in every x86_64 process, so the
-  PS4 user range starts at `0x7000000000` (still below 1 TiB). `[0x0400000000, 0x0fc0000000)` and
+- **Address space.** The macOS kernel holds `[0x0fc0000000, 0x7000000000)` in every process, so the
+  PS4 user range starts at `0x7000000000` (still below 1 TiB). The game maps one subsystem at fixed
+  addresses from `0x1000000000`, inside that hole; the loader moves the four `movabs` that load the
+  base to `0xb000000000` (`probe.c` `patch_app_area`), a range the allocator leaves free. `[0x0400000000, 0x0fc0000000)` and
   `[0x7000000000, 0xfc00000000)` are reserved before `main`, because macOS places the host's own
   mappings low and growing.
 - **The runtime heap.** The guest packs host pointers it is handed into 40 bits. glibc's brk heap is
@@ -88,10 +90,22 @@ What differs from Linux (`src/compat_macos.h`, force-included into the runtime):
   Windows.
 - **Signals.** Protection faults on mapped pages arrive as `SIGBUS`; registers come from
   `uc_mcontext->__ss`.
+- **The main thread.** Cocoa works on the first thread only: `main` runs the runtime on a second
+  thread and keeps the first for the GPU library's window and event loop (`bb_mac_main`).
 - epoll is epoll-shim (over kqueue); thread affinity is quality of service.
 
-Known gap: MoltenVK reports `robustBufferAccess2` and `nullDescriptor` (VK_EXT_robustness2) as
-unsupported, and the video core requires both when it creates the device.
+What differs in the video core, chosen from what the device reports rather than by platform:
+
+- **No `nullDescriptor`.** Empty bindings get zeroed placeholder buffers and 1x1 images in the shape
+  the shader declares (`vk_null_resources.h`). `robustBufferAccess2` is optional.
+- **No sparse buffers.** The buffer arenas are plain buffers over slices of one lazily committed
+  host mapping that shadows the guest address space, imported with `VK_EXT_external_memory_host`;
+  residency is bookkeeping only (`buffer.h` `host_shadow_arenas`).
+- **Barycentrics.** MoltenVK cannot translate `PerVertexKHR` inputs, so the recompiler takes its
+  no-barycentrics path there.
+
+Known gaps: geometry shaders are skipped (Metal has none), and other features MoltenVK lacks
+(custom border colors, depth clip enable, attachment feedback loops) are missing.
 
 ## Linux (x86_64)
 

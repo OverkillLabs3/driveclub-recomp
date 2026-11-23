@@ -452,6 +452,13 @@ static int overlaps(uintptr_t start, uintptr_t end, int ignore_reserved) {
 static uintptr_t find_free(uintptr_t hint, uint64_t size, uint64_t alignment) {
     uintptr_t at=align_up(hint<USER_MIN ? USER_MIN : hint, alignment);
     for (size_t i=vma_index(at); at+size<=USER_MAX; ++i) {
+#ifdef __APPLE__
+        if (at<BB_MAC_APP_AREA_END && at+size>BB_MAC_APP_AREA) {
+            at=align_up(BB_MAC_APP_AREA_END,alignment);
+            i=vma_index(at)-1;
+            continue;
+        }
+#endif
         if (i==vma_count || vmas[i].start>=at+size) return at;
         at=align_up(vmas[i].end,alignment);
     }
@@ -479,7 +486,11 @@ static int32_t place(void **inout, uint64_t size, int prot, int flags, uint64_t 
         address=find_free(address,size,alignment);
         if (!address) return mem_fail(NO_MEMORY, __LINE__);
     }
-    if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) return mem_fail(NO_MEMORY, __LINE__);
+    if (host_map(address,size,host_prot(prot),kind==KIND_RESERVED,phys)) {
+        printf("Runtime: host mapping failed at %#llx, size %#llx, flags %#x, kind %d (errno %d)\n",
+               (unsigned long long)address,(unsigned long long)size,(unsigned)flags,kind,errno);
+        return mem_fail(NO_MEMORY, __LINE__);
+    }
     void *mapped=(void *)address;
     drop_range(address,address+size);
     if (vma_insert(vma_index(address),(Vma){address,address+size,kind,prot,type,phys})) return mem_fail(NO_MEMORY, __LINE__);

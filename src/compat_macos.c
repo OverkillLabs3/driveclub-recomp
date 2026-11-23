@@ -144,6 +144,61 @@ void bb_mac_close_from(int lowest) {
     for (int fd = lowest; fd < top; ++fd) close(fd);
 }
 
+/* ---- the main thread ----
+ * Cocoa (SDL's window and its events) works on the process's first thread only. main() hands
+ * the runtime to a second thread and keeps the first for jobs posted with bb_mac_run_on_main:
+ * the GPU library's window loop, which on Linux and Windows has a thread of its own. */
+typedef struct MainJob { struct MainJob *next; void (*fn)(void *); void *arg; } MainJob;
+static pthread_mutex_t main_jobs_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t main_jobs_ready = PTHREAD_COND_INITIALIZER;
+static MainJob *main_jobs, **main_jobs_tail = &main_jobs;
+typedef struct { int (*body)(int, char **); int argc; char **argv; } MainArgs;
+
+static void *runtime_thread(void *opaque) {
+    const MainArgs *args = opaque;
+    bb_mac_setname(pthread_self(), "bb:main");
+    exit(args->body(args->argc, args->argv));
+}
+void bb_mac_run_on_main(void (*fn)(void *), void *arg) {
+    MainJob *job = bb_low_malloc(sizeof *job);
+    if (!job) abort();
+    job->next = NULL; job->fn = fn; job->arg = arg;
+    pthread_mutex_lock(&main_jobs_lock);
+    *main_jobs_tail = job;
+    main_jobs_tail = &job->next;
+    pthread_cond_signal(&main_jobs_ready);
+    pthread_mutex_unlock(&main_jobs_lock);
+}
+int bb_mac_main(int (*body)(int, char **), int argc, char **argv) {
+    static MainArgs args;
+    args.body = body; args.argc = argc; args.argv = argv;
+    /* The stack the first thread would have had (8 MiB by default), at least. */
+    struct rlimit limit;
+    size_t stack = 64u << 20;
+    if (getrlimit(RLIMIT_STACK, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY && limit.rlim_cur > stack)
+        stack = (size_t)limit.rlim_cur;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack);
+    pthread_t thread;
+    if (pthread_create(&thread, &attr, runtime_thread, &args) != 0) {
+        fprintf(stderr, "macOS: cannot start the runtime thread\n");
+        return 1;
+    }
+    pthread_attr_destroy(&attr);
+    pthread_detach(thread);
+    for (;;) {
+        pthread_mutex_lock(&main_jobs_lock);
+        while (!main_jobs) pthread_cond_wait(&main_jobs_ready, &main_jobs_lock);
+        MainJob *job = main_jobs;
+        main_jobs = job->next;
+        if (!main_jobs) main_jobs_tail = &main_jobs;
+        pthread_mutex_unlock(&main_jobs_lock);
+        job->fn(job->arg);
+        bb_low_free(job);
+    }
+}
+
 /* ---- the runtime's heap below 1 TiB ----
  * 64 KiB pages over [BB_MAC_LOW_HEAP, BB_MAC_LOW_HEAP_END). A page holds blocks of one
  * power-of-two class (16 B to 32 KiB, so each block is aligned to its size), or is part of a

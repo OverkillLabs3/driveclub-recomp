@@ -17,6 +17,9 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 #include <vk_mem_alloc.h>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
 
 namespace VideoCore {
 
@@ -183,6 +186,10 @@ void UniqueBuffer::Destroy() {
     } else if (buffer) {
         device.destroyBuffer(buffer);
     }
+    if (imported) {
+        device.freeMemory(imported);
+        imported = VK_NULL_HANDLE;
+    }
     buffer = VK_NULL_HANDLE;
     allocation = VK_NULL_HANDLE;
     bda_addr = 0;
@@ -269,6 +276,77 @@ VkResult UniqueBuffer::Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_ty
     return VK_SUCCESS;
 }
 
+u8* HostShadow() {
+#ifdef _WIN32
+    UNREACHABLE_MSG("Shadowed buffer arenas are not implemented on Windows");
+#else
+    static u8* const shadow = [] {
+        constexpr u64 size = u64{1} << 40;
+        void* p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0);
+        ASSERT_MSG(p != MAP_FAILED, "Cannot reserve the guest address space shadow for the buffer arenas");
+        std::printf("GPU: no sparse buffers; buffer arenas shadow guest memory at %p\n", p);
+        return static_cast<u8*>(p);
+    }();
+    return shadow;
+#endif
+}
+
+VkResult UniqueBuffer::CreateShadowed(const Vulkan::Instance& instance, vk::BufferCreateInfo& buffer_ci,
+                                      VAddr cpu_addr) {
+    constexpr auto handle_type = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT;
+    const vk::ExternalMemoryBufferCreateInfo external_ci = {.handleTypes = handle_type};
+    buffer_ci.flags &= ~(vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency |
+                         vk::BufferCreateFlagBits::eSparseAliased);
+    buffer_ci.pNext = &external_ci;
+    auto created = device.createBuffer(buffer_ci);
+    buffer_ci.pNext = nullptr;
+    if (created.result != vk::Result::eSuccess) {
+        LOG_ERROR(Render_Vulkan, "Failed creating a shadowed arena: {}", vk::to_string(created.result));
+        return static_cast<VkResult>(created.result);
+    }
+    buffer = created.value;
+
+    void* host = HostShadow() + cpu_addr;
+    const auto host_props = device.getMemoryHostPointerPropertiesEXT(handle_type, host);
+    const auto reqs = device.getBufferMemoryRequirements(buffer);
+    const u32 types = host_props.value.memoryTypeBits & reqs.memoryTypeBits;
+    const auto& props = instance.GetMemoryProperties();
+    u32 type = ~0u;
+    for (u32 i = 0; i < props.memoryTypeCount; ++i) {
+        if (!((types >> i) & 1)) continue;
+        if (type == ~0u || (props.memoryTypes[i].propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+            type = i;
+        }
+    }
+    if (host_props.result != vk::Result::eSuccess || type == ~0u) {
+        LOG_ERROR(Render_Vulkan, "No memory type imports the arena shadow ({}, types {:#x})",
+                  vk::to_string(host_props.result), types);
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+    const vk::MemoryAllocateFlagsInfo addressable = {.flags = vk::MemoryAllocateFlagBits::eDeviceAddress};
+    const vk::ImportMemoryHostPointerInfoEXT import_info = {
+        .pNext = &addressable,
+        .handleType = handle_type,
+        .pHostPointer = host,
+    };
+    auto memory = device.allocateMemory({
+        .pNext = &import_info,
+        .allocationSize = buffer_ci.size,
+        .memoryTypeIndex = type,
+    });
+    if (memory.result != vk::Result::eSuccess) {
+        LOG_ERROR(Render_Vulkan, "Importing {} bytes of the arena shadow failed: {}", buffer_ci.size,
+                  vk::to_string(memory.result));
+        return static_cast<VkResult>(memory.result);
+    }
+    imported = memory.value;
+    if (const auto bound = device.bindBufferMemory(buffer, imported, 0); bound != vk::Result::eSuccess) {
+        return static_cast<VkResult>(bound);
+    }
+    bda_addr = device.getBufferAddress({.buffer = buffer});
+    return bda_addr ? VK_SUCCESS : VK_ERROR_UNKNOWN;
+}
+
 Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes_,
                MemoryType mem_type_, std::string_view debug_name)
     : cpu_addr{cpu_addr_}, size_bytes{size_bytes_}, mem_type{mem_type_},
@@ -280,7 +358,9 @@ Buffer::Buffer(const Vulkan::Instance& instance, VAddr cpu_addr_, u64 size_bytes
         .sharingMode = vk::SharingMode::eExclusive,
     };
     VmaAllocationInfo alloc_info{};
-    const VkResult create_result = buffer.Create(buffer_ci, mem_type, &alloc_info);
+    const VkResult create_result = mem_type == MemoryType::Sparse && host_shadow_arenas
+                                       ? buffer.CreateShadowed(instance, buffer_ci, cpu_addr)
+                                       : buffer.Create(buffer_ci, mem_type, &alloc_info);
     if (create_result != VK_SUCCESS) {
         LOG_ERROR(Render_Vulkan, "Buffer construction failed ({}), buffer stays empty",
                   vk::to_string(vk::Result{create_result}));
