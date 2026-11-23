@@ -761,7 +761,13 @@ struct PM4CmdWriteData {
 
     template <typename T>
     T Address() const {
-        return reinterpret_cast<T>(addr64);
+        // bbport: VAddr is unsigned long and u64 unsigned long long on macOS; an integer to integer
+        // reinterpret_cast is only allowed between identical types.
+        if constexpr (std::is_integral_v<T>) {
+            return static_cast<T>(addr64);
+        } else {
+            return reinterpret_cast<T>(addr64);
+        }
     }
 };
 
