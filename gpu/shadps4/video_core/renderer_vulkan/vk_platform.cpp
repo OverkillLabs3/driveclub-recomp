@@ -13,6 +13,8 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
+#include <cstdlib>
+#include <string_view>
 #include <vector>
 #include <fmt/ranges.h>
 
@@ -259,6 +261,16 @@ std::vector<const char*> GetInstanceLayers(bool enable_validation, bool enable_c
 vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
                                   bool enable_crash_diagnostic) {
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
+#if defined(__APPLE__)
+    // bbport: MoltenVK encodes Vulkan commands into Metal as they are recorded (on the renderer's recording thread)
+    // and submits on its own queue thread, instead of encoding everything inside vkQueueSubmit on the draw thread.
+    // Under Rosetta that encoding was the frame's bottleneck. MoltenVK reads these when the instance is created;
+    // values set by the user win. BB_MVK_ENCODING=submit keeps MoltenVK's defaults.
+    if (const char* mode = std::getenv("BB_MVK_ENCODING"); !(mode && std::string_view{mode} == "submit")) {
+        setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
+        setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "2", 0);
+    }
+#endif
 
 #if defined(__APPLE__)
     // Initialize the environment with the path to the included ICD, so that the loader will

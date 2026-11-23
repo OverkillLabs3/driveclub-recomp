@@ -469,7 +469,12 @@ public:
 
     /// Returns the maximum number of push descriptors.
     u32 MaxPushDescriptors() const {
-        return push_descriptor_props.maxPushDescriptors;
+        // bbport: BB_PUSH_DESCRIPTORS=0 binds descriptor sets instead (written on the draw thread).
+        static const bool off = [] {
+            const char* env = std::getenv("BB_PUSH_DESCRIPTORS");
+            return env && env[0] == '0';
+        }();
+        return off ? 0u : push_descriptor_props.maxPushDescriptors;
     }
 
     /// Returns the maximum size of a single VkDeviceMemory
