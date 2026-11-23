@@ -2155,9 +2155,16 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     }
     PassStats::Add(PassStats::Get().dispatches);
     PassStats::Add(PassStats::Get().dispatches_total);
+    PassStats::LabelText label{};
+    if (PassStats::Labels()) {
+        std::snprintf(label.data(), label.size(), "cs %016llx %ux%ux%u",
+                      static_cast<unsigned long long>(cs.pgm_hash), dim_x, dim_y, dim_z);
+    }
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
+        if (label[0]) cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{.pLabelName = label.data()});
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
+        if (label[0]) cmdbuf.endDebugUtilsLabelEXT();
         if (crumb_handle) {
             cmdbuf.writeBufferMarkerAMD(vk::PipelineStageFlagBits::eTopOfPipe, crumb_handle, 0, crumb);
         }
@@ -4260,7 +4267,13 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         state.num_layers = std::min<u32>(state.num_layers, image_view.info.range.extent.layers);
 
         auto& attachment = state.depth_stencil_attachment;
-        attachment.image_view = *image_view.image_view;
+        // bbport: the view info marks depth writes as is_storage, which only changes the view's storage usage;
+        // passes with and without depth writes attach one view so they can continue each other's render pass.
+        auto attachment_info = desc.view_info;
+        attachment_info.is_storage = false;
+        attachment.image_view = attachment_info.is_storage == desc.view_info.is_storage
+                                    ? *image_view.image_view
+                                    : *image.FindView(attachment_info, false).image_view;
         attachment.image_layout = image.backing->state.layout;
         attachment.clear_value = {};
         attachment.is_clear = 0;
@@ -4377,6 +4390,30 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
     // bbport: object motion vector attachment of G-buffer pipelines.
     if (key.motion_vectors) {
         object_motion->Attach(state, state.width, state.height);
+    }
+    // bbport: a pass without attachments kept the maximum framebuffer size (16384x16384, 65535 layers), which a
+    // tile-based GPU walks tile by tile. Its fragments (occlusion queries count them) all lie inside the
+    // screen, window and generic scissors, so the pass ends where they end.
+    bool any_attachment = state.depth_stencil_attachment.image_view != vk::ImageView{};
+    for (u32 cb = 0; cb < state.num_color_attachments; ++cb) {
+        any_attachment |= state.color_attachments[cb].image_view != vk::ImageView{};
+    }
+    static const bool empty_pass_scissor = [] {
+        const char* env = std::getenv("BB_EMPTY_PASS_SCISSOR");
+        return !(env && *env == '0');
+    }();
+    if (!any_attachment && empty_pass_scissor) {
+        const s32 offset_x = regs.window_scissor.window_offset_disable ? 0 : regs.window_offset.window_x_offset;
+        const s32 offset_y = regs.window_scissor.window_offset_disable ? 0 : regs.window_offset.window_y_offset;
+        const s32 right = std::min({s32(regs.screen_scissor.bottom_right_x),
+                                    s32(regs.window_scissor.bottom_right_x) + offset_x,
+                                    s32(regs.generic_scissor.bottom_right_x) + offset_x});
+        const s32 bottom = std::min({s32(regs.screen_scissor.bottom_right_y),
+                                     s32(regs.window_scissor.bottom_right_y) + offset_y,
+                                     s32(regs.generic_scissor.bottom_right_y) + offset_y});
+        state.width = u16(std::clamp<s32>(right, 1, state.width));
+        state.height = u16(std::clamp<s32>(bottom, 1, state.height));
+        state.num_layers = 1;
     }
     return state;
 }

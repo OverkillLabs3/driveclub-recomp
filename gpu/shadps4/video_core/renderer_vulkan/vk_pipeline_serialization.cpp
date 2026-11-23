@@ -33,7 +33,9 @@ static u32 ShaderBinaryVersion() {
                (motion_log && motion_log[0] == '1' ? 4u : 0u) +
                (lds && lds[0] == '0' ? 8u : 0u) +
                (std::getenv("DR_NO_WAVE_FIX") ? 16u : 0u) +
-               (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u);
+               (!wide || !wide[0] || wide[0] == '1' ? 512u : 0u) +
+               // BB_CONTRACTION: which stages keep NoContraction (all of them adds nothing).
+               (static_cast<u32>(Shader::Contraction()) << 11);
     }();
     return version;
 }

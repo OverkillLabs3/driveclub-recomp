@@ -86,6 +86,28 @@ inline bool RectReplayAllowed(u64 pgm_hash) {
     return only.find(text) != std::string::npos;
 }
 
+/// bbport: which shaders mark their float adds, subtracts, multiplies and fmas NoContraction (BB_CONTRACTION=
+/// all|vertex|none). The mark keeps GCN's separate multiply and add, so a position computed by two shaders
+/// comes out bit-identical and depth-equal passes line up. SPIRV-Cross for Metal turns every marked op into an
+/// [[clang::optnone]] fma helper, which keeps the Metal compiler from fusing and scheduling them: on macOS
+/// only the vertex-type stages keep the mark (pixel and compute shaders run unmarked).
+enum class ContractionMode : u32 { All = 0, Vertex = 1, None = 2 };
+inline ContractionMode Contraction() {
+    static const ContractionMode mode = [] {
+        const char* env = std::getenv("BB_CONTRACTION");
+        const std::string v = env ? env : "";
+        if (v == "all") return ContractionMode::All;
+        if (v == "vertex") return ContractionMode::Vertex;
+        if (v == "none") return ContractionMode::None;
+#ifdef __APPLE__
+        return ContractionMode::Vertex;
+#else
+        return ContractionMode::All;
+#endif
+    }();
+    return mode;
+}
+
 struct SwVertexRuntimeInfo {
     u32 step_rate_0;
     u32 step_rate_1;

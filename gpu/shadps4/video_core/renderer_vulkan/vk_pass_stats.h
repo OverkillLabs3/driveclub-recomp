@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdio>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cxxabi.h>
 #include <dlfcn.h>
@@ -116,6 +117,16 @@ inline ShapeTable& Table() {
     static ShapeTable t;
     return t;
 }
+
+/// BB_PASS_LABELS=1: a debug label per render pass and dispatch (Metal System Trace shows them per encoder).
+inline bool Labels() {
+    static const bool on = [] {
+        const char* v = std::getenv("BB_PASS_LABELS");
+        return v && *v && *v != '0';
+    }();
+    return on;
+}
+using LabelText = std::array<char, 112>;
 
 inline void Add(std::atomic<u64>& counter, u64 n = 1) {
     if (Enabled()) counter.fetch_add(n, std::memory_order_relaxed);

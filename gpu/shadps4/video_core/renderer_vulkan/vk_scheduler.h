@@ -881,8 +881,13 @@ public:
     }
 
     [[nodiscard]] bool IsRenderingWith(const RenderState& state) const {
-        return is_rendering && render_state == state;
+        return is_rendering && (render_state == state || ContinuesPass(state));
     }
+
+    /// bbport: whether `next` can draw in the open render pass although its state differs: same targets and
+    /// layouts, no clear of its own (one at the pass start already happened), and at most the open pass's color
+    /// slots, extra ones null. On a tile-based GPU (MoltenVK) every new pass reloads its attachments.
+    [[nodiscard]] bool ContinuesPass(const RenderState& next) const;
 
     /// Whether BeginRendering(state) would start a new render pass.
     [[nodiscard]] bool WillBeginRendering(const RenderState& state) const {

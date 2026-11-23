@@ -67,9 +67,46 @@ Scheduler::~Scheduler() {
 #endif
 }
 
+bool Scheduler::ContinuesPass(const RenderState& next) const {
+    static const bool enabled = [this] {
+        const char* env = std::getenv("BB_PASS_CONTINUE");
+        if (env && *env) return *env != '0';
+        return instance.GetDriverID() == vk::DriverId::eMoltenvk;
+    }();
+    if (!enabled || !is_rendering) {
+        return false;
+    }
+    const RenderState& open = render_state;
+    if (open.width != next.width || open.height != next.height || open.num_layers != next.num_layers ||
+        next.num_color_attachments > open.num_color_attachments) {
+        return false;
+    }
+    const auto& od = open.depth_stencil_attachment;
+    const auto& nd = next.depth_stencil_attachment;
+    if (od.image_view != nd.image_view || od.image_layout != nd.image_layout ||
+        od.has_depth != nd.has_depth || od.has_stencil != nd.has_stencil || nd.depth_clear ||
+        nd.stencil_clear) {
+        return false;
+    }
+    for (u32 i = 0; i < open.num_color_attachments; ++i) {
+        const auto& o = open.color_attachments[i];
+        if (i >= next.num_color_attachments) {
+            if (o.image_view) {
+                return false;
+            }
+            continue;
+        }
+        const auto& n = next.color_attachments[i];
+        if (n.is_clear || n.image_view != o.image_view || n.image_layout != o.image_layout) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void Scheduler::BeginRendering(const RenderState& new_state) {
     BB_PIPE_CHECK_OBJ("Scheduler::BeginRendering", static_cast<const void*>(this));
-    if (is_rendering && render_state == new_state) {
+    if (is_rendering && (render_state == new_state || ContinuesPass(new_state))) {
         return;
     }
     EndRendering();
@@ -194,6 +231,20 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
     };
 
+    if (PassStats::Labels()) {
+        PassStats::LabelText label{};
+        const auto view = [](vk::ImageView v) {
+            return u32(reinterpret_cast<uintptr_t>(static_cast<VkImageView>(v)));
+        };
+        std::snprintf(label.data(), label.size(), "pass %ux%u x%u c%u %#x d%u %#x clr%x", render_state.width,
+                      render_state.height, render_state.num_layers, render_state.num_color_attachments,
+                      render_state.num_color_attachments ? view(render_state.color_attachments[0].image_view) : 0,
+                      db.has_depth ? (depth_read_only ? 2u : 1u) : 0u, view(db.image_view),
+                      render_state.color_attachments[0].is_clear | (db.depth_clear ? 0x100u : 0u));
+        Record([label](vk::CommandBuffer cmdbuf) {
+            cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{.pLabelName = label.data()});
+        });
+    }
     if (!recording_threaded) {
         current_cmdbuf.beginRendering(rendering_info);
         return;
@@ -220,6 +271,9 @@ void Scheduler::EndRendering() {
     PassStats::Ended(__builtin_return_address(0), "end by");
     is_rendering = false;
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
+    if (PassStats::Labels()) {
+        Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endDebugUtilsLabelEXT(); });
+    }
 }
 
 void Scheduler::TraceDirectRecording(void* caller) {
