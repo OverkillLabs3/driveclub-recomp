@@ -144,6 +144,12 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if VK_EXT_robustness2 nullDescriptor is enabled: a descriptor or vertex
+    /// buffer may be VK_NULL_HANDLE. Otherwise NullResources stands in.
+    bool IsNullDescriptorSupported() const {
+        return null_descriptor;
+    }
+
     /// Returns true if VK_KHR_maintenance8 is supported
     bool IsMaintenance8Supported() const {
         return maintenance_8;
@@ -619,6 +625,8 @@ private:
     TracyVkCtx profiler_context{};
     u32 queue_family_index{0};
     bool custom_border_color{};
+    bool robust_buffer_access2{};
+    bool null_descriptor{};
     bool fragment_shader_barycentric{};
     bool amd_shader_explicit_vertex_parameter{};
     bool depth_clip_control{};

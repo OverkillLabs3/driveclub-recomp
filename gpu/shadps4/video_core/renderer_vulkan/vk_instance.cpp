@@ -308,12 +308,20 @@ bool Instance::CreateDevice() {
                "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
 
     const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
-    ASSERT_MSG(robustness2_features.robustBufferAccess2,
-               "Required Vulkan feature unavailable: robustBufferAccess2");
     ASSERT_MSG(robustness2_features.robustImageAccess2,
                "Required Vulkan feature unavailable: robustImageAccess2");
-    ASSERT_MSG(robustness2_features.nullDescriptor,
-               "Required Vulkan feature unavailable: nullDescriptor");
+    // Optional: MoltenVK has neither. Without nullDescriptor the rasterizer binds placeholder
+    // resources where a descriptor would be null (vk_null_resources.h); without
+    // robustBufferAccess2, out-of-bounds buffer reads fall back to robustBufferAccess.
+    robust_buffer_access2 = robustness2_features.robustBufferAccess2;
+    null_descriptor = robustness2_features.nullDescriptor;
+    if (!robust_buffer_access2) {
+        LOG_WARNING(Render_Vulkan, "Vulkan feature robustBufferAccess2 unavailable");
+    }
+    if (!null_descriptor) {
+        LOG_WARNING(Render_Vulkan,
+                    "Vulkan feature nullDescriptor unavailable: binding placeholder resources");
+    }
 
     // Optional
     maintenance_5 = add_extension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
@@ -652,9 +660,9 @@ bool Instance::CreateDevice() {
             .depthClipEnable = true,
         },
         vk::PhysicalDeviceRobustness2FeaturesEXT{
-            .robustBufferAccess2 = true,
+            .robustBufferAccess2 = robust_buffer_access2,
             .robustImageAccess2 = true,
-            .nullDescriptor = true,
+            .nullDescriptor = null_descriptor,
         },
         vk::PhysicalDeviceFaultFeaturesEXT{
             .deviceFault = device_fault,
