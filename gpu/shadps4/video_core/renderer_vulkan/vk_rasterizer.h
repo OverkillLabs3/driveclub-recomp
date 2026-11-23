@@ -12,6 +12,7 @@
 #include "video_core/renderer_vulkan/vk_bind_helper.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_drive_aa.h"
+#include "video_core/renderer_vulkan/vk_null_resources.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
@@ -432,6 +433,7 @@ private:
     std::unique_ptr<DriveAA> drive_aa;
     std::unique_ptr<CameraMotion> camera_motion; // bbport: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
+    std::unique_ptr<NullResources> null_resources; ///< empty bindings without nullDescriptor
     bool scene_started = false;
     std::unique_ptr<ObjectMotion> object_motion;
     std::unique_ptr<VideoCore::Buffer> crumb_buffer; ///< AMD buffer marker target (see BbRecent::crumb)

@@ -873,6 +873,29 @@ static int patch_exposure_exact(unsigned char *image, uint64_t size) {
     printf("BB_EXPOSURE_EXACT: 3 of 3 exposure getter calls patched\n");
     return 1;
 }
+#ifdef __APPLE__
+/* macOS: the macOS kernel holds [0x0fc0000000, 0x7000000000) in every process, and the game maps one subsystem's
+ * memory at fixed addresses from 0x1000000000 (0x748d50: two maps at the base and base+0x8000000; 0x749210: a
+ * flexible map with the base as its address). Their movabs immediates are moved to BB_MAC_APP_AREA. */
+static void patch_app_area(unsigned char *image, uint64_t size) {
+    static const uint64_t sites[] = {0x748d85, 0x748d8f, 0x749247, 0x74925a};
+    const uint64_t from = BB_PS4_APP_AREA, to = BB_MAC_APP_AREA;
+    unsigned patched = 0;
+    for (size_t i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i) {
+        if (size < sites[i] + 10) continue;
+        unsigned char *site = image + sites[i];
+        uint64_t imm;
+        memcpy(&imm, site + 2, 8);
+        if ((site[0] != 0x48 && site[0] != 0x49) || site[1] < 0xb8 || site[1] > 0xbf || imm != from) {
+            printf("macOS: %#" PRIx64 " is not a movabs of the app area base; not patched\n", sites[i]);
+            continue;
+        }
+        memcpy(site + 2, &to, 8);
+        ++patched;
+    }
+    printf("macOS: app area base %#" PRIx64 " moved to %#" PRIx64 " at %u of 4 sites\n", from, to, patched);
+}
+#endif
 /* BB_CLOUD_STALE=1 (opt-in; gpu/shadps4/video_core/page_manager.cpp): trueSKY's cloud sample asks the readback getter
  * at 0x60265e (lea rcx, [rbp-0x14c]; call 0x758980); the call goes to the host hook through a near thunk. */
 static void patch_cloud_get(unsigned char *image, uint64_t size) {
@@ -1408,7 +1431,14 @@ static void print_system_info(void) {
     }
 }
 #endif
+#ifdef __APPLE__
+/* Cocoa needs the first thread for the window (compat_macos.c bb_mac_main). */
+static int probe_main(int argc, char **argv);
+int main(int argc, char **argv) { return bb_mac_main(probe_main, argc, argv); }
+static int probe_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
+#endif
 #ifdef _WIN32
     start_tick=GetTickCount64();
 #endif
@@ -1688,6 +1718,9 @@ int main(int argc, char **argv) {
     if (!cpu_only) patch_cloud_get(image, size);
     if (!cpu_only) patch_query_get(image, size);
     if (!cpu_only) patch_crowd_get(image, size);
+#ifdef __APPLE__
+    patch_app_area(image, size);
+#endif
 #if defined(_WIN32) || defined(__APPLE__)
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif

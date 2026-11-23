@@ -76,7 +76,11 @@ imgui=gpu/third_party/imgui
     "${sdl_cflags[@]}" "${sdl_libs[@]}" -Wl,-rpath,"$deps/lib" -pthread -o out/driveclub-launcher
 
 # The video core points the Vulkan loader at the executable's folder on macOS (vk_platform.cpp).
-cp "$deps/lib/libMoltenVK.dylib" out/libMoltenVK.dylib
+# Replaced only when it changed, and by rename: copying over the file a running game has mapped
+# corrupts that game's code and Rosetta's translation of it ("code signature supplement failed").
+if ! cmp -s "$deps/lib/libMoltenVK.dylib" out/libMoltenVK.dylib; then
+    cp "$deps/lib/libMoltenVK.dylib" out/libMoltenVK.dylib.new && mv -f out/libMoltenVK.dylib.new out/libMoltenVK.dylib
+fi
 sed 's|"library_path": *"[^"]*"|"library_path": "./libMoltenVK.dylib"|' \
     "$deps/share/vulkan/icd.d/MoltenVK_icd.json" > out/MoltenVK_icd.json
 

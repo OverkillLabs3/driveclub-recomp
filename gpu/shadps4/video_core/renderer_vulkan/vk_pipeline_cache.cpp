@@ -340,8 +340,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
             if (const char* env = std::getenv("BB_INTERP_INT_FIX")) {
                 return env[0] == '1';
             }
+            // MoltenVK takes the no-barycentrics path too (vk_instance.h): the same fix keeps
+            // interpolated integers exact there.
             return !instance.IsFragmentShaderBarycentricSupported() &&
-                   instance.GetDriverID() == vk::DriverId::eNvidiaProprietary;
+                   (instance.GetDriverID() == vk::DriverId::eNvidiaProprietary ||
+                    instance.GetDriverID() == vk::DriverId::eMoltenvk);
         }(),
         // The game shares workgroup memory between the 64 lanes of a wave without barriers, which holds on
         // the console because they run in lockstep. A host compiler is free to reorder those loads and stores

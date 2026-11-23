@@ -144,6 +144,12 @@ public:
         return vk12_features.shaderInt8;
     }
 
+    /// Returns true if VK_EXT_robustness2 nullDescriptor is enabled: a descriptor or vertex
+    /// buffer may be VK_NULL_HANDLE. Otherwise NullResources stands in.
+    bool IsNullDescriptorSupported() const {
+        return null_descriptor;
+    }
+
     /// Returns true if VK_KHR_maintenance8 is supported
     bool IsMaintenance8Supported() const {
         return maintenance_8;
@@ -212,8 +218,11 @@ public:
     }
 
     /// Returns true when VK_KHR_fragment_shader_barycentric is supported.
+    /// bbport: not on MoltenVK, which advertises it but cannot translate PerVertexKHR inputs to
+    /// MSL: those fragment shaders fail to compile. The recompiler's fallback (no barycentrics,
+    /// as on Pascal) is used there.
     bool IsFragmentShaderBarycentricSupported() const {
-        return fragment_shader_barycentric;
+        return fragment_shader_barycentric && driver_id != vk::DriverId::eMoltenvk;
     }
 
     /// Returns true when VK_AMD_shader_explicit_vertex_parameter is supported.
@@ -619,6 +628,8 @@ private:
     TracyVkCtx profiler_context{};
     u32 queue_family_index{0};
     bool custom_border_color{};
+    bool robust_buffer_access2{};
+    bool null_descriptor{};
     bool fragment_shader_barycentric{};
     bool amd_shader_explicit_vertex_parameter{};
     bool depth_clip_control{};
