@@ -649,7 +649,7 @@ void BufferCache::RecordReadback(Readback& job) {
             }
             // GPU-modified bytes on the fault's own 4 KB page: their total, and the closest one.
             const VAddr page = Common::AlignDown(job.fault, 4096);
-            const VAddr a = std::max(lo, page), e = std::min(lo + copy.size, page + 4096);
+            const VAddr a = std::max<VAddr>(lo, page), e = std::min<VAddr>(lo + copy.size, page + 4096);
             if (a < e) {
                 job.page_gpu_bytes += e - a;
             }
