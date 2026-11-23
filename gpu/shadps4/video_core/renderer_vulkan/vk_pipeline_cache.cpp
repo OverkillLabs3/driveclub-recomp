@@ -261,6 +261,7 @@ const Shader::RuntimeInfo& PipelineCache::BuildRuntimeInfo(PipelineSelection& se
         info.sw.vs.tess_emulated_primitive =
             regs.primitive_type == AmdGpu::PrimitiveType::RectList ||
             regs.primitive_type == AmdGpu::PrimitiveType::QuadList;
+        info.sw.vs.rect_replay = RectReplay(sel);
         break;
     case SwStage::TessellationControl: {
         info.sw.tcs.num_input_control_points = regs.ls_hs_config.hs_input_control_points;
@@ -439,6 +440,18 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+bool PipelineCache::RectReplay(const PipelineSelection& selection) const {
+    // bbport: on MoltenVK the tessellation emulation of rect lists runs a compute pre-pass that ends the open
+    // render pass. BB_RECT_REPLAY=0/1 overrides; indirect and indexed draws keep the tessellation path.
+    static const bool wanted = [this] {
+        const char* env = std::getenv("BB_RECT_REPLAY");
+        if (env && *env) return *env != '0';
+        return instance.GetDriverID() == vk::DriverId::eMoltenvk;
+    }();
+    return wanted && selection.regs->primitive_type == AmdGpu::PrimitiveType::RectList &&
+           !selection.draw_indirect_params.is_indirect && !selection.no_rect_replay;
+}
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
                                                            const PreparedDraw* prepared) {
     used_prepared = nullptr;
@@ -536,6 +549,7 @@ bool PipelineCache::RefreshGraphicsKey(PipelineSelection& sel) {
     key.clip_space = regs.clipper_control.clip_space;
     key.provoking_vtx_last = regs.polygon_control.provoking_vtx_last;
     key.prim_type = regs.primitive_type;
+    key.rect_replay = RectReplay(sel) ? 1 : 0;
     key.polygon_mode = regs.polygon_control.PolyMode();
     key.patch_control_points =
         regs.stage_enable.hs_en ? regs.ls_hs_config.hs_input_control_points : 0;

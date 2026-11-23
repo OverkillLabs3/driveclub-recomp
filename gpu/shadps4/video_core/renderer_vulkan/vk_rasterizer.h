@@ -306,6 +306,11 @@ private:
     bool FilterDraw();
     bool FilterDrawPasses() const;
     void FlushLongBatch();
+    bool DeferFlushInPass() const;
+    u64 TargetsKey() const;
+    void FlushBeforeDraw();
+    u64 held_targets{};
+    bool flush_held{};
     void CaptureHdrHudless(VideoCore::ImageId display, VAddr address);
     void InvalidateHdrHudless(VAddr address);
     u32 batch_draws{};

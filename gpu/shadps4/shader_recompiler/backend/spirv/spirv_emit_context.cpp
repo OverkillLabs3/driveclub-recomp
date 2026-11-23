@@ -181,6 +181,58 @@ void EmitContext::DefineInterfaces() {
     DefinePushDataBlock();
     DefineInputs();
     DefineOutputs();
+    if (sw_stage == SwStage::Vertex && hw_stage == HwStage::Vertex && runtime_info.sw.vs.rect_replay &&
+        !info.has_fetch_shader && RectReplayAllowed(info.pgm_hash)) {
+        SetupRectReplay();
+    }
+}
+
+void EmitContext::SetupRectReplay() {
+    rect_replay = true;
+    output_f32 = TypePointer(spv::StorageClass::Private, F32[1]);
+    output_u32 = TypePointer(spv::StorageClass::Private, U32[1]);
+    output_s32 = TypePointer(spv::StorageClass::Private, S32[1]);
+    const auto shadow = [&](Id& var, Id type, Id scalar, u32 components, u32 array_size, bool is_float) {
+        if (!Sirit::ValidId(var)) {
+            return;
+        }
+        for (const auto& o : replay_outputs) {
+            if (o.real.value == var.value) { // the same variable seen through two fields
+                var = o.shadow;
+                return;
+            }
+        }
+        const Id ptr{TypePointer(spv::StorageClass::Private, type)};
+        const Id priv{AddGlobalVariable(ptr, spv::StorageClass::Private, ConstantNull(type))};
+        interfaces.push_back(priv);
+        replay_outputs.push_back({var, priv, type, scalar, components, array_size, is_float});
+        var = priv;
+    };
+    shadow(output_position, F32[4], F32[1], 4, 0, true);
+    for (u32 i = 0; i < IR::NumParams; ++i) {
+        auto& param = output_params[i];
+        if (!Sirit::ValidId(param.id) || param.num_components == 0) {
+            continue;
+        }
+        const Id scalar = param.is_integer ? U32[1] : F32[1];
+        const Id type = param.is_integer ? U32[param.num_components] : F32[param.num_components];
+        shadow(param.id, type, scalar, param.num_components, 0, !param.is_integer);
+        param.pointer_type = param.is_integer ? output_u32 : output_f32;
+    }
+    const Id distances{TypeArray(F32[1], ConstU32(8U))};
+    // Emulated clip distances are a parameter vector (shadowed above); the builtin ones an array of 8.
+    shadow(clip_distances, distances, F32[1], 0, 8, true);
+    shadow(cull_distances, distances, F32[1], 0, 8, true);
+    shadow(output_point_size, F32[1], F32[1], 1, 0, true);
+    shadow(output_layer, U32[1], U32[1], 1, 0, false);
+    shadow(output_viewport_index, U32[1], U32[1], 1, 0, false);
+    shadow(motion_out_cur, F32[4], F32[1], 4, 0, true);
+    shadow(motion_out_prev, F32[4], F32[1], 4, 0, true);
+
+    replay_real_vertex_index = vertex_index;
+    const Id vid_ptr{TypePointer(spv::StorageClass::Private, U32[1])};
+    vertex_index = AddGlobalVariable(vid_ptr, spv::StorageClass::Private, ConstantNull(U32[1]));
+    interfaces.push_back(vertex_index);
 }
 
 const VectorIds& GetAttributeType(EmitContext& ctx, AmdGpu::NumberFormat fmt) {

@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 #include <algorithm>
 #include <span>
 #include "common/types.h"
@@ -68,6 +72,20 @@ enum class Output : u8 {
 };
 using OutputMap = std::array<Output, 4>;
 
+/// bbport: BB_RECT_REPLAY_ONLY=<hex hash,...>: rect replay only for these vertex shaders (bisecting).
+inline bool RectReplayAllowed(u64 pgm_hash) {
+    static const std::string only = [] {
+        const char* env = std::getenv("BB_RECT_REPLAY_ONLY");
+        return std::string(env ? env : "");
+    }();
+    if (only.empty()) {
+        return true;
+    }
+    char text[32];
+    std::snprintf(text, sizeof(text), "%llx", static_cast<unsigned long long>(pgm_hash));
+    return only.find(text) != std::string::npos;
+}
+
 struct SwVertexRuntimeInfo {
     u32 step_rate_0;
     u32 step_rate_1;
@@ -75,6 +93,11 @@ struct SwVertexRuntimeInfo {
     u16 instance_sgpr_offset{};
     bool is_indirect{};
     bool tess_emulated_primitive{};
+    /// bbport: a rect list drawn as two triangles without tessellation (MoltenVK, where the tessellation
+    /// emulation runs a compute pre-pass that splits the render pass). The vertex shader runs its body for
+    /// the rect's three vertices and outputs one of six (backend/spirv/emit_spirv_rect_replay.cpp); used
+    /// only when the shader has no fetch shader, as its outputs then depend on the vertex index alone.
+    bool rect_replay{};
 
     bool operator==(const SwVertexRuntimeInfo& other) const noexcept = default;
 };

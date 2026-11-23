@@ -18,6 +18,7 @@
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
+#include "video_core/renderer_vulkan/vk_pass_stats.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -1263,6 +1264,28 @@ void Runtime::FlushBarriers() {
         return;
     }
 
+    if (PassStats::Sequence() && scheduler.IsRenderingAny()) {
+        std::string note;
+        Dl_info info{};
+        if (dladdr(__builtin_return_address(0), &info) && info.dli_sname) {
+            int status = 0;
+            char* d = abi::__cxa_demangle(info.dli_sname, nullptr, nullptr, &status);
+            std::string n = d ? d : info.dli_sname;
+            std::free(d);
+            if (const auto paren = n.find('('); paren != std::string::npos) n.resize(paren);
+            note = "from " + n;
+        }
+        if (dep_info.memoryBarrierCount) {
+            note += " mem " + vk::to_string(memory_barrier.srcStageMask) + ":" +
+                    vk::to_string(memory_barrier.srcAccessMask) + " -> " + vk::to_string(memory_barrier.dstStageMask) +
+                    ":" + vk::to_string(memory_barrier.dstAccessMask);
+        }
+        for (const auto& b : image_barriers) {
+            note += " img " + std::to_string(b.image ? u32(reinterpret_cast<uintptr_t>(static_cast<VkImage>(b.image))) : 0) +
+                    " " + vk::to_string(b.oldLayout) + "->" + vk::to_string(b.newLayout);
+        }
+        PassStats::Note(note);
+    }
     scheduler.EndRendering();
     // bbport: with the GPU profiler on, a barrier that changes the layout of a depth/stencil image gets its own
     // label (a depth decompression on some GPUs), keyed by the layouts and size.

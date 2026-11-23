@@ -9,6 +9,8 @@
 # Environment:
 #   BB_LTO            ON/OFF link-time optimization of libbbgpu (default OFF on macOS)
 #   BB_DEPS_DIR       prefix with the macOS build dependencies (default out/deps-macos)
+#   BB_DIAGNOSTICS    ON builds only a GPU library with capture/profiling support (BB_GPU_PROFILE) into
+#                     out/gpu-diag; run the usual out/driveclub-probe with DYLD_LIBRARY_PATH=out/gpu-diag
 set -euo pipefail
 cd -- "$(dirname -- "$0")"
 deps=${BB_DEPS_DIR:-$PWD/out/deps-macos}
@@ -27,8 +29,11 @@ read -r -a libraries <<< "$(pkg-config --libs vulkan sdl3)"
 read -r -a sdl_cflags <<< "$(pkg-config --cflags sdl3)"
 read -r -a sdl_libs <<< "$(pkg-config --libs sdl3)"
 
+diagnostics=${BB_DIAGNOSTICS:-OFF}
+gpu_dir=out/gpu
+[ "$diagnostics" = ON ] && gpu_dir=out/gpu-diag
 mkdir -p out
-cmake -S gpu -B out/gpu -G Ninja \
+cmake -S gpu -B "$gpu_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_OSX_ARCHITECTURES=$arch \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
@@ -36,14 +41,18 @@ cmake -S gpu -B out/gpu -G Ninja \
     -DCMAKE_PREFIX_PATH="$deps" -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew \
     -DCMAKE_FIND_FRAMEWORK=LAST \
     -DProtobuf_PROTOC_EXECUTABLE="$deps/bin/protoc" -DBoost_INCLUDE_DIR="$deps/include" \
-    -DBB_LTO="${BB_LTO:-OFF}" -DBB_PGO=off -DBB_DIAGNOSTICS=OFF \
+    -DBB_LTO="${BB_LTO:-OFF}" -DBB_PGO=off -DBB_DIAGNOSTICS="$diagnostics" \
     -DCMAKE_C_FLAGS="-ffile-prefix-map=$PWD=." \
     -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$PWD=." >/dev/null
 echo "GPU library: $("$CXX" --version | head -1), $arch"
-if ! ninja -C out/gpu bbgpu > out/gpu-build.log 2>&1; then
-    grep -v '^[[]' out/gpu-build.log | grep -E 'error|Error' -A3 | head -60 >&2
-    echo 'GPU library build failed (full log: out/gpu-build.log)' >&2
+if ! ninja -C "$gpu_dir" bbgpu > "$gpu_dir-build.log" 2>&1; then
+    grep -v '^[[]' "$gpu_dir-build.log" | grep -E 'error|Error' -A3 | head -60 >&2
+    echo "GPU library build failed (full log: $gpu_dir-build.log)" >&2
     exit 1
+fi
+if [ "$diagnostics" = ON ]; then
+    echo "Built $PWD/$gpu_dir/libbbgpu.dylib (diagnostics): DYLD_LIBRARY_PATH=$PWD/$gpu_dir out/driveclub-probe ..."
+    exit 0
 fi
 
 if [ ! -f out/libatrac9.a ] || [ -n "$(find third_party/LibAtrac9/C/src -newer out/libatrac9.a -name '*.c' -print -quit)" ]; then

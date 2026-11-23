@@ -82,12 +82,17 @@ GraphicsPipeline::GraphicsPipeline(
         .pVertexAttributeDescriptions = sdata.vertex_attributes.data(),
     };
 
-    const auto topology = LiverpoolToVK::PrimitiveType(key.prim_type);
+    // bbport: the vertex shader did the rect itself when it has no fetch shader (EmitContext::DefineInterfaces).
+    const auto* vs_stage_info = infos[u32(Shader::SwStage::Vertex)];
+    rect_replay = key.rect_replay && key.prim_type == AmdGpu::PrimitiveType::RectList && vs_stage_info &&
+                  !vs_stage_info->has_fetch_shader && Shader::RectReplayAllowed(vs_stage_info->pgm_hash);
+    const auto topology =
+        rect_replay ? vk::PrimitiveTopology::eTriangleList : LiverpoolToVK::PrimitiveType(key.prim_type);
     const vk::PipelineInputAssemblyStateCreateInfo input_assembly = {
         .topology = topology,
     };
 
-    const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList;
+    const bool is_rect_list = key.prim_type == AmdGpu::PrimitiveType::RectList && !rect_replay;
     const bool is_quad_list = key.prim_type == AmdGpu::PrimitiveType::QuadList;
     const vk::PipelineTessellationStateCreateInfo tessellation_state = {
         .patchControlPoints = is_rect_list ? 3U : (is_quad_list ? 4U : key.patch_control_points),

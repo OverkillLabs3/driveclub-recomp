@@ -39,6 +39,7 @@ extern "C" int runtime_motion_blur_clock(float*, uint64_t*);
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vehicle_motion_policy.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "video_core/renderer_vulkan/vk_pass_stats.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -1248,6 +1249,14 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
         BbStats::PhaseTimer lookup_timer{BbStats::phase_ns[1]};
         pipeline = pipeline_cache.GetGraphicsPipeline({}, prepared);
         used_prepared = pipeline_cache.UsedPrepared();
+        if (pipeline && pipeline->IsRectReplay() && (is_indexed || Regs().index_offset != 0)) {
+            // bbport: the replayed rect counts vertices itself from 0; an indexed one or one with a vertex
+            // offset keeps the tessellation path.
+            pipeline_cache.SetNoRectReplay(true);
+            pipeline = pipeline_cache.GetGraphicsPipeline({}, nullptr);
+            pipeline_cache.SetNoRectReplay(false);
+            used_prepared = nullptr;
+        }
     }
     if (prepared) {
         draw_prep->Count(pipeline != nullptr && used_prepared == prepared);
@@ -1269,6 +1278,7 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         FrameCapture::Poll();
         scheduler.PopPendingOperations();
     }
+    FlushBeforeDraw(); // on the thread that records (stage B with the two-stage pipe)
     const auto& regs = Regs();
     // bbport: the pass copying a finished frame to a display buffer; the previous draw's
     // target is that frame.
@@ -1514,19 +1524,37 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    if (PassStats::Shapes()) {
+        const auto& sc = scheduler.GetDynamicState().scissors;
+        if (!sc.empty()) {
+            PassStats::Scissor(state.width, state.height, sc[0].offset.x, sc[0].offset.y, sc[0].extent.width,
+                               sc[0].extent.height);
+        }
+    }
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
     const auto [vertex_offset, instance_offset] = GetDrawOffsets(regs, vs_info, fetch_shader);
 
     const vk::Pipeline handle = pipeline->Handle();
-    const u32 num_indices = regs.num_indices;
+    // bbport: a replayed rect list draws two triangles (six vertices) per rect of three.
+    const u32 num_indices = pipeline->IsRectReplay() ? regs.num_indices / 3 * 6 : regs.num_indices;
     const u32 num_instances = regs.num_instances.NumInstances();
     const u32 first_vertex = vertex_offset;
     const u32 first_instance = instance_offset;
     // The number BbRecent::Draw below gives this draw; the GPU writes it when its command processor gets here.
     const vk::Buffer crumb_handle = BB_DIAGNOSTICS && BbRecent::crumb ? crumb_buffer->Handle() : vk::Buffer{};
     const u32 crumb = BB_DIAGNOSTICS ? BbRecent::next.load(std::memory_order_relaxed) + 1 : 0;
+    PassStats::Add(PassStats::Get().draws);
+    PassStats::Add(PassStats::Get().draws_total);
+    if (PassStats::Shapes() && regs.primitive_type == AmdGpu::PrimitiveType::RectList) {
+        const auto* ps_info = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+        const auto& rs = scheduler.GetRenderState();
+        PassStats::Rect({vs_info.pgm_hash, ps_info ? ps_info->pgm_hash : 0, num_indices, num_instances,
+                         fetch_shader ? u32(fetch_shader->attributes.size()) : 0u, is_indexed ? 1u : 0u,
+                         PassStats::Get().draws_total.load() == PassStats::Get().pass_start.load() + 1 ? 1u : 0u, rs.width,
+                         rs.height});
+    }
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
         if (is_indexed) {
@@ -1807,11 +1835,55 @@ void Rasterizer::FlushLongBatch() {
         batch_tick = tick;
         batch_draws = 0;
     }
-    if (++batch_draws >= interval) {
+    ++batch_draws;
+    // bbport: on a tile-based GPU (Apple, through MoltenVK) a submit ends the open render pass and the next
+    // draw reloads its attachments. A due flush waits for a draw with other render targets (FlushBeforeDraw,
+    // before that draw records anything) unless it runs far past the interval.
+    if (batch_draws >= interval) {
+        if (DeferFlushInPass() && scheduler.IsRenderingAny() && batch_draws < interval * 8) {
+            held_targets = TargetsKey();
+            flush_held = true;
+            return;
+        }
+        flush_held = false;
         batch_draws = 0;
         scheduler.Flush();
         batch_tick = scheduler.CurrentTick();
     }
+}
+
+bool Rasterizer::DeferFlushInPass() const {
+    static const bool defer = [this] {
+        const char* env = std::getenv("BB_FLUSH_IN_PASS");
+        if (env && *env) return *env == '0';
+        return instance.GetDriverID() == vk::DriverId::eMoltenvk;
+    }();
+    return defer;
+}
+
+u64 Rasterizer::TargetsKey() const {
+    // The render targets in the registers: a cheap guess at whether the next draw keeps the open pass.
+    const auto& regs = Regs();
+    u64 key = u64(regs.depth_buffer.DepthAddress()) * 0x9E3779B97F4A7C15ull;
+    for (u32 i = 0; i < AmdGpu::NUM_COLOR_BUFFERS; ++i) {
+        key = (key ^ u64(regs.color_buffers[i].Address())) * 0x100000001B3ull;
+    }
+    return key;
+}
+
+void Rasterizer::FlushBeforeDraw() {
+    // A flush FlushLongBatch held back goes before a draw whose targets differ (it begins another pass), or once
+    // the open pass has ended some other way; nothing of the draw is recorded yet.
+    if (!flush_held) return;
+    if (scheduler.CurrentTick() != batch_tick) {
+        flush_held = false; // something else submitted meanwhile
+        return;
+    }
+    if (scheduler.IsRenderingAny() && TargetsKey() == held_targets) return;
+    flush_held = false;
+    batch_draws = 0;
+    scheduler.Flush();
+    batch_tick = scheduler.CurrentTick();
 }
 
 void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u32 stride,
@@ -1912,6 +1984,13 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
     scheduler.BeginRendering(state);
+    if (PassStats::Shapes()) {
+        const auto& sc = scheduler.GetDynamicState().scissors;
+        if (!sc.empty()) {
+            PassStats::Scissor(state.width, state.height, sc[0].offset.x, sc[0].offset.y, sc[0].extent.width,
+                               sc[0].extent.height);
+        }
+    }
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
@@ -2074,6 +2153,8 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     if (FrameCapture::Active()) {
         FrameCapture::Dispatch(cs.pgm_hash, dim_x, dim_y, dim_z);
     }
+    PassStats::Add(PassStats::Get().dispatches);
+    PassStats::Add(PassStats::Get().dispatches_total);
     scheduler.Record([=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, handle);
         cmdbuf.dispatch(dim_x, dim_y, dim_z);
