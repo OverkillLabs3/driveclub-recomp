@@ -319,6 +319,34 @@ inline void TuneProcess() {
     }();
     (void)done;
 }
+#elif defined(__APPLE__)
+
+/// Hardware threads available to the process (macOS has no affinity masks).
+inline unsigned Available() {
+    return std::max(1u, std::thread::hardware_concurrency());
+}
+
+/// macOS schedules by quality of service: the GPU threads ask for the performance cores.
+inline void MakeImportant() {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+}
+enum CoreOwner : unsigned {
+    kGpuCommandThread = 1,
+    kDrawThread = 2,
+    kRecorderThread = 4,
+};
+inline unsigned CoreOwners() {
+    return 0;
+}
+inline void ReserveCoreForCurrentThread(CoreOwner) {
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+}
+inline void TuneProcess() {}
+
+/// The calling thread runs on the efficiency cores when the performance cores are busy.
+inline void MakeBackground() {
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+}
 #else
 
 /// Hardware threads available to the process.

@@ -38,7 +38,13 @@ static uint64_t pool_size_bytes(void) {
 #define POOL_SIZE pool_size_bytes()
 #define FLEXIBLE_SIZE (UINT64_C(448) * 1024 * 1024)
 #define PAGE UINT64_C(16384)
+#ifdef __APPLE__
+/* Rosetta 2 holds [0x0fc0000000, 0x7000000000) in every x86_64 process (MAP_FIXED there fails),
+ * so the PS4 user range starts above it. The game only needs addresses below 1 TiB. */
+#define USER_MIN UINT64_C(0x7000000000)
+#else
 #define USER_MIN UINT64_C(0x1000000000)
+#endif
 #define USER_MAX UINT64_C(0xfc00000000)
 #define LIMIT 4096
 #define INVALID ((int32_t)UINT32_C(0x80020016))
@@ -337,6 +343,7 @@ static int pool(void) {
     backing_base=view;
     return 0;
 }
+/* macOS: the range is reserved before main (compat_macos.c); nothing to do here either. */
 void runtime_memory_reserve(void) {}
 static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, uint64_t phys) {
     void *mapped = !reserved
@@ -344,10 +351,20 @@ static int host_map(uintptr_t address, uint64_t size, int prot, int reserved, ui
         : mmap((void *)address,size,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_NORESERVE|MAP_FIXED,-1,0);
     return mapped==MAP_FAILED ? -1 : 0;
 }
+#ifdef __APPLE__
+/* An unmapped hole in the guest range would be filled by the host's next mapping. */
+static int host_unmap(uintptr_t address, uint64_t size) { return bb_mac_unreserve_release((void *)address,size); }
+#else
 static int host_unmap(uintptr_t address, uint64_t size) { return munmap((void *)address,size); }
+#endif
 static int host_protect(uintptr_t address, uint64_t size, int prot) { return mprotect((void *)address,size,prot); }
 static void host_discard(uint64_t phys, uint64_t size) {
+#ifdef __APPLE__
+    /* No hole punching in shared memory objects: released pages read as zero when reused. */
+    memset(backing_base+phys,0,size);
+#else
     fallocate(pool_fd,FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE,(off_t)phys,(off_t)size);
+#endif
 }
 #endif
 static void queue_hook(int kind, uintptr_t address, uint64_t size) {
@@ -761,15 +778,20 @@ uintptr_t runtime_memory_resolve(const char *name) {
     return RUNTIME_LOOKUP(exports,name);
 }
 /* Host-owned memory the guest can see (image, stacks, trampolines) lives in
- * [LOW_MIN, USER_MIN): PS4 code packs pointers into 40-bit fields. */
+ * [LOW_MIN, LOW_MAX): PS4 code packs pointers into 40-bit fields. */
 #define LOW_MIN UINT64_C(0x0800000000)
+#ifdef __APPLE__
+#define LOW_MAX UINT64_C(0x0fc0000000) /* where Rosetta 2's own range begins */
+#else
+#define LOW_MAX USER_MIN
+#endif
 static uintptr_t low_next=LOW_MIN;
 void *runtime_low_map(size_t size, int prot) {
     size=align_up(size,PAGE);
     write_lock();
 #ifdef _WIN32
     void *p=NULL;
-    while (!p && low_next+size<=USER_MIN) {
+    while (!p && low_next+size<=LOW_MAX) {
         p=VirtualAlloc((void *)low_next,size,MEM_RESERVE|MEM_COMMIT,win_prot(prot));
         low_next+=size+UINT64_C(65536); /* unmapped gap catches overruns; allocation granularity */
     }
@@ -777,7 +799,7 @@ void *runtime_low_map(size_t size, int prot) {
     return p;
 #else
     void *p=MAP_FAILED;
-    while (low_next+size<=USER_MIN) {
+    while (low_next+size<=LOW_MAX) {
         p=mmap((void *)low_next,size,prot,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED_NOREPLACE,-1,0);
         low_next+=size+PAGE; /* unmapped gap catches overruns */
         if (p!=MAP_FAILED) break;
