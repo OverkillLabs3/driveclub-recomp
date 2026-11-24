@@ -11,7 +11,8 @@ Id Decorate(EmitContext& ctx, IR::Inst* inst, Id op) {
     // bbport: BB_CONTRACTION (runtime_info.h) leaves the pixel and compute shaders unmarked on macOS.
     const auto mode = Contraction();
     const bool unmarked_stage = ctx.sw_stage == SwStage::Fragment || ctx.sw_stage == SwStage::Compute;
-    if (mode == ContractionMode::None || (mode == ContractionMode::Vertex && unmarked_stage)) {
+    if (mode == ContractionMode::None || mode == ContractionMode::Invariant ||
+        (mode == ContractionMode::Vertex && unmarked_stage)) {
         return op;
     }
     ctx.Decorate(op, spv::Decoration::NoContraction);

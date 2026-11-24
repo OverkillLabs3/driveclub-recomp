@@ -270,6 +270,12 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
         setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
         setenv("MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS", "2", 0);
     }
+    // bbport: descriptors bound directly to the encoders instead of through Metal argument buffers: under Rosetta
+    // the argument-buffer path cost the recording thread more per push (race 56.6 -> 62 fps). BB_MVK_ARGUMENT_BUFFERS=1
+    // goes back (shaders over Metal's per-stage limits of 31 buffers, 128 textures and 16 samplers would need it).
+    if (const char* ab = std::getenv("BB_MVK_ARGUMENT_BUFFERS"); !(ab && ab[0] == '1')) {
+        setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "0", 0);
+    }
 #endif
 
 #if defined(__APPLE__)

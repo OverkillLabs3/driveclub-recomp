@@ -87,11 +87,13 @@ inline bool RectReplayAllowed(u64 pgm_hash) {
 }
 
 /// bbport: which shaders mark their float adds, subtracts, multiplies and fmas NoContraction (BB_CONTRACTION=
-/// all|vertex|none). The mark keeps GCN's separate multiply and add, so a position computed by two shaders
+/// all|vertex|invariant|none). The mark keeps GCN's separate multiply and add, so a position computed by two shaders
 /// comes out bit-identical and depth-equal passes line up. SPIRV-Cross for Metal turns every marked op into an
-/// [[clang::optnone]] fma helper, which keeps the Metal compiler from fusing and scheduling them: on macOS
-/// only the vertex-type stages keep the mark (pixel and compute shaders run unmarked).
-enum class ContractionMode : u32 { All = 0, Vertex = 1, None = 2 };
+/// [[clang::optnone]] fma helper, which keeps the Metal compiler from fusing and scheduling them. On macOS
+/// (`invariant`) no shader is marked and the vertex position output is decorated Invariant instead: Metal then
+/// computes it the same way in every shader that computes it the same way, which is what lines depth-equal
+/// passes up, while the rest of the vertex shader is optimised. `vertex` keeps the mark on vertex-type stages.
+enum class ContractionMode : u32 { All = 0, Vertex = 1, None = 2, Invariant = 3 };
 inline ContractionMode Contraction() {
     static const ContractionMode mode = [] {
         const char* env = std::getenv("BB_CONTRACTION");
@@ -99,8 +101,9 @@ inline ContractionMode Contraction() {
         if (v == "all") return ContractionMode::All;
         if (v == "vertex") return ContractionMode::Vertex;
         if (v == "none") return ContractionMode::None;
+        if (v == "invariant") return ContractionMode::Invariant;
 #ifdef __APPLE__
-        return ContractionMode::Vertex;
+        return ContractionMode::Invariant;
 #else
         return ContractionMode::All;
 #endif
