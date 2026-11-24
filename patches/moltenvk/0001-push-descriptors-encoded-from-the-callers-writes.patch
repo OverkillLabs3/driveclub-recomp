@@ -1,0 +1,73 @@
+diff --git a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
+index 76ca788..705ca0f 100644
+--- a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
++++ b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.h
+@@ -119,6 +119,15 @@ public:
+ 	/** Adds the specified execution command at the end of this command buffer. */
+ 	void addCommand(MVKCommand* command);
+ 
++	/**
++	 * bbport: when commands are encoded as they are added (immediate prefill) and the command buffer is not
++	 * reusable, applies the push descriptor writes to the encoder directly from the caller's structures and returns
++	 * true. Otherwise returns false, and the caller records an MVKCmdPushDescriptorSet as usual. The command would
++	 * only have deep-copied the writes into heap arrays, encoded them at once and freed them again.
++	 */
++	bool pushDescriptorSetImmediately(VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout, uint32_t set,
++									  uint32_t descriptorWriteCount, const VkWriteDescriptorSet* pDescriptorWrites);
++
+ 	/** Returns the number of commands currently in this command buffer. */
+ 	uint32_t getCommandCount() { return _commandCount; }
+ 
+@@ -384,6 +393,9 @@ public:
+ 	/** Returns the command encoder state. */
+ 	MVKCommandEncoderState& getState() { return _state; }
+ 
++	/** bbport: how commands are encoded (MVKCommandBuffer::pushDescriptorSetImmediately). */
++	MVKPrefillMetalCommandBuffersStyle getPrefillStyle() const { return _prefillStyle; }
++
+ 	/** Returns the Vulkan graphics encoder state. */
+ 	const MVKVulkanGraphicsCommandEncoderState& getVkGraphics() const { return _state.vkGraphics(); }
+ 
+diff --git a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.mm b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.mm
+index 8c24deb..1610daa 100644
+--- a/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.mm
++++ b/MoltenVK/MoltenVK/Commands/MVKCommandBuffer.mm
+@@ -301,6 +301,22 @@ void MVKCommandBuffer::addCommand(MVKCommand* command) {
+     if ( !_head ) { _head = command; }
+ }
+ 
++bool MVKCommandBuffer::pushDescriptorSetImmediately(VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout layout,
++													 uint32_t set, uint32_t descriptorWriteCount,
++													 const VkWriteDescriptorSet* pDescriptorWrites) {
++	if ( !_canAcceptCommands || !_immediateCmdEncoder || _isReusable ) { return false; }
++	_commandCount++;
++	auto* mvkLayout = (MVKPipelineLayout*)layout;
++	if (_immediateCmdEncoder->getPrefillStyle() == MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS_STYLE_IMMEDIATE_ENCODING) {
++		@autoreleasepool {
++			_immediateCmdEncoder->getState().pushDescriptorSet(pipelineBindPoint, mvkLayout, set, descriptorWriteCount, pDescriptorWrites);
++		}
++	} else {
++		_immediateCmdEncoder->getState().pushDescriptorSet(pipelineBindPoint, mvkLayout, set, descriptorWriteCount, pDescriptorWrites);
++	}
++	return true;
++}
++
+ void MVKCommandBuffer::submit(MVKQueueCommandBufferSubmission* cmdBuffSubmit,
+ 							  MVKCommandEncodingContext* pEncodingContext) {
+ 	if ( !canExecute() ) { return; }
+diff --git a/MoltenVK/MoltenVK/Vulkan/vulkan.mm b/MoltenVK/MoltenVK/Vulkan/vulkan.mm
+index b15fe5e..18fede6 100644
+--- a/MoltenVK/MoltenVK/Vulkan/vulkan.mm
++++ b/MoltenVK/MoltenVK/Vulkan/vulkan.mm
+@@ -3072,7 +3072,10 @@ MVK_PUBLIC_VULKAN_SYMBOL void vkCmdPushDescriptorSet(
+     const VkWriteDescriptorSet*                 pDescriptorWrites) {
+ 
+ 	MVKTraceVulkanCallStart();
+-    MVKAddCmd(PushDescriptorSet, commandBuffer, pipelineBindPoint, layout, set, descriptorWriteCount, pDescriptorWrites);
++	// bbport: encode at once from the caller's writes when the command buffer encodes as commands are added.
++	if ( !MVKCommandBuffer::getMVKCommandBuffer(commandBuffer)->pushDescriptorSetImmediately(pipelineBindPoint, layout, set, descriptorWriteCount, pDescriptorWrites) ) {
++		MVKAddCmd(PushDescriptorSet, commandBuffer, pipelineBindPoint, layout, set, descriptorWriteCount, pDescriptorWrites);
++	}
+ 	MVKTraceVulkanCallEnd();
+ }
+ 

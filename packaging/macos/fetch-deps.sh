@@ -83,13 +83,33 @@ if ! done_mark "vulkan-loader-$vulkan_version"; then
         -DVULKAN_HEADERS_INSTALL_DIR="$deps"
     mark "vulkan-loader-$vulkan_version"
 fi
-if ! done_mark "moltenvk-$moltenvk_version-1"; then
-    archive=$cache/MoltenVK-macos-$moltenvk_version.tar
-    fetch "https://github.com/KhronosGroup/MoltenVK/releases/download/$moltenvk_version/MoltenVK-macos.tar" "$archive"
-    rm -rf "$src/MoltenVK" && mkdir -p "$src/MoltenVK"
-    tar -xf "$archive" --no-same-owner -C "$src/MoltenVK"
-    dylib=$(find "$src/MoltenVK" -name libMoltenVK.dylib -path '*dynamic*' | head -1)
-    [ -n "$dylib" ] || dylib=$(find "$src/MoltenVK" -name libMoltenVK.dylib | head -1)
+# MoltenVK is built from source with the patches in patches/moltenvk (Apple-silicon performance; the first build
+# takes a while: its dependencies are built too). MOLTENVK_PREBUILT=1 installs the unpatched release instead.
+moltenvk_patches=$(cat patches/moltenvk/*.patch 2>/dev/null | shasum | cut -c1-12)
+moltenvk_mark=moltenvk-$moltenvk_version-$([ "${MOLTENVK_PREBUILT:-0}" = 1 ] && echo prebuilt || echo "src-$moltenvk_patches")
+if ! done_mark "$moltenvk_mark"; then
+    if [ "${MOLTENVK_PREBUILT:-0}" = 1 ]; then
+        archive=$cache/MoltenVK-macos-$moltenvk_version.tar
+        fetch "https://github.com/KhronosGroup/MoltenVK/releases/download/$moltenvk_version/MoltenVK-macos.tar" "$archive"
+        rm -rf "$src/MoltenVK" && mkdir -p "$src/MoltenVK"
+        tar -xf "$archive" --no-same-owner -C "$src/MoltenVK"
+        dylib=$(find "$src/MoltenVK" -name libMoltenVK.dylib -path '*dynamic*' | head -1)
+        [ -n "$dylib" ] || dylib=$(find "$src/MoltenVK" -name libMoltenVK.dylib | head -1)
+    else
+        command -v xcodebuild >/dev/null || { echo 'Building MoltenVK needs Xcode (or MOLTENVK_PREBUILT=1).' >&2; exit 1; }
+        mvk=$src/MoltenVK-source
+        if [ ! -d "$mvk/.git" ]; then
+            git clone --depth 1 --branch "$moltenvk_version" https://github.com/KhronosGroup/MoltenVK.git "$mvk"
+        fi
+        git -C "$mvk" checkout -q -- . && git -C "$mvk" clean -qfd -- MoltenVK
+        for patch in patches/moltenvk/*.patch; do
+            [ -e "$patch" ] && git -C "$mvk" apply "$PWD/$patch"
+        done
+        echo "Building MoltenVK $moltenvk_version from source (first time: about half an hour) ..."
+        [ -d "$mvk/External/build" ] || (cd "$mvk" && ./fetchDependencies --macos >/dev/null)
+        (cd "$mvk" && make macos >/dev/null)
+        dylib=$mvk/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
+    fi
     lipo -info "$dylib" | grep -q x86_64 || { echo "MoltenVK has no x86_64 slice: $dylib" >&2; exit 1; }
     cp "$dylib" "$deps/lib/libMoltenVK.dylib"
     mkdir -p "$deps/share/vulkan/icd.d"
@@ -106,7 +126,7 @@ if ! done_mark "moltenvk-$moltenvk_version-1"; then
     }
 }
 EOF
-    mark "moltenvk-$moltenvk_version-1"
+    mark "$moltenvk_mark"
 fi
 
 # --- header-only ------------------------------------------------------------------------------
