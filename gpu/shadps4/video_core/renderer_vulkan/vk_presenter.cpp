@@ -28,6 +28,7 @@
 #include "bbport_settings.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
+#include "video_core/renderer_vulkan/vk_pass_stats.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_reflex.h"
 #include "video_core/texture_cache/image.h"
@@ -1063,6 +1064,7 @@ Frame* Presenter::PrepareBlankFrame(bool present_thread, u64 content_frame_id) {
 }
 
 void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame) {
+    if (is_game_frame && !is_reusing_frame) PassStats::Frame();
     // Free the frame for reuse
     const auto free_frame = [&] {
         if (!is_reusing_frame) {
@@ -1497,6 +1499,31 @@ void Presenter::UpdateFrameGenLimit(bool wanted, double work_ms) {
     settings.frame_gen_display_hz = int(hz);
 }
 
+// bbport: BB_SHOT_DIR: when <dir>/shot.request exists, the next game frame is saved as <dir>/<its contents>.png
+// (the request is removed). For comparing renders; the copy waits for the GPU once.
+namespace {
+std::string TakeShotRequest() {
+    static const char* dir = std::getenv("BB_SHOT_DIR");
+    if (!dir || !*dir) {
+        return {};
+    }
+    const std::string request = std::string(dir) + "/shot.request";
+    FILE* file = std::fopen(request.c_str(), "rb");
+    if (!file) {
+        return {};
+    }
+    char name[128] = {};
+    const size_t got = std::fread(name, 1, sizeof(name) - 1, file);
+    std::fclose(file);
+    std::remove(request.c_str());
+    std::string base(name, got);
+    while (!base.empty() && std::isspace(static_cast<unsigned char>(base.back()))) {
+        base.pop_back();
+    }
+    return std::string(dir) + "/" + (base.empty() ? std::string("shot") : base) + ".png";
+}
+} // namespace
+
 bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool notify_launcher) {
     if (!swapchain.AcquireNextImage()) {
         swapchain.Recreate(window.GetWidth(), window.GetHeight());
@@ -1600,6 +1627,35 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
         }
         cmdbuf.blitImage(image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
+        if (last && notify_launcher) {
+            shot_path = TakeShotRequest();
+            if (!shot_path.empty()) {
+                const vk::BufferCreateInfo buffer_info{
+                    .size = vk::DeviceSize(frame->width) * frame->height * 4,
+                    .usage = vk::BufferUsageFlagBits::eTransferDst,
+                };
+                const VmaAllocationCreateInfo shot_alloc{
+                    .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                    .usage = VMA_MEMORY_USAGE_AUTO,
+                };
+                VkBuffer buffer{};
+                VmaAllocationInfo shot_info{};
+                if (vmaCreateBuffer(instance.GetAllocator(), &static_cast<const VkBufferCreateInfo&>(buffer_info),
+                                    &shot_alloc, &buffer, &shot_allocation, &shot_info) == VK_SUCCESS) {
+                    shot_buffer = buffer;
+                    shot_mapped = shot_info.pMappedData;
+                    shot_width = frame->width;
+                    shot_height = frame->height;
+                    const vk::BufferImageCopy region{
+                        .imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                        .imageExtent = {frame->width, frame->height, 1},
+                    };
+                    cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, shot_buffer, region);
+                } else {
+                    shot_path.clear();
+                }
+            }
+        }
         // bbport: the settings menu / FPS counter over the frame, at display resolution.
         BbOverlay::NotePresent();
         const bool overlay = BbOverlay::Visible() && !hdr_output;
@@ -1663,6 +1719,22 @@ bool Presenter::PresentImage(Frame* frame, vk::Image image, bool last, bool noti
         info.AddSignal(frame->present_done);
     }
     scheduler.Flush(info);
+    if (!shot_path.empty()) {
+        scheduler.Finish();
+        vmaInvalidateAllocation(instance.GetAllocator(), shot_allocation, 0, VK_WHOLE_SIZE);
+        size_t size = 0;
+        void* png = tdefl_write_image_to_png_file_in_memory(shot_mapped, int(shot_width), int(shot_height), 4,
+                                                            &size);
+        if (FILE* out = png ? std::fopen(shot_path.c_str(), "wb") : nullptr) {
+            std::fwrite(png, 1, size, out);
+            std::fclose(out);
+            std::printf("Screenshot: %s (%ux%u)\n", shot_path.c_str(), shot_width, shot_height);
+        }
+        mz_free(png);
+        vmaDestroyBuffer(instance.GetAllocator(), shot_buffer, shot_allocation);
+        shot_buffer = VK_NULL_HANDLE;
+        shot_path.clear();
+    }
 
     if (last) {
         Reflex::TraceCpuPresent(frame->content_frame_id);

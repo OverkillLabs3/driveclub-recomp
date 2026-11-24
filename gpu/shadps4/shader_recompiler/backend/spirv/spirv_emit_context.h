@@ -279,6 +279,22 @@ public:
     Id clip_distances{};
     Id cull_distances{};
 
+    // bbport: rect replay (runtime_info.h, SwVertexRuntimeInfo::rect_replay). The body writes Private shadows
+    // of the outputs and reads a Private vertex index; the replay entry point runs it per rect vertex.
+    struct ReplayOutput {
+        Id real;
+        Id shadow;
+        Id type;
+        Id scalar_type; // F32 / U32 component
+        u32 components; // vector size; 0 for an array of floats (clip/cull distances)
+        u32 array_size;
+        bool is_float;
+    };
+    bool rect_replay{};
+    Id replay_real_vertex_index{};
+    std::vector<ReplayOutput> replay_outputs;
+    void SetupRectReplay();
+
     Id patch_vertices{};
     Id output_tess_level_outer{};
     Id output_tess_level_inner{};

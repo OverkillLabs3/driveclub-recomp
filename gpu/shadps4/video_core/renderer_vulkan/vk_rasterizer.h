@@ -12,6 +12,7 @@
 #include "video_core/renderer_vulkan/vk_bind_helper.h"
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_drive_aa.h"
+#include "video_core/renderer_vulkan/vk_null_resources.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
@@ -236,7 +237,7 @@ public:
     }
 
     std::thread::id GetGpuCommandProcessorThread();
-#if defined(__linux__) || defined(_WIN32)
+#if defined(__linux__) || defined(_WIN32) || defined(__APPLE__)
     u32 GetGpuCommandProcessorThreadId();
 #endif
 
@@ -305,6 +306,11 @@ private:
     bool FilterDraw();
     bool FilterDrawPasses() const;
     void FlushLongBatch();
+    bool DeferFlushInPass() const;
+    u64 TargetsKey() const;
+    void FlushBeforeDraw();
+    u64 held_targets{};
+    bool flush_held{};
     void CaptureHdrHudless(VideoCore::ImageId display, VAddr address);
     void InvalidateHdrHudless(VAddr address);
     u32 batch_draws{};
@@ -432,6 +438,7 @@ private:
     std::unique_ptr<DriveAA> drive_aa;
     std::unique_ptr<CameraMotion> camera_motion; // bbport: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
+    std::unique_ptr<NullResources> null_resources; ///< empty bindings without nullDescriptor
     bool scene_started = false;
     std::unique_ptr<ObjectMotion> object_motion;
     std::unique_ptr<VideoCore::Buffer> crumb_buffer; ///< AMD buffer marker target (see BbRecent::crumb)

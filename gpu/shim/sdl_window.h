@@ -44,6 +44,7 @@ private:
     std::string text, text_prompt, base_title;
     void UpdateTextTitle();
     SDL_Window* window{};
+    void* metal_view{}; ///< macOS: the SDL_MetalView whose layer MoltenVK presents to
     WindowSystemInfo window_info{};
 };
 

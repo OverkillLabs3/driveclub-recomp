@@ -30,6 +30,11 @@
 #ifndef _WIN64
 #include <sys/mman.h>
 #include "common/adaptive_mutex.h"
+#if defined(__APPLE__) && defined(__x86_64__)
+#include <sys/ucontext.h>
+#include <immintrin.h>
+#include "common/decoder.h"
+#endif
 #else
 #include <windows.h>
 #include "common/decoder.h"
@@ -62,8 +67,63 @@ namespace VideoCore {
 constexpr size_t PM_PAGE_SIZE = 4_KB;
 constexpr size_t PM_PAGE_BITS = 12;
 
-#ifdef _WIN64
+#if (defined(_WIN64) || (defined(__APPLE__) && defined(__x86_64__)))
+#if defined(__APPLE__)
+// bbport: macOS (x86_64 under Rosetta 2): the emulation below works on a Windows-shaped register context. It is
+// filled from the signal's ucontext and written back after an emulated instruction (MacContext).
+using DWORD = u32;
+using DWORD64 = u64;
+struct M128A {
+    u64 Low;
+    s64 High;
+};
+constexpr DWORD CONTEXT_XSTATE = 0x40u;
+struct CONTEXT {
+    DWORD ContextFlags;
+    DWORD MxCsr;
+    DWORD EFlags;
+    DWORD64 Rax, Rcx, Rdx, Rbx, Rsp, Rbp, Rsi, Rdi, R8, R9, R10, R11, R12, R13, R14, R15, Rip;
+    M128A Xmm0, Xmm1, Xmm2, Xmm3, Xmm4, Xmm5, Xmm6, Xmm7, Xmm8, Xmm9, Xmm10, Xmm11, Xmm12, Xmm13, Xmm14, Xmm15;
+    M128A* ymm_upper; ///< the upper YMM halves in the signal context (AVX state present), or null
+};
+#endif
 namespace {
+#if defined(__APPLE__)
+// The guest registers of a fault: copied out of the ucontext, and back in when the instruction was emulated.
+struct MacContext {
+    ucontext_t* uc;
+    CONTEXT ctx{};
+    explicit MacContext(void* context) : uc{static_cast<ucontext_t*>(context)} {
+        const auto& ss = uc->uc_mcontext->__ss;
+        const auto& fs = uc->uc_mcontext->__fs;
+        ctx.Rax = ss.__rax; ctx.Rbx = ss.__rbx; ctx.Rcx = ss.__rcx; ctx.Rdx = ss.__rdx;
+        ctx.Rsi = ss.__rsi; ctx.Rdi = ss.__rdi; ctx.Rbp = ss.__rbp; ctx.Rsp = ss.__rsp;
+        ctx.R8 = ss.__r8; ctx.R9 = ss.__r9; ctx.R10 = ss.__r10; ctx.R11 = ss.__r11;
+        ctx.R12 = ss.__r12; ctx.R13 = ss.__r13; ctx.R14 = ss.__r14; ctx.R15 = ss.__r15;
+        ctx.Rip = ss.__rip;
+        ctx.EFlags = DWORD(ss.__rflags);
+        ctx.MxCsr = fs.__fpu_mxcsr;
+        std::memcpy(&ctx.Xmm0, &fs.__fpu_xmm0, 16 * sizeof(M128A));
+        if (uc->uc_mcsize >= sizeof(struct __darwin_mcontext_avx64)) {
+            auto* avx = reinterpret_cast<struct __darwin_mcontext_avx64*>(uc->uc_mcontext);
+            ctx.ymm_upper = reinterpret_cast<M128A*>(&avx->__fs.__fpu_ymmh0);
+            ctx.ContextFlags = CONTEXT_XSTATE;
+        }
+    }
+    void WriteBack() {
+        auto& ss = uc->uc_mcontext->__ss;
+        auto& fs = uc->uc_mcontext->__fs;
+        ss.__rax = ctx.Rax; ss.__rbx = ctx.Rbx; ss.__rcx = ctx.Rcx; ss.__rdx = ctx.Rdx;
+        ss.__rsi = ctx.Rsi; ss.__rdi = ctx.Rdi; ss.__rbp = ctx.Rbp; ss.__rsp = ctx.Rsp;
+        ss.__r8 = ctx.R8; ss.__r9 = ctx.R9; ss.__r10 = ctx.R10; ss.__r11 = ctx.R11;
+        ss.__r12 = ctx.R12; ss.__r13 = ctx.R13; ss.__r14 = ctx.R14; ss.__r15 = ctx.R15;
+        ss.__rip = ctx.Rip;
+        ss.__rflags = (ss.__rflags & ~u64(0xFFFFFFFFu)) | ctx.EFlags;
+        fs.__fpu_mxcsr = ctx.MxCsr;
+        std::memcpy(&fs.__fpu_xmm0, &ctx.Xmm0, 16 * sizeof(M128A));
+    }
+};
+#endif
 // bbport: BB_FAULT_EMULATE=1. Guest read faults in DriveClub mostly read CPU data that shares a 4 KB page with a
 // few GPU-written bytes (the top site reads a field ~250 bytes from 16 GPU-written bytes): the page is protected
 // for those bytes, and the read waited for a download of them. A plain load (mov, movzx, movsx, movsxd, SSE
@@ -157,9 +217,13 @@ M128A* YmmUpper(CONTEXT* ctx) {
     if ((ctx->ContextFlags & CONTEXT_XSTATE) != CONTEXT_XSTATE) {
         return nullptr;
     }
+#if defined(__APPLE__)
+    return ctx->ymm_upper;
+#else
     DWORD length = 0;
     auto* upper = static_cast<M128A*>(LocateXStateFeature(ctx, XSTATE_AVX, &length));
     return upper && length >= 16 * sizeof(M128A) ? upper : nullptr;
+#endif
 }
 
 Load Classify(const ZydisDecodedInstruction& inst) {
@@ -712,8 +776,7 @@ bool EmulateNonGpuLane(CONTEXT* ctx, const ZydisDecodedInstruction& inst, const 
     return true;
 }
 
-bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
-    CONTEXT* ctx = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord;
+bool EmulateNonGpuLoadCtx(CONTEXT* ctx, VAddr fault, Vulkan::Rasterizer* rasterizer) {
     ZydisDecodedInstruction inst;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
     if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
@@ -799,8 +862,7 @@ bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterize
 
 // Stores: mov m, r / mov m, imm and the SSE stores of the low part or the whole XMM register. The bytes are
 // collected here; the GPU thread checks them and does the store (Rasterizer::StoreUntracked).
-bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
-    CONTEXT* ctx = static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord;
+bool EmulateNonGpuStoreCtx(CONTEXT* ctx, VAddr fault, Vulkan::Rasterizer* rasterizer) {
     ZydisDecodedInstruction inst;
     ZydisDecodedOperand ops[ZYDIS_MAX_OPERAND_COUNT];
     if (!ZYAN_SUCCESS(Common::Decoder::Instance()->decodeInstruction(
@@ -888,6 +950,28 @@ bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasteriz
     ctx->Rip += inst.length;
     return true;
 }
+
+bool EmulateNonGpuLoad(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
+#if defined(__APPLE__)
+    MacContext mac{context};
+    if (!EmulateNonGpuLoadCtx(&mac.ctx, fault, rasterizer)) return false;
+    mac.WriteBack();
+    return true;
+#else
+    return EmulateNonGpuLoadCtx(static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord, fault, rasterizer);
+#endif
+}
+
+bool EmulateNonGpuStore(void* context, VAddr fault, Vulkan::Rasterizer* rasterizer) {
+#if defined(__APPLE__)
+    MacContext mac{context};
+    if (!EmulateNonGpuStoreCtx(&mac.ctx, fault, rasterizer)) return false;
+    mac.WriteBack();
+    return true;
+#else
+    return EmulateNonGpuStoreCtx(static_cast<EXCEPTION_POINTERS*>(context)->ContextRecord, fault, rasterizer);
+#endif
+}
 } // namespace
 #endif
 
@@ -971,7 +1055,7 @@ struct PageManager::Impl {
             BbStats::Timer timer{BbStats::t_write_faults};
             // The readback log names the faulting instruction for writes too (it kept the last read's before).
             BbTrace::fault_rip = Common::FaultInstructionPointer(context);
-#ifdef _WIN64
+#if (defined(_WIN64) || (defined(__APPLE__) && defined(__x86_64__)))
             // Only faults on pages holding GPU data: CPU write tracking faults stay on the cheap path.
             if (!is_gpu_thread && FaultEmulation() && rasterizer->IsPageGpuModified(addr) &&
                 PageEmulationBudgetLeft(addr)) {
@@ -992,6 +1076,8 @@ struct PageManager::Impl {
             BbTrace::fault_rip = Common::FaultInstructionPointer(context);
 #ifdef _WIN64
             BbTrace::fault_ret = *reinterpret_cast<const u64*>(((EXCEPTION_POINTERS*)context)->ContextRecord->Rsp);
+#endif
+#if (defined(_WIN64) || (defined(__APPLE__) && defined(__x86_64__)))
             // Only read faults from GPU read protection (a page holding GPU data).
             if (!is_gpu_thread && FaultEmulation() && rasterizer->IsPageGpuModified(addr) &&
                 PageEmulationBudgetLeft(addr)) {

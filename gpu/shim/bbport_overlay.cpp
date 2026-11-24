@@ -42,6 +42,18 @@ asm(".section .rdata,\"dr\"\n"
     ".global bb_font_ttf_end\n"
     "bb_font_ttf_end:\n"
     ".text\n");
+#elif defined(__APPLE__)
+// Mach-O: C symbols carry a leading underscore; read-only data is __TEXT,__const.
+asm(".section __TEXT,__const\n"
+    ".balign 16\n"
+    ".private_extern _bb_font_ttf\n"
+    ".globl _bb_font_ttf\n"
+    "_bb_font_ttf:\n"
+    ".incbin \"" BB_FONT_PATH "\"\n"
+    ".private_extern _bb_font_ttf_end\n"
+    ".globl _bb_font_ttf_end\n"
+    "_bb_font_ttf_end:\n"
+    ".text\n");
 #else
 asm(".section .rodata\n"
     ".balign 16\n"
@@ -61,15 +73,23 @@ extern "C" const unsigned char bb_font_ttf_end[];
 #ifdef _WIN32
 #define BB_EXIT_FONT_SECTION ".section .rdata,\"dr\"\n"
 #define BB_EXIT_FONT_END ".text\n"
+#elif defined(__APPLE__)
+#define BB_EXIT_FONT_SECTION ".section __TEXT,__const\n"
+#define BB_EXIT_FONT_END ".text\n"
 #else
 #define BB_EXIT_FONT_SECTION ".section .rodata\n"
 #define BB_EXIT_FONT_END ".previous\n"
 #endif
+#ifdef __APPLE__
+#define BB_SYM(name) "_" #name
+#else
+#define BB_SYM(name) #name
+#endif
 asm(BB_EXIT_FONT_SECTION
-    ".balign 16\n.global bb_exit_body\nbb_exit_body:\n.incbin \"" BB_EXIT_BODY_FONT_PATH "\"\n"
-    ".global bb_exit_body_end\nbb_exit_body_end:\n"
-    ".balign 16\n.global bb_exit_heading\nbb_exit_heading:\n.incbin \"" BB_EXIT_HEADING_FONT_PATH "\"\n"
-    ".global bb_exit_heading_end\nbb_exit_heading_end:\n" BB_EXIT_FONT_END);
+    ".balign 16\n.globl " BB_SYM(bb_exit_body) "\n" BB_SYM(bb_exit_body) ":\n.incbin \"" BB_EXIT_BODY_FONT_PATH "\"\n"
+    ".globl " BB_SYM(bb_exit_body_end) "\n" BB_SYM(bb_exit_body_end) ":\n"
+    ".balign 16\n.globl " BB_SYM(bb_exit_heading) "\n" BB_SYM(bb_exit_heading) ":\n.incbin \"" BB_EXIT_HEADING_FONT_PATH "\"\n"
+    ".globl " BB_SYM(bb_exit_heading_end) "\n" BB_SYM(bb_exit_heading_end) ":\n" BB_EXIT_FONT_END);
 extern "C" const unsigned char bb_exit_body[],bb_exit_body_end[],bb_exit_heading[],bb_exit_heading_end[];
 
 

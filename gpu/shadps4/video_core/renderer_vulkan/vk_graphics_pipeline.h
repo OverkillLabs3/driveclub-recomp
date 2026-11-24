@@ -56,6 +56,7 @@ struct GraphicsPipelineKey {
         AmdGpu::ClipSpace clip_space : 1;
         AmdGpu::ProvokingVtxLast provoking_vtx_last : 1;
         u32 depth_clip_enable : 1;
+        u32 rect_replay : 1; ///< bbport: a rect list drawn as two triangles (runtime_info.h, rect_replay)
     };
 
     GraphicsPipelineKey() {
@@ -95,6 +96,11 @@ public:
                      bool preloading);
     ~GraphicsPipeline();
 
+    /// bbport: a rect list drawn as two triangles: six vertices per rect instead of three.
+    bool IsRectReplay() const noexcept {
+        return rect_replay;
+    }
+
     const std::optional<const Shader::Gcn::FetchShaderData>& GetFetchShader() const noexcept {
         return fetch_shader;
     }
@@ -115,6 +121,7 @@ private:
 
 private:
     GraphicsPipelineKey key;
+    bool rect_replay{};
     std::optional<const Shader::Gcn::FetchShaderData> fetch_shader{};
 };
 

@@ -93,6 +93,7 @@ struct PipelineSelection {
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
     DrawIndirectParams draw_indirect_params{};
+    bool no_rect_replay = false; ///< bbport: an indexed rect list keeps the tessellation emulation
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };
 
@@ -125,6 +126,11 @@ public:
     bool LoadComputePipeline(Serialization::Archive& ar);
     bool LoadGraphicsPipeline(Serialization::Archive& ar);
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
+
+    /// bbport: the next lookups keep rect lists on the tessellation path (an indexed rect list).
+    void SetNoRectReplay(bool value) {
+        sel.no_rect_replay = value;
+    }
 
     const GraphicsPipeline* GetGraphicsPipeline(const DrawIndirectParams params = {},
                                                 const PreparedDraw* prepared = nullptr);
@@ -171,6 +177,7 @@ private:
     std::pair<vk::ShaderModule, u64> CompileModule(Shader::Info& info, Shader::RuntimeInfo runtime_info,
                                    const std::span<const u32>& code, size_t perm_idx,
                                    Shader::Backend::Bindings& binding);
+    bool RectReplay(const PipelineSelection& selection) const;
     const Shader::RuntimeInfo& BuildRuntimeInfo(PipelineSelection& sel, Shader::HwStage stage,
                                                 Shader::SwStage l_stage);
 

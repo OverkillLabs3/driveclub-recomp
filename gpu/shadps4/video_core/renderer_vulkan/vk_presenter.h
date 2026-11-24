@@ -141,6 +141,15 @@ public:
     Frame* PrepareLastFrame();
 
 private:
+    // bbport: BB_SHOT_DIR screenshots (vk_presenter.cpp, TakeShotRequest).
+    std::string shot_path;
+    VkBuffer shot_buffer{};
+    VmaAllocation shot_allocation{};
+    void* shot_mapped{};
+    u32 shot_width{};
+    u32 shot_height{};
+
+private:
     Frame* GetRenderFrame();
 
     void RecreateFrame(Frame* frame, u32 width, u32 height);

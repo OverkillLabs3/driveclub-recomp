@@ -590,6 +590,8 @@ inline u64 NowNs() {
 inline u32 CurrentCpu() {
 #ifdef _WIN32
     return static_cast<u32>(GetCurrentProcessorNumber());
+#elif defined(__APPLE__)
+    return ~0U; // no current-CPU query on macOS
 #else
     const int cpu = sched_getcpu();
     return cpu < 0 ? ~0U : static_cast<u32>(cpu);

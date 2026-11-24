@@ -57,6 +57,15 @@ constexpr vk::BufferUsageFlags AllFlags =
 /// AMD driver drops the old mapping and shaders that still use the old addresses read invalid memory.
 inline bool sparse_aliased_enabled = false;
 
+/// bbport: set by the Vulkan instance when the device has no sparse buffers (MoltenVK). The buffer
+/// arenas are then plain buffers over a slice of one host mapping that shadows the 40-bit guest
+/// address space (guest address A at HostShadow() + A), imported with VK_EXT_external_memory_host.
+/// Pages are committed when first touched, so the shadow costs what the GPU uses; two arenas over
+/// the same guest range alias the same memory, as aliased sparse binding does.
+inline bool host_shadow_arenas = false;
+/// The shadow mapping, reserved on first use (1 TiB of address space, nothing committed).
+u8* HostShadow();
+
 struct UniqueBuffer {
     explicit UniqueBuffer(vk::Device device, VmaAllocator allocator);
     ~UniqueBuffer();
@@ -68,7 +77,8 @@ struct UniqueBuffer {
         : device{other.device}, buffer{std::exchange(other.buffer, VK_NULL_HANDLE)},
           bda_addr{std::exchange(other.bda_addr, 0)},
           allocator{std::exchange(other.allocator, VK_NULL_HANDLE)},
-          allocation{std::exchange(other.allocation, VK_NULL_HANDLE)} {}
+          allocation{std::exchange(other.allocation, VK_NULL_HANDLE)},
+          imported{std::exchange(other.imported, VK_NULL_HANDLE)} {}
 
     UniqueBuffer& operator=(UniqueBuffer&& other) noexcept {
         if (this != &other) {
@@ -78,12 +88,17 @@ struct UniqueBuffer {
             bda_addr = std::exchange(other.bda_addr, 0);
             allocator = std::exchange(other.allocator, VK_NULL_HANDLE);
             allocation = std::exchange(other.allocation, VK_NULL_HANDLE);
+            imported = std::exchange(other.imported, VK_NULL_HANDLE);
         }
         return *this;
     }
 
     VkResult Create(vk::BufferCreateInfo& buffer_ci, MemoryType mem_type,
                     VmaAllocationInfo* out_alloc_info);
+
+    /// An arena over its slice of HostShadow() (host_shadow_arenas).
+    VkResult CreateShadowed(const Vulkan::Instance& instance, vk::BufferCreateInfo& buffer_ci,
+                            VAddr cpu_addr);
 
     void Destroy();
 
@@ -92,6 +107,7 @@ struct UniqueBuffer {
     vk::DeviceAddress bda_addr{};
     VmaAllocator allocator;
     VmaAllocation allocation{};
+    vk::DeviceMemory imported{}; ///< the host memory a shadowed arena is bound to
 };
 
 struct Buffer {

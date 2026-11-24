@@ -2,11 +2,46 @@
 #include <cstdlib>
 #include <cstring>
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <SDL3/SDL_metal.h>
+#include <dlfcn.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "sdl_window.h"
 #include "bbport_overlay.h"
 #include "bbport_prompts.h"
+
+#ifdef __APPLE__
+namespace {
+// bbport: the game's 16:9 picture keeps its shape whatever the window or screen. The presenter letterboxes the
+// frame inside the swapchain image (FitImage), but Core Animation then scales that image to the view's layer and by
+// default stretches it to fill: while a resize, a switch to full screen on a 16:10 MacBook panel or a move between
+// displays leaves the swapchain at the old size, the picture was squashed. The layer now scales with the aspect
+// kept (kCAGravityResizeAspect) over black, so any such mismatch shows bars instead.
+void KeepLayerAspect(void* layer) {
+    if (!layer) {
+        return;
+    }
+    auto* gravity = static_cast<id*>(dlsym(RTLD_DEFAULT, "kCAGravityResizeAspect"));
+    if (gravity && *gravity) {
+        reinterpret_cast<void (*)(id, SEL, id)>(objc_msgSend)(static_cast<id>(layer),
+                                                             sel_registerName("setContentsGravity:"), *gravity);
+    }
+    using GetConstantColor = void* (*)(const void*);
+    auto* get_color = reinterpret_cast<GetConstantColor>(dlsym(RTLD_DEFAULT, "CGColorGetConstantColor"));
+    auto* black_name = static_cast<const void**>(dlsym(RTLD_DEFAULT, "kCGColorBlack"));
+    if (get_color && black_name && *black_name) {
+        if (void* black = get_color(*black_name)) {
+            reinterpret_cast<void (*)(id, SEL, void*)>(objc_msgSend)(static_cast<id>(layer),
+                                                                    sel_registerName("setBackgroundColor:"), black);
+        }
+    }
+}
+} // namespace
+#endif
 
 namespace Frontend {
 
@@ -43,7 +78,13 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, width_);
     SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, height_);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+#ifdef __APPLE__
+    // MoltenVK draws to the view's CAMetalLayer (VK_EXT_metal_surface); SDL loads no Vulkan.
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_METAL_BOOLEAN, true);
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
+#else
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
+#endif
     const char* fullscreen = std::getenv("BB_FULLSCREEN");
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
     base_title = title;
@@ -58,6 +99,15 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
         window_info.type = WindowSystemType::Windows;
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_INSTANCE_POINTER, nullptr);
         window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    } else
+#endif
+#ifdef __APPLE__
+    if (driver && !std::strcmp(driver, "cocoa")) {
+        window_info.type = WindowSystemType::Metal;
+        metal_view = SDL_Metal_CreateView(window);
+        ASSERT_MSG(metal_view, "Failed to create the Metal view: {}", SDL_GetError());
+        window_info.render_surface = SDL_Metal_GetLayer(metal_view);
+        KeepLayerAspect(window_info.render_surface);
     } else
 #endif
     if (driver && !std::strcmp(driver, "x11")) {
@@ -84,6 +134,9 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 }
 
 WindowSDL::~WindowSDL() {
+#ifdef __APPLE__
+    if (metal_view) SDL_Metal_DestroyView(metal_view);
+#endif
     SDL_DestroyWindow(window);
 }
 

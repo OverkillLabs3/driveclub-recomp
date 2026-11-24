@@ -3,6 +3,10 @@
 
 #pragma once
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 #include <algorithm>
 #include <span>
 #include "common/types.h"
@@ -68,6 +72,45 @@ enum class Output : u8 {
 };
 using OutputMap = std::array<Output, 4>;
 
+/// bbport: BB_RECT_REPLAY_ONLY=<hex hash,...>: rect replay only for these vertex shaders (bisecting).
+inline bool RectReplayAllowed(u64 pgm_hash) {
+    static const std::string only = [] {
+        const char* env = std::getenv("BB_RECT_REPLAY_ONLY");
+        return std::string(env ? env : "");
+    }();
+    if (only.empty()) {
+        return true;
+    }
+    char text[32];
+    std::snprintf(text, sizeof(text), "%llx", static_cast<unsigned long long>(pgm_hash));
+    return only.find(text) != std::string::npos;
+}
+
+/// bbport: which shaders mark their float adds, subtracts, multiplies and fmas NoContraction (BB_CONTRACTION=
+/// all|vertex|invariant|none). The mark keeps GCN's separate multiply and add, so a position computed by two shaders
+/// comes out bit-identical and depth-equal passes line up. SPIRV-Cross for Metal turns every marked op into an
+/// [[clang::optnone]] fma helper, which keeps the Metal compiler from fusing and scheduling them. On macOS
+/// (`invariant`) no shader is marked and the vertex position output is decorated Invariant instead: Metal then
+/// computes it the same way in every shader that computes it the same way, which is what lines depth-equal
+/// passes up, while the rest of the vertex shader is optimised. `vertex` keeps the mark on vertex-type stages.
+enum class ContractionMode : u32 { All = 0, Vertex = 1, None = 2, Invariant = 3 };
+inline ContractionMode Contraction() {
+    static const ContractionMode mode = [] {
+        const char* env = std::getenv("BB_CONTRACTION");
+        const std::string v = env ? env : "";
+        if (v == "all") return ContractionMode::All;
+        if (v == "vertex") return ContractionMode::Vertex;
+        if (v == "none") return ContractionMode::None;
+        if (v == "invariant") return ContractionMode::Invariant;
+#ifdef __APPLE__
+        return ContractionMode::Invariant;
+#else
+        return ContractionMode::All;
+#endif
+    }();
+    return mode;
+}
+
 struct SwVertexRuntimeInfo {
     u32 step_rate_0;
     u32 step_rate_1;
@@ -75,6 +118,11 @@ struct SwVertexRuntimeInfo {
     u16 instance_sgpr_offset{};
     bool is_indirect{};
     bool tess_emulated_primitive{};
+    /// bbport: a rect list drawn as two triangles without tessellation (MoltenVK, where the tessellation
+    /// emulation runs a compute pre-pass that splits the render pass). The vertex shader runs its body for
+    /// the rect's three vertices and outputs one of six (backend/spirv/emit_spirv_rect_replay.cpp); used
+    /// only when the shader has no fetch shader, as its outputs then depend on the vertex index alone.
+    bool rect_replay{};
 
     bool operator==(const SwVertexRuntimeInfo& other) const noexcept = default;
 };

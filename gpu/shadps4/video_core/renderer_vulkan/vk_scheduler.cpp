@@ -23,6 +23,7 @@
 #include "imgui/renderer/texture_manager.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
+#include "video_core/renderer_vulkan/vk_pass_stats.h"
 #include "video_core/renderer_vulkan/vk_reflex.h"
 #include "bbport_threads.h"
 
@@ -66,9 +67,46 @@ Scheduler::~Scheduler() {
 #endif
 }
 
+bool Scheduler::ContinuesPass(const RenderState& next) const {
+    static const bool enabled = [this] {
+        const char* env = std::getenv("BB_PASS_CONTINUE");
+        if (env && *env) return *env != '0';
+        return instance.GetDriverID() == vk::DriverId::eMoltenvk;
+    }();
+    if (!enabled || !is_rendering) {
+        return false;
+    }
+    const RenderState& open = render_state;
+    if (open.width != next.width || open.height != next.height || open.num_layers != next.num_layers ||
+        next.num_color_attachments > open.num_color_attachments) {
+        return false;
+    }
+    const auto& od = open.depth_stencil_attachment;
+    const auto& nd = next.depth_stencil_attachment;
+    if (od.image_view != nd.image_view || od.image_layout != nd.image_layout ||
+        od.has_depth != nd.has_depth || od.has_stencil != nd.has_stencil || nd.depth_clear ||
+        nd.stencil_clear) {
+        return false;
+    }
+    for (u32 i = 0; i < open.num_color_attachments; ++i) {
+        const auto& o = open.color_attachments[i];
+        if (i >= next.num_color_attachments) {
+            if (o.image_view) {
+                return false;
+            }
+            continue;
+        }
+        const auto& n = next.color_attachments[i];
+        if (n.is_clear || n.image_view != o.image_view || n.image_layout != o.image_layout) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void Scheduler::BeginRendering(const RenderState& new_state) {
     BB_PIPE_CHECK_OBJ("Scheduler::BeginRendering", static_cast<const void*>(this));
-    if (is_rendering && render_state == new_state) {
+    if (is_rendering && (render_state == new_state || ContinuesPass(new_state))) {
         return;
     }
     EndRendering();
@@ -143,6 +181,43 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         }
     }
 
+    if (PassStats::Enabled()) {
+        auto& ps = PassStats::Get();
+        const u64 px = u64(render_state.width) * render_state.height * std::max<u64>(render_state.num_layers, 1);
+        u64 load = 0, clear = 0, store = 0;
+        for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
+            (render_state.color_attachments[i].is_clear ? clear : load) += px;
+            store += px;
+        }
+        if (db.has_depth) {
+            (db.depth_clear ? clear : load) += px;
+            store += depth_read_only ? 0 : px;
+        }
+        if (db.has_stencil) {
+            (db.stencil_clear ? clear : load) += px;
+            store += stencil_read_only ? 0 : px;
+        }
+        PassStats::Add(ps.passes);
+        if (render_state.width < 256 && render_state.height < 256) PassStats::Add(ps.small_passes);
+        PassStats::Add(ps.load_px, load);
+        PassStats::Add(ps.clear_px, clear);
+        PassStats::Add(ps.store_px, store);
+        u32 clears = 0;
+        for (u32 i = 0; i < render_state.num_color_attachments; ++i) {
+            clears |= render_state.color_attachments[i].is_clear ? 1u << i : 0;
+        }
+        clears |= db.has_depth && db.depth_clear ? 0x100 : 0;
+        clears |= db.has_stencil && db.stencil_clear ? 0x200 : 0;
+        PassStats::Pass({render_state.width, render_state.height, render_state.num_layers,
+                         render_state.num_color_attachments,
+                         db.has_depth ? (depth_read_only ? 2u : 1u) : 0u, db.has_stencil ? 1u : 0u, clears,
+                         render_state.num_color_attachments
+                             ? u32(reinterpret_cast<uintptr_t>(static_cast<VkImageView>(render_state.color_attachments[0].image_view))) : 0u},
+                        load + store,
+                        db.has_depth || db.has_stencil
+                            ? u64(reinterpret_cast<uintptr_t>(static_cast<VkImageView>(db.image_view))) : 0);
+    }
+
     const vk::RenderingInfo rendering_info = {
         .renderArea =
             {
@@ -156,6 +231,20 @@ void Scheduler::BeginRendering(const RenderState& new_state) {
         .pStencilAttachment = db.has_stencil ? &stencil_attachment : nullptr,
     };
 
+    if (PassStats::Labels()) {
+        PassStats::LabelText label{};
+        const auto view = [](vk::ImageView v) {
+            return u32(reinterpret_cast<uintptr_t>(static_cast<VkImageView>(v)));
+        };
+        std::snprintf(label.data(), label.size(), "pass %ux%u x%u c%u %#x d%u %#x clr%x", render_state.width,
+                      render_state.height, render_state.num_layers, render_state.num_color_attachments,
+                      render_state.num_color_attachments ? view(render_state.color_attachments[0].image_view) : 0,
+                      db.has_depth ? (depth_read_only ? 2u : 1u) : 0u, view(db.image_view),
+                      render_state.color_attachments[0].is_clear | (db.depth_clear ? 0x100u : 0u));
+        Record([label](vk::CommandBuffer cmdbuf) {
+            cmdbuf.beginDebugUtilsLabelEXT(vk::DebugUtilsLabelEXT{.pLabelName = label.data()});
+        });
+    }
     if (!recording_threaded) {
         current_cmdbuf.beginRendering(rendering_info);
         return;
@@ -179,8 +268,12 @@ void Scheduler::EndRendering() {
     if (!is_rendering) {
         return;
     }
+    PassStats::Ended(__builtin_return_address(0), "end by");
     is_rendering = false;
     Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endRendering(); });
+    if (PassStats::Labels()) {
+        Record([](vk::CommandBuffer cmdbuf) { cmdbuf.endDebugUtilsLabelEXT(); });
+    }
 }
 
 void Scheduler::TraceDirectRecording(void* caller) {
@@ -395,6 +488,7 @@ void Scheduler::WaitSubmitted() {
 }
 
 void Scheduler::Wait(u64 tick, u32 site) {
+    if (!work_semaphore.IsFree(tick)) PassStats::Add(PassStats::Get().waits);
     if (tick >= work_semaphore.CurrentTick()) {
         // Make sure we are not waiting for the current tick without signalling
         SubmitInfo info{};
@@ -486,6 +580,8 @@ void Scheduler::AllocateWorkerCommandBuffers() {
 
 void Scheduler::SubmitExecution(SubmitInfo& info) {
     std::scoped_lock lk{submit_mutex};
+    PassStats::Add(PassStats::Get().submits);
+    if (is_rendering) PassStats::Ended(__builtin_return_address(0), "submit from");
     const u64 signal_value = work_semaphore.NextTick();
 
 #if TRACY_GPU_ENABLED

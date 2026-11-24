@@ -229,6 +229,125 @@ Id DefineMain(EmitContext& ctx, const IR::Program& program) {
     return main;
 }
 
+// bbport: rect replay (runtime_info.h). The entry point runs the shader body (which writes Private shadows
+// of the outputs) for the three vertices of its rect, finds the rect's corner vertex the way the tessellation
+// emulation does (emit_spirv_quad_rect.cpp: it shares x with one neighbour and y with the other), and writes
+// one of six vertices: the rect's own triangle, then the two other vertices in reverse and the fourth,
+// a + b - corner for every output.
+Id DefineRectReplayMain(EmitContext& ctx, Id body) {
+    const Id void_function{ctx.TypeFunction(ctx.void_id)};
+    const Id main{ctx.OpFunction(ctx.void_id, spv::FunctionControlMask::MaskNone, void_function)};
+    ctx.AddLabel();
+    // Each call's outputs are copied to function variables (declared first, as SPIR-V requires): a value
+    // loaded from the shadow and used after the next call may otherwise be read again from the shadow by
+    // SPIRV-Cross, which forwards the load into its later uses (MoltenVK then saw the third vertex three times).
+    const size_t num_outputs = ctx.replay_outputs.size();
+    std::vector<std::array<Id, 3>> locals(num_outputs);
+    for (size_t o = 0; o < num_outputs; ++o) {
+        const Id ptr{ctx.TypePointer(spv::StorageClass::Function, ctx.replay_outputs[o].type)};
+        for (u32 j = 0; j < 3; ++j) {
+            locals[o][j] = ctx.AddLocalVariable(ptr, spv::StorageClass::Function);
+        }
+    }
+    const Id u32_t{ctx.U32[1]};
+    const Id f32_t{ctx.F32[1]};
+    const Id bool_t{ctx.U1[1]};
+    const auto u = [&](u32 v) { return ctx.ConstU32(v); };
+    // The draw starts at vertex 0 (the rasterizer keeps rects with a vertex offset on the tessellation path):
+    // gl_BaseVertex is not reliable for non-indexed draws on Metal.
+    const Id index{ctx.OpLoad(u32_t, ctx.replay_real_vertex_index)};
+    const Id rect{ctx.OpUDiv(u32_t, index, u(6))};
+    const Id k{ctx.OpUMod(u32_t, index, u(6))};
+    const Id first{ctx.OpIMul(u32_t, rect, u(3))};
+
+    const size_t n = ctx.replay_outputs.size();
+    std::vector<std::array<Id, 3>> values(n);
+    for (u32 j = 0; j < 3; ++j) {
+        ctx.OpStore(ctx.vertex_index, ctx.OpIAdd(u32_t, first, u(j)));
+        ctx.OpFunctionCall(ctx.void_id, body);
+        for (size_t o = 0; o < n; ++o) {
+            ctx.OpStore(locals[o][j], ctx.OpLoad(ctx.replay_outputs[o].type, ctx.replay_outputs[o].shadow));
+        }
+    }
+    for (size_t o = 0; o < n; ++o) {
+        for (u32 j = 0; j < 3; ++j) {
+            values[o][j] = ctx.OpLoad(ctx.replay_outputs[o].type, locals[o][j]);
+        }
+    }
+
+    // replay_outputs[0] is the position.
+    std::array<Id, 3> xy;
+    for (u32 j = 0; j < 3; ++j) {
+        xy[j] = ctx.OpVectorShuffle(ctx.F32[2], values[0][j], values[0][j], 0, 1);
+    }
+    const Id bvec2{ctx.U1[2]};
+    std::array<Id, 3> equal;
+    for (u32 j = 0; j < 3; ++j) {
+        equal[j] = ctx.OpFOrdEqual(bvec2, xy[j], xy[(j + 1) % 3]);
+    }
+    std::array<Id, 3> is_corner;
+    std::array<Id, 3> weight;
+    for (u32 j = 0; j < 3; ++j) {
+        const Id xy_equal{ctx.OpLogicalAnd(bool_t, ctx.OpCompositeExtract(bool_t, equal[j], 0),
+                                           ctx.OpCompositeExtract(bool_t, equal[(j + 2) % 3], 1))};
+        const Id yx_equal{ctx.OpLogicalAnd(bool_t, ctx.OpCompositeExtract(bool_t, equal[j], 1),
+                                           ctx.OpCompositeExtract(bool_t, equal[(j + 2) % 3], 0))};
+        is_corner[j] = ctx.OpLogicalOr(bool_t, xy_equal, yx_equal);
+        weight[j] = ctx.OpSelect(f32_t, is_corner[j], ctx.ConstF32(-1.0f), ctx.ConstF32(1.0f));
+    }
+    Id corner{ctx.OpSelect(u32_t, is_corner[2], u(2), u(0))};
+    corner = ctx.OpSelect(u32_t, is_corner[1], u(1), corner);
+    const Id a{ctx.OpUMod(u32_t, ctx.OpIAdd(u32_t, corner, u(1)), u(3))};
+    const Id b{ctx.OpUMod(u32_t, ctx.OpIAdd(u32_t, corner, u(2)), u(3))};
+    // Vertices 0-2: the rect's own; 3: b, 4: a, 5: the fourth. (b, a, fourth) keeps the winding of (corner, a, b).
+    const Id own{ctx.OpULessThan(bool_t, k, u(3))};
+    const Id source{ctx.OpSelect(u32_t, own, k, ctx.OpSelect(u32_t, ctx.OpIEqual(bool_t, k, u(3)), b, a))};
+    const Id is_fourth{ctx.OpIEqual(bool_t, k, u(5))};
+    const Id pick1{ctx.OpIEqual(bool_t, source, u(1))};
+    const Id pick2{ctx.OpIEqual(bool_t, source, u(2))};
+    const Id a1{ctx.OpIEqual(bool_t, a, u(1))};
+    const Id a2{ctx.OpIEqual(bool_t, a, u(2))};
+
+    const auto choose = [&](Id type, Id v0, Id v1, Id v2, Id is1, Id is2) {
+        return ctx.OpSelect(type, is1, v1, ctx.OpSelect(type, is2, v2, v0));
+    };
+    const auto blend = [&](Id type, u32 components, Id v0, Id v1, Id v2) {
+        if (components == 1) {
+            return ctx.OpFAdd(type, ctx.OpFMul(type, v0, weight[0]),
+                              ctx.OpFAdd(type, ctx.OpFMul(type, v1, weight[1]), ctx.OpFMul(type, v2, weight[2])));
+        }
+        return ctx.OpFAdd(type, ctx.OpVectorTimesScalar(type, v0, weight[0]),
+                          ctx.OpFAdd(type, ctx.OpVectorTimesScalar(type, v1, weight[1]),
+                                     ctx.OpVectorTimesScalar(type, v2, weight[2])));
+    };
+    const auto finish = [&](Id type, u32 components, bool is_float, Id v0, Id v1, Id v2) {
+        const Id picked{choose(type, v0, v1, v2, pick1, pick2)};
+        const Id fourth{is_float ? blend(type, components, v0, v1, v2) : choose(type, v0, v1, v2, a1, a2)};
+        return ctx.OpSelect(type, is_fourth, fourth, picked);
+    };
+    for (size_t o = 0; o < n; ++o) {
+        const auto& out = ctx.replay_outputs[o];
+        if (out.components == 0) {
+            // An array of floats: element by element (OpSelect on arrays is not portable).
+            std::vector<Id> elements(out.array_size);
+            for (u32 e = 0; e < out.array_size; ++e) {
+                std::array<Id, 3> v;
+                for (u32 j = 0; j < 3; ++j) {
+                    v[j] = ctx.OpCompositeExtract(out.scalar_type, values[o][j], e);
+                }
+                elements[e] = finish(out.scalar_type, 1, true, v[0], v[1], v[2]);
+            }
+            ctx.OpStore(out.real, ctx.OpCompositeConstruct(out.type, elements));
+            continue;
+        }
+        ctx.OpStore(out.real, finish(out.type, out.components, out.is_float, values[o][0], values[o][1],
+                                     values[o][2]));
+    }
+    ctx.OpReturn();
+    ctx.OpFunctionEnd();
+    return main;
+}
+
 spv::ExecutionMode ExecutionMode(AmdGpu::TessellationType primitive) {
     switch (primitive) {
     case AmdGpu::TessellationType::Isoline:
@@ -662,7 +781,10 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     EmitContext ctx{profile, runtime_info, program.info, binding};
     PrepareWorldRepeat(program);
     PlanWideLoads(ctx, program);
-    const Id main{DefineMain(ctx, program)};
+    Id main{DefineMain(ctx, program)};
+    if (ctx.rect_replay) {
+        main = DefineRectReplayMain(ctx, main);
+    }
     DefineEntryPoint(program.info, ctx, main);
     SetupCapabilities(program.info, profile, runtime_info, ctx);
     SetupFloatMode(ctx, profile, runtime_info, main);

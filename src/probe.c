@@ -19,14 +19,18 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#ifndef __APPLE__
 #include <malloc.h>
+#endif
 #include <unistd.h>
 #include <signal.h>
 #include <ucontext.h>
 #include <fcntl.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#ifndef __APPLE__
 #include <sys/syscall.h>
+#endif
 #include <sys/uio.h>
 #endif
 
@@ -251,7 +255,7 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     printf("Caller return offset: 0x%" PRIxPTR "; first argument: 0x%" PRIxPTR "\n", caller, argument);
     for (uint64_t m=0;m<module_count;++m)
         if (caller>=modules[m].base && caller-modules[m].base<modules[m].size)
-            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",caller-modules[m].base);
+            printf("Caller in linked module %" PRIu64 " (%s): +0x%" PRIxPTR "\n",m,m==0 ? "libc.prx" : "system module",(uintptr_t)(caller-modules[m].base));
     runtime_report();
     puts(entered_game ? "Original guest entry instructions executed; game initialization is incomplete." :
                         "Native libc initialization is incomplete; game entry has not run.");
@@ -261,7 +265,12 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
 #if !defined(_WIN32) && defined(GUEST_CPU_NATIVE)
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
-__asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
+#ifdef __APPLE__
+#define ENTER_ON_STACK_SYM "_enter_on_stack" /* Mach-O: C symbols carry a leading underscore */
+#else
+#define ENTER_ON_STACK_SYM "enter_on_stack"
+#endif
+__asm__(".text\n.globl " ENTER_ON_STACK_SYM "\n" ENTER_ON_STACK_SYM ":\n"
         " push %rbp\n mov %rsp,%rbp\n and $-16,%rcx\n mov %rcx,%rsp\n"
         " mov %rdi,%rax\n mov %rsi,%rdi\n mov %rdx,%rsi\n call *%rax\n"
         " mov %rbp,%rsp\n pop %rbp\n ret\n");
@@ -572,8 +581,11 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 static LONG WINAPI unhandled_fault(EXCEPTION_POINTERS *info) { return fatal_exception(info); }
+#endif
+#if defined(_WIN32) || defined(__APPLE__)
 /* Guest code reads its TCB with `mov <reg>, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
- * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
+ * the displacement becomes the TEB TLS slot that holds the guest TCB, on macOS the pthread
+ * TSD slot (runtime_thread.c). */
 uint32_t runtime_thread_tcb_offset(void);
 static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
     /* gs:[0] load into any 64-bit register: 65, REX.W (48; 4c for r8-r15), 8b, ModRM with a SIB
@@ -597,7 +609,12 @@ static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
 static void fault(int sig, siginfo_t *info, void *context) {
     /* The guest CPU's own faults (FEXCore's JIT), then GPU page tracking (write-protected guest pages). */
     if (guest_cpu_handle_fault(sig, info, context)) return;
+#ifdef __APPLE__
+    /* Darwin raises SIGBUS for a write to a protected page that is mapped (KERN_PROTECTION_FAILURE). */
+    if (gpu_enabled && (sig == SIGSEGV || sig == SIGBUS) && bbgpu_handle_fault(context, info->si_addr)) return;
+#else
     if (gpu_enabled && sig == SIGSEGV && bbgpu_handle_fault(context, info->si_addr)) return;
+#endif
     /* A speculative guest memory read (runtime_memory.c) failed: resume its recovery point. */
     if ((sig == SIGSEGV || sig == SIGBUS) && runtime_fault_recover) {
         sigjmp_buf *recover = runtime_fault_recover;
@@ -682,6 +699,9 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
     { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
     dump_frames(context);
+#ifdef __APPLE__
+    bb_mac_signal_other_threads(SIGUSR2);
+#else
     int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
     char buffer[4096];
     long n;
@@ -693,6 +713,7 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
             if (tid>0 && tid!=self) { syscall(SYS_tgkill,getpid(),tid,SIGUSR2); usleep(20000); }
             at+=d->reclen;
         }
+#endif
     usleep(100000);
     _exit(128 + sig);
 }
@@ -852,6 +873,29 @@ static int patch_exposure_exact(unsigned char *image, uint64_t size) {
     printf("BB_EXPOSURE_EXACT: 3 of 3 exposure getter calls patched\n");
     return 1;
 }
+#ifdef __APPLE__
+/* macOS: the macOS kernel holds [0x0fc0000000, 0x7000000000) in every process, and the game maps one subsystem's
+ * memory at fixed addresses from 0x1000000000 (0x748d50: two maps at the base and base+0x8000000; 0x749210: a
+ * flexible map with the base as its address). Their movabs immediates are moved to BB_MAC_APP_AREA. */
+static void patch_app_area(unsigned char *image, uint64_t size) {
+    static const uint64_t sites[] = {0x748d85, 0x748d8f, 0x749247, 0x74925a};
+    const uint64_t from = BB_PS4_APP_AREA, to = BB_MAC_APP_AREA;
+    unsigned patched = 0;
+    for (size_t i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i) {
+        if (size < sites[i] + 10) continue;
+        unsigned char *site = image + sites[i];
+        uint64_t imm;
+        memcpy(&imm, site + 2, 8);
+        if ((site[0] != 0x48 && site[0] != 0x49) || site[1] < 0xb8 || site[1] > 0xbf || imm != from) {
+            printf("macOS: %#" PRIx64 " is not a movabs of the app area base; not patched\n", sites[i]);
+            continue;
+        }
+        memcpy(site + 2, &to, 8);
+        ++patched;
+    }
+    printf("macOS: app area base %#" PRIx64 " moved to %#" PRIx64 " at %u of 4 sites\n", from, to, patched);
+}
+#endif
 /* BB_CLOUD_STALE=1 (opt-in; gpu/shadps4/video_core/page_manager.cpp): trueSKY's cloud sample asks the readback getter
  * at 0x60265e (lea rcx, [rbp-0x14c]; call 0x758980); the call goes to the host hook through a near thunk. */
 static void patch_cloud_get(unsigned char *image, uint64_t size) {
@@ -1211,7 +1255,11 @@ void runtime_restart(void) {
      * restart goes through run.sh, which reads the settings the launcher wrote. */
     const char *command=getenv("BB_RESTART_COMMAND");
     puts(command && *command ? "Runtime: restarting" : "Runtime: restarting through run.sh");
+#ifdef __APPLE__
+    bb_mac_close_from(3);
+#else
     syscall(SYS_close_range, 3u, ~0u, 0u);
+#endif
     if (command && *command) execlp("bash", "bash", "-c", command, (char *)NULL);
     else execlp("bash", "bash", "run.sh", (char *)NULL);
     perror("runtime_restart: exec");
@@ -1383,7 +1431,14 @@ static void print_system_info(void) {
     }
 }
 #endif
+#ifdef __APPLE__
+/* Cocoa needs the first thread for the window (compat_macos.c bb_mac_main). */
+static int probe_main(int argc, char **argv);
+int main(int argc, char **argv) { return bb_mac_main(probe_main, argc, argv); }
+static int probe_main(int argc, char **argv) {
+#else
 int main(int argc, char **argv) {
+#endif
 #ifdef _WIN32
     start_tick=GetTickCount64();
 #endif
@@ -1403,7 +1458,7 @@ int main(int argc, char **argv) {
     guest_cpu_init(runtime_low_map);
 #endif
     if (argc == 2 && !strcmp(argv[1], "--vulkan-only")) return vulkan_smoke();
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     /* The PS4 user range must stay free of host allocations (GPU driver, heaps), and the guest
      * TCB needs one of the 64 TEB TLS slots before DLLs (Vulkan drivers) take them. */
     runtime_memory_reserve();
@@ -1663,7 +1718,10 @@ int main(int argc, char **argv) {
     if (!cpu_only) patch_cloud_get(image, size);
     if (!cpu_only) patch_query_get(image, size);
     if (!cpu_only) patch_crowd_get(image, size);
-#ifdef _WIN32
+#ifdef __APPLE__
+    patch_app_area(image, size);
+#endif
+#if defined(_WIN32) || defined(__APPLE__)
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif
     const char *sse4a_rewrite=getenv("BB_SSE4A_REWRITE"); /* 1 forces it on, 0 leaves every site to the fault handler */

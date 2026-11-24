@@ -12,7 +12,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // (48 dwords per object; rows 16, 20, 24, 28 map view x, y, z and 1 to the previous clip).
 layout(binding = 0, std430) readonly buffer Frame { uint frame_data[]; };
 layout(binding = 1, std430) readonly buffer Camera { uint camera_data[]; };
-layout(binding = 2, std430) readonly buffer Objects { uint object_data[]; };
+layout(binding = 2, std430) readonly buffer Objects { uint object_words[]; }; // not "object_data": a Metal address space keyword (SPIRV-Cross keeps the name)
 layout(binding = 3) uniform texture2D gbuffer_tex; // RGBA8; alpha * 255, low 6 bits: object
 layout(binding = 4) uniform texture2D depth_tex;   // D32, reversed (1 = near)
 layout(binding = 5, rg16f) uniform writeonly image2D motion_img;
@@ -34,8 +34,8 @@ float Ca(uint i) { return F(camera_data[offsets.y + i]); }
 
 vec4 Row(uint base) {
     base += offsets.z;
-    return vec4(F(object_data[base]), F(object_data[base + 1u]), F(object_data[base + 2u]),
-                F(object_data[base + 3u]));
+    return vec4(F(object_words[base]), F(object_words[base + 1u]), F(object_words[base + 2u]),
+                F(object_words[base + 3u]));
 }
 
 void main() {

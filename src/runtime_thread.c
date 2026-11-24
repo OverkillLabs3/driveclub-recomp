@@ -84,6 +84,24 @@ static void set_gs(void *base) {
     if (!TlsSetValue(tls_slot,base)) { fprintf(stderr,"STOP: TlsSetValue failed (%lu)\n",GetLastError()); exit(21); }
 }
 #define tls_block_alloc(size) _aligned_malloc(size,64)
+#elif defined(__APPLE__)
+/* macOS: GS points at the pthread TSD array (gs:[8*key]) and cannot be moved. The guest TCB
+ * lives in a TSD slot instead and the loader rewrites the load to `mov rax, gs:[8*key]`, the
+ * same rewrite as Windows with another displacement. */
+static pthread_key_t tcb_key;
+static int tcb_key_made;
+uint32_t runtime_thread_tcb_offset(void) {
+    if (!tcb_key_made) {
+        if (pthread_key_create(&tcb_key,NULL)) { fputs("STOP: pthread_key_create failed\n",stderr); exit(21); }
+        tcb_key_made=1;
+    }
+    return 8*(uint32_t)tcb_key;
+}
+static void set_gs(void *base) {
+    runtime_thread_tcb_offset();
+    if (pthread_setspecific(tcb_key,base)) { fputs("STOP: pthread_setspecific failed\n",stderr); exit(21); }
+}
+#define tls_block_alloc(size) aligned_alloc(64,size)
 #else
 /* x86-64: arch_prctl(ARCH_SET_GS); other hosts: the guest CPU's GS base (runtime_cpu.c, cpu/). */
 static void set_gs(void *base) { guest_cpu_set_gs(base); }

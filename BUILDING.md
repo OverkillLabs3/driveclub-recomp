@@ -57,6 +57,56 @@ Run the regression test from the repository root (no game files needed):
     out/font_cjk_fallback_test
     BB_TEST_CJK_FONT=/path/to/a-cjk.ttf out/font_cjk_fallback_test
 
+## macOS (Apple silicon, work in progress)
+
+The macOS build is the Linux runtime built as an **x86_64** program: the game's own code is
+x86-64 and runs on the host CPU, which on Apple silicon is Rosetta 2. Every library is x86_64
+too. Vulkan is the Khronos loader over MoltenVK.
+
+Host tools (Homebrew, arm64 is fine): `brew install cmake ninja pkg-config nasm glslang boost nlohmann-json`,
+plus Rosetta 2 (`softwareupdate --install-rosetta`).
+
+    bash packaging/macos/fetch-deps.sh   # x86_64 dependencies into out/deps-macos, once
+    bash build-macos.sh
+
+This produces `out/driveclub-probe`, `out/gpu/libbbgpu.dylib`, `out/driveclub-prepare`,
+`out/driveclub-launcher`, and `out/libMoltenVK.dylib` with its `out/MoltenVK_icd.json` (the video
+core points the Vulkan loader at the executable's folder on macOS). Check Vulkan with
+`out/driveclub-probe --vulkan-only` (set `VK_DRIVER_FILES=out/MoltenVK_icd.json` for this test).
+
+What differs from Linux (`src/compat_macos.h`, force-included into the runtime):
+
+- **Address space.** The macOS kernel holds `[0x0fc0000000, 0x7000000000)` in every process, so the
+  PS4 user range starts at `0x7000000000` (still below 1 TiB). The game maps one subsystem at fixed
+  addresses from `0x1000000000`, inside that hole; the loader moves the four `movabs` that load the
+  base to `0xb000000000` (`probe.c` `patch_app_area`), a range the allocator leaves free. `[0x0400000000, 0x0fc0000000)` and
+  `[0x7000000000, 0xfc00000000)` are reserved before `main`, because macOS places the host's own
+  mappings low and growing.
+- **The runtime heap.** The guest packs host pointers it is handed into 40 bits. glibc's brk heap is
+  low; macOS's malloc zones are not. The runtime's `malloc` family goes to a small allocator over
+  `[0x0400000000, 0x0800000000)`.
+- **Guest TLS.** GS is the pthread TSD on macOS and cannot be moved: the guest TCB lives in a TSD
+  slot and the loader rewrites `mov reg, gs:[0]` to `gs:[8*key]`, as it rewrites it to a TEB slot on
+  Windows.
+- **Signals.** Protection faults on mapped pages arrive as `SIGBUS`; registers come from
+  `uc_mcontext->__ss`.
+- **The main thread.** Cocoa works on the first thread only: `main` runs the runtime on a second
+  thread and keeps the first for the GPU library's window and event loop (`bb_mac_main`).
+- epoll is epoll-shim (over kqueue); thread affinity is quality of service.
+
+What differs in the video core, chosen from what the device reports rather than by platform:
+
+- **No `nullDescriptor`.** Empty bindings get zeroed placeholder buffers and 1x1 images in the shape
+  the shader declares (`vk_null_resources.h`). `robustBufferAccess2` is optional.
+- **No sparse buffers.** The buffer arenas are plain buffers over slices of one lazily committed
+  host mapping that shadows the guest address space, imported with `VK_EXT_external_memory_host`;
+  residency is bookkeeping only (`buffer.h` `host_shadow_arenas`).
+- **Barycentrics.** MoltenVK cannot translate `PerVertexKHR` inputs, so the recompiler takes its
+  no-barycentrics path there.
+
+Known gaps: geometry shaders are skipped (Metal has none), and other features MoltenVK lacks
+(custom border colors, depth clip enable, attachment feedback loops) are missing.
+
 ## Linux (x86_64)
 
 The Linux support comes from the upstream ARM Linux branch
