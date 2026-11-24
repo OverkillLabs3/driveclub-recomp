@@ -115,7 +115,11 @@ static void rw_write_lock(void) {
             if (__atomic_compare_exchange_n(&rw_state,&s,RW_WRITER,0,__ATOMIC_ACQUIRE,__ATOMIC_RELAXED)) break;
             continue;
         }
-        __atomic_fetch_or(&rw_state,RW_WAITING,__ATOMIC_RELAXED);
+        /* The last reader wakes a writer only when it sees RW_WAITING: one leaving between the load above and
+         * setting the bit sent no wakeup, and the writer slept with no reader left (a boot hang, once fault
+         * emulation took this lock from fault handlers). Wait only if readers remain after the bit is set. */
+        s=__atomic_or_fetch(&rw_state,RW_WAITING,__ATOMIC_ACQ_REL);
+        if (!(s&~RW_WAITING)) continue;
         pthread_cond_wait(&rw_readers_done,&rw_mutex);
     }
     pthread_mutex_unlock(&rw_mutex);
@@ -125,6 +129,9 @@ static void rw_write_unlock(void) {
     pthread_mutex_lock(&rw_mutex);
     __atomic_store_n(&rw_state,0,__ATOMIC_RELEASE);
     pthread_cond_broadcast(&rw_writer_done);
+    /* A second writer that arrived while this one held the lock waits on rw_readers_done (it saw RW_WRITER as
+     * "not free"): no reader will signal it, so the release does. */
+    pthread_cond_broadcast(&rw_readers_done);
     pthread_mutex_unlock(&rw_mutex);
 }
 static void write_lock(void) {
