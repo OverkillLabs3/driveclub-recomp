@@ -986,10 +986,25 @@ ImageView& TextureCache::FindDepthTarget(ImageId image_id, const ImageDesc& desc
 
     // Register meta data for this depth buffer
     if (desc.info.meta_info.htile_addr) {
-        BbCmaskMetadata::Register(metadata_mutex, surface_metas, desc.info.meta_info.htile_addr,
-                                 MetaDataInfo{.type = MetaType::HTile,
-                                              .clear_mask = image.info.meta_info.htile_clear_mask},
-                                 MetaType::CMask, MetaType::CpuRevokedCMask);
+        // bbport: a depth target's HTILE takes the address over from metadata of another kind (cmask_metadata.h).
+        // BB_META_REPLACE_KIND=0: the address keeps its first kind, as before.
+        static const bool replace_kind = [] {
+            const char* v = std::getenv("BB_META_REPLACE_KIND");
+            return !(v && v[0] == '0');
+        }();
+        const auto old_kind = BbCmaskMetadata::Register(
+            metadata_mutex, surface_metas, desc.info.meta_info.htile_addr,
+            MetaDataInfo{.type = MetaType::HTile, .clear_mask = image.info.meta_info.htile_clear_mask},
+            MetaType::CMask, MetaType::CpuRevokedCMask, replace_kind);
+        if (old_kind) {
+            static std::atomic<int> told{0};
+            if (told.fetch_add(1) < 4) {
+                std::printf("GPU: the HTILE of a %ux%u depth target at %#llx replaces metadata of kind %d there "
+                            "(BB_META_REPLACE_KIND=0 turns this off)\n",
+                            image.info.size.width, image.info.size.height,
+                            static_cast<unsigned long long>(desc.info.meta_info.htile_addr), int(*old_kind));
+            }
+        }
         image.info.meta_info.htile_addr = desc.info.meta_info.htile_addr;
     }
 
@@ -1581,6 +1596,22 @@ bool TextureCache::IsMetaCleared(VAddr address, u32 slice) const {
 
 bool TextureCache::ClearMeta(VAddr address) {
     return BbCmaskMetadata::Clear(metadata_mutex, surface_metas, address, MetaType::CpuRevokedCMask);
+}
+
+// bbport: a colour target's own queries: an entry of another kind at its CMASK address (a depth target's HTILE that
+// took the address over, FindDepthTarget) is not its metadata: not cleared, and left as it is.
+bool TextureCache::IsColorMetaCleared(VAddr address, u32 slice) const {
+    std::scoped_lock lock{metadata_mutex};
+    const auto it = surface_metas.find(address);
+    return it != surface_metas.end() && it->second.type == MetaType::CMask && (it->second.clear_mask & (1u << slice));
+}
+
+void TextureCache::TouchColorMeta(VAddr address, u32 slice) {
+    std::scoped_lock lock{metadata_mutex};
+    const auto it = surface_metas.find(address);
+    if (it != surface_metas.end() && it->second.type == MetaType::CMask) {
+        it.value().clear_mask &= ~(1u << slice);
+    }
 }
 
 bool TextureCache::TouchMeta(VAddr address, u32 slice, bool is_clear) {

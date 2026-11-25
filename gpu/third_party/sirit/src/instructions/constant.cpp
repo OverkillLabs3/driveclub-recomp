@@ -22,6 +22,11 @@ Id Module::ConstantFalse(Id result_type) {
     return *declarations << OpId{spv::Op::OpConstantFalse, result_type} << EndOp{};
 }
 
+Id Module::SpecConstantFalse(Id result_type) { // VR multiview
+    declarations->Reserve(3);
+    return *declarations << OpId{spv::Op::OpSpecConstantFalse, result_type} << EndOp{};
+}
+
 Id Module::Constant(Id result_type, const Literal& literal) {
     declarations->Reserve(3 + 2);
     return *declarations << OpId{spv::Op::OpConstant, result_type} << literal << EndOp{};

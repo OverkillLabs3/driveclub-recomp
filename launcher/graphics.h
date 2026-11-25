@@ -15,9 +15,11 @@ struct GraphicsChoice {
   bool lens_dust = true;      // dirt on the camera lens against the sun
   bool heat_haze = true;      // heat shimmer over hot roads
   bool fxaa = true;           // the FXAA pass after the game's own anti-aliasing
+  bool ssr = true;            // the screen-space reflections in races (wet roads, puddles)
+  bool ssao = true;           // the screen-space ambient occlusion
   bool Default() const {
     return !own_car && !opponents && !scenery && !reflections && !shadows && !particles && dynamic_res &&
-           motion_blur && lens_dust && heat_haze && fxaa;
+           motion_blur && lens_dust && heat_haze && fxaa && ssr && ssao;
   }
 };
 

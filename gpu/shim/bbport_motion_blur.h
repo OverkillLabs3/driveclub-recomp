@@ -33,6 +33,23 @@ struct IntervalHistory {
     return interval;
   }
 };
+// The same constants with the exposure at 0: no blur. VR with alternate frames: the camera moves by the eyes'
+// distance every frame, and the blur drew it as fast sideways motion (everything near smeared across). The blur
+// shares its shader with the game's anti-aliasing, which FSR and DLSS start from, so it is not patched out there.
+inline bool Zero(void *data, std::size_t size) {
+  if (size != Bytes || !data)
+    return false;
+  std::array<float, Bytes / sizeof(float)> constants;
+  std::memcpy(constants.data(), data, size);
+  if (!(constants[128] > 0.0f && constants[133] > 0.0f &&
+        std::abs(constants[142] + 1.0f) < 0.00001f && constants[143] > 0.0f &&
+        constants[143] < 1.0f))
+    return false;
+  const float zero = 0.0f;
+  std::memcpy(static_cast<unsigned char *>(data) + ExposureWord * sizeof(float),
+              &zero, sizeof(zero));
+  return true;
+}
 inline bool Correct(void *data, std::size_t size, float simulated_dt,
                     int reference_fps) {
   if (size != Bytes || !data || (reference_fps != 30 && reference_fps != 60) ||

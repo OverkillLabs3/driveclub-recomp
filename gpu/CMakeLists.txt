@@ -133,6 +133,16 @@ add_host_shader(camera_motion.comp camera_motion_comp)
 add_host_shader(drive_motion.comp drive_motion_comp)
 add_host_shader(dc_motion.comp dc_motion_comp)
 add_host_shader(drive_aa_copy.comp drive_aa_copy_comp)
+# VR (bbport_vr.cpp): the game's picture for the headset.
+add_host_shader(vr_copy.comp vr_copy_comp)
+add_host_shader(vr_hud.comp vr_hud_comp)
+add_host_shader(vr_window.comp vr_window_comp)
+add_host_shader(vr_reproject.comp vr_reproject_comp)
+add_host_shader(vr_resample.comp vr_resample_comp)
+add_host_shader(vr_smaa.comp vr_smaa_edges_comp SMAA_PASS=0)
+add_host_shader(vr_smaa.comp vr_smaa_weights_comp SMAA_PASS=1)
+add_host_shader(vr_smaa.comp vr_smaa_blend_comp SMAA_PASS=2)
+add_host_shader(vr_glow.comp vr_glow_comp)
 add_host_shader(taa_sharpen.comp drive_aa_sharpen_comp HALF_INPUT=1)
 add_host_shader(upscale_merge.comp upscale_merge_comp)
 add_host_shader(upscale_reactive.comp upscale_reactive_comp)
@@ -257,6 +267,8 @@ target_sources(bbgpu PRIVATE third_party/imgui/imgui.cpp third_party/imgui/imgui
     third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
     third_party/imgui/backends/imgui_impl_vulkan.cpp)
 target_include_directories(bbgpu PRIVATE third_party/imgui third_party/imgui/backends)
+# VR (bbport_vr.cpp): the OpenXR headers (Apache-2.0 OR MIT); the loader is a DLL found at run time.
+target_include_directories(bbgpu PRIVATE third_party/openxr/include)
 target_compile_definitions(bbgpu PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES
     BB_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/fonts/DejaVuSans.ttf"
     BB_EXIT_BODY_FONT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../launcher/assets/fonts/001futura-webfont.ttf"

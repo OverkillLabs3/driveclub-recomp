@@ -203,16 +203,28 @@ void CameraMotion::RecordMotion(vk::CommandBuffer cmdbuf, vk::ImageView depth_vi
     bool object_valid = false;
     const vk::ImageView object_view = object_motion && object_motion->Enabled()
         ? object_motion->PrepareRead(cmdbuf, width, height, object_valid) : depth_view;
+    // VR with alternate frames: back to the same eye's last frame (the previous frame is the other eye's, 6-7 cm
+    // aside); the cars' own vectors go back one frame, to the other eye, so they are left out then.
+    const bool per_eye = eye >= 0 && eye < 2;
+    const Camera& before = per_eye && eye_camera[eye].valid ? eye_camera[eye] : previous;
+    const std::array<float, 2> before_jitter = per_eye && eye_camera[eye].valid ? eye_jitter[eye] : previous_jitter;
+    if (per_eye) {
+        object_valid = false;
+    }
     const PushConstants push{
-        .reproject = Multiply(previous.view, current.inv_view),
+        .reproject = Multiply(before.view, current.inv_view),
         .proj = current.proj,
-        .prev_proj = previous.proj,
+        .prev_proj = before.proj,
         .size = {float(width), float(height)},
         .jitter = jitter,
-        .previous_jitter = previous_jitter,
+        .previous_jitter = before_jitter,
         .mode = object_valid ? 1u : 0u,
         .use_highlight = object_valid && color_view ? 1.0f : 0.0f,
     };
+    if (per_eye) {
+        eye_camera[eye] = current;
+        eye_jitter[eye] = jitter;
+    }
     const vk::DescriptorImageInfo depth_info{.imageView = depth_view,
                                              .imageLayout = vk::ImageLayout::eGeneral};
     const vk::DescriptorImageInfo motion_info{.imageView = motion_view,

@@ -253,6 +253,8 @@ public:
     Id vertex_index{};
     Id instance_id{};
     Id push_data_block{};
+    Id vr_view_index{}; ///< VR multiview: gl_ViewIndex (emit_spirv_vr.h)
+    Id vr_multiview{};  ///< VR multiview: specialisation constant 200, the multiview twin
     // bbport: object motion vectors (runtime_info.h, MotionVectors).
     Id motion_out_cur{};
     Id motion_out_prev{};
@@ -322,6 +324,7 @@ public:
         bool is_integer = false;
         bool is_storage = false;
         bool native_cube = false;
+        bool vr_array = false; ///< VR multiview: a plain 2D image declared as a 2D array (emit_spirv_vr.h)
         MipStorageFallbackMode mip_fallback_mode{};
     };
 

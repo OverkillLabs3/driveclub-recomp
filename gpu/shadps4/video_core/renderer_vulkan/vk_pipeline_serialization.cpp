@@ -26,7 +26,9 @@ static u32 ShaderBinaryVersion() {
         const char* motion_log = std::getenv("BB_MOTION_SELECT_LOG");
         // 82: four-phase convex repeat sampling without the coarsest-mip mean/gain.
         // 83: vehicle motion vectors for DLSS (the motion shaders changed).
-        return (83u << 16) +
+        // 84: VR multiview: no eye shift at z = 0 (infinitely far).
+        return (84u << 16) +
+               (std::getenv("BB_VR_SHIFT_INFINITE") ? 32u : 0u) +
                (BbSettings::Get().startup_texture_repetition ? 1024u : 0u) +
                (nan && std::atoi(nan) != 0 ? 1u : 0u) +
                (undef && std::atoi(undef) != 0 ? 2u : 0u) +

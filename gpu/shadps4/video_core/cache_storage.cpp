@@ -10,6 +10,7 @@
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
+#include "video_core/renderer_vulkan/vr/vr_multiview.h"
 
 #include <miniz.h>
 
@@ -117,7 +118,8 @@ void DataBase::Open() {
         // bbport: one folder per shader binary version, which includes the switches that change translated shaders:
         // with one shared folder, alternating two builds or two switch settings cleared each other's caches.
         cache_path = GetUserPath(PathType::CacheDir) /
-                     fmt::format("{}-s{}", game_info.GameSerial(), Serialization::ShaderCacheVersion());
+                     fmt::format("{}-s{}{}", game_info.GameSerial(), Serialization::ShaderCacheVersion(),
+                                 Vulkan::Vr::Multiview::CacheSuffix()); // VR multiview: its shaders apart
         if (!std::filesystem::exists(cache_path)) {
             std::filesystem::create_directories(cache_path);
         }

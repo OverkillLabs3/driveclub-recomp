@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// VR: the other eye from this frame's picture and depth (reproject = 1). The eyes are the same camera moved sideways,
+// so each pixel moves along its row by k * (depth + z22) pixels (reversed depth: depth + z22 = near / distance).
+// Pass 0 keeps, for each pixel of the other eye, the nearest picture pixel that lands there (atomic max of the depth
+// bits); pass 1 copies that pixel's colour; pass 2 fills what nothing landed on: a one-pixel crack from its farther
+// neighbour, a hole behind a near object from that eye's own last picture (alternate frames: the frame before), or,
+// without one (reproject = 2: both eyes from a frame drawn between them), from the nearest landed pixel along the row
+// on the farther side: the background it uncovered.
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(binding = 0) uniform texture2D depth_tex;
+layout(binding = 1, rgba8) uniform readonly image2D picture_img;
+layout(binding = 2, rgba8) uniform readonly image2D last_img;
+layout(binding = 3, r32ui) uniform uimage2D hit_img;
+layout(binding = 4, rgba8) uniform image2D out_img;
+
+layout(push_constant) uniform Constants {
+    vec2 size;
+    float k;
+    float z22;
+    int pass_index;
+    int have_last;
+};
+
+int Target(ivec2 p, out uint bits) {
+    const float depth = max(texelFetch(depth_tex, p, 0).r, 0.0);
+    bits = floatBitsToUint(depth) + 1u; // 0: nothing landed
+    return int(floor(float(p.x) + 0.5 + k * (depth + z22)));
+}
+
+void main() {
+    const ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 extent = ivec2(size);
+    if (p.x >= extent.x || p.y >= extent.y) {
+        return;
+    }
+    if (pass_index == 0) {
+        uint bits;
+        const int x = Target(p, bits);
+        if (x >= 0 && x < extent.x) {
+            imageAtomicMax(hit_img, ivec2(x, p.y), bits);
+        }
+    } else if (pass_index == 1) {
+        uint bits;
+        const int x = Target(p, bits);
+        if (x >= 0 && x < extent.x && imageLoad(hit_img, ivec2(x, p.y)).r == bits) {
+            imageStore(out_img, ivec2(x, p.y), imageLoad(picture_img, p));
+        }
+    } else {
+        if (imageLoad(hit_img, p).r != 0u) {
+            return;
+        }
+        const uint left = p.x > 0 ? imageLoad(hit_img, p - ivec2(1, 0)).r : 0u;
+        const uint right = p.x + 1 < extent.x ? imageLoad(hit_img, p + ivec2(1, 0)).r : 0u;
+        vec4 c;
+        if (left != 0u && right != 0u) {
+            c = imageLoad(out_img, left <= right ? p - ivec2(1, 0) : p + ivec2(1, 0));
+        } else if (have_last != 0) {
+            c = imageLoad(last_img, p);
+        } else {
+            // the first landed pixel on each side, within 256: the farther one is the uncovered background
+            ivec2 l = ivec2(-1), r = ivec2(-1);
+            uint lb = 0u, rb = 0u;
+            for (int d = 2; d <= 256 && (lb == 0u || rb == 0u); ++d) {
+                if (lb == 0u && p.x - d >= 0) {
+                    lb = imageLoad(hit_img, p - ivec2(d, 0)).r;
+                    l = p - ivec2(d, 0);
+                }
+                if (rb == 0u && p.x + d < extent.x) {
+                    rb = imageLoad(hit_img, p + ivec2(d, 0)).r;
+                    r = p + ivec2(d, 0);
+                }
+            }
+            if (lb != 0u && (rb == 0u || lb <= rb)) {
+                c = imageLoad(out_img, l);
+            } else if (rb != 0u) {
+                c = imageLoad(out_img, r);
+            } else {
+                c = imageLoad(picture_img, p);
+            }
+        }
+        imageStore(out_img, p, c);
+    }
+}

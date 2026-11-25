@@ -25,11 +25,11 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, BitmapSource> images = [];
     private readonly List<Button> navButtons = [];
     private double homeExtraRows;   // the rows Game status has beyond the first four
-    private readonly string[] names = ["Play", "Display", "Graphics", "General", "Driving", "Patches", "Benchmark", "Mods"];
-    private readonly string[] hints = ["Your game, ready to drive.", "Frame rate, resolution, anti-aliasing and HDR.", "Scene detail, reflections and camera effects.", "Player profile, content, launcher behavior and advanced options.", "Driving assists, field of view and steering wheel forces.", "Compatibility workarounds and optional community patches.", "A repeatable event driven by the game's AI.", "Manage local replacement files."];
+    private readonly string[] names = ["Play", "Display", "Graphics", "VR", "General", "Driving", "Patches", "Benchmark", "Mods"];
+    private readonly string[] hints = ["Your game, ready to drive.", "Frame rate, resolution, anti-aliasing and HDR.", "Scene detail, reflections and camera effects.", "The VR headset: stereo mode, the picture per eye and the frame rate.", "Player profile, content, launcher behavior and advanced options.", "Driving assists, field of view and steering wheel forces.", "Compatibility workarounds and optional community patches.", "A repeatable event driven by the game's AI.", "Manage local replacement files."];
     // Home is shell-only; the remaining pages follow the native 0.3.1 tabs.
-    private readonly int[] sourcePages = [-1, 0, 1, 2, 3, 5, 4, -2];
-    private readonly string[] backgroundPaths = ["backgrounds/page-0.png", "backgrounds/page-2.png", "backgrounds/detail.png", "backgrounds/page-4.png", "backgrounds/driving.png", "backgrounds/patches.png", "backgrounds/page-5.png", "backgrounds/mods.png"];
+    private readonly int[] sourcePages = [-1, 0, 1, 6, 2, 3, 5, 4, -2];
+    private readonly string[] backgroundPaths = ["backgrounds/page-0.png", "backgrounds/page-2.png", "backgrounds/detail.png", "backgrounds/page-2.png", "backgrounds/page-4.png", "backgrounds/driving.png", "backgrounds/patches.png", "backgrounds/page-5.png", "backgrounds/mods.png"];
     private int drivingSubpage;
     private bool foldersExpanded;
     private bool animateFoldersOpening;
@@ -118,7 +118,7 @@ public partial class MainWindow : Window
                 Adopt(await backend.Call("state"));
                 OperationStatus(state.FoldersOk ? "" : "Choose the game folders on Play.");
                 if (Environment.GetCommandLineArgs().Contains("--mod-manager")) ShowPage(ModsPage, false);
-                if (!preview && Environment.GetCommandLineArgs().Contains("--benchmark")) { ShowPage(6, false); await Launch(true); }
+                if (!preview && Environment.GetCommandLineArgs().Contains("--benchmark")) { ShowPage(Array.IndexOf(names, "Benchmark"), false); await Launch(true); }
                 else if (!preview && (Environment.GetCommandLineArgs().Contains("--play") || (File.Exists(Path.Combine(root, "launcher.ini")) && File.ReadLines(Path.Combine(root, "launcher.ini")).Any(x => x.Trim() == "auto_play=1")))) await Launch(false);
                 if (!preview && !busy && IsVisible) _ = CheckForUpdates();
             }

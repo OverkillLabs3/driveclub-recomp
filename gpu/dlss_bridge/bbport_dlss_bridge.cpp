@@ -35,9 +35,14 @@ struct State {
     NVSDK_NGX_FeatureDiscoveryInfo discovery{};
     NVSDK_NGX_FeatureDiscoveryInfo discovery_fg{}; // Frame Generation
     NVSDK_NGX_Parameter* capabilities{};
-    NVSDK_NGX_Parameter* parameters{};
-    NVSDK_NGX_Handle* feature{};
-    BbDlssFeature feature_desc{};
+    // DLSS features, each with its own parameters and history (ABI 3: one per eye in VR); `slot` is the one the
+    // calls act on.
+    struct Slot {
+        NVSDK_NGX_Parameter* parameters{};
+        NVSDK_NGX_Handle* feature{};
+        BbDlssFeature feature_desc{};
+    } slots[2];
+    uint32_t slot{};
     // Frame Generation: its own parameter map (NVIDIA's advice with two features).
     NVSDK_NGX_Parameter* fg_parameters{};
     NVSDK_NGX_Handle* fg_feature{};
@@ -213,22 +218,31 @@ int32_t Initialize(VkInstance instance, VkPhysicalDevice physical, VkDevice devi
     return 1;
 }
 
+void ReleaseSlot(State::Slot& slot) {
+    if (slot.feature) {
+        NVSDK_NGX_VULKAN_ReleaseFeature(slot.feature);
+        slot.feature = nullptr;
+    }
+    if (slot.parameters) {
+        NVSDK_NGX_VULKAN_DestroyParameters(slot.parameters);
+        slot.parameters = nullptr;
+    }
+}
+
 void ReleaseFeature() {
-    if (state.feature) {
-        NVSDK_NGX_VULKAN_ReleaseFeature(state.feature);
-        state.feature = nullptr;
-    }
-    if (state.parameters) {
-        NVSDK_NGX_VULKAN_DestroyParameters(state.parameters);
-        state.parameters = nullptr;
-    }
+    ReleaseSlot(state.slots[state.slot]);
+}
+
+void SelectFeature(uint32_t slot) {
+    state.slot = slot < 2 ? slot : 0;
 }
 
 int32_t CreateFeature(VkCommandBuffer command, const BbDlssFeature* desc) {
     if (!state.initialized || !state.capabilities || !desc)
         return 0;
     ReleaseFeature();
-    if (!Check("Parameter allocation", NVSDK_NGX_VULKAN_AllocateParameters(&state.parameters)))
+    auto& cur = state.slots[state.slot];
+    if (!Check("Parameter allocation", NVSDK_NGX_VULKAN_AllocateParameters(&cur.parameters)))
         return 0;
     for (const char* key : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
@@ -236,7 +250,7 @@ int32_t CreateFeature(VkCommandBuffer command, const BbDlssFeature* desc) {
                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
-        NVSDK_NGX_Parameter_SetUI(state.parameters, key, desc->preset);
+        NVSDK_NGX_Parameter_SetUI(cur.parameters, key, desc->preset);
     static constexpr std::array qualities{
         NVSDK_NGX_PerfQuality_Value_DLAA, NVSDK_NGX_PerfQuality_Value_MaxQuality,
         NVSDK_NGX_PerfQuality_Value_Balanced, NVSDK_NGX_PerfQuality_Value_MaxPerf,
@@ -252,14 +266,14 @@ int32_t CreateFeature(VkCommandBuffer command, const BbDlssFeature* desc) {
         (desc->depth_inverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0) |
         (desc->hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure
                    : 0);
-    const auto result = NGX_VULKAN_CREATE_DLSS_EXT1(state.device, command, 1, 1, &state.feature,
-                                                   state.parameters, &settings);
-    if (!Check("DLSS feature creation", result) || !state.feature) {
-        state.feature = nullptr;
+    const auto result = NGX_VULKAN_CREATE_DLSS_EXT1(state.device, command, 1, 1, &cur.feature,
+                                                   cur.parameters, &settings);
+    if (!Check("DLSS feature creation", result) || !cur.feature) {
+        cur.feature = nullptr;
         return 0;
     }
-    state.feature_desc = *desc;
-    Log(0, "DLSS %ux%u -> %ux%u, quality %d, preset %u%s", desc->input_width, desc->input_height,
+    cur.feature_desc = *desc;
+    Log(0, "DLSS %u: %ux%u -> %ux%u, quality %d, preset %u%s", state.slot, desc->input_width, desc->input_height,
         desc->output_width, desc->output_height, desc->quality, desc->preset,
         desc->hdr ? ", HDR input" : "");
     return 1;
@@ -272,7 +286,8 @@ NVSDK_NGX_Resource_VK Wrap(const BbDlssImage& image, bool writable) {
 }
 
 int32_t Evaluate(VkCommandBuffer command, const BbDlssEvaluate* evaluate) {
-    if (!state.feature || !state.parameters || !evaluate)
+    auto& cur = state.slots[state.slot];
+    if (!cur.feature || !cur.parameters || !evaluate)
         return 0;
     auto color = Wrap(evaluate->color, false);
     auto depth = Wrap(evaluate->depth, false);
@@ -284,16 +299,15 @@ int32_t Evaluate(VkCommandBuffer command, const BbDlssEvaluate* evaluate) {
     parameters.Feature.InSharpness = evaluate->sharpness;
     parameters.pInDepth = &depth;
     parameters.pInMotionVectors = &motion;
-    parameters.InRenderSubrectDimensions = {state.feature_desc.input_width,
-                                            state.feature_desc.input_height};
+    parameters.InRenderSubrectDimensions = {cur.feature_desc.input_width, cur.feature_desc.input_height};
     parameters.InJitterOffsetX = evaluate->jitter_x;
     parameters.InJitterOffsetY = evaluate->jitter_y;
     parameters.InReset = evaluate->reset;
     parameters.InMVScaleX = parameters.InMVScaleY = 1.0f;
     parameters.InPreExposure = parameters.InExposureScale = 1.0f;
     parameters.InFrameTimeDeltaInMsec = evaluate->frame_ms;
-    return Check("DLSS evaluation", NGX_VULKAN_EVALUATE_DLSS_EXT(command, state.feature,
-                                                                state.parameters, &parameters))
+    return Check("DLSS evaluation", NGX_VULKAN_EVALUATE_DLSS_EXT(command, cur.feature,
+                                                                cur.parameters, &parameters))
                ? 1
                : 0;
 }
@@ -437,7 +451,9 @@ int32_t FrameGenEvaluate(VkCommandBuffer command, const BbDlssgEvaluate* evaluat
 
 void Shutdown() {
     FrameGenRelease();
-    ReleaseFeature();
+    for (auto& slot : state.slots)
+        ReleaseSlot(slot);
+    state.slot = 0;
     if (state.capabilities) {
         NVSDK_NGX_VULKAN_DestroyParameters(state.capabilities);
         state.capabilities = nullptr;
@@ -452,7 +468,7 @@ void Shutdown() {
 const BbDlssApi api{BBPORT_DLSS_BRIDGE_ABI, Configure,        InstanceExtensions, DeviceExtensions,
                     Initialize,             CreateFeature,    Evaluate,           ReleaseFeature,
                     Shutdown,               FrameGenMaxCount, FrameGenCreate,     FrameGenEvaluate,
-                    FrameGenRelease};
+                    FrameGenRelease,        SelectFeature};
 
 } // namespace
 

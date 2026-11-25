@@ -10,6 +10,7 @@
 #include "common/assert.h"
 #include "common/func_traits.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_vr.h" // VR multiview
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/frontend/translate/translate.h"
@@ -662,6 +663,7 @@ std::vector<u32> EmitSPIRV(const Profile& profile, const RuntimeInfo& runtime_in
     EmitContext ctx{profile, runtime_info, program.info, binding};
     PrepareWorldRepeat(program);
     PlanWideLoads(ctx, program);
+    Vr::ScanScreenParams(program); // VR multiview: outputs holding the screen position
     const Id main{DefineMain(ctx, program)};
     DefineEntryPoint(program.info, ctx, main);
     SetupCapabilities(program.info, profile, runtime_info, ctx);

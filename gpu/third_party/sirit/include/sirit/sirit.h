@@ -207,6 +207,9 @@ public:
     /// Returns a false scalar constant.
     Id ConstantFalse(Id result_type);
 
+    /// VR multiview: a boolean specialisation constant, false unless specialised.
+    Id SpecConstantFalse(Id result_type);
+
     /// Returns a numeric scalar constant.
     Id Constant(Id result_type, const Literal& literal);
 

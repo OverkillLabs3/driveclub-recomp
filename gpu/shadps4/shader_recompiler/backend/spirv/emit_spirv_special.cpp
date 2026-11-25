@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
+#include "shader_recompiler/backend/spirv/emit_spirv_vr.h" // VR multiview
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/ir/debug_print.h"
 #include "shader_recompiler/ir/microinstruction.h"
@@ -16,6 +17,7 @@ void EmitPrologue(EmitContext& ctx) {
         ctx.DefineWorkgroupIndex();
     }
     ctx.DefineBufferProperties();
+    Vr::EyeBuffers(ctx); // VR multiview: the eye's copy of each guest buffer
 }
 
 void ConvertDepthMode(EmitContext& ctx) {
@@ -187,9 +189,10 @@ static void EmitFragmentMotion(EmitContext& ctx) {
 }
 
 void EmitEpilogue(EmitContext& ctx) {
-    if (Sirit::ValidId(ctx.motion_out_cur)) {
+    if (Sirit::ValidId(ctx.motion_out_cur)) { // before the eye's shift (it cancels in the motion)
         EmitVertexMotion(ctx);
     }
+    Vr::Epilogue(ctx); // VR multiview: the eye's clip shift
     if (Sirit::ValidId(ctx.motion_frag_out)) {
         EmitFragmentMotion(ctx);
     }
@@ -218,6 +221,7 @@ void EmitDiscardCond(EmitContext& ctx, Id condition) {
 }
 
 void EmitEmitVertex(EmitContext& ctx) {
+    Vr::BeforeEmitVertex(ctx); // VR multiview: the eye's clip shift
     ctx.OpEmitVertex();
 }
 

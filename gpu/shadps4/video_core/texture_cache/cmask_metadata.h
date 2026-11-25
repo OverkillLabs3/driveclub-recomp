@@ -57,15 +57,29 @@ bool Touch(Mutex& mutex, Map& entries, Address address, unsigned slice,
     }
     return true;
 }
+// `replace_kind`: metadata of another kind at the address is replaced, and its kind returned (the game reuses the
+// address: a depth target's HTILE where a colour target's CMASK was registered). Without it the entry kept its first
+// kind, and the HTILE's clears found nothing to clear there (Clear refuses a revoked CMASK entry): the depth target
+// was never cleared again (DriveClub in VR at the larger eye sizes: the mirror's scene, its world went black).
 template <class Mutex, class Map, class Address, class Entry, class Kind>
-void Register(Mutex& mutex, Map& entries, Address address, Entry initial,
-              Kind cmask, Kind revoked) {
+std::optional<Kind> Register(Mutex& mutex, Map& entries, Address address, Entry initial,
+                             Kind cmask, Kind revoked, bool replace_kind = false) {
     std::scoped_lock lock{mutex};
     const auto [it, inserted] = entries.emplace(address, initial);
-    if (!inserted && initial.type == cmask && Value(it).type == revoked) {
-        Value(it).type = cmask;
+    if (inserted) {
+        return std::nullopt;
     }
-    // Restoring CMask intentionally preserves the existing clear_mask.
+    if (initial.type == cmask && Value(it).type == revoked) {
+        Value(it).type = cmask;
+        // Restoring CMask intentionally preserves the existing clear_mask.
+        return std::nullopt;
+    }
+    if (replace_kind && Value(it).type != initial.type) {
+        const Kind old = Value(it).type;
+        Value(it) = initial;
+        return old;
+    }
+    return std::nullopt;
 }
 template <class Mutex, class Map, class Addresses>
 void Erase(Mutex& mutex, Map& entries, const Addresses& addresses) {

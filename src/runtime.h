@@ -104,6 +104,7 @@ void runtime_memory_reserve(void);
 /* Blocked-thread diagnostic (runtime_diag.c): threads.txt in the user dir lists long waits. */
 extern uintptr_t runtime_image_base;
 extern uint64_t runtime_image_size;
+extern volatile int runtime_image_ready;
 void runtime_diag_start(void);
 void runtime_diag_print(void *file);
 void runtime_rwlock_dump(void *file);

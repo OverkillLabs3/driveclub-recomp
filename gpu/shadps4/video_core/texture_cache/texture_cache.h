@@ -260,6 +260,8 @@ public:
     bool IsMetaCleared(VAddr address, u32 slice) const;
     bool ClearMeta(VAddr address);
     bool TouchMeta(VAddr address, u32 slice, bool is_clear);
+    bool IsColorMetaCleared(VAddr address, u32 slice) const; ///< bbport: CMASK entries only
+    void TouchColorMeta(VAddr address, u32 slice);           ///< bbport: the slice is no longer cleared (CMASK only)
     /// Revoke stale CMask claims whose metadata bases lie in an actual CPU-upload span.
     void RevokeCmaskForCpuUpload(VAddr address, u64 size);
 

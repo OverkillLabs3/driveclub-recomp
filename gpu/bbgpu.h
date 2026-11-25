@@ -21,6 +21,9 @@ void bbgpu_register_kernel(void);
 void bbnet_configure(const char *app0, const char *serial, const char *title, const char *app_ver);
 /* Creates window, Vulkan device, presenter and GPU command processor. */
 int bbgpu_init(const BbGpuConfig *config);
+/* VR, BB_VR_AUTO_SIZE=1 (the launcher's Auto headset picture), before bbgpu_init: starts OpenXR and gives the size
+ * each eye is drawn at so that the part the runtime shows has exactly the pixels it asks for (1), else 0. */
+int bbgpu_vr_auto_size(uint32_t *width, uint32_t *height);
 /* After guest finalizers: join presentation/GPU/window threads and destroy their owners. */
 void bbgpu_shutdown(void);
 /* Function for an imported NID ("NID#lib#mod"), or 0 when the GPU library does not provide it. */

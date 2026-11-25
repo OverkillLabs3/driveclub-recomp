@@ -23,6 +23,9 @@ layout(push_constant) uniform Constants {
     vec2 size;      // pixels
     vec2 jitter;    // this frame's viewport shift in pixels (x right, y down)
     uvec4 offsets;  // dwords from each binding's (aligned) start to the game's buffer
+    // VR true stereo: the eye's clip x shift (0 for one picture). The game's constants are the centre view's; an eye
+    // sees a point at its clip x plus the shift (the same in the previous frame, the eye fixed in the head).
+    float eye_shift;
 };
 
 float F(uint v) {
@@ -51,9 +54,6 @@ void main() {
     imageStore(depth_copy_img, pixel, vec4(1.0 - depth));
     const uint object = uint(texelFetch(gbuffer_tex, pixel, 0).a * 255.0 + 0.5) & 63u;
 
-    const float ray_x = (Fr(76u) * uv.x + Fr(78u)) * Fr(94u) + Fr(92u);
-    const float ray_y = (Fr(77u) * uv.y + Fr(79u)) * Fr(95u) + Fr(93u);
-
     // Reversed infinite depth: depth <= 1e-6 is the sky at infinity.
     // Infinite direction rotates with the camera, without translation (view_w = 0).
     // Using z = 1.0 for sky preserves full 32-bit floating-point precision and eliminates
@@ -61,6 +61,12 @@ void main() {
     const bool sky = depth <= 1e-6;
     const float denom = max(-(Ca(118u) * depth + Ca(119u)), 1e-7);
     const float z = sky ? 1.0 : (1.0 / denom);
+    // VR: the centre view's pixel (clip w is z: the eye's shift / w, in screen fractions); the sky has none.
+    const float eye_clip = sky ? 0.0 : eye_shift;
+    const vec2 centre_uv = vec2(uv.x - Ca(100u) * eye_clip / z, uv.y);
+
+    const float ray_x = (Fr(76u) * centre_uv.x + Fr(78u)) * Fr(94u) + Fr(92u);
+    const float ray_y = (Fr(77u) * centre_uv.y + Fr(79u)) * Fr(95u) + Fr(93u);
     const float view_x = z * ray_x;
     const float view_y = z * ray_y;
     const float view_w = sky ? 0.0 : 1.0;
@@ -72,7 +78,7 @@ void main() {
     vec2 cam_motion = vec2(0.0);
     if (cam_clip.w > 1e-5) {
         const vec2 prev_cam_uv =
-            vec2(Ca(100u), Ca(101u)) * cam_clip.xy / cam_clip.w + vec2(Ca(102u), Ca(103u));
+            vec2(Ca(100u), Ca(101u)) * (cam_clip.xy + vec2(eye_clip, 0.0)) / cam_clip.w + vec2(Ca(102u), Ca(103u));
         cam_motion = (prev_cam_uv - uv) * size;
     }
 
@@ -84,7 +90,7 @@ void main() {
         const vec4 prev_clip = view_x * col_x + view_y * col_y - z * col_z + col_w;
         if (prev_clip.w > 1e-5) {
             const vec2 prev_uv =
-                vec2(Ca(100u), Ca(101u)) * prev_clip.xy / prev_clip.w + vec2(Ca(102u), Ca(103u));
+                vec2(Ca(100u), Ca(101u)) * (prev_clip.xy + vec2(eye_clip, 0.0)) / prev_clip.w + vec2(Ca(102u), Ca(103u));
             motion = (prev_uv - uv) * size;
         } else {
             motion = vec2(0.0);

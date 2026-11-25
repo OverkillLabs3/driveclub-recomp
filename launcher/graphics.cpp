@@ -253,6 +253,10 @@ std::vector<Edit> Edits(const GraphicsChoice& c) {
   // The game AA adds an FXAA pass after its temporal AA (photo mode turns it off).
   if (!c.fxaa) e.push_back({"default", "AA", nullptr, {{"enableFXAA", "false"}}});
   if (!c.dynamic_res) e.push_back({"default", "ViewportScaling", nullptr, {{"variableScaling", "false"}}});
+  // Off in races (a few FPS at VR sizes): the screen-space reflections, which wet roads and puddles get theirs from,
+  // and the ambient occlusion. Photo mode keeps both.
+  if (!c.ssr) e.push_back({"OnePlayer2D", "General", nullptr, {{"enableSSR", "false"}}});
+  if (!c.ssao) e.push_back({"default", "General", nullptr, {{"ssao", "false"}}});
   return e;
 }
 
@@ -260,9 +264,9 @@ std::string Describe(const GraphicsChoice& c) {
   char s[200];
   // The runtime's benchmark report reads the first five (runtime_benchmark.c).
   snprintf(s, sizeof s,
-           "car %d opponents %d scenery %d reflections %d dynres %d shadows %d particles %d blur %d dust %d haze %d fxaa %d",
+           "car %d opponents %d scenery %d reflections %d dynres %d shadows %d particles %d blur %d dust %d haze %d fxaa %d ssr %d ssao %d",
            c.own_car, c.opponents, c.scenery, c.reflections, c.dynamic_res, c.shadows, c.particles, c.motion_blur,
-           c.lens_dust, c.heat_haze, c.fxaa);
+           c.lens_dust, c.heat_haze, c.fxaa, c.ssr, c.ssao);
   return s;
 }
 

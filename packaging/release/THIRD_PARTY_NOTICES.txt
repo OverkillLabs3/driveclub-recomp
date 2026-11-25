@@ -7,6 +7,8 @@ This program includes code and libraries from other projects. Their licenses app
 - Dear ImGui (MIT), stb_truetype (public domain), miniz (MIT), xbyak (BSD-3-Clause), magic_enum (MIT)
 - SDL3 (zlib), FFmpeg (LGPL-2.1-or-later), Vulkan Memory Allocator (MIT)
 - FidelityFX FSR (MIT)
+- SMAA (MIT, Jorge Jimenez et al.): the VR mode's SMAA; licenses/SMAA-LICENSE.txt (source: gpu/third_party/smaa). https://github.com/iryoku/smaa
+- OpenXR loader (Apache-2.0, The Khronos Group): runtime/openxr_loader.dll in the VR builds; licenses/OpenXR-loader-LICENSE.txt. https://github.com/KhronosGroup/OpenXR-SDK
 - AMD FSR SDK 2.4 Vulkan DLLs (runtime/fsr: amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll), used for FSR 4.1 on Radeon graphics cards, unmodified; the licence is LICENSE-AMD-FidelityFX-SDK.md in that folder.
 - FSR 4 model files (runtime/fsr4_shaders): built by the Q2RTX project from the MIT-licensed FSR 4 source in AMD's FidelityFX SDK; the notice is LICENSE-FSR4-v07.txt in that folder.
 - NVIDIA DLSS library (nvngx_dlss.dll in the runtime folder), used for DLSS anti-aliasing and upscaling on GeForce RTX cards. They are distributed under the NVIDIA DLSS license in the licenses folder.
