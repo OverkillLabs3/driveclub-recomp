@@ -176,6 +176,7 @@ struct DynamicState {
     float line_width{};
     bool feedback_loop_enabled{};
 
+
     /// Commits the dynamic state to the provided command buffer (a null one only clears the
     /// flags that committing clears).
     void Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf);
@@ -402,14 +403,28 @@ struct DynamicState {
     }
 
     void SetViewports(const Viewports& viewports_) {
-        if (!std::ranges::equal(viewports, viewports_)) {
+        const size_t n = viewports_.size();
+        bool same = (viewports.size() == n);
+        if (same) {
+            const auto* a = viewports.data();
+            const auto* b = viewports_.data();
+            for (size_t i = 0; i < n; ++i) {
+                if (!(a[i] == b[i])) {
+                    same = false;
+                    break;
+                }
+            }
+        }
+        if (!same) {
             viewports = viewports_;
             dirty_state.viewports = true;
         }
     }
 
     void SetScissors(const Scissors& scissors_) {
-        if (!std::ranges::equal(scissors, scissors_)) {
+        const size_t n = scissors_.size();
+        if (scissors.size() != n ||
+            (n != 0 && std::memcmp(scissors.data(), scissors_.data(), n * sizeof(vk::Rect2D)) != 0)) {
             scissors = scissors_;
             dirty_state.scissors = true;
         }
@@ -840,6 +855,15 @@ public:
         return {dst, data.size()};
     }
 
+    /// Allocates uninitialized storage in the current chunk after ReserveRecordData() ensured space.
+    template <typename T>
+    T* AllocateRecordArray(size_t count) {
+        if (count == 0) {
+            return nullptr;
+        }
+        return static_cast<T*>(CurrentChunk().Allocate(count * sizeof(T), alignof(T)));
+    }
+
     /// Hands recorded commands to the recording thread. Called at points where no caller holds
     /// the raw command buffer (end of draws and dispatches); small batches are kept.
     void KickRecording(bool force = false);
@@ -991,11 +1015,13 @@ private:
     std::unique_ptr<RecordChunk> record_chunk;
     std::vector<std::unique_ptr<RecordChunk>> full_chunks;
     std::mutex recorder_mutex;
-    std::condition_variable_any recorder_cv;
-    std::condition_variable_any recorder_idle_cv;
+    std::condition_variable recorder_cv;
+    std::condition_variable recorder_idle_cv;
     std::deque<std::unique_ptr<RecordChunk>> recorder_queue;
     std::vector<std::unique_ptr<RecordChunk>> free_chunks;
     bool recorder_busy = false;
+    bool recorder_stop = false;
+    bool recorder_sync_waiting = false;
     /// A submission wrote buffer memory the CPU will read straight from the mapping: the next submission ends with
     /// a barrier that makes those writes visible to the host.
     std::atomic<bool> host_read_barrier{false};

@@ -35,6 +35,32 @@ struct SharpFetch {
     template <u32 num_dwords = N>
         requires(num_dwords <= N)
     constexpr bool Fetch(const u32* flatbuf, T* out) const {
+        if (!std::is_constant_evaluated()) {
+            constexpr u8 full_mask =
+                num_dwords == 8 ? u8{0xFF} : static_cast<u8>((1u << num_dwords) - 1u);
+            if ((load_mask & full_mask) == full_mask) {
+                const u64 base = offsets[0];
+                if constexpr (num_dwords == 4) {
+                    u64 o;
+                    std::memcpy(&o, offsets.data(), sizeof(o));
+                    if (base <= 0xFFFBull &&
+                        o == base * 0x0001000100010001ull + 0x0003000200010000ull) {
+                        std::memcpy(out, flatbuf + base, 4 * sizeof(u32));
+                        return true;
+                    }
+                } else if constexpr (num_dwords == 8) {
+                    u64 o0, o1;
+                    std::memcpy(&o0, offsets.data(), sizeof(o0));
+                    std::memcpy(&o1, offsets.data() + 4, sizeof(o1));
+                    if (base <= 0xFFF7ull &&
+                        o0 == base * 0x0001000100010001ull + 0x0003000200010000ull &&
+                        o1 == base * 0x0001000100010001ull + 0x0007000600050004ull) {
+                        std::memcpy(out, flatbuf + base, 8 * sizeof(u32));
+                        return true;
+                    }
+                }
+            }
+        }
         u8 mask = load_mask;
         for (u32 i = 0; i < num_dwords; i++) {
             if (offsets[i] == UNKNOWN_LOCATION) {

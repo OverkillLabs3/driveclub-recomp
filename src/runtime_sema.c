@@ -65,8 +65,46 @@ extern __thread int runtime_thread_background;
 /* Background library threads (WebAPI, wheel support) that poll a semaphore in vain over and over sleep a little
  * between polls instead of keeping a core busy. */
 static void throttle_background(void) {
-    if (!runtime_thread_background) return;
-    compat_sleep_ns(2000000);
+    if (runtime_thread_background) {
+        compat_sleep_ns(2000000);
+        return;
+    }
+    static int backoff_enabled = -1;
+    if (__builtin_expect(backoff_enabled < 0, 0)) {
+        const char *env = getenv("BB_SPIN_BACKOFF");
+        backoff_enabled = !(env && env[0] == '0');
+    }
+    if (!backoff_enabled) return;
+    /* Back off sustained tight sem_poll/psem_trywait spin-loops on non-background threads. */
+    static _Thread_local uint64_t last_fail_ns;
+    static _Thread_local uint32_t fail_streak;
+#ifdef _WIN32
+    uint64_t t = compat_monotonic_ns();
+#else
+    uint64_t t = now_ns();
+#endif
+    if (t - last_fail_ns < 5000u) {
+        if (fail_streak < 256u) ++fail_streak;
+        if (fail_streak > 64u) {
+            if (fail_streak <= 96u) {
+#ifdef _WIN32
+                compat_yield();
+#else
+                sched_yield();
+#endif
+            } else {
+                compat_sleep_ns(200000u);
+            }
+#ifdef _WIN32
+            t = compat_monotonic_ns();
+#else
+            t = now_ns();
+#endif
+        }
+    } else {
+        fail_streak = 0;
+    }
+    last_fail_ns = t;
 }
 static int32_t wait_count(uint32_t id,int32_t need,uint32_t *timeout,int block) {
     pthread_mutex_lock(&lock);

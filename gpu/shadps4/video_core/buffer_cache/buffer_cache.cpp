@@ -1373,7 +1373,7 @@ std::pair<const Buffer*, u64> BufferCache::ObtainBufferForImage(VAddr device_add
             if (staging.size < Chunk) {
                 SmallGuestCopy(item);
             } else {
-                BbCopy::Async([item] { item.run(item); });
+                BbCopy::AsyncItem(item);
             }
         }
         return {staging.buffer, staging.offset};
@@ -1501,6 +1501,17 @@ const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
 }
 
 void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_block) {
+    // Fast path for 1-2 block arena lookups (95%+ of binds): resident_ranges only grows.
+    if (first_block == last_block) {
+        if (resident_block_cache[first_block & 511] == first_block + 1) [[likely]] {
+            return;
+        }
+    } else if (last_block == first_block + 1) {
+        if (resident_block_cache[first_block & 511] == first_block + 1 &&
+            resident_block_cache[last_block & 511] == last_block + 1) [[likely]] {
+            return;
+        }
+    }
     u32 resident_blocks{};
     IntervalList bind_ranges;
     resident_ranges.ForEachGap(first_block, last_block + 1, [&](u64 start, u64 end) {
@@ -1509,6 +1520,10 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     });
 
     if (bind_ranges.Empty()) {
+        resident_block_cache[first_block & 511] = first_block + 1;
+        if (last_block == first_block + 1) {
+            resident_block_cache[last_block & 511] = last_block + 1;
+        }
         return;
     }
     BbStats::Timer timer{BbStats::t_resident};

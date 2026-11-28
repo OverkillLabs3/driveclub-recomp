@@ -27,6 +27,9 @@
 #include "common/assert.h"
 #include "common/thread.h"
 #include "common/types.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace Vulkan {
 
@@ -45,7 +48,7 @@ public:
         thread.request_stop();
         published.fetch_add(0, std::memory_order_seq_cst);
         wake.fetch_add(1, std::memory_order_seq_cst);
-        wake.notify_one();
+        WakeOneU32(wake);
     }
 
     /// True on the draw recording thread.
@@ -86,7 +89,7 @@ public:
         ++packets;
         if (sleeping.load(std::memory_order_seq_cst)) {
             wake.fetch_add(1, std::memory_order_seq_cst);
-            wake.notify_one();
+            WakeOneU32(wake);
         }
     }
 
@@ -112,24 +115,7 @@ public:
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = BbCpu::Cycles();
-        const auto wall = std::chrono::steady_clock::now();
-        bool reported = false;
-        for (u32 spins = 0; consumed.load(std::memory_order_acquire) != head; ++spins) {
-            if (spins < 4096) {
-                BbCpu::Pause();
-            } else {
-                std::this_thread::yield();
-                // bbport: a recording thread stuck for 2 s (a GPU hang inside it) is reported once, with the
-                // reason of this drain, so a freeze leaves a trace in the log.
-                if (!reported && !(spins & 1023) && std::chrono::steady_clock::now() - wall > std::chrono::seconds(2)) {
-                    reported = true;
-                    std::printf("Draw pipe: the recording thread has not finished its packets for 2 s (drain reason "
-                                "%u, %llu ring bytes queued)\n",
-                                reason, static_cast<unsigned long long>(head - consumed.load()));
-                    std::fflush(stdout);
-                }
-            }
-        }
+        WaitUntilConsumed(head);
         const u64 waited = BbCpu::Cycles() - start;
         drain_cycles += waited;
         cycles_by_reason[slot] += waited;
@@ -138,6 +124,9 @@ public:
     /// Stage A: position after the last committed packet; Reached(position) once B ran it.
     [[nodiscard]] u64 Head() const noexcept {
         return head;
+    }
+    [[nodiscard]] u64 Consumed() const noexcept {
+        return consumed.load(std::memory_order_acquire);
     }
     [[nodiscard]] bool Reached(u64 position) const noexcept {
         return consumed.load(std::memory_order_acquire) >= position;
@@ -148,12 +137,7 @@ public:
         if (Reached(position)) {
             return;
         }
-        for (u32 spins = 1; !Reached(position); ++spins) {
-            BbCpu::Pause();
-            if (!(spins & 1023)) {
-                std::this_thread::yield();
-            }
-        }
+        WaitUntilConsumed(position);
     }
 
     /// Packets published that stage B has not finished (any thread; BB_PIPE_CHECK).
@@ -184,9 +168,55 @@ private:
         return (size + 63) & ~63u;
     }
 
-    void WaitForSpace(u64 at, u64 size) {
-        while (at + size - consumed.load(std::memory_order_acquire) > Capacity) {
+    static inline void WaitU32(std::atomic<u32>& addr, u32 undesired) noexcept {
+#ifdef _WIN32
+        WaitOnAddress(&addr, &undesired, sizeof(u32), INFINITE);
+#else
+        addr.wait(undesired, std::memory_order_seq_cst);
+#endif
+    }
+
+    static inline void WakeOneU32(std::atomic<u32>& addr) noexcept {
+#ifdef _WIN32
+        WakeByAddressSingle(&addr);
+#else
+        addr.notify_one();
+#endif
+    }
+
+    void WaitUntilConsumed(u64 target) {
+        for (u32 spins = 0; spins < 256; ++spins) {
+            if (consumed.load(std::memory_order_acquire) >= target) {
+                return;
+            }
             BbCpu::Pause();
+        }
+        while (consumed.load(std::memory_order_acquire) < target) {
+            const u32 seen = wait_seq.load(std::memory_order_seq_cst);
+            wait_target.store(target, std::memory_order_seq_cst);
+            if (consumed.load(std::memory_order_seq_cst) < target) {
+                WaitU32(wait_seq, seen);
+            }
+            wait_target.store(0, std::memory_order_relaxed);
+        }
+    }
+
+    void PublishConsumed(u64 at) {
+        consumed.store(at, std::memory_order_seq_cst);
+        u64 target = wait_target.load(std::memory_order_seq_cst);
+        if (target != 0 && at >= target &&
+            wait_target.compare_exchange_strong(target, 0, std::memory_order_acq_rel)) {
+            wait_seq.fetch_add(1, std::memory_order_seq_cst);
+            WakeOneU32(wait_seq);
+        }
+    }
+
+    void WaitForSpace(u64 at, u64 size) {
+        if (at + size > Capacity) {
+            const u64 need = at + size - Capacity;
+            if (consumed.load(std::memory_order_acquire) < need) {
+                WaitUntilConsumed(need);
+            }
         }
     }
 
@@ -225,7 +255,7 @@ private:
                         sleeping.store(true, std::memory_order_seq_cst);
                         if (published.load(std::memory_order_seq_cst) == at &&
                             !stop.stop_requested()) {
-                            wake.wait(seen, std::memory_order_seq_cst);
+                            WaitU32(wake, seen);
                         }
                         sleeping.store(false, std::memory_order_relaxed);
                     }
@@ -235,7 +265,7 @@ private:
             const auto* header = reinterpret_cast<const Header*>(ring.get() + at % Capacity);
             if (header->size == 0) {
                 at += Capacity - at % Capacity;
-                consumed.store(at, std::memory_order_release);
+                PublishConsumed(at);
                 continue;
             }
             const u64 start = BbCpu::Cycles();
@@ -256,7 +286,7 @@ private:
             if (published.load(std::memory_order_acquire) == at) {
                 BbCopy::FlushBatch();
             }
-            consumed.store(at, std::memory_order_release);
+            PublishConsumed(at);
         }
     }
 
@@ -268,6 +298,8 @@ private:
     u32 pending_size = 0;
     alignas(64) std::atomic<u64> published{0};
     alignas(64) std::atomic<u64> consumed{0};
+    alignas(64) std::atomic<u64> wait_target{0};
+    std::atomic<u32> wait_seq{0};
     alignas(64) std::atomic<u32> wake{0};
     std::atomic<bool> sleeping{false};
     std::atomic<u32> stage_b_tid{0};

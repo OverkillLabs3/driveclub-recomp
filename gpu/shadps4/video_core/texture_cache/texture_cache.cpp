@@ -46,7 +46,11 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
     : instance{instance_}, scheduler{scheduler_}, runtime{runtime_}, liverpool{liverpool_},
       buffer_cache{buffer_cache_}, tracker{tracker_}, blit_helper{instance, scheduler},
       tile_manager{instance, scheduler, runtime, buffer_cache.GetStreamBuffer()},
-      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()} {
+      readback_linear_images{EmulatorSettings.IsReadbackLinearImagesEnabled()},
+      membership_gen_enabled{[] {
+          const char* env = std::getenv("BB_MEMO_MEMBERSHIP");
+          return !(env && env[0] == '0');
+      }()} {
 
     u32 max_samplers = instance.GetMaxSamplerAllocationCount();
     trigger_gc_samplers = max_samplers * 3 / 4;
@@ -1124,21 +1128,59 @@ void TextureCache::RefreshImage(Image& image) {
 vk::Sampler TextureCache::GetSampler(const AmdGpu::Sampler& sampler,
                                      AmdGpu::BorderColorBuffer border_color_base,
                                      const bool is_depth, float extra_lod_bias, bool isotropic) {
-    // Compare and plain uses of one S# need separate samplers; so do extra LOD biases and isotropic ones.
-    const u64 hash = HashCombine(HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
-                                             u64(std::bit_cast<u32>(extra_lod_bias))),
-                                 u64(isotropic));
-
-    std::scoped_lock lock{samplers_mutex};
-    const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base,
-                                                        is_depth, extra_lod_bias, isotropic);
-    if (new_sampler) {
-        samplers.at(hash).lru_id = sampler_lru_cache.Insert(hash, gc_tick);
-    } else {
-        sampler_lru_cache.Touch(it->second.lru_id, gc_tick);
+    // Fast per-thread direct-mapped memo: avoids mutex, XXH3, hash map lookup, and LRU churn
+    // on the 99.9% repeat sampler binds within each GC tick.
+    u64 s0 = 0, s1 = 0;
+    static_assert(sizeof(sampler) == 16);
+    std::memcpy(&s0, &sampler, 8);
+    std::memcpy(&s1, reinterpret_cast<const u8*>(&sampler) + 8, 8);
+    const u32 lod_bits = std::bit_cast<u32>(extra_lod_bias);
+    const u32 flags = u32(is_depth) | (u32(isotropic) << 1);
+    const u64 gen = sampler_generation.load(std::memory_order_acquire);
+    const u64 tick = gc_tick;
+    const u64 mix = (s0 ^ (s1 * 0x9E3779B97F4A7C15ull) ^ (u64(lod_bits) << 32) ^
+                     (u64(flags) << 17)) *
+                    0xFF51AFD7ED558CCDull;
+    struct SamplerMemo {
+        const TextureCache* owner = nullptr;
+        u64 generation = 0;
+        u64 tick = ~0ULL;
+        u64 s0 = 0, s1 = 0;
+        u32 lod_bits = 0, flags = 0;
+        vk::Sampler handle{};
+    };
+    static thread_local std::array<SamplerMemo, 128> sampler_memo{};
+    auto& memo = sampler_memo[(mix ^ (mix >> 32)) & (sampler_memo.size() - 1)];
+    if (memo.owner == this && memo.generation == gen && memo.tick == tick && memo.s0 == s0 &&
+        memo.s1 == s1 && memo.lod_bits == lod_bits && memo.flags == flags) {
+        return memo.handle;
     }
 
-    return it->second.Handle();
+    // Compare and plain uses of one S# need separate samplers; so do extra LOD biases and isotropic ones.
+    const u64 hash = HashCombine(HashCombine(HashCombine(XXH3_64bits(&sampler, sizeof(sampler)), is_depth),
+                                             u64(lod_bits)),
+                                 u64(isotropic));
+
+    vk::Sampler handle{};
+    {
+        std::scoped_lock lock{samplers_mutex};
+        const auto [it, new_sampler] = samplers.try_emplace(hash, instance, sampler, border_color_base,
+                                                            is_depth, extra_lod_bias, isotropic);
+        if (new_sampler) {
+            auto& created = samplers.at(hash);
+            created.lru_id = sampler_lru_cache.Insert(hash, tick);
+            created.lru_touched_tick = tick;
+            handle = created.Handle();
+        } else {
+            if (it->second.lru_touched_tick != tick) {
+                it->second.lru_touched_tick = tick;
+                sampler_lru_cache.Touch(it->second.lru_id, tick);
+            }
+            handle = it->second.Handle();
+        }
+    }
+    memo = {this, gen, tick, s0, s1, lod_bits, flags, handle};
+    return handle;
 }
 
 void TextureCache::RegisterImage(ImageId image_id) {
@@ -1501,6 +1543,7 @@ void TextureCache::GarbageCollectSamplers() {
         const size_t lru_id = samplers.at(hash).lru_id;
         samplers.erase(hash);
         sampler_lru_cache.Free(lru_id);
+        sampler_generation.fetch_add(1, std::memory_order_release);
         return false;
     };
 
@@ -1525,7 +1568,7 @@ void TextureCache::RunGarbageCollector() {
 }
 
 void TextureCache::TouchImage(const Image& image) {
-    if (image.lru_touched_tick == gc_tick) {
+    if (image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8) {
         return;
     }
     image.lru_touched_tick = gc_tick;

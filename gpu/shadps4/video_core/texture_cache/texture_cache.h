@@ -100,11 +100,8 @@ public:
     /// changes the image's backing: memos that check each entry's backing can use this one). Equal to
     /// RegistryGeneration with BB_MEMO_MEMBERSHIP=0.
     [[nodiscard]] u64 MembershipGeneration() const noexcept {
-        static const bool on = [] {
-            const char* env = std::getenv("BB_MEMO_MEMBERSHIP");
-            return !(env && env[0] == '0');
-        }();
-        return on ? membership_generation.load(std::memory_order_acquire) : RegistryGeneration();
+        return membership_gen_enabled ? membership_generation.load(std::memory_order_acquire)
+                                      : RegistryGeneration();
     }
 
     /// bbport: FindImage's access tick for an image found by a memoized lookup. The LRU touch
@@ -163,15 +160,14 @@ public:
         constexpr u32 Registered = static_cast<u32>(ImageFlagBits::Registered);
         return (flags & (Dirty | Registered)) == Registered &&
                image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
-               image.lru_touched_tick == gc_tick;
+               image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8;
     }
 
     /// Updates image contents if it was modified by CPU.
     void UpdateImage(ImageId image_id) {
-        // bbport: a clean image already tracked and touched in this GC period needs nothing.
-        // Every texture binding comes here; the mutex (shared with the fault handlers of the
-        // guest threads) was ~3% of the GPU thread. Flags are read atomically: an invalidation
-        // racing with this check races the same way with the locked path.
+        // bbport: a clean image already tracked and touched recently (within 8 GC ticks; eviction
+        // threshold is >= 16 ticks) needs nothing. Avoids acquiring `mutex` and detaching/reattaching
+        // LRU nodes on every submission for every active texture.
         if (!BbToggle::Disabled(BbToggle::UpdateImageFastPath)) {
             const Image& image = slot_images[image_id];
             const u32 flags = std::atomic_ref<u32>(const_cast<u32&>(reinterpret_cast<const u32&>(image.flags)))
@@ -180,7 +176,7 @@ public:
             constexpr u32 Registered = static_cast<u32>(ImageFlagBits::Registered);
             if ((flags & (Dirty | Registered)) == Registered &&
                 image.track_addr == image.guest_begin && image.track_addr_end == image.guest_end &&
-                image.lru_touched_tick == gc_tick) {
+                image.lru_touched_tick <= gc_tick && (gc_tick - image.lru_touched_tick) < 8) {
                 return;
             }
         }
@@ -397,6 +393,7 @@ private:
     Common::LeastRecentlyUsedCache<ImageId, u64> lru_cache;
     Common::LeastRecentlyUsedCache<u64, u64> sampler_lru_cache;
     const bool readback_linear_images;
+    const bool membership_gen_enabled;
     PageTable page_table;
     std::mutex mutex;
     // bbport: FindImage results for unchanged image registrations (guarded by `mutex`).
@@ -418,6 +415,7 @@ private:
     std::array<FindImageCacheEntry, 1024> find_image_cache{};
     std::atomic<u64> registry_generation{0};
     std::atomic<u64> membership_generation{0};
+    std::atomic<u64> sampler_generation{1};
     std::mutex samplers_mutex;
     std::mutex download_images_mutex;
     struct MetaDataInfo {

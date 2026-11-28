@@ -110,6 +110,25 @@ int compat_random(void *buffer, size_t size) {
 
 /* One high-resolution timer per thread (Windows 10 1803+); a plain waitable timer before. */
 static __thread HANDLE sleep_timer;
+static uint64_t qpc_freq;
+static int64_t qpc_start;
+__attribute__((constructor)) static void init_qpc(void) {
+    LARGE_INTEGER f, s;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&s);
+    qpc_freq = (uint64_t)(f.QuadPart > 0 ? f.QuadPart : 1);
+    qpc_start = (int64_t)s.QuadPart;
+}
+uint64_t compat_monotonic_ns(void) {
+    if (__builtin_expect(!qpc_freq, 0)) init_qpc();
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    const uint64_t ticks = (uint64_t)(now.QuadPart - qpc_start);
+    const uint64_t f = qpc_freq;
+    if (__builtin_expect(f == 10000000ULL, 1)) return ticks * 100ULL;
+    return (ticks / f) * 1000000000ULL + ((ticks % f) * 1000000000ULL) / f;
+}
+void compat_yield(void) { SwitchToThread(); }
 void compat_sleep_ns(uint64_t ns) {
     if (!ns) { SwitchToThread(); return; }
     if (!sleep_timer) {

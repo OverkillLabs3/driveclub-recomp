@@ -272,6 +272,8 @@ private:
         }
     };
     IntervalList<Backing> resident_ranges;
+    // Direct-mapped cache of known-resident block indices (resident_ranges only grows).
+    std::array<u64, 512> resident_block_cache{};
 
     u32 arena_memory_type_index{};
     /// System memory type used when video memory is full, so a small card keeps playing slowly

@@ -25,6 +25,9 @@ struct Item {
     unsigned long long source, destination, size, extra;
 };
 
+/// Starts a single Item on a copy thread with zero heap allocation (inline when disabled).
+void AsyncItem(const Item& item);
+
 /// Queues a small copy in the calling thread's batch; the batch is started with Async() once it
 /// holds about 512 KiB or 256 items, or by FlushBatch()/WaitAsync(). One wakeup per batch
 /// instead of one per copy (thousands of constant buffer copies per frame).

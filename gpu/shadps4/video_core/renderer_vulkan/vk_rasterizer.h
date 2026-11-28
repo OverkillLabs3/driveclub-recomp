@@ -282,7 +282,7 @@ private:
             {0xA292, 1}, {0xA2A5, 1}, {0xA2DF, 5}, {0xC242, 1}}};
         static constexpr u32 Words = 196;
         bool valid = false;
-        const GraphicsPipeline* pipeline = nullptr;
+        ColorWriteMasks write_masks{};
         bool is_indexed = false;
         bool feedback_loop = false;
         std::array<float, 2> jitter{};

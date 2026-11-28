@@ -80,13 +80,54 @@ static ABI int32_t posix_clock_getres(uint32_t id,GuestTimespec *ts) {
     if (ts) { ts->sec=t.tv_sec; ts->nsec=t.tv_nsec; }
     return 0;
 }
-static ABI uint64_t process_time(void) {
-    struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
-    return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000+(uint64_t)((t.tv_nsec-process_start.tv_nsec)/1000);
-}
-static ABI uint64_t process_time_counter(void) {
+static uint64_t monotonic_ns_raw(void) {
+#ifdef _WIN32
+    return compat_monotonic_ns();
+#else
     struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
+#endif
+}
+static int spin_backoff_enabled(void) {
+    static int enabled = -1;
+    if (__builtin_expect(enabled < 0, 0)) {
+        const char *env = getenv("BB_SPIN_BACKOFF");
+        enabled = !(env && env[0] == '0');
+    }
+    return enabled;
+}
+static uint64_t guest_time_backoff(uint64_t now_ns) {
+    if (!spin_backoff_enabled()) return now_ns;
+    /* DriveClub's main thread waits on GPU labels in a tight busy-wait loop calling
+     * sceKernelGetProcessTimeCounter() millions of times/sec (guest+0x745fc0), burning ~92%
+     * of a core on 4C/8T CPUs. Back off cleanly once a thread polls tightly (<4 us) >64 times. */
+    static _Thread_local uint64_t last_ns;
+    static _Thread_local uint32_t streak;
+    if (now_ns - last_ns < 4000u) {
+        if (streak < 256u) ++streak;
+        if (streak > 64u) {
+            if (streak <= 96u) {
+#ifdef _WIN32
+                compat_yield();
+#else
+                sched_yield();
+#endif
+            } else {
+                compat_sleep_ns(200000u);
+            }
+            now_ns = monotonic_ns_raw();
+        }
+    } else {
+        streak = 0;
+    }
+    last_ns = now_ns;
+    return now_ns;
+}
+static ABI uint64_t process_time(void) {
+    return guest_time_backoff(monotonic_ns_raw()) / 1000u;
+}
+static ABI uint64_t process_time_counter(void) {
+    return guest_time_backoff(monotonic_ns_raw());
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
 #ifdef GUEST_CPU_NATIVE
@@ -113,8 +154,8 @@ static ABI uint64_t read_tsc(void) { return guest_cpu_tsc(); }
 static ABI uint64_t tsc_frequency(void) { return guest_cpu_tsc_frequency(); }
 #endif
 /* Shared with the GPU library so flip/label timestamps use the guest's clock. */
-uint64_t runtime_process_time_us(void) { return process_time(); }
-uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
+uint64_t runtime_process_time_us(void) { return monotonic_ns_raw() / 1000u; }
+uint64_t runtime_process_time_counter(void) { return monotonic_ns_raw(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
 #ifndef _WIN32
 void compat_sleep_ns(uint64_t ns) {

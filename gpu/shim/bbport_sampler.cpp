@@ -6,6 +6,11 @@
 #include <windows.h>
 #include <tlhelp32.h>
 
+extern "C" {
+extern uintptr_t runtime_image_base;
+extern uint64_t runtime_image_size;
+}
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -40,6 +45,12 @@ std::uint64_t CpuTime(HANDLE h) {
 }
 
 std::string Where(std::uintptr_t rip, std::uintptr_t exe_base) {
+    if (runtime_image_base && rip >= runtime_image_base && rip - runtime_image_base < runtime_image_size) {
+        char out[64];
+        std::snprintf(out, sizeof(out), "guest+0x%llx",
+                      static_cast<unsigned long long>(rip - runtime_image_base));
+        return out;
+    }
     HMODULE module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(rip), &module) || !module) {
@@ -123,7 +134,7 @@ void Run() {
             CloseHandle(snap);
             std::sort(load.rbegin(), load.rend());
             busy.clear();
-            for (std::size_t i = 0; i < load.size() && i < 4; ++i) {
+            for (std::size_t i = 0; i < load.size() && i < 6; ++i) {
                 if (load[i].first > 1000000) {  // over 10 ms of CPU in the last second
                     busy.push_back(load[i].second);
                 }
@@ -184,7 +195,7 @@ void Run() {
                 }
             }
             std::sort(order.rbegin(), order.rend());
-            for (std::size_t n = 0; n < order.size() && n < 3; ++n) {
+            for (std::size_t n = 0; n < order.size() && n < 6; ++n) {
                 auto& t = threads[order[n].second];
                 // Group by location, 64-byte buckets, so one function shows as a few lines.
                 std::map<std::string, std::uint32_t> by_place;
