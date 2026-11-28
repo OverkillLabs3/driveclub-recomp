@@ -10,8 +10,8 @@
 // skip_gpu_check.txt next to the launcher does the same.
 std::wstring CheckGpu();
 
-// "" when the processor has what the game's code needs (AVX, BMI1, LZCNT, MOVBE, POPCNT: Intel Haswell from 2013,
-// AMD Excavator or Ryzen, or newer), otherwise a sentence naming what is missing.
+// "" when the processor has what the game's code needs (AVX, POPCNT, F16C: Intel Ivy Bridge from 2012,
+// AMD Piledriver/Ryzen, or newer; MOVBE/BMI1/LZCNT are lowered at runtime), otherwise a sentence naming what is missing.
 std::wstring CheckCpu();
 
 // Entry point of the query process (DriveClub.exe --gpu-check <result file>). Exit code 0: fine, 1: refused.

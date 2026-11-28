@@ -295,14 +295,11 @@ std::wstring CheckCpu() {
   }
   need(avx, L"AVX");
   need((c & (1u << 23)) != 0, L"POPCNT");
-  need((c & (1u << 22)) != 0, L"MOVBE");
-  unsigned b7 = 0, d7 = 0, c7 = 0, a7 = 0;
-  need(__get_cpuid_count(7, 0, &a7, &b7, &c7, &d7) && (b7 & (1u << 3)) != 0, L"BMI1");
-  unsigned ae = 0, be = 0, ce = 0, de = 0;
-  need(__get_cpuid(0x80000001u, &ae, &be, &ce, &de) && (ce & (1u << 5)) != 0, L"LZCNT");
+  need((c & (1u << 29)) != 0, L"F16C");
+  // MOVBE, BMI1, and LZCNT are lowered at load time / via VEH by DriveClubGame.exe on pre-Haswell CPUs (e.g., Ivy Bridge).
   if (missing.empty()) return L"";
   return L"Your processor does not support " + missing +
-         L", which the game needs. Intel Haswell (2013) or newer, or AMD Excavator or Ryzen or newer, is required. If you are sure your processor has these, turn on \"Skip the hardware check\".";
+         L", which the game needs. Intel Ivy Bridge (2012) or newer, or AMD Piledriver/Ryzen or newer, is required. If you are sure your processor has these, turn on \"Skip the hardware check\".";
 }
 
 std::wstring DescribeCpu() {

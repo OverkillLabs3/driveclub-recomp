@@ -45,6 +45,7 @@
 #define _GNU_SOURCE
 #include "runtime.h"
 #include "guest_cpu.h"
+#include "../gpu/shim/bbport_ivy_isa.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -444,6 +445,7 @@ static void finish(double t) {
     ran_with(ran, sizeof(ran));
     printf("Benchmark: result %s\n", line);
     printf("Benchmark: %s\n", ran);
+    bbgpu_ivy_report();
     FILE *f = fopen(out_path, "wb");
     if (f) { fprintf(f, "%s\n%s\n", line, ran); fclose(f); }
     else printf("Benchmark: cannot write %s\n", out_path);

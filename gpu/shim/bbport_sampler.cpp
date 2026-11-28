@@ -1,4 +1,5 @@
 #include "bbport_diagnostics.h"
+#include "bbport_ivy_isa.h"
 // Performance aid: with BB_PROFILE=1 the busiest threads are sampled about every millisecond and the
 // most frequent code locations are written to the log every 10 seconds, as module + offset (the
 // offsets of DriveClubGame.exe can be looked up with a symbolizer on an unstripped build).
@@ -40,6 +41,9 @@ std::uint64_t CpuTime(HANDLE h) {
 }
 
 std::string Where(std::uintptr_t rip, std::uintptr_t exe_base) {
+    if (bbgpu_ivy_in_trampoline(rip)) {
+        return "ivy_tramp";
+    }
     HMODULE module{};
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<LPCWSTR>(rip), &module) || !module) {
