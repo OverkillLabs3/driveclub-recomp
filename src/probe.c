@@ -12,6 +12,7 @@
 #include "../gpu/shim/bbport_diagnostics.h"
 #include "guest_cpu.h"
 #include "gpu/bbgpu.h"
+#include "../gpu/shim/bbport_ivy_isa.h"
 #if !defined(__GNUC__) || (!defined(__x86_64__) && defined(_WIN32))
 #error This prototype requires GCC or Clang, on x86-64 for MinGW.
 #endif
@@ -355,6 +356,7 @@ static DWORD WINAPI crash_dump_worker(LPVOID unused) {
 }
 
 static void note_exit(void) {
+    bbgpu_ivy_report();
     runtime_ffb_release("the game quit");
     puts("Runtime: the process ended normally");
     fflush(NULL);
@@ -493,6 +495,7 @@ static LONG fatal_exception(EXCEPTION_POINTERS *info) {
             fputc(10,stderr);
         }
     }
+    bbgpu_ivy_report();
     write_crash_dump(info);
     runtime_ffb_release("a crash");
     fputs("Runtime: the process was ended after the fault above",stderr);
@@ -555,6 +558,8 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
         }
+        /* Pre-Haswell (Ivy Bridge) fallback: MOVBE, VEX BMI1, and UD2-trapped 4-byte LZCNT/TZCNT. */
+        if (bbgpu_ivy_handle_ud(info)) return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (code==EXCEPTION_ACCESS_VIOLATION || code==EXCEPTION_ILLEGAL_INSTRUCTION || code==EXCEPTION_PRIV_INSTRUCTION ||
         code==EXCEPTION_STACK_OVERFLOW || code==EXCEPTION_INT_DIVIDE_BY_ZERO || code==EXCEPTION_DATATYPE_MISALIGNMENT) {
@@ -563,6 +568,7 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
         uintptr_t rip=(uintptr_t)info->ContextRecord->Rip;
         HMODULE self=GetModuleHandleA(NULL), module=NULL;
         int ours=(image && rip-(uintptr_t)image<0x20000000) ||
+                 bbgpu_ivy_in_trampoline(rip) ||
                  (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,(LPCSTR)rip,&module) && module==self) ||
                  !module;
         if (ours) return fatal_exception(info);
@@ -1676,6 +1682,41 @@ int main(int argc, char **argv) {
     resource_entry_install();
     if (!cpu_only) camera_patch_install();
     if (!cpu_only) horizon_lock_install();
+#ifdef _WIN32
+    {
+        /* Collect all known guest code roots (entry, module inits, function bindings, code relocs)
+         * so CFG-guided Ivy Bridge rewriting only touches genuine instructions, never .rodata. */
+        uint64_t max_roots = 1 + module_count + import_count + nr;
+        uint64_t *ivy_roots = malloc((size_t)(max_roots * sizeof(*ivy_roots)));
+        BbIvySegment *ivy_segs = malloc((size_t)(ns * sizeof(*ivy_segs)));
+        if (ivy_roots && ivy_segs) {
+            uint64_t rcount = 0;
+            for (uint64_t i = 0; i < ns; ++i) {
+                ivy_segs[i].address = segments[i].address;
+                ivy_segs[i].size = segments[i].size;
+                ivy_segs[i].flags = segments[i].flags;
+            }
+            ivy_roots[rcount++] = entry;
+            for (uint64_t m = 0; m < module_count; ++m) ivy_roots[rcount++] = modules[m].init;
+            for (uint64_t i = 0; i < import_count; ++i)
+                if (bindings[i] && binding_kinds[i] == 1) ivy_roots[rcount++] = bindings[i];
+            for (uint64_t i = 0; i < nr; ++i) {
+                if (relocs[i].kind == 0 && relocs[i].value < size) {
+                    for (uint64_t s = 0; s < ns; ++s) {
+                        if ((segments[s].flags & 1) && relocs[i].value >= segments[s].address &&
+                            relocs[i].value - segments[s].address < segments[s].size) {
+                            ivy_roots[rcount++] = relocs[i].value;
+                            break;
+                        }
+                    }
+                }
+            }
+            bbgpu_ivy_rewrite_guest(image, size, ivy_segs, ns, ivy_roots, rcount);
+        }
+        free(ivy_roots);
+        free(ivy_segs);
+    }
+#endif
     protect(traps, round_page((import_count + 1) * 32), 5);
     protect(image, round_page(size), 0);
     int executable_entry = 0;
