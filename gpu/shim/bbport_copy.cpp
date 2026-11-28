@@ -24,9 +24,9 @@ thread_local bool in_copy_thread = false;
 class Pool {
 public:
     Pool() {
-        // Copies are on the critical path (fences wait for them): normal priority, a quarter
-        // of the hardware threads available to the process (Steam Deck 2).
-        unsigned count = std::clamp(BbThreads::Available() / 4, 1u, 4u);
+        // Copies are on the critical path (fences wait for them): normal priority, ~1/4 of
+        // hardware threads (2 on 8-thread CPUs, capped at 4 — avoids SMT contention on 4C/8T).
+        unsigned count = std::clamp(BbThreads::Available() / 4u, 1u, 4u);
         if (const char* env = std::getenv("BB_COPY_THREADS")) {
             count = static_cast<unsigned>(std::clamp(std::atoi(env), 0, 16));
         }
@@ -51,14 +51,72 @@ public:
     }
 
     void Async(std::function<void()> task) {
+        bool wake = false;
         {
             std::scoped_lock lk{mutex};
             const u64 epoch = epoch_base + epochs.size() - 1;
             ++epochs.back().pending;
             ++pending;
-            async_tasks.push_back({std::move(task), epoch});
+            pending_approx.fetch_add(1, std::memory_order_release);
+            Task t;
+            t.kind = Task::Kind::Func;
+            t.run = std::move(task);
+            t.epoch = epoch;
+            async_tasks.push_back(std::move(t));
+            wake = idle_workers > 0;
         }
-        cv.notify_one();
+        if (wake) {
+            cv.notify_one();
+        }
+    }
+
+    void AsyncItem(const Item& item) {
+        bool wake = false;
+        {
+            std::scoped_lock lk{mutex};
+            const u64 epoch = epoch_base + epochs.size() - 1;
+            ++epochs.back().pending;
+            ++pending;
+            pending_approx.fetch_add(1, std::memory_order_release);
+            Task t;
+            t.kind = Task::Kind::SingleItem;
+            t.item = item;
+            t.epoch = epoch;
+            async_tasks.push_back(std::move(t));
+            wake = idle_workers > 0;
+        }
+        if (wake) {
+            cv.notify_one();
+        }
+    }
+
+    void AsyncBatch(std::vector<Item>& items) {
+        bool wake = false;
+        std::vector<Item> replacement;
+        {
+            std::scoped_lock lk{mutex};
+            const u64 epoch = epoch_base + epochs.size() - 1;
+            ++epochs.back().pending;
+            ++pending;
+            pending_approx.fetch_add(1, std::memory_order_release);
+            if (!free_batches.empty()) {
+                replacement = std::move(free_batches.back());
+                free_batches.pop_back();
+            }
+            Task t;
+            t.kind = Task::Kind::Batch;
+            t.batch = std::move(items);
+            t.epoch = epoch;
+            async_tasks.push_back(std::move(t));
+            wake = idle_workers > 0;
+        }
+        items = std::move(replacement);
+        if (items.capacity() < 256) {
+            items.reserve(256);
+        }
+        if (wake) {
+            cv.notify_one();
+        }
     }
 
     void AfterCopies(std::function<void()> callback) {
@@ -75,24 +133,29 @@ public:
     }
 
     void WaitAll() {
-        // The waiting thread helps instead of only spinning.
+        // Fast path when no copies or callbacks are pending.
+        if (pending_approx.load(std::memory_order_acquire) == 0) {
+            return;
+        }
+        // The waiting thread helps drain queued tasks and blocks cleanly (no mutex spin)
+        // when only in-flight worker tasks remain.
         while (true) {
             Task task;
             {
-                std::scoped_lock lk{mutex};
+                std::unique_lock lk{mutex};
+                ++done_waiters;
+                done_cv.wait(lk, [&] {
+                    return (pending == 0 && epochs.size() == 1 && !draining) ||
+                           !async_tasks.empty();
+                });
+                --done_waiters;
                 if (pending == 0 && epochs.size() == 1 && !draining) {
                     return;
                 }
-                if (!async_tasks.empty()) {
-                    task = std::move(async_tasks.front());
-                    async_tasks.pop_front();
-                }
+                task = std::move(async_tasks.front());
+                async_tasks.pop_front();
             }
-            if (task.run) {
-                RunAsync(task);
-            } else {
-                std::this_thread::yield();
-            }
+            RunAsync(task);
         }
     }
 
@@ -120,7 +183,11 @@ public:
 private:
     using u64 = unsigned long long;
     struct Task {
+        enum class Kind : unsigned char { Func, SingleItem, Batch };
+        Kind kind = Kind::Func;
         std::function<void()> run;
+        Item item{};
+        std::vector<Item> batch;
         u64 epoch{};
     };
     /// Copies issued between two AfterCopies() calls, and the callbacks waiting for them.
@@ -138,15 +205,27 @@ private:
     void RunAsync(Task& task) {
         const bool was = in_copy_thread;
         in_copy_thread = true;
-        task.run();
+        if (task.kind == Task::Kind::SingleItem) {
+            task.item.run(task.item);
+        } else if (task.kind == Task::Kind::Batch) {
+            for (const auto& item : task.batch) {
+                item.run(item);
+            }
+            task.batch.clear();
+        } else {
+            task.run();
+        }
         in_copy_thread = was;
-        Complete(task.epoch);
+        Complete(task.epoch, task.kind == Task::Kind::Batch ? &task.batch : nullptr);
     }
 
     /// Retires a task and runs the callbacks of epochs with nothing left, oldest first. One
     /// thread drains at a time so the callbacks keep their order.
-    void Complete(u64 epoch) {
+    void Complete(u64 epoch, std::vector<Item>* recycled_batch = nullptr) {
         std::unique_lock lk{mutex};
+        if (recycled_batch && free_batches.size() < 16) {
+            free_batches.push_back(std::move(*recycled_batch));
+        }
         --epochs[epoch - epoch_base].pending;
         --pending;
         if (draining) {
@@ -172,6 +251,15 @@ private:
             lk.lock();
         }
         draining = false;
+        const bool all_done = (pending == 0 && epochs.size() == 1);
+        const bool notify_waiters = all_done && done_waiters > 0;
+        if (all_done) {
+            pending_approx.store(0, std::memory_order_release);
+        }
+        lk.unlock();
+        if (notify_waiters) {
+            done_cv.notify_all();
+        }
     }
 
     static void Work(Job& job) {
@@ -189,9 +277,13 @@ private:
         u64 seen = 0;
         std::unique_lock lk{mutex};
         while (true) {
-            cv.wait(lk, [&] {
-                return stop || !async_tasks.empty() || (generation != seen && current);
-            });
+            if (!stop && async_tasks.empty() && (generation == seen || !current)) {
+                ++idle_workers;
+                cv.wait(lk, [&] {
+                    return stop || !async_tasks.empty() || (generation != seen && current);
+                });
+                --idle_workers;
+            }
             if (stop) {
                 return;
             }
@@ -214,13 +306,18 @@ private:
     std::vector<std::thread> threads;
     std::mutex mutex;
     std::condition_variable cv;
+    std::condition_variable done_cv;
     std::shared_ptr<Job> current;
     u64 generation = 0;
     bool stop = false;
     std::deque<Task> async_tasks;
+    std::vector<std::vector<Item>> free_batches;
     std::deque<Epoch> epochs; ///< back() is open for new copies
     u64 epoch_base = 0;       ///< epoch number of epochs.front()
     std::size_t pending = 0;
+    std::atomic<std::size_t> pending_approx{0};
+    unsigned idle_workers = 0;
+    unsigned done_waiters = 0;
     bool draining = false;
 };
 
@@ -249,19 +346,27 @@ void Async(std::function<void()> task) {
     GetPool().Async(std::move(task));
 }
 
+void AsyncItem(const Item& item) {
+    if (!Enabled()) {
+        item.run(item);
+        return;
+    }
+    GetPool().AsyncItem(item);
+}
+
 void FlushBatch() {
     if (batch.items.empty()) {
         return;
     }
-    auto items = std::make_shared<std::vector<Item>>(std::move(batch.items));
-    batch.items = {};
-    batch.items.reserve(256);
     batch.bytes = 0;
-    Async([items] {
-        for (const auto& item : *items) {
+    if (!Enabled()) {
+        for (const auto& item : batch.items) {
             item.run(item);
         }
-    });
+        batch.items.clear();
+        return;
+    }
+    GetPool().AsyncBatch(batch.items);
 }
 
 void QueueCopy(const Item& item) {

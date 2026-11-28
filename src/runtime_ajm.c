@@ -202,16 +202,39 @@ static uint32_t at9_frame(Instance *in, const unsigned char **input, uint64_t *i
     uint64_t room=output_room(out)/(uint64_t)(channels*pcm_size(in->format));
     if (samples>room) samples=(uint32_t)room;
     /* Convert (and optionally de-interleave) into the requested encoding. */
-    unsigned char converted[256*8*4];
     int non_interleaved=(in->codec_flags>>8)&1;
-    for (uint32_t s=0;s<samples;++s) for (int c=0;c<channels;++c) {
-        int16_t v=pcm[(skip+s)*(uint32_t)channels+(uint32_t)c];
-        size_t index=non_interleaved ? (size_t)c*samples+s : (size_t)s*(size_t)channels+(size_t)c;
-        if (in->format==FORMAT_S16) memcpy(converted+index*2,&v,2);
-        else if (in->format==FORMAT_S32) { int32_t w=(int32_t)v<<16; memcpy(converted+index*4,&w,4); }
-        else { float f=(float)v/32768.0f; memcpy(converted+index*4,&f,4); }
+    const int16_t *src = pcm + skip * (uint32_t)channels;
+    const uint64_t total_samples = (uint64_t)samples * (uint64_t)channels;
+    if (in->format == FORMAT_S16 && !non_interleaved) {
+        output_write(out, (const unsigned char *)src, total_samples * 2u);
+    } else {
+        union { unsigned char bytes[256*8*4]; int16_t s16[256*8*2]; int32_t s32[256*8]; float f32[256*8]; } converted;
+        if (!non_interleaved) {
+            if (in->format == FORMAT_S32) {
+                for (uint64_t i = 0; i < total_samples; ++i) converted.s32[i] = (int32_t)src[i] << 16;
+            } else {
+                const float scale = 1.0f / 32768.0f;
+                for (uint64_t i = 0; i < total_samples; ++i) converted.f32[i] = (float)src[i] * scale;
+            }
+        } else if (in->format == FORMAT_S16) {
+            for (int c = 0; c < channels; ++c) {
+                int16_t *ch_dst = converted.s16 + (size_t)c * samples;
+                for (uint32_t s = 0; s < samples; ++s) ch_dst[s] = src[s * (uint32_t)channels + (uint32_t)c];
+            }
+        } else if (in->format == FORMAT_S32) {
+            for (int c = 0; c < channels; ++c) {
+                int32_t *ch_dst = converted.s32 + (size_t)c * samples;
+                for (uint32_t s = 0; s < samples; ++s) ch_dst[s] = (int32_t)src[s * (uint32_t)channels + (uint32_t)c] << 16;
+            }
+        } else {
+            const float scale = 1.0f / 32768.0f;
+            for (int c = 0; c < channels; ++c) {
+                float *ch_dst = converted.f32 + (size_t)c * samples;
+                for (uint32_t s = 0; s < samples; ++s) ch_dst[s] = (float)src[s * (uint32_t)channels + (uint32_t)c] * scale;
+            }
+        }
+        output_write(out, converted.bytes, total_samples * (uint64_t)pcm_size(in->format));
     }
-    output_write(out,converted,(uint64_t)samples*(uint64_t)channels*(uint64_t)pcm_size(in->format));
     *samples_written=samples;
     in->gapless.skipped_samples+=(uint16_t)((uint32_t)frame-samples);
     if (in->gapless_init.total_samples) in->gapless.total_samples-=samples;

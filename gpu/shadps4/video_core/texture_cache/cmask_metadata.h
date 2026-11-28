@@ -69,6 +69,16 @@ void Register(Mutex& mutex, Map& entries, Address address, Entry initial,
 }
 template <class Mutex, class Map, class Addresses>
 void Erase(Mutex& mutex, Map& entries, const Addresses& addresses) {
+    bool any = false;
+    for (const auto address : addresses) {
+        if (address) {
+            any = true;
+            break;
+        }
+    }
+    if (!any) {
+        return;
+    }
     std::scoped_lock lock{mutex};
     for (const auto address : addresses) {
         if (address) {

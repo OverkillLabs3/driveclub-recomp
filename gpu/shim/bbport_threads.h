@@ -240,8 +240,9 @@ inline void ReserveCoreForCurrentThread(CoreOwner owner) {
         if (free_cores.empty()) {
             return skip("which cores are fast is unknown");
         }
-        if (logical < 6 || cores.size() < 4) {
-            return skip("fewer than 6 logical CPUs or 4 cores");
+        const bool force_reserve = (env && env[0] == '1');
+        if (logical < 6 || (!force_reserve && cores.size() <= 4) || cores.size() < 4) {
+            return skip("4 or fewer physical cores (avoids starving guest threads; BB_CORE_RESERVE=1 overrides)");
         }
         if (process != system) {
             return skip("the process may only run on some CPUs");

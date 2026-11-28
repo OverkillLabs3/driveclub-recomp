@@ -98,7 +98,20 @@ public:
     ~BarrierTracker() = default;
 
     /// Checks whether there is a pending access of a given type
-    bool FindRange(const AddressRange& range, Access access_type) const;
+    bool FindRange(const AddressRange& range, Access access_type) const {
+        if (access_type == Access::Write) {
+            if ((root_mask_valid >> HashTableSize) == 0) {
+                return false;
+            }
+        } else if (root_mask_valid == 0) {
+            return false;
+        }
+        const u32 root_index = ComputeRootIndex(range, access_type);
+        if (!(root_mask_valid & (u64{1} << (root_index - 1)))) {
+            return false;
+        }
+        return FindNode(range, root_index) != 0;
+    }
 
     /// Inserts address range for a given access type
     void InsertRange(const AddressRange& range, Access access_type);

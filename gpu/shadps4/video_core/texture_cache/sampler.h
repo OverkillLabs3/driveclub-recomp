@@ -34,6 +34,7 @@ public:
     }
 
     size_t lru_id{};
+    mutable u64 lru_touched_tick{~0ULL};
 
 private:
     vk::UniqueSampler handle;

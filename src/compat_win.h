@@ -66,6 +66,10 @@ int compat_random(void *buffer, size_t size);
 /* Sleeps with sub-millisecond precision (high-resolution waitable timer; winpthreads'
  * nanosleep rounds up to the 15.6 ms scheduler tick). */
 void compat_sleep_ns(uint64_t ns);
+/* Fast monotonic clock in nanoseconds since process start (direct QPC, bypassing winpthreads). */
+uint64_t compat_monotonic_ns(void);
+/* Yield current thread timeslice on Windows (SwitchToThread). */
+void compat_yield(void);
 /* rm -rf: 0 when the tree is gone (or never existed). */
 int compat_remove_tree(const char *path);
 /* errno for a Win32 error code. */

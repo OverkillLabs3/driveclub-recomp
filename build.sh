@@ -17,9 +17,11 @@ case "${BB_DIAGNOSTICS:-OFF}" in
 esac
 
 # BB_PGO=use with BB_LTO=ON builds with the recorded profile (pgo/default.profdata); the default build is the fast one.
+# BB_EXTRA_FLAGS allows optional microarchitecture tuning (e.g. "-march=ivybridge -mtune=ivybridge").
 cmake -S gpu -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO="${BB_PGO:-off}" \
     -DBB_DIAGNOSTICS="$diagnostic" -DBB_LTO="${BB_LTO:-OFF}" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-    -DCMAKE_C_FLAGS="-ffile-prefix-map=$root=." -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$root=." >/dev/null
+    -DCMAKE_C_FLAGS="-ffile-prefix-map=$root=. ${BB_EXTRA_FLAGS:-}" \
+    -DCMAKE_CXX_FLAGS="-ffile-prefix-map=$root=. ${BB_EXTRA_FLAGS:-}" >/dev/null
 if ! ninja -C "$build" DriveClubGame > "$build-build.log" 2>&1; then
     grep -v '^[[]' "$build-build.log" | tail -40 >&2
     echo "Build failed (full log: $build-build.log)" >&2

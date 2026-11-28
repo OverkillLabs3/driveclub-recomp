@@ -224,6 +224,20 @@ bool Runtime::Transit(VideoCore::Image* image, vk::ImageLayout dst_layout,
                       std::optional<VideoCore::SubresourceRange> subres_range) {
     BeforeImageAccess();
     if (scene_targets) scene_targets->NativeAccess(*image, dst_access);
+    auto* backing = image->backing;
+    if (backing->subresource_states.empty()) {
+        const auto& st = backing->state;
+        constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |
+                                     vk::AccessFlagBits2::eShaderWrite |
+                                     vk::AccessFlagBits2::eMemoryWrite;
+        if (st.layout == dst_layout && st.access_mask == dst_access &&
+            !(st.access_mask & write_flags) &&
+            (static_cast<bool>(st.pl_stage & vk::PipelineStageFlagBits2::eAllCommands) ||
+             !(dst_stage & ~st.pl_stage))) [[likely]] {
+            ++backing->access_epoch;
+            return false;
+        }
+    }
     const size_t prev_num_barriers = static_cast<size_t>(image_barriers.size());
     image->GetBarriers(image_barriers, dst_layout, dst_access, dst_stage, subres_range);
     return image_barriers.size() != prev_num_barriers;

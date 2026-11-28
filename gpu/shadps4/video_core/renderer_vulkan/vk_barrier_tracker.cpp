@@ -17,12 +17,6 @@ BarrierTracker::BarrierTracker() {
     }
 }
 
-bool BarrierTracker::FindRange(const AddressRange& range, Access access_type) const {
-    u32 root_index = ComputeRootIndex(range, access_type);
-    u32 node_index = FindNode(range, root_index);
-    return node_index;
-}
-
 void BarrierTracker::InsertRange(const AddressRange& range, Access access_type) {
     // If we can just insert the node with no conflicts, we don't have to do anything.
     u32 root_index = ComputeRootIndex(range, access_type);

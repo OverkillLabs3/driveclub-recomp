@@ -182,33 +182,64 @@ struct Info : InfoPersistent {
         u32 num_pointer_reads;
     };
     static constexpr u32 MaxUdSnapshots = 6;
-    // Function local, not `inline thread_local` members: with thin LTO on Windows the linker cannot find the
-    // thread-local initialization routine of a member that is shared by several files.
+    // bbport: single trivial-init thread_local state avoids per-call static-init guards and
+    // caches the last matched stage pointer (BindTextures/BindBuffers/BindSamplers hit the
+    // exact same stage 10-20 times in a row on bb:DrawRec).
+    struct UdSnapshotState {
+        u32 count;
+        const Info* last_info;
+        const UdSnapshot* last_snap;
+        const Info* infos[MaxUdSnapshots];
+        UdSnapshot snapshots[MaxUdSnapshots];
+    };
+    static UdSnapshotState& UdState() noexcept {
+        thread_local UdSnapshotState state{};
+        return state;
+    }
     static UdSnapshot* UdSnapshots() noexcept {
-        thread_local UdSnapshot snapshots[MaxUdSnapshots];
-        return snapshots;
+        return UdState().snapshots;
     }
     static u32& NumUdSnapshots() noexcept {
-        thread_local u32 count = 0;
-        return count;
+        return UdState().count;
+    }
+    static void SetUdSnapshot(u32 index, const UdSnapshot& snap) noexcept {
+        auto& st = UdState();
+        st.infos[index] = snap.info;
+        st.snapshots[index] = snap;
+    }
+    static void SetNumUdSnapshots(u32 count) noexcept {
+        auto& st = UdState();
+        st.count = count;
+        st.last_info = nullptr;
+        st.last_snap = nullptr;
     }
 
     const UdSnapshot* Snapshot() const noexcept {
-        for (u32 i = 0; i < NumUdSnapshots(); ++i) {
-            if (UdSnapshots()[i].info == this) {
-                return &UdSnapshots()[i];
+        auto& st = UdState();
+        const u32 count = st.count;
+        if (count == 0) {
+            return nullptr;
+        }
+        if (st.last_info == this) [[likely]] {
+            return st.last_snap;
+        }
+        for (u32 i = 0; i < count; ++i) {
+            if (st.infos[i] == this) {
+                st.last_info = this;
+                st.last_snap = &st.snapshots[i];
+                return st.last_snap;
             }
         }
         return nullptr;
     }
     std::span<const u32> UserData() const noexcept {
-        if (const auto* snapshot = Snapshot()) [[unlikely]] {
+        if (const auto* snapshot = Snapshot()) {
             return {snapshot->user_data, snapshot->user_data_size};
         }
         return user_data;
     }
     std::span<const u32> FlatUserData() const noexcept {
-        if (const auto* snapshot = Snapshot()) [[unlikely]] {
+        if (const auto* snapshot = Snapshot()) {
             return {snapshot->flat, snapshot->flat_size};
         }
         return flattened_ud_buf;

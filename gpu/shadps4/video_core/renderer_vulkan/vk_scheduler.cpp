@@ -57,6 +57,10 @@ Scheduler::Scheduler(const Instance& instance, bool threaded_recording)
 Scheduler::~Scheduler() {
     if (recorder_thread.joinable()) {
         SyncRecording();
+        {
+            std::scoped_lock lk{recorder_mutex};
+            recorder_stop = true;
+        }
         recorder_thread.request_stop();
         recorder_cv.notify_all();
         recorder_thread.join();
@@ -319,34 +323,39 @@ void Scheduler::SyncRecording() {
     KickRecording(true);
     BbStats::WaitTimer timer{BbStats::sync_recording_ns};
     std::unique_lock lk{recorder_mutex};
-    recorder_idle_cv.wait(lk, [this] { return recorder_queue.empty() && !recorder_busy; });
+    if (!recorder_queue.empty() || recorder_busy) {
+        recorder_sync_waiting = true;
+        recorder_idle_cv.wait(lk, [this] { return recorder_queue.empty() && !recorder_busy; });
+        recorder_sync_waiting = false;
+    }
 }
 
 void Scheduler::RecorderThread(std::stop_token stoken) {
     Common::SetCurrentThreadName("bb:VkRecorder");
     BbThreads::MakeImportant();
     BbThreads::ReserveCoreForCurrentThread(BbThreads::kRecorderThread);
+    static const auto spin_time =
+        std::chrono::microseconds(BbThreads::Available() >= 12 ? 200 : 20);
+    std::unique_ptr<RecordChunk> chunk;
     while (true) {
-        // Spin briefly before sleeping: the next chunk usually follows within microseconds,
-        // and a sleeping recorder costs the GPU thread a wake-up syscall per kick. With few
-        // hardware threads (Steam Deck: 8) the spin would take time from guest threads.
-        static const auto spin_time = std::chrono::microseconds(
-            BbThreads::Available() >= 12 ? 200 : 20);
-        const auto spin_until = std::chrono::steady_clock::now() + spin_time;
-        for (u32 spins = 1; queued_chunks.load(std::memory_order_acquire) == 0; ++spins) {
-            BbCpu::Pause();
-            // The clock is read every 256 pauses, not per iteration.
-            if (!(spins & 255) &&
-                (stoken.stop_requested() || std::chrono::steady_clock::now() >= spin_until)) {
-                break;
+        if (!chunk) {
+            // Only spin and read the clock when no chunk is already queued.
+            if (queued_chunks.load(std::memory_order_acquire) == 0) {
+                const auto spin_until = std::chrono::steady_clock::now() + spin_time;
+                for (u32 spins = 1; queued_chunks.load(std::memory_order_acquire) == 0; ++spins) {
+                    BbCpu::Pause();
+                    if (!(spins & 255) &&
+                        (stoken.stop_requested() || std::chrono::steady_clock::now() >= spin_until)) {
+                        break;
+                    }
+                }
             }
-        }
-        std::unique_ptr<RecordChunk> chunk;
-        {
             std::unique_lock lk{recorder_mutex};
-            recorder_sleeping = true;
-            recorder_cv.wait(lk, stoken, [this] { return !recorder_queue.empty(); });
-            recorder_sleeping = false;
+            if (recorder_queue.empty() && !recorder_stop) {
+                recorder_sleeping = true;
+                recorder_cv.wait(lk, [this] { return !recorder_queue.empty() || recorder_stop; });
+                recorder_sleeping = false;
+            }
             if (recorder_queue.empty()) {
                 return; // stop requested
             }
@@ -360,8 +369,15 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
         {
             std::scoped_lock lk{recorder_mutex};
             free_chunks.push_back(std::move(chunk));
+            if (!recorder_queue.empty()) {
+                // Immediately grab the next queued chunk under the same lock acquisition.
+                chunk = std::move(recorder_queue.front());
+                recorder_queue.pop_front();
+                queued_chunks.store(recorder_queue.size(), std::memory_order_release);
+                continue;
+            }
             recorder_busy = false;
-            if (recorder_queue.empty()) {
+            if (recorder_sync_waiting) {
                 recorder_idle_cv.notify_all();
             }
         }
@@ -501,6 +517,9 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     }
 
     EndRendering();
+    // Flush our queued stream copies to the copy pool BEFORE SyncRecording() so copy workers
+    // run in parallel while we wait for the Vulkan recorder thread to finish its last chunk.
+    BbCopy::FlushBatch();
     if (auto* profiler = GpuProfiler::Get(); profiler && profiler->Records(this)) {
         // Until the next submission's first timestamp: mostly the GPU waiting for it.
         profiler->Mark(0x5B317ull, [] { return std::string{"(between submissions: GPU idle)"}; });

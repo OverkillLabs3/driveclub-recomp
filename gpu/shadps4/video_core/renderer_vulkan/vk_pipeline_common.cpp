@@ -42,7 +42,7 @@ bool RetryPipelineCreation(vk::Result result, u32 attempt, const char* kind, con
 }
 
 
-void Pipeline::BindResources(DescriptorWrites& set_writes,
+void Pipeline::BindResources(std::span<vk::WriteDescriptorSet> set_writes,
                              const Shader::PushData& push_data) const {
     const auto bind_point =
         IsCompute() ? vk::PipelineBindPoint::eCompute : vk::PipelineBindPoint::eGraphics;
@@ -64,15 +64,24 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
             });
             return;
         }
-        // Writes and the infos they point to are laid out in the recording chunk, with the
-        // pointers already aimed at those copies: the command only carries a span.
-        size_t bytes = set_writes.size() * sizeof(vk::WriteDescriptorSet) + 64;
+        // Writes and the infos they point to are laid out in the recording chunk in contiguous
+        // arrays (one allocation per kind instead of one per descriptor write).
+        size_t num_buffers = 0, num_images = 0, num_views = 0;
         for (const auto& write : set_writes) {
-            bytes += write.descriptorCount *
-                         (sizeof(vk::DescriptorBufferInfo) + sizeof(vk::DescriptorImageInfo) +
-                          sizeof(vk::BufferView)) +
-                     32;
+            if (write.pBufferInfo) {
+                num_buffers += write.descriptorCount;
+            }
+            if (write.pImageInfo) {
+                num_images += write.descriptorCount;
+            }
+            if (write.pTexelBufferView) {
+                num_views += write.descriptorCount;
+            }
         }
+        const size_t bytes = set_writes.size() * sizeof(vk::WriteDescriptorSet) +
+                             num_buffers * sizeof(vk::DescriptorBufferInfo) +
+                             num_images * sizeof(vk::DescriptorImageInfo) +
+                             num_views * sizeof(vk::BufferView) + 128;
         // ssport: a shader can bind descriptor arrays far larger than one recording chunk
         // (128 KiB). Those writes and their infos are owned by the command on the heap.
         if (bytes + 1024 > RecordChunk::Capacity) {
@@ -109,21 +118,43 @@ void Pipeline::BindResources(DescriptorWrites& set_writes,
             return;
         }
         scheduler.ReserveRecordData(bytes);
-        const auto writes = scheduler.RecordData(std::span<const vk::WriteDescriptorSet>{set_writes});
-        auto* patched = const_cast<vk::WriteDescriptorSet*>(writes.data());
-        for (size_t i = 0; i < writes.size(); ++i) {
+        auto* patched = scheduler.AllocateRecordArray<vk::WriteDescriptorSet>(set_writes.size());
+        std::memcpy(patched, set_writes.data(), set_writes.size() * sizeof(vk::WriteDescriptorSet));
+        auto* buf_dst = scheduler.AllocateRecordArray<vk::DescriptorBufferInfo>(num_buffers);
+        auto* img_dst = scheduler.AllocateRecordArray<vk::DescriptorImageInfo>(num_images);
+        auto* view_dst = scheduler.AllocateRecordArray<vk::BufferView>(num_views);
+        for (size_t i = 0; i < set_writes.size(); ++i) {
             auto& write = patched[i];
+            const u32 count = write.descriptorCount;
             if (write.pBufferInfo) {
-                write.pBufferInfo = scheduler.RecordData(std::span{write.pBufferInfo, write.descriptorCount}).data();
+                if (count == 1) {
+                    *buf_dst = *write.pBufferInfo;
+                } else {
+                    std::memcpy(buf_dst, write.pBufferInfo, count * sizeof(vk::DescriptorBufferInfo));
+                }
+                write.pBufferInfo = buf_dst;
+                buf_dst += count;
             }
             if (write.pImageInfo) {
-                write.pImageInfo = scheduler.RecordData(std::span{write.pImageInfo, write.descriptorCount}).data();
+                if (count == 1) {
+                    *img_dst = *write.pImageInfo;
+                } else {
+                    std::memcpy(img_dst, write.pImageInfo, count * sizeof(vk::DescriptorImageInfo));
+                }
+                write.pImageInfo = img_dst;
+                img_dst += count;
             }
             if (write.pTexelBufferView) {
-                write.pTexelBufferView =
-                    scheduler.RecordData(std::span{write.pTexelBufferView, write.descriptorCount}).data();
+                if (count == 1) {
+                    *view_dst = *write.pTexelBufferView;
+                } else {
+                    std::memcpy(view_dst, write.pTexelBufferView, count * sizeof(vk::BufferView));
+                }
+                write.pTexelBufferView = view_dst;
+                view_dst += count;
             }
         }
+        const std::span<const vk::WriteDescriptorSet> writes{patched, set_writes.size()};
         scheduler.Record([bind_point, layout, writes](vk::CommandBuffer cmdbuf) {
             cmdbuf.pushDescriptorSetKHR(bind_point, layout, 0, writes);
         });
