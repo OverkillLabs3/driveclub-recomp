@@ -1145,6 +1145,67 @@ static float cull_factor(const char *name, float fallback) {
     const float value=env && *env ? (float)atof(env) : fallback;
     return value>=0.0f && value<=4.0f ? value : fallback;
 }
+static void apply_raindrop_resolution(unsigned char *image, uint64_t size) {
+    /* Windscreen raindrop heightmap (0x509a400000, R8G8Unorm) and normal map (0x501abf8000,
+     * R5G6B5Unorm) are hardcoded to 2048x1024 in eboot 1.28 regardless of render resolution.
+     * BB_RAINDROP_RES=2 (default) doubles both to 4096x2048 (4x texels); 1 keeps stock 2048x1024.
+     * BB_RAINDROP_HQ_FMT=0 (default) keeps stock R5G6B5, 1 promotes normal map to R8G8B8A8_UNORM
+     * (enum 0x01), 2 promotes to R16G16B16A16_UNORM (enum 0x25). */
+    const char *res_env = getenv("BB_RAINDROP_RES");
+    const int scale = res_env && *res_env ? atoi(res_env) : 2;
+    const char *fmt_env = getenv("BB_RAINDROP_HQ_FMT");
+    const int hq_fmt = fmt_env && *fmt_env ? atoi(fmt_env) : 0;
+    if ((scale != 2 && scale != 4) && hq_fmt <= 0) return;
+    if (size < 0x617af2) return;
+
+    static const unsigned char expect_create[] = {0xba, 0x00, 0x08, 0x00, 0x00, 0xb9, 0x00, 0x04, 0x00, 0x00};
+    static const unsigned char expect_guard[]  = {0x81, 0x78, 0x2c, 0x00, 0x08, 0x00, 0x00, 0x75, 0x09,
+                                                  0x81, 0x78, 0x30, 0x00, 0x04, 0x00, 0x00};
+    static const unsigned char expect_norm_c[] = {0xc7, 0x45, 0xb8, 0x00, 0x00, 0x00, 0x45,
+                                                  0xc7, 0x45, 0xbc, 0x00, 0x00, 0x80, 0x44,
+                                                  0xc7, 0x45, 0xc0, 0x00, 0x00, 0x00, 0x3a,
+                                                  0xc7, 0x45, 0xc4, 0x00, 0x00, 0x80, 0x3a};
+    static const unsigned char expect_draw_c[] = {0xc7, 0x45, 0xb0, 0x00, 0x00, 0x00, 0x45,
+                                                  0xc7, 0x45, 0xb4, 0x00, 0x00, 0x80, 0x44,
+                                                  0xc7, 0x45, 0xb8, 0x00, 0x00, 0x00, 0x3a,
+                                                  0xc7, 0x45, 0xbc, 0x00, 0x00, 0x80, 0x3a};
+    static const unsigned char expect_fmt[]    = {0xc7, 0x04, 0x24, 0x28, 0x00, 0x00, 0x00};
+
+    if (scale == 2 || scale == 4) {
+        if (!memcmp(image + 0x613e18, expect_create, sizeof expect_create) &&
+            !memcmp(image + 0x615041, expect_guard, sizeof expect_guard) &&
+            !memcmp(image + 0x6155c8, expect_create, sizeof expect_create) &&
+            !memcmp(image + 0x617ae0, expect_guard, sizeof expect_guard) &&
+            !memcmp(image + 0x617338, expect_norm_c, sizeof expect_norm_c) &&
+            !memcmp(image + 0x61749a, expect_draw_c, sizeof expect_draw_c)) {
+            const uint32_t w = 2048u * (uint32_t)scale;
+            const uint32_t h = 1024u * (uint32_t)scale;
+            const float fw = (float)w, fh = (float)h;
+            const float inv_w = 1.0f / fw, inv_h = 1.0f / fh;
+            /* Texture allocations (normal map 0x613e18 + heightmap 0x6155c8) and size guards. */
+            memcpy(image + 0x613e19, &w, 4); memcpy(image + 0x613e1e, &h, 4);
+            memcpy(image + 0x615044, &w, 4); memcpy(image + 0x61504d, &h, 4);
+            memcpy(image + 0x6155c9, &w, 4); memcpy(image + 0x6155ce, &h, 4);
+            memcpy(image + 0x617ae3, &w, 4); memcpy(image + 0x617aec, &h, 4);
+            /* GenerateNormalMapSprinkle: update W/H, keep texel finite-diff step (1/2048, 1/1024)
+             * so physical droplet normal steepness/refraction matches stock PS4 while sampling at 4x res. */
+            memcpy(image + 0x61733b, &fw, 4); memcpy(image + 0x617342, &fh, 4);
+            /* RenderWaterDropletsSprinkle: update W/H and 1/W, 1/H. */
+            memcpy(image + 0x61749d, &fw, 4); memcpy(image + 0x6174a4, &fh, 4);
+            memcpy(image + 0x6174ab, &inv_w, 4); memcpy(image + 0x6174b2, &inv_h, 4);
+            printf("Raindrops: windscreen droplet atlas scaled %dx to %ux%u\n", scale, w, h);
+        } else {
+            printf("Raindrops: eboot 1.28 droplet sites did not match; keeping 2048x1024\n");
+        }
+    }
+    if (hq_fmt > 0 && !memcmp(image + 0x613e11, expect_fmt, sizeof expect_fmt)) {
+        const uint32_t fmt_enum = (hq_fmt == 2) ? 0x25u : 0x01u; /* R16G16B16A16_UNORM or R8G8B8A8_UNORM */
+        memcpy(image + 0x613e14, &fmt_enum, 4);
+        printf("Raindrops: windscreen normal map promoted to %s (enum 0x%02x)\n",
+               hq_fmt == 2 ? "R16G16B16A16Unorm" : "R8G8B8A8Unorm", fmt_enum);
+    }
+}
+
 static void apply_cull_scale(unsigned char *image, uint64_t size) {
     if (size<0x60fff0) return;
     const float scales[3]={cull_factor("BB_CULL_SCALE",0.25f),cull_factor("BB_CULL_SCALE_ZPASS",1.0f),
@@ -1657,6 +1718,7 @@ int main(int argc, char **argv) {
     if (!cpu_only) scene_debug_install();
     if (!cpu_only) apply_upscale_render_size(image, size);
     if (!cpu_only) apply_ui_resolution(image, size);
+    if (!cpu_only) apply_raindrop_resolution(image, size);
     if (!cpu_only) apply_cull_scale(image, size);
     if (!cpu_only) patch_shared_alloc(image, size);
     if (!cpu_only && !patch_exposure_exact(image, size)) patch_exposure_copy(image, size);

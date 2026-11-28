@@ -4586,6 +4586,53 @@ void Rasterizer::UpdateDynamicState(const GraphicsPipeline* pipeline, const bool
                              instance.IsDynamicColorWriteMaskSupported(),
                              instance.IsAttachmentFeedbackLoopLayoutSupported(),
                              [&](auto&& command) { scheduler.Record(std::move(command)); });
+    const u8 num_samples = pipeline->GetGraphicsKey().num_samples;
+    if (num_samples > 1) [[unlikely]] {
+        const auto vk_samples = LiverpoolToVK::NumSamples(
+            num_samples, instance.GetColorSampleCounts() & instance.GetDepthSampleCounts());
+        if (instance.IsSampleLocationsSupported(vk_samples)) {
+            static_assert(offsetof(AmdGpu::Regs, aa_sample_locs_pixel) == 0xA2FE * sizeof(u32));
+            const auto& regs = Regs();
+            const u32 word0 = regs.aa_sample_locs_pixel[0];
+            const u32 word1 = regs.aa_sample_locs_pixel[1];
+            const u32 count = u32(vk_samples);
+            if (dynamic_state.sample_locs_dirty || dynamic_state.sample_locs_samples != count ||
+                dynamic_state.sample_locs_word0 != word0 ||
+                dynamic_state.sample_locs_word1 != word1) {
+                dynamic_state.sample_locs_dirty = false;
+                dynamic_state.sample_locs_samples = count;
+                dynamic_state.sample_locs_word0 = word0;
+                dynamic_state.sample_locs_word1 = word1;
+                std::array<vk::SampleLocationEXT, 8> locs{};
+                const u32 n = std::min(count, 8u);
+                if (word0 == 0 && word1 == 0 && count == 4) {
+                    locs[0] = {0.25f, 0.25f};
+                    locs[1] = {0.75f, 0.25f};
+                    locs[2] = {0.25f, 0.75f};
+                    locs[3] = {0.75f, 0.75f};
+                } else {
+                    const auto decode_loc = [](u32 w, u32 idx) -> vk::SampleLocationEXT {
+                        const u8 b = u8((w >> (idx * 8u)) & 0xFFu);
+                        const s32 sx = s32(s8(b << 4)) >> 4;
+                        const s32 sy = s32(s8(b)) >> 4;
+                        return {float(sx + 8) / 16.0f, float(sy + 8) / 16.0f};
+                    };
+                    for (u32 i = 0; i < n; ++i) {
+                        locs[i] = decode_loc(i < 4 ? word0 : word1, i & 3u);
+                    }
+                }
+                scheduler.Record([vk_samples, locs, n](vk::CommandBuffer cmdbuf) {
+                    const vk::SampleLocationsInfoEXT info = {
+                        .sampleLocationsPerPixel = vk_samples,
+                        .sampleLocationGridSize = {1, 1},
+                        .sampleLocationsCount = n,
+                        .pSampleLocations = locs.data(),
+                    };
+                    cmdbuf.setSampleLocationsEXT(info);
+                });
+            }
+        }
+    }
 }
 
 void Rasterizer::UpdateViewportScissorState() const {

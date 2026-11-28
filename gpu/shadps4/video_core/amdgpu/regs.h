@@ -154,7 +154,9 @@ union Regs {
         StreamOutBufferConfig vgt_strmout_buffer_config;
         INSERT_PADDING_WORDS(17);
         AaConfig aa_config;
-        INSERT_PADDING_WORDS(31);
+        INSERT_PADDING_WORDS(5);
+        std::array<u32, 16> aa_sample_locs_pixel; // PA_SC_AA_SAMPLE_LOCS_PIXEL_X0Y0_0..X1Y1_3 (0xA2FE..0xA30D)
+        INSERT_PADDING_WORDS(10);
         ColorBuffer color_buffers[NUM_COLOR_BUFFERS];
         INSERT_PADDING_WORDS(7343);
         StreamOutControl cp_strmout_cntl;

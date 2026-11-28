@@ -176,6 +176,11 @@ struct DynamicState {
     float line_width{};
     bool feedback_loop_enabled{};
 
+    bool sample_locs_dirty{true};
+    u32 sample_locs_samples{};
+    u32 sample_locs_word0{};
+    u32 sample_locs_word1{};
+
     /// Commits the dynamic state to the provided command buffer (a null one only clears the
     /// flags that committing clears).
     void Commit(const Instance& instance, const vk::CommandBuffer& cmdbuf);
@@ -399,6 +404,7 @@ struct DynamicState {
         dirty_state.color_write_masks = true;
         dirty_state.line_width = true;
         dirty_state.feedback_loop_enabled = true;
+        sample_locs_dirty = true;
     }
 
     void SetViewports(const Viewports& viewports_) {

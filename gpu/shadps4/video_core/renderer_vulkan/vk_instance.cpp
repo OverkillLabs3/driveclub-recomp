@@ -268,11 +268,13 @@ bool Instance::CreateDevice() {
     const vk::StructureChain properties_chain = physical_device.getProperties2<
         vk::PhysicalDeviceProperties2, vk::PhysicalDeviceVulkan11Properties,
         vk::PhysicalDeviceVulkan12Properties, vk::PhysicalDeviceVulkan13Properties,
-        vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+        vk::PhysicalDevicePushDescriptorPropertiesKHR,
+        vk::PhysicalDeviceSampleLocationsPropertiesEXT>();
     vk11_props = properties_chain.get<vk::PhysicalDeviceVulkan11Properties>();
     vk12_props = properties_chain.get<vk::PhysicalDeviceVulkan12Properties>();
     vk13_props = properties_chain.get<vk::PhysicalDeviceVulkan13Properties>();
     push_descriptor_props = properties_chain.get<vk::PhysicalDevicePushDescriptorPropertiesKHR>();
+    sample_locations_props = properties_chain.get<vk::PhysicalDeviceSampleLocationsPropertiesEXT>();
     LOG_INFO(Render_Vulkan, "Physical device subgroup size {}", vk11_props.subgroupSize);
 
     if (available_extensions.empty()) {
@@ -388,6 +390,17 @@ bool Instance::CreateDevice() {
     amd_shader_trinary_minmax = add_extension(VK_AMD_SHADER_TRINARY_MINMAX_EXTENSION_NAME);
     nv_framebuffer_mixed_samples = add_extension(VK_NV_FRAMEBUFFER_MIXED_SAMPLES_EXTENSION_NAME);
     amd_mixed_attachment_samples = add_extension(VK_AMD_MIXED_ATTACHMENT_SAMPLES_EXTENSION_NAME);
+    {
+        const char* sl_env = std::getenv("BB_SAMPLE_LOCATIONS");
+        const bool want_sl = !(sl_env && sl_env[0] == '0');
+        sample_locations = want_sl && add_extension(VK_EXT_SAMPLE_LOCATIONS_EXTENSION_NAME);
+        if (sample_locations) {
+            std::printf("GPU: VK_EXT_sample_locations enabled (sampleCounts=%#x, maxGrid=%ux%u)\n",
+                        unsigned(VkSampleCountFlags(sample_locations_props.sampleLocationSampleCounts)),
+                        sample_locations_props.maxSampleLocationGridSize.width,
+                        sample_locations_props.maxSampleLocationGridSize.height);
+        }
+    }
     shader_atomic_float = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME);
     shader_atomic_float2 = add_extension(VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME);
     if (shader_atomic_float2) {

@@ -276,6 +276,9 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     if (info.props.is_block && instance.IsBlockTexelViewSupported()) {
         flags |= vk::ImageCreateFlagBits::eBlockTexelViewCompatible;
     }
+    if (info.props.is_depth && info.num_samples > 1 && instance.IsSampleLocationsEnabled()) {
+        flags |= vk::ImageCreateFlagBits::eSampleLocationsCompatibleDepthEXT;
+    }
 
     usage_flags = ImageUsageFlags(instance, info);
     format_features = FormatFeatureFlags(usage_flags);
