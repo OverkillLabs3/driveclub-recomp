@@ -327,6 +327,15 @@ public:
         return amd_mixed_attachment_samples;
     }
 
+    /// Returns true if VK_EXT_sample_locations is enabled (and supports the requested sample count).
+    bool IsSampleLocationsEnabled() const {
+        return sample_locations;
+    }
+
+    bool IsSampleLocationsSupported(vk::SampleCountFlagBits samples) const {
+        return sample_locations && bool(sample_locations_props.sampleLocationSampleCounts & samples);
+    }
+
     /// Returns true when geometry shaders are supported by the device
     bool IsGeometryStageSupported() const {
         return features.geometryShader;
@@ -594,6 +603,7 @@ private:
     vk::PhysicalDeviceVulkan12Properties vk12_props;
     vk::PhysicalDeviceVulkan13Properties vk13_props;
     vk::PhysicalDevicePushDescriptorPropertiesKHR push_descriptor_props;
+    vk::PhysicalDeviceSampleLocationsPropertiesEXT sample_locations_props;
     vk::PhysicalDeviceFeatures features;
     vk::PhysicalDeviceVulkan12Features vk12_features;
     vk::PhysicalDeviceVulkan13Features vk13_features;
@@ -637,6 +647,7 @@ private:
     bool amd_shader_trinary_minmax{};
     bool nv_framebuffer_mixed_samples{};
     bool amd_mixed_attachment_samples{};
+    bool sample_locations{};
     bool shader_atomic_float{};
     bool shader_atomic_float2{};
     bool workgroup_memory_explicit_layout{};

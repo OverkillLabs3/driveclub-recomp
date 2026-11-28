@@ -398,6 +398,9 @@ int g_neural = -1, neural_saved = 0;  // "Neural rendering" toggle (BB_NEURAL), 
 int g_fsrver = -1, fsrver_saved = 0;  // "FSR version" row (BB_UPSCALER fsr3 / fsr4); launcher.ini fsrver=
 int g_fgpace = -1, fgpace_saved = 0;  // "Frame generation pacing" row (BB_FG_PACING=gpu); launcher.ini fgpace=
 int g_reflex = -1, reflex_saved = 0;  // "NVIDIA Reflex" row (BB_REFLEX); launcher.ini reflex=
+int g_raindrop_res = -1, raindrop_res_saved = 1;                // "Droplet resolution" (BB_RAINDROP_RES: 1 / 2); launcher.ini raindrop_res=
+int g_raindrop_normal_fmt = -1, raindrop_normal_fmt_saved = 0;  // "Droplet normal precision" (BB_RAINDROP_HQ_FMT: 0 / 1 / 2); launcher.ini raindrop_normal_fmt=
+int g_sample_locations = -1, sample_locations_saved = 1;        // "Exact 2x2 rain sampling" (BB_SAMPLE_LOCATIONS: 0 / 1); launcher.ini sample_locations=
 int g_inres = -1, g_wide = -1, g_aspect = -1, g_outres = -1, g_preset = -1, g_mirror = -1, g_aniso = -1, g_fps = -1, g_fgen = -1, g_aa = -1, g_up = -1, g_lang = -1;
 
 // Graphics detail rows (graphics.cpp): the control of each, and its choice from launcher.ini (-1 = not saved yet).
@@ -552,7 +555,8 @@ std::vector<std::wstring> g_bench_ran_lines;  // every setting the game reported
 std::vector<std::wstring> g_user_env;
 void SnapshotUserEnv() {
   for (const wchar_t* name : {L"BB_FPS_LIMIT", L"BB_PRESENT_MODE", L"BB_LANGUAGE", L"BB_AA_SCALE", L"BB_AA", L"BB_FRAME_GEN", L"BB_FRAME_GEN_MULTIPLIER", L"BB_FRAME_GEN_AUTO",
-                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST"}) {
+                             L"BB_TEXTURE_REPETITION", L"BB_GEARBOX", L"BB_BRAKE_ASSIST", L"BB_HARDCORE", L"BB_WHEEL_ASSIST",
+                             L"BB_RAINDROP_RES", L"BB_RAINDROP_HQ_FMT", L"BB_SAMPLE_LOCATIONS"}) {
 
     if (GetEnvironmentVariableW(name, nullptr, 0) != 0) g_user_env.push_back(name);
   }
@@ -1621,6 +1625,21 @@ void BuildModel() {
                            L"\x2022 Off is a little sharper.\n"
                            L"\x2022 Photo mode turns it off.",
                            "@gfx", true);
+  g_raindrop_res = seg(L"Droplet resolution",
+                       L"Resolution of the windscreen raindrop simulation and normal map.\n"
+                       L"\x2022 Game (2048): PS4's 2048x1024 droplet atlas.\n"
+                       L"\x2022 2x (4096): 4096x2048 atlas (4x texels) for sharper droplets and streaks.",
+                       {L"Game (2048)", L"2x (4096)"}, {"@raindrop_res", ""}, 1);
+  g_raindrop_normal_fmt = seg(L"Droplet normal precision",
+                              L"Bit depth of the windscreen droplet normal map.\n"
+                              L"\x2022 Game (5-6-5): PS4's 16-bit R5G6B5 format.\n"
+                              L"\x2022 High (8-bit): R8G8B8A8 for smoother refraction gradients.\n"
+                              L"\x2022 Ultra (16-bit): R16G16B16A16 for maximum refraction precision.",
+                              {L"Game (5-6-5)", L"High (8-bit)", L"Ultra (16-bit)"}, {"@raindrop_normal_fmt", "", ""}, 0);
+  g_sample_locations = toggle(L"Exact 2x2 rain sampling",
+                              L"Uses Vulkan programmable sample locations so the 4x MSAA windscreen rain pass matches PS4's exact 2x2 subpixel grid.\n"
+                              L"\x2022 Fixes jagged 2x2 block aliasing on windshield droplets.",
+                              "@sample_locations", true);
   auto picker = [](const wchar_t* label, const wchar_t* hint, const char* tag) {
     Ctl c{label, hint, Kind::Picker, {L""}, {tag}, 0, 0};
     g_c.push_back(std::move(c));
@@ -1810,6 +1829,7 @@ void BuildModel() {
                                       g_gfx[kGfxShadows], g_gfx[kGfxParticles], g_texture_repetition}, 0, kTabDetail});
   g_cards.push_back({L"REFLECTIONS", {g_gfx[kGfxSsr], g_mirror}, 0, kTabDetail});
   g_cards.push_back({L"CAMERA EFFECTS", {g_gfx[kGfxBlur], g_motion_blur, g_gfx[kGfxDust], g_gfx[kGfxHaze], g_gfx[kGfxFxaa]}, 0, kTabDetail});
+  g_cards.push_back({L"WINDSCREEN RAIN", {g_raindrop_res, g_raindrop_normal_fmt, g_sample_locations}, 0, kTabDetail});
   g_cards.push_back({L"NEURAL RENDERING", {g_neural, g_nr_sub[0], g_nr_sub[1], g_nr_sub[2], g_nr_sub[3], g_nr_sub[4]}, 0, kTabDetail,
                      L"Touches up the picture after upscaling. Needs a GeForce RTX card and NVIDIA's own nvngx_dlssnr.dll in the runtime folder: this release does not include it."});
   g_cards.push_back({L"PLAYER", {pname, g_lang}, 0, kTabGameplay});
@@ -1999,6 +2019,9 @@ void LoadSettings() {
       if (line.rfind(kGfxKey[k], 0) == 0) gfx_saved[k] = atoi(line.substr(strlen(kGfxKey[k])).c_str());
     }
     if (line.rfind("motion_blur=", 0) == 0) motion_blur_saved = line.substr(12) == "fast" ? 1 : 0;
+    if (line.rfind("raindrop_res=", 0) == 0) raindrop_res_saved = atoi(line.substr(13).c_str());
+    if (line.rfind("raindrop_normal_fmt=", 0) == 0) raindrop_normal_fmt_saved = atoi(line.substr(20).c_str());
+    if (line.rfind("sample_locations=", 0) == 0) sample_locations_saved = atoi(line.substr(17).c_str());
     if (line.rfind("unlock_all=", 0) == 0) unlock_all_cars = line.substr(11) == "1";
     if (line.rfind("skip_intro=", 0) == 0) skip_intro_saved = line.substr(11) == "1";
     if (line.rfind("telemetry=", 0) == 0) telemetry_saved = atoi(line.substr(10).c_str());
@@ -2184,6 +2207,9 @@ void LoadSettings() {
     c.sel = gfx_saved[k] >= 0 && gfx_saved[k] < choices ? gfx_saved[k] : c.def;
   }
   if (g_motion_blur >= 0) g_c[g_motion_blur].sel = motion_blur_saved;
+  if (g_raindrop_res >= 0) g_c[g_raindrop_res].sel = (std::clamp)(raindrop_res_saved, 0, 1);
+  if (g_raindrop_normal_fmt >= 0) g_c[g_raindrop_normal_fmt].sel = (std::clamp)(raindrop_normal_fmt_saved, 0, 2);
+  if (g_sample_locations >= 0) g_c[g_sample_locations].sel = sample_locations_saved ? 1 : 0;
   if (g_prompts >= 0) g_c[g_prompts].sel = (std::clamp)(prompts_saved, 0, 2);
   if (g_xbox_buttons >= 0) g_c[g_xbox_buttons].sel = (std::clamp)(xbox_buttons_saved, 0, 1);
   if (g_ps_buttons >= 0) g_c[g_ps_buttons].sel = (std::clamp)(ps_buttons_saved, 0, 1);
@@ -2364,6 +2390,9 @@ bool SaveSettings() {
       if (g_nr_sub[k] >= 0) ini << nr_keys[k] << g_c[g_nr_sub[k]].sel << "\r\n";
     }
     ini << "motion_blur=" << (g_c[g_motion_blur].sel == 1 ? "fast" : "slow") << "\r\n";
+    if (g_raindrop_res >= 0) ini << "raindrop_res=" << g_c[g_raindrop_res].sel << "\r\n";
+    if (g_raindrop_normal_fmt >= 0) ini << "raindrop_normal_fmt=" << g_c[g_raindrop_normal_fmt].sel << "\r\n";
+    if (g_sample_locations >= 0) ini << "sample_locations=" << (g_c[g_sample_locations].sel ? 1 : 0) << "\r\n";
     ini << "bench_track=" << kBenchTracks[g_bench_track].id << "\r\nbench_car=" << kBenchCars[g_bench_car].id
         << "\r\nbench_mode=" << g_c[g_bmode].sel << "\r\nbench_tod=" << g_c[g_btod].sel << "\r\nbench_weather=" << g_c[g_bweather].sel
         << "\r\nbench_rain=" << g_c[g_brain].sel << "\r\nbench_length=" << g_c[g_blen].sel << "\r\n";
@@ -3772,6 +3801,16 @@ std::wstring StartGame(HANDLE* process = nullptr) {
   if (g_reflex >= 0 && !UserEnv(L"BB_REFLEX")) {
     const int r = g_c[g_reflex].sel;
     SetEnvironmentVariableW(L"BB_REFLEX", r == 0 ? L"off" : r == 1 ? L"on" : L"boost");
+  }
+  if (g_raindrop_res >= 0 && !UserEnv(L"BB_RAINDROP_RES")) {
+    SetEnvironmentVariableW(L"BB_RAINDROP_RES", g_c[g_raindrop_res].sel == 1 ? L"2" : L"1");
+  }
+  if (g_raindrop_normal_fmt >= 0 && !UserEnv(L"BB_RAINDROP_HQ_FMT")) {
+    const int f = g_c[g_raindrop_normal_fmt].sel;
+    SetEnvironmentVariableW(L"BB_RAINDROP_HQ_FMT", f == 2 ? L"2" : f == 1 ? L"1" : L"0");
+  }
+  if (g_sample_locations >= 0 && !UserEnv(L"BB_SAMPLE_LOCATIONS")) {
+    SetEnvironmentVariableW(L"BB_SAMPLE_LOCATIONS", g_c[g_sample_locations].sel ? L"1" : L"0");
   }
   if (g_fgen >= 0 && !UserEnv(L"BB_FRAME_GEN")) {
     const int f = g_c[g_fgen].sel;

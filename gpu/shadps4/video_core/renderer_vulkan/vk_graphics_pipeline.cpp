@@ -120,12 +120,44 @@ GraphicsPipeline::GraphicsPipeline(
 
     if (!preloading) {
         const auto& fs_info = runtime_infos[u32(Shader::SwStage::Fragment)].hw.fs;
+        const bool sample_shading =
+            fs_info.addr_flags.persp_sample_ena || fs_info.addr_flags.linear_sample_ena;
         sdata.multisampling = {
             .rasterizationSamples = LiverpoolToVK::NumSamples(
                 key.num_samples, instance.GetColorSampleCounts() & instance.GetDepthSampleCounts()),
-            .sampleShadingEnable =
-                fs_info.addr_flags.persp_sample_ena || fs_info.addr_flags.linear_sample_ena,
+            .sampleShadingEnable = sample_shading,
+            .minSampleShading = sample_shading ? 1.0f : 0.0f,
         };
+    }
+
+    auto multisampling = sdata.multisampling;
+    if (multisampling.sampleShadingEnable && multisampling.minSampleShading == 0.0f) {
+        multisampling.minSampleShading = 1.0f;
+    }
+    const bool use_sample_locations =
+        key.num_samples > 1 &&
+        instance.IsSampleLocationsSupported(multisampling.rasterizationSamples);
+    static constexpr std::array<vk::SampleLocationEXT, 4> default_grid_2x2 = {
+        vk::SampleLocationEXT{0.25f, 0.25f},
+        vk::SampleLocationEXT{0.75f, 0.25f},
+        vk::SampleLocationEXT{0.25f, 0.75f},
+        vk::SampleLocationEXT{0.75f, 0.75f},
+    };
+    const vk::PipelineSampleLocationsStateCreateInfoEXT sample_locations_state = {
+        .sampleLocationsEnable = VK_TRUE,
+        .sampleLocationsInfo = {
+            .sampleLocationsPerPixel = multisampling.rasterizationSamples,
+            .sampleLocationGridSize = {1, 1},
+            .sampleLocationsCount =
+                multisampling.rasterizationSamples == vk::SampleCountFlagBits::e4 ? 4u : 0u,
+            .pSampleLocations =
+                multisampling.rasterizationSamples == vk::SampleCountFlagBits::e4
+                    ? default_grid_2x2.data()
+                    : nullptr,
+        },
+    };
+    if (use_sample_locations) {
+        multisampling.pNext = &sample_locations_state;
     }
 
     const vk::PipelineViewportDepthClipControlCreateInfoEXT clip_control = {
@@ -154,6 +186,9 @@ GraphicsPipeline::GraphicsPipeline(
     }
     if (instance.IsDynamicColorWriteMaskSupported()) {
         dynamic_states.push_back(vk::DynamicState::eColorWriteMaskEXT);
+    }
+    if (use_sample_locations) {
+        dynamic_states.push_back(vk::DynamicState::eSampleLocationsEXT);
     }
     if (instance.IsVertexInputDynamicState()) {
         dynamic_states.push_back(vk::DynamicState::eVertexInputEXT);
@@ -414,7 +449,7 @@ GraphicsPipeline::GraphicsPipeline(
         .pTessellationState = &tessellation_state,
         .pViewportState = &viewport_info,
         .pRasterizationState = &raster_chain.get(),
-        .pMultisampleState = &sdata.multisampling,
+        .pMultisampleState = &multisampling,
         .pDepthStencilState =
             !instance.IsExtendedDynamicState3Supported() ? &depth_stencil_info : nullptr,
         .pColorBlendState = &color_blending,
